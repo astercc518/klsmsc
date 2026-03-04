@@ -1,0 +1,270 @@
+version: '3.8'
+
+services:
+  # MySQL数据库
+  mysql:
+    image: mysql:8.0
+    container_name: smsc-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass123}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-sms_system}
+      MYSQL_USER: ${MYSQL_USER:-smsuser}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpass123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # Redis缓存
+  redis:
+    image: redis:7.0-alpine
+    container_name: smsc-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # RabbitMQ消息队列
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: smsc-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"   # AMQP端口
+      - "15672:15672" # 管理界面
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # API服务
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: smsc-api
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_HOST: mysql
+      DATABASE_PORT: 3306
+      DATABASE_USER: ${MYSQL_USER:-smsuser}
+      DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+      DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ADMIN_GROUP_ID: ${TELEGRAM_ADMIN_GROUP_ID:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./logs:/app/logs
+      - import_uploads:/tmp/smsc_imports
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # Celery Worker (短信发送)
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: smsc-worker
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_HOST: mysql
+      DATABASE_PORT: 3306
+      DATABASE_USER: ${MYSQL_USER:-smsuser}
+      DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+      DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+    volumes:
+      - ./backend:/app
+      - ./logs:/app/logs
+      - import_uploads:/tmp/smsc_imports
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4 -Q celery,sms_send,sms_dlr,data_tasks
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # Celery Beat (定时任务调度)
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: smsc-beat
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_HOST: mysql
+      DATABASE_PORT: 3306
+      DATABASE_USER: ${MYSQL_USER:-smsuser}
+      DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+      DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+    volumes:
+      - ./backend:/app
+      - ./logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # Telegram Bot
+  bot:
+    build:
+      context: ./telegram_bot
+      dockerfile: Dockerfile
+    container_name: smsc-bot
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_HOST: mysql
+      DATABASE_PORT: 3306
+      DATABASE_USER: ${MYSQL_USER:-smsuser}
+      DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+      DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    volumes:
+      - ./telegram_bot:/app
+      - ./backend:/backend # 挂载 backend 代码以供复用
+      - ./logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: python -m bot.main
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # 前端服务
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: smsc-frontend
+    ports:
+      - "3001:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # Prometheus监控
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: smsc-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # Grafana可视化
+  grafana:
+    image: grafana/grafana:latest
+    container_name: smsc-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: false
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  rabbitmq_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  import_uploads:
+    driver: local
+
+networks:
+  smsc-network:
+    driver: bridge

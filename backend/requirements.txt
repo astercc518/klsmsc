@@ -1,0 +1,52 @@
+# Web框架
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+python-multipart==0.0.6
+
+# 数据库
+SQLAlchemy==2.0.23
+PyMySQL==1.1.0
+alembic==1.12.1
+asyncmy==0.2.8
+
+# 缓存和消息队列
+redis==5.0.1
+celery==5.3.4
+kombu==5.3.4
+
+# 电话号码解析
+phonenumbers==8.13.26
+
+# 安全和加密
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+cryptography==41.0.7
+bcrypt==4.1.2
+
+# HTTP客户端
+httpx==0.25.2
+aiohttp==3.9.1
+
+# 监控和日志
+prometheus-client==0.19.0
+python-json-logger==2.0.7
+loguru==0.7.2
+
+# 工具库
+python-dotenv==1.0.0
+click==8.1.7
+pytz==2023.3
+email-validator==2.1.0
+
+# SMPP协议支持
+smpplib==2.2.4
+
+# 测试依赖
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+aiosqlite==0.19.0
+
