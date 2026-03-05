@@ -20,6 +20,8 @@ except ImportError:
     # Fallback for when running as script inside the package
     from config import settings
 
+import asyncio
+import aiomysql
 from telegram.ext import ApplicationBuilder, PicklePersistence, CommandHandler
 from bot.utils import logger
 from bot.handlers.auth import auth_handlers
@@ -40,14 +42,51 @@ from bot.handlers.mass_send import get_mass_handlers
 # 数据操作处理器
 from bot.handlers.data_ops import data_handlers
 
+async def get_bot_token_from_db() -> str:
+    """从数据库 system_config 读取 Bot Token"""
+    try:
+        conn = await aiomysql.connect(
+            host=os.environ.get("DATABASE_HOST", "mysql"),
+            port=int(os.environ.get("DATABASE_PORT", 3306)),
+            user=os.environ.get("DATABASE_USER", "smsuser"),
+            password=os.environ.get("DATABASE_PASSWORD", "smspass123"),
+            db=os.environ.get("DATABASE_NAME", "sms_system"),
+        )
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT config_value FROM system_config WHERE config_key = 'telegram_bot_token' AND is_active = 1"
+            )
+            row = await cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            logger.info("从数据库读取到 Bot Token")
+            return row[0]
+    except Exception as e:
+        logger.warning(f"从数据库读取 Bot Token 失败: {e}")
+    return ""
+
+
+def resolve_bot_token() -> str:
+    """优先数据库 → 回退环境变量"""
+    db_token = asyncio.get_event_loop().run_until_complete(get_bot_token_from_db())
+    if db_token:
+        return db_token
+    logger.info("使用环境变量中的 Bot Token")
+    return settings.TELEGRAM_BOT_TOKEN
+
+
 def main():
     """启动Bot"""
     logger.info("Starting Telegram Bot...")
     
-    # 持久化存储用户状态 (Conversations)
+    bot_token = resolve_bot_token()
+    if not bot_token:
+        logger.error("未找到有效的 Bot Token，退出")
+        sys.exit(1)
+
     persistence = PicklePersistence(filepath="bot_data.pickle")
     
-    app = ApplicationBuilder().token(settings.TELEGRAM_BOT_TOKEN).persistence(persistence).build()
+    app = ApplicationBuilder().token(bot_token).persistence(persistence).build()
     
     # 注册 Handlers
     for handler in auth_handlers:

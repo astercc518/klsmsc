@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     """应用配置"""
     
     # 应用配置
-    APP_NAME: str = "International SMS Gateway"
+    APP_NAME: str = "SMSCPro Gateway"
     APP_ENV: str = "development"
     APP_DEBUG: bool = True
     APP_HOST: str = "0.0.0.0"
@@ -102,6 +102,17 @@ class Settings(BaseSettings):
     AI_API_KEY: Optional[str] = None
     AI_API_URL: str = "https://api.deepseek.com/v1/chat/completions"
     AI_MODEL: str = "deepseek-chat"
+
+    # DLR 回调安全配置
+    DLR_CALLBACK_TOKEN: Optional[str] = None
+    DLR_CALLBACK_IP_WHITELIST: str = ""
+
+    @property
+    def dlr_callback_ip_list(self) -> List[str]:
+        """将逗号分隔的 DLR IP 白名单转为列表"""
+        if not self.DLR_CALLBACK_IP_WHITELIST:
+            return []
+        return [ip.strip() for ip in self.DLR_CALLBACK_IP_WHITELIST.split(",") if ip.strip()]
 
     # Telegram Bot配置
     TELEGRAM_BOT_TOKEN: Optional[str] = None

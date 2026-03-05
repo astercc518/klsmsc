@@ -66,13 +66,38 @@ async def get_balance(
 
 @router.get("/info", response_model=AccountInfoResponse)
 async def get_account_info(
-    account: Account = Depends(get_current_account)
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db)
 ):
     """
     查询账户信息
     """
     logger.info(f"查询账户信息: 账户={account.id}")
     
+    # 查询 TG 绑定状态（优先 TelegramBinding 表）
+    from app.modules.common.telegram_binding import TelegramBinding
+    from app.modules.common.telegram_user import TelegramUser
+
+    tg_id = account.tg_id
+    tg_username = account.tg_username
+
+    if not tg_id:
+        bind_result = await db.execute(
+            select(TelegramBinding).where(
+                TelegramBinding.account_id == account.id,
+                TelegramBinding.is_active == True
+            ).limit(1)
+        )
+        binding = bind_result.scalar_one_or_none()
+        if binding:
+            tg_id = binding.tg_id
+            tg_user_result = await db.execute(
+                select(TelegramUser).where(TelegramUser.tg_id == binding.tg_id)
+            )
+            tg_user = tg_user_result.scalar_one_or_none()
+            if tg_user:
+                tg_username = tg_user.username
+
     return AccountInfoResponse(
         id=account.id,
         account_name=account.account_name,
@@ -80,10 +105,12 @@ async def get_account_info(
         balance=float(account.balance),
         currency=account.currency,
         status=account.status,
-        services=account.services or "sms",  # 开通的业务类型
+        services=account.services or "sms",
         company_name=account.company_name,
         contact_person=account.contact_person,
         rate_limit=account.rate_limit,
+        tg_id=tg_id,
+        tg_username=tg_username,
         created_at=account.created_at.isoformat()
     )
 
@@ -180,7 +207,7 @@ async def login(
     if not account:
         return AccountLoginResponse(
             success=False,
-            error="Invalid username/email or password"
+            error="invalid_credentials"
         )
     
     # 验证密码
@@ -188,14 +215,14 @@ async def login(
         logger.warning(f"密码验证失败: email={request.email}")
         return AccountLoginResponse(
             success=False,
-            error="Invalid email or password"
+            error="invalid_credentials"
         )
     
     # 检查账户状态
     if account.status != 'active':
         return AccountLoginResponse(
             success=False,
-            error=f"Account is {account.status}"
+            error="account_disabled"
         )
     
     logger.info(f"登录成功: 账户={account.id}")
@@ -220,4 +247,51 @@ async def login(
         token=account.api_key,
         account_id=account.id
     )
+
+
+@router.post("/telegram-bind-code", response_model=dict)
+async def generate_account_tg_bind_code(
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db)
+):
+    """客户生成 Telegram 绑定码"""
+    import random
+    from app.utils.cache import get_redis_client
+
+    redis_client = await get_redis_client()
+    code = f"{random.randint(100000, 999999)}"
+    bind_key = f"acct_tg_bind:{code}"
+    await redis_client.setex(bind_key, 300, str(account.id).encode("utf-8"))
+
+    logger.info(f"客户 TG 绑定码生成: account_id={account.id}, code={code}")
+    return {"success": True, "code": code, "expires_in": 300}
+
+
+@router.post("/telegram-unbind", response_model=dict)
+async def unbind_account_telegram(
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db)
+):
+    """客户解绑 Telegram"""
+    from app.modules.common.telegram_binding import TelegramBinding
+
+    # 清除 Account 表上的 tg_id
+    if account.tg_id:
+        account.tg_id = None
+        account.tg_username = None
+
+    # 停用 TelegramBinding 记录
+    bind_result = await db.execute(
+        select(TelegramBinding).where(
+            TelegramBinding.account_id == account.id,
+            TelegramBinding.is_active == True
+        )
+    )
+    bindings = bind_result.scalars().all()
+    for b in bindings:
+        b.is_active = False
+
+    await db.commit()
+    logger.info(f"客户解绑 TG: account_id={account.id}")
+    return {"success": True, "message": "unbound"}
 

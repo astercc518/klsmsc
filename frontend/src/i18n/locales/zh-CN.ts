@@ -1,4 +1,10 @@
 export default {
+  // 品牌
+  brand: {
+    name: '星链通信',
+    fullName: '星链通信 StarLink',
+    slogan: '全球短信 · 链接世界',
+  },
   // 通用
   common: {
     confirm: '确定',
@@ -79,7 +85,7 @@ export default {
   // 登录页
   login: {
     title: '登录',
-    subtitle: '企业级短信网关平台',
+    subtitle: '全球短信  ·  链接世界',
     customerLogin: '客户登录',
     staffLogin: '员工登录',
     username: '用户名',
@@ -99,6 +105,23 @@ export default {
     roleHint: '支持管理员、销售、财务、技术角色登录',
     securityNote: 'AES-256 加密保护',
     invalidCredentials: '用户名或密码错误',
+    invalidCredentialsRemaining: '用户名或密码错误，还可尝试 {n} 次',
+    accountLocked: '账户已被锁定，请联系管理员解锁',
+    accountDisabled: '账户已被禁用，请联系管理员',
+    tgNotBound: '该账户未绑定 Telegram',
+    tgCodeExpired: '验证码已过期，请重新发送',
+    tgCodeInvalid: '验证码错误，请重新输入',
+    tgSendFailed: '验证码发送失败，请稍后重试',
+    tgCooldown: '发送过于频繁，请稍后再试',
+    tgLogin: 'TG验证',
+    tgSendCode: '发送验证码到 Telegram',
+    tgSending: '发送中',
+    tgVerifyCode: '验证码',
+    tgEnterCode: '请输入6位验证码',
+    tgVerifyLogin: '验证并登录',
+    tgCodeSentSuccess: '验证码已发送到您的 Telegram',
+    tgResendIn: '{n}秒后可重新发送',
+    tgResendCode: '重新发送验证码',
   },
   
   // 侧边栏菜单
@@ -1365,6 +1388,21 @@ export default {
     emailNotify: '邮件通知',
     telegramNotify: 'Telegram通知',
     telegramBound: '已绑定',
+    tgBinding: 'Telegram 绑定',
+    tgBoundStatus: '已绑定',
+    tgNotBoundStatus: '未绑定',
+    tgBindSteps: '绑定步骤',
+    tgStep1: '点击下方按钮生成6位绑定码',
+    tgStep2: '打开 Telegram Bot，发送 /bindaccount <绑定码>',
+    tgStep3: '绑定成功后刷新本页确认',
+    tgBindCode: '绑定码',
+    tgCodeExpire: '5分钟内有效',
+    tgGenerate: '生成绑定码',
+    tgRegenerate: '重新生成',
+    tgCodeGenerated: '绑定码已生成',
+    tgUnbind: '解除绑定',
+    tgUnbindConfirm: '确定要解除 Telegram 绑定吗？',
+    tgUnbindSuccess: 'Telegram 绑定已解除',
     saveSettings: '保存设置',
     loadAccountInfoFailed: '加载账户信息失败',
     passwordChangeSuccess: '密码修改成功',

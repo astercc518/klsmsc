@@ -8,6 +8,8 @@ from app.modules.common.ticket import Ticket, TicketReply, TicketTemplate
 from app.modules.common.telegram_binding import TelegramBinding
 from app.modules.common.telegram_user import TelegramUser
 from app.modules.common.system_config import SystemConfig
+from app.modules.common.config_audit_log import ConfigAuditLog
+from app.modules.common.admin_operation_log import AdminOperationLog
 from app.modules.common.invitation_code import InvitationCode
 from app.modules.common.account_template import AccountTemplate
 from app.modules.common.recharge_order import RechargeOrder
@@ -95,5 +97,9 @@ __all__ = [
     "VoiceAccount",
     "VoiceRechargeLog",
     # 开户模板
-    "AccountTemplate"
+    "AccountTemplate",
+    # 配置审计
+    "ConfigAuditLog",
+    # 管理员操作日志
+    "AdminOperationLog"
 ]

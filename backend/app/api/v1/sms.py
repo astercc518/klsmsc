@@ -21,8 +21,12 @@ from app.schemas.sms import (
     BatchSMSRequest,
     BatchSMSResponse
 )
+from fastapi.responses import JSONResponse
 from app.utils.logger import get_logger
-from app.utils.errors import ValidationError, AuthenticationError
+from app.utils.errors import (
+    ValidationError, AuthenticationError,
+    InsufficientBalanceError, PricingNotFoundError, ChannelNotAvailableError
+)
 from sqlalchemy import select
 
 logger = get_logger(__name__)
@@ -234,7 +238,7 @@ async def send_sms(
         )
         
         db.add(sms_log)
-        await db.commit()
+        await db.flush()
         
         logger.info(f"短信记录已创建: {message_id}, Profit={sms_log.selling_price - sms_log.cost_price}")
         
@@ -269,12 +273,16 @@ async def send_sms(
             success=False,
             error={"code": e.error_code, "message": e.message}
         )
-    except Exception as e:
-        logger.error(f"发送短信失败: {str(e)}", exc_info=e)
-        await db.rollback()
+    except (InsufficientBalanceError, PricingNotFoundError, ChannelNotAvailableError) as e:
         return SMSSendResponse(
             success=False,
-            error={"code": "INTERNAL_ERROR", "message": str(e)}
+            error={"code": e.error_code, "message": e.message}
+        )
+    except Exception as e:
+        logger.error(f"发送短信失败: {str(e)}", exc_info=e)
+        return SMSSendResponse(
+            success=False,
+            error={"code": "INTERNAL_ERROR", "message": "An internal error occurred. Please try again later."}
         )
 
 
@@ -319,43 +327,81 @@ async def send_batch_sms(
     account: Account = Depends(get_current_account_or_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """批量发送短信"""
+    """
+    批量发送短信（异步入队模式）
+
+    先预校验号码并批量创建记录、扣费，然后统一入队异步发送，
+    避免逐条同步阻塞。
+    """
+    from app.utils.queue import QueueManager
+
     results = []
     succeeded = 0
     failed = 0
-    
+
     for phone_number in request.phone_numbers:
         try:
-            # 调用单条发送API
-            single_request = SMSSendRequest(
-                phone_number=phone_number,
-                message=request.message,
-                sender_id=request.sender_id, # 兼容旧参数
-                callback_url=request.callback_url
-            )
-            
-            response = await send_sms(single_request, account, db)
-            
-            if response.success:
-                succeeded += 1
-            else:
+            # 1. 校验号码
+            is_valid, err_msg, phone_info = Validator.validate_phone_number(phone_number)
+            if not is_valid:
                 failed += 1
-            
-            results.append({
-                "phone_number": phone_number,
-                "success": response.success,
-                "message_id": response.message_id,
-                "error": response.error
-            })
-            
-        except Exception as e:
+                results.append({"phone_number": phone_number, "success": False,
+                                "message_id": None, "error": {"code": "INVALID_PHONE", "message": err_msg}})
+                continue
+
+            country_code = phone_info['country_code']
+
+            # 2. 路由选择
+            routing_engine = RoutingEngine(db)
+            channel = await routing_engine.select_channel(country_code=country_code, strategy='priority')
+            if not channel:
+                failed += 1
+                results.append({"phone_number": phone_number, "success": False,
+                                "message_id": None, "error": {"code": "NO_CHANNEL", "message": "No available channel"}})
+                continue
+
+            # 3. 计费扣款
+            pricing_engine = PricingEngine(db)
+            charge_result = await pricing_engine.calculate_and_charge(
+                account_id=account.id, channel_id=channel.id,
+                country_code=country_code, message=request.message,
+            )
+            if not charge_result['success']:
+                failed += 1
+                results.append({"phone_number": phone_number, "success": False,
+                                "message_id": None, "error": {"code": "BILLING_ERROR", "message": charge_result.get('error', 'Billing failed')}})
+                continue
+
+            # 4. 创建短信记录
+            message_id = f"msg_{uuid.uuid4().hex}"
+            sms_log = SMSLog(
+                message_id=message_id, account_id=account.id, channel_id=channel.id,
+                phone_number=phone_info['e164_format'], country_code=country_code,
+                message=request.message, message_count=charge_result['message_count'],
+                status='queued', cost_price=charge_result['total_base_cost'],
+                selling_price=charge_result['total_cost'], currency=charge_result['currency'],
+                submit_time=datetime.now(),
+            )
+            db.add(sms_log)
+            await db.flush()
+
+            # 5. 入队异步发送
+            QueueManager.queue_sms(message_id)
+
+            succeeded += 1
+            results.append({"phone_number": phone_number, "success": True,
+                            "message_id": message_id, "error": None})
+
+        except (InsufficientBalanceError, PricingNotFoundError, ChannelNotAvailableError) as e:
             failed += 1
-            results.append({
-                "phone_number": phone_number,
-                "success": False,
-                "error": {"code": "ERROR", "message": str(e)}
-            })
-    
+            results.append({"phone_number": phone_number, "success": False,
+                            "message_id": None, "error": {"code": e.error_code, "message": e.message}})
+        except Exception as e:
+            logger.error(f"批量发送单条失败: {phone_number}, {str(e)}")
+            failed += 1
+            results.append({"phone_number": phone_number, "success": False,
+                            "message_id": None, "error": {"code": "ERROR", "message": "Send failed"}})
+
     return BatchSMSResponse(
         success=True,
         total=len(request.phone_numbers),
@@ -529,6 +575,52 @@ from app.core.dlr_handler import (
     parse_json_dlr, parse_xml_dlr, parse_form_dlr, 
     detect_and_parse_dlr, process_dlr_reports
 )
+from app.config import settings
+import ipaddress as _ipaddress
+
+
+def _verify_dlr_caller(request: Request) -> bool:
+    """
+    校验 DLR 回调请求来源：Token 或 IP 白名单。
+    两项都未配置时视为开放（向后兼容），配置了任一项则至少满足其一。
+    """
+    token_ok: Optional[bool] = None
+    ip_ok: Optional[bool] = None
+
+    # Token 校验
+    if settings.DLR_CALLBACK_TOKEN:
+        req_token = (
+            request.headers.get("X-DLR-Token")
+            or request.query_params.get("dlr_token")
+        )
+        token_ok = (req_token == settings.DLR_CALLBACK_TOKEN)
+
+    # IP 白名单校验
+    allowed_ips = settings.dlr_callback_ip_list
+    if allowed_ips:
+        client_ip = (
+            request.headers.get("X-Real-IP")
+            or (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            or (request.client.host if request.client else "")
+        )
+        try:
+            client_addr = _ipaddress.ip_address(client_ip)
+            ip_ok = any(
+                (client_addr in _ipaddress.ip_network(entry, strict=False))
+                if "/" in entry
+                else (client_addr == _ipaddress.ip_address(entry))
+                for entry in allowed_ips
+            )
+        except ValueError:
+            ip_ok = False
+
+    # 两项都未配置 → 放行（向后兼容）
+    if token_ok is None and ip_ok is None:
+        return True
+    # 任一通过即可
+    if token_ok is True or ip_ok is True:
+        return True
+    return False
 
 
 @router.post("/dlr/callback")
@@ -544,8 +636,17 @@ async def dlr_callback_post(
     - XML: <report><mid>xxx</mid><status>delivered</status></report>
     - Form: mid=xxx&status=delivered
     
-    支持多种字段名称，自动适配不同上游通道
+    认证方式（至少配置一项）：
+    - Header: X-DLR-Token  或  Query: ?dlr_token=xxx
+    - IP 白名单（环境变量 DLR_CALLBACK_IP_WHITELIST）
     """
+    if not _verify_dlr_caller(request):
+        logger.warning(f"DLR 回调认证失败: IP={request.client.host if request.client else 'unknown'}")
+        return JSONResponse(
+            status_code=403,
+            content={"status": 1, "message": "Forbidden"}
+        )
+
     try:
         content_type = request.headers.get('content-type', '')
         body = await request.body()
@@ -572,14 +673,12 @@ async def dlr_callback_post(
             reports = parse_form_dlr(dict(form_data))
         
         else:
-            # 自动检测格式
             reports = detect_and_parse_dlr(body_text, content_type)
         
         if not reports:
             logger.warning(f"DLR 回调无法解析或无有效报告: {body_text[:200]}")
             return {"status": 0, "message": "no valid reports"}
         
-        # 处理报告
         success, fail = await process_dlr_reports(reports, db, source="push")
         
         logger.info(f"DLR 回调处理完成: 成功={success}, 失败={fail}")
@@ -587,14 +686,13 @@ async def dlr_callback_post(
         
     except Exception as e:
         logger.error(f"处理 DLR 回调失败: {str(e)}", exc_info=True)
-        return {"status": 1, "message": str(e)}
+        return {"status": 1, "message": "internal error"}
 
 
 @router.get("/dlr/callback")
 async def dlr_callback_get(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    # 常见字段名
     mid: Optional[str] = None,
     msgid: Optional[str] = None,
     message_id: Optional[str] = None,
@@ -616,8 +714,14 @@ async def dlr_callback_get(
     
     支持多种常见的 URL 参数名称，自动适配不同上游
     """
+    if not _verify_dlr_caller(request):
+        logger.warning(f"DLR GET 回调认证失败: IP={request.client.host if request.client else 'unknown'}")
+        return JSONResponse(
+            status_code=403,
+            content={"status": 1, "message": "Forbidden"}
+        )
+
     try:
-        # 合并所有可能的字段
         report = {
             'message_id': mid or msgid or message_id or taskid,
             'mobile': mobile or phone or to,
@@ -633,14 +737,13 @@ async def dlr_callback_get(
             logger.warning(f"DLR GET 回调缺少消息ID: {query_string}")
             return {"status": 0, "message": "missing message_id"}
         
-        # 处理报告
         success, fail = await process_dlr_reports([report], db, source="push-get")
         
         return {"status": 0, "message": "success", "processed": success + fail}
         
     except Exception as e:
         logger.error(f"处理 DLR GET 回调失败: {str(e)}")
-        return {"status": 1, "message": str(e)}
+        return {"status": 1, "message": "internal error"}
 
 
 @router.post("/dlr/callback/{channel_code}")

@@ -47,14 +47,16 @@ async def lifespan(app: FastAPI):
     logger.info("✅ 数据库和Redis连接已关闭")
 
 
-# 创建FastAPI应用
+# 生产环境禁用 API 文档端点
+_is_dev = (settings.APP_ENV == "development")
+
 app = FastAPI(
     title=settings.APP_NAME,
-    description="企业级国际短信网关系统",
+    description="SMSCPro - 企业级国际短信网关系统 | smscpro.com",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    docs_url="/docs" if _is_dev else None,
+    redoc_url="/redoc" if _is_dev else None,
+    openapi_url="/openapi.json" if _is_dev else None,
     lifespan=lifespan
 )
 
@@ -149,7 +151,7 @@ from app.api.v1 import (
     sms, account, channels, admin, reports, bot_admin, system_config,
     templates, api_keys, batches, scheduled_tasks, sub_accounts, packages,
     notifications, security_logs, suppliers, tickets, settlements,
-    channel_relations, voice, account_templates, ai
+    channel_relations, voice, account_templates, ai, admin_logs
 )
 from app.api.v1.data import (
     admin_numbers_router, admin_products_router, admin_orders_router,
@@ -191,6 +193,8 @@ app.include_router(voice.router, prefix="/api/v1", tags=["Voice"])
 app.include_router(account_templates.router, prefix="/api/v1", tags=["Account Templates"])
 # AI 文案生成
 app.include_router(ai.router, prefix="/api/v1/ai", tags=["AI"])
+# 系统操作日志
+app.include_router(admin_logs.router, prefix="/api/v1", tags=["System Logs"])
 
 
 if __name__ == "__main__":

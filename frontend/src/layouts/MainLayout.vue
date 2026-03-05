@@ -13,19 +13,23 @@
         <div class="logo-area">
           <div class="logo-wrapper" @click="toggleSidebar">
             <div class="logo-icon">
-              <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-                <path d="M16 2L30 9V23L16 30L2 23V9L16 2Z" stroke="url(#logo-grad)" stroke-width="2" fill="none"/>
-                <circle cx="16" cy="16" r="6" fill="url(#logo-grad)"/>
+              <svg width="30" height="30" viewBox="0 0 48 48" fill="none">
                 <defs>
-                  <linearGradient id="logo-grad" x1="2" y1="2" x2="30" y2="30">
-                    <stop offset="0%" stop-color="#667EEA"/>
-                    <stop offset="100%" stop-color="#764BA2"/>
+                  <linearGradient id="logo-grad" x1="4" y1="4" x2="44" y2="44">
+                    <stop offset="0%" stop-color="#6366F1"/><stop offset="100%" stop-color="#A855F7"/>
                   </linearGradient>
                 </defs>
+                <circle cx="24" cy="24" r="20" stroke="url(#logo-grad)" stroke-width="0.8" opacity="0.2"/>
+                <path d="M24 6 L27.5 20 L42 24 L27.5 28 L24 42 L20.5 28 L6 24 L20.5 20 Z" fill="url(#logo-grad)" opacity="0.9"/>
+                <circle cx="24" cy="24" r="3.5" fill="#fff" opacity="0.85"/>
+                <g fill="url(#logo-grad)" opacity="0.6">
+                  <circle cx="24" cy="4" r="1.5"/><circle cx="44" cy="24" r="1.5"/>
+                  <circle cx="24" cy="44" r="1.5"/><circle cx="4" cy="24" r="1.5"/>
+                </g>
               </svg>
             </div>
             <transition name="fade">
-              <span class="logo-text" v-if="!sidebarCollapsed">SMSPro</span>
+              <span class="logo-text" v-if="!sidebarCollapsed">{{ $t('brand.name') }}</span>
             </transition>
           </div>
         </div>

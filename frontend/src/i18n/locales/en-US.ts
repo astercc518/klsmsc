@@ -1,4 +1,10 @@
 export default {
+  // Brand
+  brand: {
+    name: 'StarLink',
+    fullName: 'StarLink Communications',
+    slogan: 'Global SMS · Connect the World',
+  },
   // Common
   common: {
     confirm: 'Confirm',
@@ -75,7 +81,7 @@ export default {
   // Login
   login: {
     title: 'Login',
-    subtitle: 'Enterprise SMS Gateway Platform',
+    subtitle: 'Global SMS  ·  Connect the World',
     customerLogin: 'Customer Login',
     staffLogin: 'Staff Login',
     username: 'Username',
@@ -95,6 +101,23 @@ export default {
     roleHint: 'Supports Admin, Sales, Finance, Tech roles',
     securityNote: 'AES-256 Encrypted',
     invalidCredentials: 'Invalid username or password',
+    invalidCredentialsRemaining: 'Invalid credentials, {n} attempts remaining',
+    accountLocked: 'Account is locked, please contact administrator',
+    accountDisabled: 'Account is disabled, please contact administrator',
+    tgNotBound: 'Account is not bound to Telegram',
+    tgCodeExpired: 'Verification code expired, please resend',
+    tgCodeInvalid: 'Invalid verification code',
+    tgSendFailed: 'Failed to send code, please try again later',
+    tgCooldown: 'Too frequent, please wait before retrying',
+    tgLogin: 'TG Login',
+    tgSendCode: 'Send Code to Telegram',
+    tgSending: 'Sending',
+    tgVerifyCode: 'Verification Code',
+    tgEnterCode: 'Enter 6-digit code',
+    tgVerifyLogin: 'Verify & Login',
+    tgCodeSentSuccess: 'Code sent to your Telegram',
+    tgResendIn: 'Resend in {n}s',
+    tgResendCode: 'Resend Code',
   },
   
   // Sidebar Menu
@@ -1302,6 +1325,21 @@ export default {
     emailNotify: 'Email Notification',
     telegramNotify: 'Telegram Notification',
     telegramBound: 'Bound',
+    tgBinding: 'Telegram Binding',
+    tgBoundStatus: 'Bound',
+    tgNotBoundStatus: 'Not Bound',
+    tgBindSteps: 'Binding Steps',
+    tgStep1: 'Click button below to generate a 6-digit binding code',
+    tgStep2: 'Open Telegram Bot, send /bindaccount <code>',
+    tgStep3: 'Refresh this page to confirm binding',
+    tgBindCode: 'Binding Code',
+    tgCodeExpire: 'Valid for 5 minutes',
+    tgGenerate: 'Generate Code',
+    tgRegenerate: 'Regenerate',
+    tgCodeGenerated: 'Binding code generated',
+    tgUnbind: 'Unbind',
+    tgUnbindConfirm: 'Are you sure to unbind Telegram?',
+    tgUnbindSuccess: 'Telegram binding removed',
     saveSettings: 'Save Settings',
     loadAccountInfoFailed: 'Failed to load account info',
     passwordChangeSuccess: 'Password changed successfully',

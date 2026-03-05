@@ -57,3 +57,12 @@ alembic/versions/__pycache__/
 # 编辑器备份
 *.bak
 *.orig
+
+# SSL 证书
+certs/
+*.pem
+*.key
+*.crt
+
+# 后端环境文件副本
+backend/.env.host

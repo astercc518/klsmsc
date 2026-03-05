@@ -4,13 +4,14 @@
 import hmac
 import hashlib
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from fastapi import Security, HTTPException, Header, Request, Depends
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from jose import JWTError, jwt
+from passlib.context import CryptContext
 from app.modules.common.account import Account
 from app.modules.common.admin_user import AdminUser
 from app.database import get_db
@@ -26,6 +27,14 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 # JWT Bearer Token
 security = HTTPBearer()
+
+# 模块级 CryptContext 实例（避免每次调用重复创建）
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _utcnow() -> datetime:
+    """返回当前 UTC 时间（timezone-aware）"""
+    return datetime.now(timezone.utc)
 
 
 # ====================================
@@ -44,23 +53,8 @@ async def get_current_admin(
     credentials: HTTPAuthorizationCredentials = Security(security),
     db: AsyncSession = Depends(get_db)
 ) -> AdminUser:
-    """获取当前管理员（FastAPI Dependency）"""
-    token = credentials.credentials
-    payload = AuthService.verify_token(token)
-    admin_id = payload.get("sub")
-    
-    if not admin_id:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    
-    result = await db.execute(
-        select(AdminUser).where(AdminUser.id == int(admin_id))
-    )
-    admin = result.scalar_one_or_none()
-    
-    if not admin:
-        raise HTTPException(status_code=401, detail="Admin not found")
-    
-    return admin
+    """获取当前管理员（FastAPI Dependency）— 委托给 AuthService 实现"""
+    return await AuthService.get_current_admin(credentials, db)
 
 
 class AuthService:
@@ -186,16 +180,12 @@ class AuthService:
     @staticmethod
     def hash_password(password: str) -> str:
         """密码哈希"""
-        from passlib.context import CryptContext
-        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-        return pwd_context.hash(password)
+        return _pwd_context.hash(password)
     
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         """验证密码"""
-        from passlib.context import CryptContext
-        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-        return pwd_context.verify(plain_password, hashed_password)
+        return _pwd_context.verify(plain_password, hashed_password)
     
     @staticmethod
     def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
@@ -210,15 +200,12 @@ class AuthService:
             JWT token字符串
         """
         to_encode = data.copy()
-        # RFC 7519 recommends "sub" be a string. python-jose enforces this.
         if "sub" in to_encode and to_encode["sub"] is not None:
             to_encode["sub"] = str(to_encode["sub"])
-        if expires_delta:
-            expire = datetime.utcnow() + expires_delta
-        else:
-            expire = datetime.utcnow() + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+        now = _utcnow()
+        expire = now + (expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES))
         
-        to_encode.update({"exp": expire, "iat": datetime.utcnow()})
+        to_encode.update({"exp": expire, "iat": now})
         encoded_jwt = jwt.encode(
             to_encode,
             settings.JWT_SECRET_KEY,

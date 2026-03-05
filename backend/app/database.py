@@ -5,10 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 from sqlalchemy.orm import declarative_base
 from app.config import settings
 
-# 创建异步引擎
+# 创建异步引擎（仅开发环境开启 SQL echo，避免泄露敏感信息）
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.APP_DEBUG,
+    echo=(settings.APP_DEBUG and settings.APP_ENV == "development"),
     pool_size=settings.DATABASE_POOL_SIZE,
     max_overflow=settings.DATABASE_MAX_OVERFLOW,
     pool_pre_ping=True,

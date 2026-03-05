@@ -93,6 +93,8 @@ services:
       - ./backend:/app
       - ./logs:/app/logs
       - import_uploads:/tmp/smsc_imports
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./.env:/app/.env.host
     depends_on:
       mysql:
         condition: service_healthy
@@ -211,7 +213,10 @@ services:
       dockerfile: Dockerfile
     container_name: smsc-frontend
     ports:
-      - "3001:80"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

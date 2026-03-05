@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4F46E5"/>
+      <stop offset="50%" stop-color="#6366F1"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#fff" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="clip"><rect width="512" height="512" rx="110"/></clipPath>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- ?? -->
+  <rect width="512" height="512" rx="110" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="110" fill="url(#shine)"/>
+
+  <g clip-path="url(#clip)">
+    <!-- ???????????? -->
+    <g fill="none" stroke="#fff" opacity="0.1" stroke-width="1.2">
+      <circle cx="256" cy="256" r="175"/>
+      <ellipse cx="256" cy="256" rx="110" ry="175"/>
+      <ellipse cx="256" cy="256" rx="42" ry="175"/>
+      <line x1="81" y1="196" x2="431" y2="196"/>
+      <line x1="81" y1="256" x2="431" y2="256"/>
+      <line x1="81" y1="316" x2="431" y2="316"/>
+    </g>
+
+    <!-- ??????? -->
+    <g stroke="#fff" stroke-width="1.5" fill="none" opacity="0.25">
+      <line x1="140" y1="160" x2="260" y2="200"/>
+      <line x1="260" y1="200" x2="380" y2="150"/>
+      <line x1="260" y1="200" x2="350" y2="310"/>
+      <line x1="140" y1="160" x2="130" y2="300"/>
+      <line x1="130" y1="300" x2="260" y2="350"/>
+      <line x1="260" y1="350" x2="350" y2="310"/>
+      <line x1="380" y1="150" x2="400" y2="280"/>
+      <line x1="400" y1="280" x2="350" y2="310"/>
+    </g>
+
+    <!-- ????????-->
+    <g filter="url(#glow)">
+      <g fill="#fff" opacity="0.9">
+        <!-- ???????? -->
+        <path d="M140,160 l4,-12 4,12 12,4 -12,4 -4,12 -4,-12 -12,-4z"/>
+        <path d="M380,150 l4,-12 4,12 12,4 -12,4 -4,12 -4,-12 -12,-4z"/>
+        <path d="M130,300 l3,-10 3,10 10,3 -10,3 -3,10 -3,-10 -10,-3z"/>
+        <path d="M350,310 l3,-10 3,10 10,3 -10,3 -3,10 -3,-10 -10,-3z"/>
+        <path d="M260,350 l3,-10 3,10 10,3 -10,3 -3,10 -3,-10 -10,-3z"/>
+        <path d="M400,280 l3,-9 3,9 9,3 -9,3 -3,9 -3,-9 -9,-3z"/>
+      </g>
+    </g>
+
+    <!-- ???SMS ???? -->
+    <g transform="translate(230, 175)">
+      <!-- ???? -->
+      <path d="M-55,-50 L65,-50 C78,-50 88,-40 88,-27 L88,15 C88,28 78,38 65,38 L0,38 L-22,58 L-22,38 L-40,38 C-53,38 -63,28 -63,15 L-63,-27 C-63,-40 -53,-50 -40,-50Z"
+            fill="#fff" opacity="0.95"/>
+      <!-- ?????????? -->
+      <g stroke="url(#bg)" stroke-width="5" stroke-linecap="round" opacity="0.7">
+        <line x1="-35" y1="-25" x2="55" y2="-25"/>
+        <line x1="-35" y1="-7" x2="40" y2="-7"/>
+        <line x1="-35" y1="11" x2="25" y2="11"/>
+      </g>
+    </g>
+
+    <!-- ?????? -->
+    <g transform="translate(340, 190)" stroke="#fff" stroke-width="5" stroke-linecap="round" fill="none" opacity="0.55">
+      <path d="M0,-18 C12,-18 12,10 0,10"/>
+      <path d="M8,-32 C28,-32 28,24 8,24"/>
+      <path d="M16,-46 C44,-46 44,38 16,38"/>
+    </g>
+  </g>
+</svg>

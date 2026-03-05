@@ -32,10 +32,12 @@ class AccountInfoResponse(BaseModel):
     balance: float
     currency: str
     status: str
-    services: str = "sms"  # 开通的业务类型，逗号分隔，如 "sms,voice,data"
+    services: str = "sms"
     company_name: Optional[str] = None
     contact_person: Optional[str] = None
     rate_limit: Optional[int] = None
+    tg_id: Optional[int] = None
+    tg_username: Optional[str] = None
     created_at: str
 
 

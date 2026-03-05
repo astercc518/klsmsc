@@ -372,15 +372,10 @@ async def notify_telegram_user(account_id: int, message: str, db: AsyncSession):
             return False
         
         # 从系统配置或环境变量获取Bot Token
+        from app.services.config_service import ConfigService
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         if not bot_token:
-            # 尝试从数据库配置读取
-            from app.modules.common.system_config import SystemConfig
-            config_query = select(SystemConfig).where(SystemConfig.config_key == "telegram_bot_token")
-            config_result = await db.execute(config_query)
-            config = config_result.scalar_one_or_none()
-            if config and config.config_value:
-                bot_token = config.config_value
+            bot_token = await ConfigService.get("telegram_bot_token", db)
         
         if not bot_token:
             logger.warning("TELEGRAM_BOT_TOKEN 未配置，跳过通知")
@@ -820,26 +815,10 @@ async def get_bot_config(
     db: AsyncSession = Depends(get_db)
 ):
     """获取Bot配置"""
-    from app.modules.common.system_config import SystemConfig
+    from app.services.config_service import ConfigService
     
-    # 定义配置键列表
-    config_keys = [
-        'telegram_bot_token', 'telegram_bot_username', 'telegram_bot_status',
-        'telegram_admin_group_id', 'telegram_notification_group_id',
-        'telegram_enable_register', 'telegram_enable_recharge', 'telegram_enable_batch_review',
-        'telegram_enable_balance_query', 'telegram_enable_send_sms', 'telegram_enable_ticket',
-        'telegram_welcome_message', 'telegram_help_message', 'telegram_maintenance_message',
-        'telegram_max_recipients', 'telegram_daily_send_limit', 'telegram_min_recharge_amount',
-        'telegram_send_cooldown_seconds', 'telegram_webhook_url', 'telegram_webhook_secret'
-    ]
+    configs = await ConfigService.get_by_category("telegram", db)
     
-    # 查询所有配置
-    result = await db.execute(
-        select(SystemConfig).where(SystemConfig.config_key.in_(config_keys))
-    )
-    configs = {c.config_key: c.config_value for c in result.scalars().all()}
-    
-    # 从数据库或环境变量读取
     bot_token = configs.get('telegram_bot_token') or os.getenv('TELEGRAM_BOT_TOKEN', '')
     bot_username = configs.get('telegram_bot_username') or os.getenv('TELEGRAM_BOT_USERNAME', '')
     
@@ -900,10 +879,9 @@ async def update_bot_config(
     """更新Bot配置"""
     if admin.role not in ['super_admin', 'admin']:
         raise HTTPException(status_code=403, detail="需要管理员权限")
-    
-    from app.modules.common.system_config import SystemConfig
-    
-    # 配置映射
+
+    from app.services.config_service import ConfigService
+
     config_map = {
         'bot_token': 'telegram_bot_token',
         'bot_username': 'telegram_bot_username',
@@ -924,40 +902,73 @@ async def update_bot_config(
         'min_recharge_amount': 'telegram_min_recharge_amount',
         'send_cooldown_seconds': 'telegram_send_cooldown_seconds',
         'webhook_url': 'telegram_webhook_url',
-        'webhook_secret': 'telegram_webhook_secret'
+        'webhook_secret': 'telegram_webhook_secret',
     }
-    
+
     update_data = data.dict(exclude_unset=True)
-    
+    updates: dict[str, str] = {}
+
     for field, db_key in config_map.items():
         if field in update_data and update_data[field] is not None:
             value = update_data[field]
-            if isinstance(value, bool):
-                value = 'true' if value else 'false'
-            else:
-                value = str(value)
-            
-            # 查找或创建配置
-            result = await db.execute(
-                select(SystemConfig).where(SystemConfig.config_key == db_key)
-            )
-            config = result.scalar_one_or_none()
-            
-            if config:
-                config.config_value = value
-                config.updated_at = datetime.now()
-            else:
-                new_config = SystemConfig(
-                    config_key=db_key,
-                    config_value=value,
-                    config_type='string',
-                    description=f'Telegram Bot {field}'
-                )
-                db.add(new_config)
-    
-    await db.commit()
-    
+            updates[db_key] = 'true' if value is True else ('false' if value is False else str(value))
+
+    if updates:
+        await ConfigService.batch_update(
+            updates, db,
+            admin_id=admin.id,
+            admin_name=admin.username,
+        )
+
+        # 同步关键配置到 .env 文件，使 Docker 重启后仍可读取
+        env_sync_map = {
+            'telegram_bot_token': 'TELEGRAM_BOT_TOKEN',
+            'telegram_admin_group_id': 'TELEGRAM_ADMIN_GROUP_ID',
+        }
+        env_updates = {}
+        for db_key, env_key in env_sync_map.items():
+            if db_key in updates:
+                env_updates[env_key] = updates[db_key]
+        if env_updates:
+            _sync_env_file(env_updates)
+
     return {"success": True, "message": "配置已更新"}
+
+
+def _sync_env_file(updates: dict[str, str]):
+    """同步更新挂载的 .env 文件"""
+    env_path = "/app/.env.host"
+    if not os.path.exists(env_path):
+        logger.warning(f".env 文件未挂载: {env_path}")
+        return
+
+    try:
+        with open(env_path, "r") as f:
+            lines = f.readlines()
+
+        updated_keys = set()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0]
+                if key in updates:
+                    new_lines.append(f"{key}={updates[key]}\n")
+                    updated_keys.add(key)
+                    continue
+            new_lines.append(line)
+
+        # 追加新增的 key
+        for key, val in updates.items():
+            if key not in updated_keys:
+                new_lines.append(f"{key}={val}\n")
+
+        with open(env_path, "w") as f:
+            f.writelines(new_lines)
+
+        logger.info(f".env 已同步: {list(updates.keys())}")
+    except Exception as e:
+        logger.error(f"同步 .env 失败: {e}")
 
 @router.post("/restart")
 async def restart_bot(
@@ -967,11 +978,22 @@ async def restart_bot(
     """重启Bot服务"""
     if admin.role not in ['super_admin', 'admin']:
         raise HTTPException(status_code=403, detail="需要管理员权限")
-    
-    # 这里可以添加实际的重启逻辑
-    # 比如通过Docker API重启容器，或者发送信号给Bot进程
-    
-    return {"success": True, "message": "重启命令已发送"}
+
+    import threading
+
+    def _restart_sync():
+        try:
+            import docker as docker_lib
+            client = docker_lib.from_env()
+            container = client.containers.get("smsc-bot")
+            container.restart(timeout=10)
+            logger.info(f"Bot 容器重启成功 (by {admin.username})")
+        except Exception as e:
+            logger.error(f"Bot 容器重启失败: {e}")
+
+    threading.Thread(target=_restart_sync, daemon=True).start()
+
+    return {"success": True, "message": "重启命令已发送，Bot 将在数秒内重启"}
 
 
 # 6. 消息记录

@@ -35,6 +35,15 @@ class AdminLoginResponse(BaseModel):
     error: Optional[str] = None
 
 
+class TelegramSendCodeRequest(BaseModel):
+    username: str
+
+
+class TelegramVerifyRequest(BaseModel):
+    username: str
+    code: str
+
+
 class AdminUserResponse(BaseModel):
     id: int
     username: str
@@ -173,6 +182,11 @@ class AdminAccountResetPasswordRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
 # 依赖注入 - 使用JWT认证
 get_current_admin = AuthService.get_current_admin
 
@@ -194,31 +208,48 @@ async def admin_login(
     if not admin:
         return AdminLoginResponse(
             success=False,
-            error="Invalid username or password"
+            error="invalid_credentials"
+        )
+    
+    # 检查状态（密码验证前先检查，避免已锁定账户继续累加失败次数）
+    if admin.status == "locked":
+        return AdminLoginResponse(
+            success=False,
+            error="account_locked"
+        )
+    if admin.status != "active":
+        return AdminLoginResponse(
+            success=False,
+            error="account_disabled"
         )
     
     # 验证密码
     if not AuthService.verify_password(request.password, admin.password_hash):
-        # 增加失败次数
         admin.login_failed_count += 1
+        remaining = 5 - admin.login_failed_count
         if admin.login_failed_count >= 5:
             admin.status = "locked"
+            await db.commit()
+            return AdminLoginResponse(
+                success=False,
+                error="account_locked"
+            )
         await db.commit()
         return AdminLoginResponse(
             success=False,
-            error="Invalid username or password"
-        )
-    
-    # 检查状态
-    if admin.status != "active":
-        return AdminLoginResponse(
-            success=False,
-            error=f"Account is {admin.status}"
+            error=f"invalid_credentials:{remaining}"
         )
     
     # 更新登录信息
     admin.last_login_at = datetime.now()
     admin.login_failed_count = 0
+    
+    from app.services.operation_log import log_operation
+    await log_operation(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="login", action="login", target_type="admin",
+        target_id=str(admin.id), title=f"管理员 {admin.username} 登录成功",
+    )
     await db.commit()
     
     logger.info(f"管理员登录成功: {admin.username} ({admin.role})")
@@ -237,6 +268,221 @@ async def admin_login(
         username=admin.username,
         role=admin.role
     )
+
+
+@router.post("/telegram-login/send-code", response_model=dict)
+async def telegram_login_send_code(
+    request: TelegramSendCodeRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Telegram 验证登录 - 发送验证码"""
+    import random
+    from app.utils.cache import get_redis_client
+    from app.services.notification_service import notification_service
+
+    result = await db.execute(
+        select(AdminUser).where(AdminUser.username == request.username)
+    )
+    admin = result.scalar_one_or_none()
+
+    if not admin or not admin.tg_id:
+        return {"success": False, "error": "account_not_bound"}
+
+    if admin.status != "active":
+        return {"success": False, "error": "account_disabled"}
+
+    redis_client = await get_redis_client()
+    cooldown_key = f"tg_otp_cd:{request.username}"
+
+    # 60 秒冷却
+    if await redis_client.exists(cooldown_key):
+        ttl = await redis_client.ttl(cooldown_key)
+        return {"success": False, "error": "cooldown", "remaining": max(ttl, 1)}
+
+    code = f"{random.randint(100000, 999999)}"
+    otp_key = f"tg_otp:{request.username}"
+
+    await redis_client.setex(otp_key, 300, code.encode("utf-8"))
+    await redis_client.setex(cooldown_key, 60, b"1")
+
+    msg = (
+        f"🔐 *SMSCPro 登录验证码*\n\n"
+        f"验证码: `{code}`\n"
+        f"有效期: 5 分钟\n\n"
+        f"如非本人操作，请忽略此消息。"
+    )
+    sent = await notification_service.notify_user(str(admin.tg_id), msg)
+
+    if not sent:
+        await redis_client.delete(otp_key)
+        await redis_client.delete(cooldown_key)
+        return {"success": False, "error": "send_failed"}
+
+    logger.info(f"Telegram 验证码已发送: {request.username} -> tg_id={admin.tg_id}")
+    return {"success": True, "message": "code_sent"}
+
+
+@router.post("/telegram-login/verify", response_model=AdminLoginResponse)
+async def telegram_login_verify(
+    request: TelegramVerifyRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Telegram 验证登录 - 校验验证码并登录"""
+    from app.utils.cache import get_redis_client
+
+    result = await db.execute(
+        select(AdminUser).where(AdminUser.username == request.username)
+    )
+    admin = result.scalar_one_or_none()
+
+    if not admin or not admin.tg_id:
+        return AdminLoginResponse(success=False, error="tg_not_bound")
+
+    if admin.status == "locked":
+        return AdminLoginResponse(success=False, error="account_locked")
+    if admin.status != "active":
+        return AdminLoginResponse(success=False, error="account_disabled")
+
+    redis_client = await get_redis_client()
+    otp_key = f"tg_otp:{request.username}"
+    stored = await redis_client.get(otp_key)
+
+    if not stored:
+        return AdminLoginResponse(success=False, error="code_expired")
+
+    if stored.decode("utf-8") != request.code.strip():
+        return AdminLoginResponse(success=False, error="code_invalid")
+
+    # 验证通过，删除 OTP
+    await redis_client.delete(otp_key)
+
+    admin.last_login_at = datetime.now()
+    admin.login_failed_count = 0
+
+    from app.services.operation_log import log_operation
+    await log_operation(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="login", action="login", target_type="admin",
+        target_id=str(admin.id),
+        title=f"管理员 {admin.username} 通过 Telegram 验证登录",
+    )
+    await db.commit()
+
+    logger.info(f"Telegram 验证登录成功: {admin.username} ({admin.role})")
+
+    access_token_expires = timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    token = AuthService.create_access_token(
+        data={"sub": admin.id, "role": admin.role, "username": admin.username},
+        expires_delta=access_token_expires
+    )
+
+    return AdminLoginResponse(
+        success=True,
+        token=token,
+        admin_id=admin.id,
+        username=admin.username,
+        role=admin.role
+    )
+
+
+# --- Admin Profile ---
+
+@router.get("/profile", response_model=dict)
+async def get_admin_profile(
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取当前管理员个人资料"""
+    return {
+        "success": True,
+        "profile": {
+            "id": admin.id,
+            "username": admin.username,
+            "real_name": admin.real_name,
+            "email": admin.email,
+            "phone": admin.phone,
+            "role": admin.role,
+            "tg_id": admin.tg_id,
+            "tg_username": admin.tg_username,
+            "last_login_at": admin.last_login_at.isoformat() if admin.last_login_at else None,
+            "created_at": admin.created_at.isoformat() if admin.created_at else None,
+        }
+    }
+
+
+@router.post("/profile/change-password", response_model=dict)
+async def change_own_password(
+    request: ChangePasswordRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """管理员修改自己的密码"""
+    if not AuthService.verify_password(request.old_password, admin.password_hash):
+        return {"success": False, "error": "old_password_wrong"}
+
+    if len(request.new_password) < 6:
+        return {"success": False, "error": "password_too_short"}
+
+    admin.password_hash = AuthService.hash_password(request.new_password)
+    
+    from app.services.operation_log import log_operation
+    await log_operation(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="profile", action="update", target_type="admin",
+        target_id=str(admin.id), title=f"管理员 {admin.username} 修改密码",
+    )
+    await db.commit()
+    logger.info(f"管理员 {admin.username} 修改密码成功")
+    return {"success": True, "message": "password_changed"}
+
+
+@router.post("/profile/telegram-bind-code", response_model=dict)
+async def generate_telegram_bind_code(
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """生成 Telegram 绑定码（管理员在 TG Bot 中发送 /bind <code> 完成绑定）"""
+    import random
+    from app.utils.cache import get_redis_client
+
+    redis_client = await get_redis_client()
+
+    code = f"{random.randint(100000, 999999)}"
+    bind_key = f"tg_bind_code:{code}"
+    # 存储 admin_id，有效 5 分钟
+    await redis_client.setex(bind_key, 300, str(admin.id).encode("utf-8"))
+
+    logger.info(f"Telegram 绑定码生成: admin={admin.username}, code={code}")
+    return {
+        "success": True,
+        "code": code,
+        "expires_in": 300,
+    }
+
+
+@router.post("/profile/telegram-unbind", response_model=dict)
+async def unbind_telegram(
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """解绑 Telegram"""
+    if not admin.tg_id:
+        return {"success": False, "error": "not_bound"}
+
+    old_tg_id = admin.tg_id
+    admin.tg_id = None
+    admin.tg_username = None
+
+    from app.services.operation_log import log_operation
+    await log_operation(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="profile", action="update", target_type="admin",
+        target_id=str(admin.id),
+        title=f"管理员 {admin.username} 解绑 Telegram (tg_id={old_tg_id})",
+    )
+    await db.commit()
+    logger.info(f"管理员 {admin.username} 解绑 Telegram: tg_id={old_tg_id}")
+    return {"success": True, "message": "unbound"}
 
 
 # --- Accounts (Admin) ---

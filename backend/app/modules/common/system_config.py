@@ -19,6 +19,14 @@ class SystemConfig(Base):
         default='string',
         comment="值类型"
     )
+    category = Column(
+        String(50),
+        nullable=False,
+        default='general',
+        server_default='general',
+        index=True,
+        comment="分类: general/sms/telegram/notification/security"
+    )
     description = Column(Text, comment="配置说明")
     is_public = Column(Boolean, nullable=False, default=False, comment="是否公开")
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
@@ -26,4 +34,4 @@ class SystemConfig(Base):
     updated_by = Column(Integer, comment="更新人ID")
     
     def __repr__(self):
-        return f"<SystemConfig(key={self.config_key}, type={self.config_type})>"
+        return f"<SystemConfig(key={self.config_key}, category={self.category})>"

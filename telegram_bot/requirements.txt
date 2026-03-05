@@ -8,6 +8,7 @@ aiofiles==23.2.1
 # Database (Same as backend)
 SQLAlchemy==2.0.23
 asyncmy==0.2.8
+aiomysql==0.2.0
 # Backend dependencies (needed for importing backend modules)
 fastapi==0.109.0
 python-jose[cryptography]==3.3.0

@@ -17,6 +17,15 @@ export interface AdminLoginResponse {
   error?: string;
 }
 
+// Telegram 验证登录
+export function sendTelegramLoginCode(username: string) {
+  return request.post('/admin/telegram-login/send-code', { username })
+}
+
+export function verifyTelegramLoginCode(username: string, code: string): Promise<AdminLoginResponse> {
+  return request.post('/admin/telegram-login/verify', { username, code })
+}
+
 export interface ChannelCreateRequest {
   channel_code: string;
   channel_name: string;

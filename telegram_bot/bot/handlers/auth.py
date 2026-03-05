@@ -1,14 +1,18 @@
 """
 认证与账户管理 Handler
 """
+import redis
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 from bot.utils import get_session, logger
+from bot.config import settings
 from app.core.invitation import InvitationService
 from app.modules.common.telegram_binding import TelegramBinding
+from app.modules.common.telegram_user import TelegramUser
 from app.modules.common.account import Account
 from app.modules.common.admin_user import AdminUser
-from sqlalchemy import select, update
+from sqlalchemy import select, update as sa_update
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from bot.handlers.menu import (
     get_main_menu_customer, get_main_menu_sales, 
     get_main_menu_tech, get_main_menu_guest
@@ -194,12 +198,12 @@ async def switch_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if target_binding:
                 # 更新 DB 活跃状态
                 await db.execute(
-                    update(TelegramBinding)
+                    sa_update(TelegramBinding)
                     .where(TelegramBinding.tg_id == tg_id)
                     .values(is_active=False)
                 )
                 await db.execute(
-                    update(TelegramBinding)
+                    sa_update(TelegramBinding)
                     .where(TelegramBinding.tg_id == tg_id, TelegramBinding.account_id == target_id)
                     .values(is_active=True)
                 )
@@ -217,7 +221,81 @@ async def switch_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text(msg, parse_mode='Markdown')
 
+async def bind_account_by_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/bindaccount <code> — 客户通过网页生成的验证码绑定 Telegram"""
+    user = update.effective_user
+    tg_id = user.id
+    username = user.username or user.first_name
+
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text("用法: /bindaccount <6位验证码>\n请先在网页端【账户设置】生成绑定码。")
+        return
+
+    code = context.args[0].strip()
+    if not code.isdigit() or len(code) != 6:
+        await update.message.reply_text("❌ 验证码格式错误，应为6位数字。")
+        return
+
+    try:
+        redis_host = getattr(settings, "REDIS_HOST", "redis")
+        redis_port = int(getattr(settings, "REDIS_PORT", 6379))
+        redis_password = getattr(settings, "REDIS_PASSWORD", None)
+        r = redis.Redis(host=redis_host, port=redis_port, password=redis_password or None, decode_responses=True)
+        redis_key = f"account_tg_bind:{code}"
+        account_id_str = r.get(redis_key)
+
+        if not account_id_str:
+            await update.message.reply_text("❌ 验证码无效或已过期，请重新生成。")
+            return
+
+        account_id = int(account_id_str)
+        r.delete(redis_key)
+
+        async with get_session() as db:
+            acc_result = await db.execute(select(Account).where(Account.id == account_id))
+            account = acc_result.scalar_one_or_none()
+            if not account:
+                await update.message.reply_text("❌ 账户不存在。")
+                return
+
+            account.tg_id = tg_id
+            account.tg_username = username
+
+            existing = await db.execute(
+                select(TelegramBinding).where(
+                    TelegramBinding.tg_id == tg_id,
+                    TelegramBinding.account_id == account_id
+                )
+            )
+            binding = existing.scalar_one_or_none()
+            if binding:
+                binding.is_active = True
+            else:
+                db.add(TelegramBinding(tg_id=tg_id, account_id=account_id, is_active=True))
+
+            stmt = mysql_insert(TelegramUser).values(
+                tg_id=tg_id, username=username, account_id=account_id
+            )
+            stmt = stmt.on_duplicate_key_update(username=username, account_id=account_id)
+            await db.execute(stmt)
+            await db.commit()
+
+        context.user_data['account_id'] = account_id
+        context.user_data['user_type'] = 'customer'
+
+        await update.message.reply_text(
+            f"✅ 绑定成功！\n\n"
+            f"📦 账户: {account.account_name}\n"
+            f"🆔 ID: {account_id}\n\n"
+            f"发送 /start 返回主菜单。"
+        )
+    except Exception as e:
+        logger.error(f"bindaccount error: {e}", exc_info=True)
+        await update.message.reply_text("❌ 绑定失败，请稍后重试。")
+
+
 auth_handlers = [
     CommandHandler("start", start),
-    CommandHandler("switch", switch_account)
+    CommandHandler("switch", switch_account),
+    CommandHandler("bindaccount", bind_account_by_code),
 ]

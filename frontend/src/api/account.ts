@@ -61,3 +61,13 @@ export const getAccountInfo = () => {
   return request.get('/account/info')
 }
 
+// 生成客户 TG 绑定码
+export const generateAccountTgBindCode = () => {
+  return request.post('/account/telegram-bind-code')
+}
+
+// 解绑客户 TG
+export const unbindAccountTelegram = () => {
+  return request.post('/account/telegram-unbind')
+}
+

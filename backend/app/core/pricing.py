@@ -3,7 +3,7 @@
 """
 from decimal import Decimal
 from typing import Dict, Optional
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.sms.country_pricing import CountryPricing
 from app.modules.common.account_pricing import AccountPricing
@@ -33,7 +33,7 @@ class PricingEngine:
         mnc: Optional[str] = None
     ) -> Dict:
         """
-        计算费用并扣款
+        计算费用并扣款（使用原子操作防止并发超扣）
         """
         try:
             # 1. 计算短信条数
@@ -61,54 +61,52 @@ class PricingEngine:
             
             logger.info(f"计费: Sell={total_sell_price}, Cost={total_base_cost}")
             
-            # 5. 获取账户并检查余额（带缓存）
-            cache_manager = await get_cache_manager()
-            balance_cache_key = f"account:{account_id}:balance"
-            
-            # 尝试从缓存获取余额
-            cached_balance = await cache_manager.get(balance_cache_key)
-            account = None
-            
-            if cached_balance is not None:
-                cached_balance_value = Decimal(str(cached_balance))
-                if cached_balance_value < total_sell_price:
-                    raise InsufficientBalanceError(
-                        required=float(total_sell_price),
-                        available=float(cached_balance_value)
-                    )
-            
-            # 从数据库查询账户
-            result = await self.db.execute(
-                select(Account).where(Account.id == account_id)
+            # 5. 原子扣减余额：WHERE balance >= total 防止并发超扣
+            stmt = (
+                update(Account)
+                .where(
+                    Account.id == account_id,
+                    Account.balance >= total_sell_price,
+                )
+                .values(balance=Account.balance - total_sell_price)
             )
-            account = result.scalar_one_or_none()
+            result = await self.db.execute(stmt)
             
-            if not account:
-                return {'success': False, 'error': 'Account not found'}
-            
-            if account.balance < total_sell_price:
+            if result.rowcount == 0:
+                # 扣减失败：账户不存在或余额不足
+                acct_result = await self.db.execute(
+                    select(Account.balance).where(Account.id == account_id)
+                )
+                row = acct_result.first()
+                if row is None:
+                    return {'success': False, 'error': 'Account not found'}
                 raise InsufficientBalanceError(
                     required=float(total_sell_price),
-                    available=float(account.balance)
+                    available=float(row[0])
                 )
             
-            # 6. 扣减余额
-            account.balance -= total_sell_price
+            # 6. 查询扣减后的余额用于记录日志
+            acct_result = await self.db.execute(
+                select(Account.balance).where(Account.id == account_id)
+            )
+            balance_after = acct_result.scalar()
             
             # 7. 记录余额变动
             balance_log = BalanceLog(
                 account_id=account_id,
                 change_type='charge',
                 amount=-total_sell_price,
-                balance_after=account.balance,
+                balance_after=balance_after,
                 description=f"SMS charge: {message_count} parts to {country_code} ({currency})"
             )
             self.db.add(balance_log)
             
-            await self.db.commit()
+            await self.db.flush()
             
             # 更新余额缓存
-            await cache_manager.set(balance_cache_key, float(account.balance), ttl=60)
+            cache_manager = await get_cache_manager()
+            balance_cache_key = f"account:{account_id}:balance"
+            await cache_manager.set(balance_cache_key, float(balance_after), ttl=60)
             
             return {
                 'success': True,
@@ -118,11 +116,12 @@ class PricingEngine:
                 'price_per_sms': float(price_per_sms),
                 'base_cost_per_sms': float(base_cost_per_sms),
                 'currency': currency,
-                'balance_after': float(account.balance)
+                'balance_after': float(balance_after)
             }
             
+        except (InsufficientBalanceError, PricingNotFoundError):
+            raise
         except Exception as e:
-            await self.db.rollback()
             logger.error(f"扣款失败: {str(e)}", exc_info=e)
             raise
     

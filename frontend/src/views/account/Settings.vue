@@ -66,6 +66,55 @@
       </el-col>
     </el-row>
 
+    <!-- Telegram 绑定 -->
+    <el-row style="margin-top: 20px">
+      <el-col :span="24">
+        <el-card>
+          <template #header><h3>{{ $t('accountSettings.tgBinding') }}</h3></template>
+          <div class="tg-binding-section">
+            <!-- 已绑定状态 -->
+            <div v-if="tgBound" class="tg-status tg-bound">
+              <el-tag type="success" size="large">{{ $t('accountSettings.tgBoundStatus') }}</el-tag>
+              <div class="tg-info">
+                <p>Telegram ID: <strong>{{ tgId }}</strong></p>
+                <p v-if="tgUsername">Username: <strong>@{{ tgUsername }}</strong></p>
+              </div>
+              <el-button type="danger" plain @click="handleUnbindTg" :loading="unbindLoading">
+                {{ $t('accountSettings.tgUnbind') }}
+              </el-button>
+            </div>
+            <!-- 未绑定状态 -->
+            <div v-else class="tg-status tg-unbound">
+              <el-tag type="info" size="large">{{ $t('accountSettings.tgNotBoundStatus') }}</el-tag>
+              <div class="tg-steps">
+                <h4>{{ $t('accountSettings.tgBindSteps') }}</h4>
+                <ol>
+                  <li>{{ $t('accountSettings.tgStep1') }}</li>
+                  <li>{{ $t('accountSettings.tgStep2') }}</li>
+                  <li>{{ $t('accountSettings.tgStep3') }}</li>
+                </ol>
+              </div>
+              <div class="tg-code-area">
+                <div v-if="bindCode" class="bind-code-display">
+                  <span class="code-label">{{ $t('accountSettings.tgBindCode') }}:</span>
+                  <span class="code-value">{{ bindCode }}</span>
+                  <el-button size="small" type="primary" @click="copyBindCode">{{ $t('common.copy') }}</el-button>
+                  <span class="code-expire">{{ $t('accountSettings.tgCodeExpire') }}</span>
+                </div>
+                <el-button 
+                  type="primary" 
+                  @click="handleGenBindCode" 
+                  :loading="codeLoading"
+                >
+                  {{ bindCode ? $t('accountSettings.tgRegenerate') : $t('accountSettings.tgGenerate') }}
+                </el-button>
+              </div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
     <!-- 通知设置 -->
     <el-row style="margin-top: 20px">
       <el-col :span="24">
@@ -93,12 +142,6 @@
             <el-form-item :label="$t('accountSettings.emailNotify')">
               <el-switch v-model="notifyForm.email_notify" />
             </el-form-item>
-            <el-form-item :label="$t('accountSettings.telegramNotify')">
-              <el-switch v-model="notifyForm.telegram_notify" />
-              <span v-if="notifyForm.telegram_notify" style="margin-left: 10px; color: #409eff">
-                {{ $t('accountSettings.telegramBound') }}
-              </span>
-            </el-form-item>
             <el-form-item>
               <el-button type="primary" @click="updateNotifySettings" :loading="notifyLoading">
                 {{ $t('accountSettings.saveSettings') }}
@@ -114,13 +157,21 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
-import { getAccountInfo } from '@/api/account'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { getAccountInfo, generateAccountTgBindCode, unbindAccountTelegram } from '@/api/account'
 
 const { t } = useI18n()
 const profileLoading = ref(false)
 const passwordLoading = ref(false)
 const notifyLoading = ref(false)
+
+// TG 绑定
+const tgBound = ref(false)
+const tgId = ref<number | null>(null)
+const tgUsername = ref('')
+const bindCode = ref('')
+const codeLoading = ref(false)
+const unbindLoading = ref(false)
 
 const profileForm = reactive({
   username: '',
@@ -147,13 +198,61 @@ const passwordFormRef = ref()
 
 const loadAccountInfo = async () => {
   try {
-    const res = await getAccountInfo()
-    profileForm.username = res.username
+    const res: any = await getAccountInfo()
+    profileForm.username = res.account_name || res.username || ''
     profileForm.email = res.email || ''
     profileForm.company = res.company_name || ''
     profileForm.phone = res.contact_phone || ''
+    tgId.value = res.tg_id || null
+    tgUsername.value = res.tg_username || ''
+    tgBound.value = !!res.tg_id
   } catch (error: any) {
     ElMessage.error(t('accountSettings.loadAccountInfoFailed'))
+  }
+}
+
+const handleGenBindCode = async () => {
+  codeLoading.value = true
+  try {
+    const res: any = await generateAccountTgBindCode()
+    if (res?.success && res?.code) {
+      bindCode.value = res.code
+      ElMessage.success(t('accountSettings.tgCodeGenerated'))
+    } else {
+      ElMessage.error(res?.message || t('common.error'))
+    }
+  } catch (e: any) {
+    ElMessage.error(e.message || t('common.error'))
+  } finally {
+    codeLoading.value = false
+  }
+}
+
+const copyBindCode = () => {
+  navigator.clipboard.writeText(bindCode.value).then(() => {
+    ElMessage.success(t('common.copied'))
+  })
+}
+
+const handleUnbindTg = async () => {
+  try {
+    await ElMessageBox.confirm(t('accountSettings.tgUnbindConfirm'), t('common.confirm'), { type: 'warning' })
+  } catch {
+    return
+  }
+  unbindLoading.value = true
+  try {
+    const res: any = await unbindAccountTelegram()
+    if (res?.success) {
+      tgBound.value = false
+      tgId.value = null
+      tgUsername.value = ''
+      ElMessage.success(t('accountSettings.tgUnbindSuccess'))
+    }
+  } catch (e: any) {
+    ElMessage.error(e.message || t('common.error'))
+  } finally {
+    unbindLoading.value = false
   }
 }
 
@@ -227,5 +326,60 @@ onMounted(() => {
 <style scoped>
 .settings-page {
   width: 100%;
+}
+
+.tg-binding-section {
+  padding: 10px 0;
+}
+
+.tg-status {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.tg-info p {
+  margin: 4px 0;
+  color: var(--text-secondary);
+}
+
+.tg-steps h4 {
+  margin: 0 0 8px;
+}
+
+.tg-steps ol {
+  padding-left: 20px;
+  color: var(--text-secondary);
+  line-height: 2;
+}
+
+.tg-code-area {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bind-code-display {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--bg-input);
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+}
+
+.code-value {
+  font-size: 24px;
+  font-weight: 700;
+  font-family: monospace;
+  letter-spacing: 4px;
+  color: var(--primary);
+}
+
+.code-expire {
+  font-size: 12px;
+  color: var(--text-quaternary);
 }
 </style>

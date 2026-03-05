@@ -62,6 +62,9 @@ def get_main_menu_customer():
         ],
         [
             InlineKeyboardButton("📊 发送记录", callback_data="menu_history"),
+            InlineKeyboardButton("👤 账户信息", callback_data="menu_account_info"),
+        ],
+        [
             InlineKeyboardButton("❓ 帮助", callback_data="menu_help"),
         ],
     ]
@@ -113,6 +116,9 @@ def get_main_menu_guest():
     keyboard = [
         [
             InlineKeyboardButton("📝 我是客户 - 输入邀请码", callback_data="menu_enter_invite"),
+        ],
+        [
+            InlineKeyboardButton("🔗 我是客户 - 绑定已有账户", callback_data="menu_bind_account"),
         ],
         [
             InlineKeyboardButton("👔 我是员工 - 绑定账号", callback_data="menu_bind_staff"),
@@ -344,6 +350,25 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['waiting_for'] = 'invite_code'
         return
     
+    # 客户绑定已有账户
+    if data == "menu_bind_account":
+        await query.edit_message_text(
+            "🔗 绑定已有账户\n\n"
+            "请按照以下步骤操作：\n"
+            "1. 登录网页端【账户设置】\n"
+            "2. 点击【生成绑定码】\n"
+            "3. 在此输入6位绑定码\n\n"
+            "请输入绑定码：",
+            reply_markup=get_back_menu()
+        )
+        context.user_data['waiting_for'] = 'account_bind_code'
+        return
+
+    # 账户信息
+    if data == "menu_account_info":
+        await show_account_info(query, context)
+        return
+
     # 员工绑定
     if data == "menu_bind_staff":
         await query.edit_message_text(
@@ -525,6 +550,53 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         context.user_data['waiting_for'] = 'ticket_title'
         return
+
+
+async def show_account_info(query, context):
+    """显示客户账户信息"""
+    tg_id = query.from_user.id
+
+    async with get_session() as db:
+        binding_result = await db.execute(
+            select(TelegramBinding).where(
+                TelegramBinding.tg_id == tg_id,
+                TelegramBinding.is_active == True
+            )
+        )
+        binding = binding_result.scalar_one_or_none()
+
+        if not binding:
+            await query.edit_message_text(
+                "❌ 您还未绑定账户",
+                reply_markup=get_back_menu()
+            )
+            return
+
+        acc_result = await db.execute(
+            select(Account).where(Account.id == binding.account_id)
+        )
+        account = acc_result.scalar_one_or_none()
+
+        if not account:
+            await query.edit_message_text(
+                "❌ 账户信息获取失败",
+                reply_markup=get_back_menu()
+            )
+            return
+
+        tg_bound = "已绑定" if account.tg_id else "未绑定"
+        tg_info = f"@{account.tg_username}" if account.tg_username else str(account.tg_id or "-")
+
+        await query.edit_message_text(
+            f"👤 账户信息\n\n"
+            f"🆔 账户ID: {account.id}\n"
+            f"👤 用户名: {account.account_name}\n"
+            f"💰 余额: ${float(account.balance or 0):.4f} {account.currency}\n"
+            f"📊 状态: {'正常' if account.status == 'active' else account.status}\n"
+            f"📱 Telegram: {tg_bound} ({tg_info})\n"
+            f"📅 创建时间: {account.created_at.strftime('%Y-%m-%d') if account.created_at else 'N/A'}",
+            reply_markup=get_back_menu()
+        )
 
 
 async def show_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
@@ -1525,6 +1597,68 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['waiting_for'] = None
         return
     
+    # 处理账户绑定码输入
+    if waiting_for == 'account_bind_code':
+        code = text.strip()
+        if not code.isdigit() or len(code) != 6:
+            await update.message.reply_text("❌ 请输入6位数字绑定码")
+            return
+
+        import redis as redis_lib
+        try:
+            r = redis_lib.Redis(host="redis", port=6379, decode_responses=True)
+            redis_key = f"account_tg_bind:{code}"
+            account_id_str = r.get(redis_key)
+
+            if not account_id_str:
+                await update.message.reply_text(
+                    "❌ 绑定码无效或已过期，请重新生成。",
+                    reply_markup=get_back_menu()
+                )
+                return
+
+            account_id = int(account_id_str)
+            r.delete(redis_key)
+
+            async with get_session() as db:
+                acc_result = await db.execute(select(Account).where(Account.id == account_id))
+                account = acc_result.scalar_one_or_none()
+                if not account:
+                    await update.message.reply_text("❌ 账户不存在。", reply_markup=get_back_menu())
+                    return
+
+                account.tg_id = tg_id
+                account.tg_username = update.effective_user.username or update.effective_user.first_name
+
+                existing = await db.execute(
+                    select(TelegramBinding).where(
+                        TelegramBinding.tg_id == tg_id,
+                        TelegramBinding.account_id == account_id
+                    )
+                )
+                binding = existing.scalar_one_or_none()
+                if binding:
+                    binding.is_active = True
+                else:
+                    db.add(TelegramBinding(tg_id=tg_id, account_id=account_id, is_active=True))
+                await db.commit()
+
+            context.user_data['account_id'] = account_id
+            context.user_data['user_type'] = 'customer'
+            context.user_data['waiting_for'] = None
+
+            await update.message.reply_text(
+                f"✅ 绑定成功！\n\n"
+                f"📦 账户: {account.account_name}\n"
+                f"🆔 ID: {account_id}\n\n"
+                f"发送 /start 返回主菜单。",
+                reply_markup=get_main_menu_customer()
+            )
+        except Exception as e:
+            logger.error(f"account_bind_code error: {e}", exc_info=True)
+            await update.message.reply_text("❌ 绑定失败，请稍后重试。", reply_markup=get_back_menu())
+        return
+
     # 处理工单标题输入
     if waiting_for == 'ticket_title':
         if len(text) < 3:
@@ -1649,7 +1783,7 @@ from telegram.ext import MessageHandler, filters
 menu_handlers = [
     CallbackQueryHandler(
         handle_menu_callback, 
-        pattern=r'^menu_|^biz_|^ticket_type_|^country_|^tpl_|^approve_|^reject_|^process_|^ticket_detail_|^close_ticket_'
+        pattern=r'^menu_|^biz_|^ticket_type_|^country_|^tpl_|^approve_|^reject_|^process_|^ticket_detail_|^close_ticket_|^menu_bind_account$|^menu_account_info$'
     ),
     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
 ]
