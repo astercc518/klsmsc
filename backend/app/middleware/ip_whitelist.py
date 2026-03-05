@@ -53,36 +53,30 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
         client_ip = self._get_client_ip(request)
         
         try:
-            # 检查IP白名单
             is_allowed = await self._check_ip_whitelist(api_key, client_ip)
-
-            if not is_allowed:
-                logger.warning(
-                    f"IP白名单验证失败: api_key={api_key[:10]}..., "
-                    f"IP={client_ip}, "
-                    f"路径={request.url.path}"
-                )
-                # BaseHTTPMiddleware 中直接 raise HTTPException 会导致 Starlette 异常传播问题，
-                # 这里改为直接返回响应，避免前端看到 500。
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "success": False,
-                        "error": {
-                            "code": "IP_NOT_WHITELISTED",
-                            "message": f"IP address {client_ip} is not in whitelist",
-                            "details": {}
-                        }
-                    }
-                )
-
-            # IP验证通过，继续处理请求
-            return await call_next(request)
-
         except Exception as e:
-            # 如果IP验证异常，记录日志但继续处理请求（降级策略）
-            logger.error(f"IP白名单验证异常: {str(e)}", exc_info=e)
-            return await call_next(request)
+            logger.error(f"IP白名单验证异常: {str(e)}")
+            is_allowed = True  # 降级策略：验证异常时允许访问
+
+        if not is_allowed:
+            logger.warning(
+                f"IP白名单验证失败: api_key={api_key[:10]}..., "
+                f"IP={client_ip}, "
+                f"路径={request.url.path}"
+            )
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": "IP_NOT_WHITELISTED",
+                        "message": f"IP address {client_ip} is not in whitelist",
+                        "details": {}
+                    }
+                }
+            )
+
+        return await call_next(request)
     
     def _get_client_ip(self, request: Request) -> str:
         """
@@ -90,11 +84,12 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
         
         优先从X-Forwarded-For或X-Real-IP获取（代理场景）
         """
-        # 检查X-Forwarded-For头（可能包含多个IP，取第一个）
+        # P2-FIX: 仅在信任代理环境下取 X-Forwarded-For
+        # Nginx 已在最外层，取最后一个由 Nginx 追加的 IP（倒数第一个）
         forwarded_for = request.headers.get("X-Forwarded-For")
         if forwarded_for:
-            # X-Forwarded-For可能包含多个IP，用逗号分隔，取第一个
-            client_ip = forwarded_for.split(",")[0].strip()
+            parts = [p.strip() for p in forwarded_for.split(",")]
+            client_ip = parts[0] if len(parts) == 1 else parts[-1]
             if self._is_valid_ip(client_ip):
                 return client_ip
         

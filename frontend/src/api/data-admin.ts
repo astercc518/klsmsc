@@ -166,6 +166,20 @@ export function refreshProductStock(id: number) {
   return request({ url: `/admin/data/products/${id}/refresh-stock`, method: 'post' })
 }
 
+// ============ 评分管理 ============
+
+export function getProductRatings(productId: number, params?: { page?: number; page_size?: number }) {
+  return request({ url: `/admin/data/products/${productId}/ratings`, method: 'get', params })
+}
+
+export function updateRating(ratingId: number, params: { rating: number; comment?: string }) {
+  return request({ url: `/admin/data/products/ratings/${ratingId}`, method: 'put', params })
+}
+
+export function deleteRating(ratingId: number) {
+  return request({ url: `/admin/data/products/ratings/${ratingId}`, method: 'delete' })
+}
+
 // ============ 订单管理 ============
 
 export function getOrders(params?: {

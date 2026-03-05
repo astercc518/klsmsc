@@ -614,9 +614,10 @@ def _verify_dlr_caller(request: Request) -> bool:
         except ValueError:
             ip_ok = False
 
-    # 两项都未配置 → 放行（向后兼容）
+    # P2-FIX: 两项都未配置 → 拒绝（安全优先）
     if token_ok is None and ip_ok is None:
-        return True
+        logger.warning(f"DLR回调未配置Token和IP白名单，拒绝请求: {client_ip}")
+        return False
     # 任一通过即可
     if token_ok is True or ip_ok is True:
         return True

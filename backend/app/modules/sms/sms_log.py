@@ -15,6 +15,7 @@ class SMSLog(Base):
     upstream_message_id = Column(String(64), comment="上游消息ID(用于状态报告匹配)")
     account_id = Column(Integer, nullable=False, comment="账户ID")
     channel_id = Column(Integer, comment="通道ID")
+    batch_id = Column(Integer, comment="关联批次ID")
     phone_number = Column(String(20), nullable=False, comment="目标号码")
     country_code = Column(String(3), comment="国家代码")
     message = Column(Text, comment="短信内容")

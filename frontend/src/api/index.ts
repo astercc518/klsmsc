@@ -54,14 +54,15 @@ request.interceptors.response.use(
 
       switch (status) {
         case 401: {
-          const isAuthEndpoint =
-            requestUrl.includes('/login') || requestUrl.includes('/admin/')
-          if (isAuthEndpoint && !isRedirecting) {
+          if (!isRedirecting) {
             isRedirecting = true
             ElMessage.error('认证失败，请重新登录')
             localStorage.removeItem('api_key')
             localStorage.removeItem('admin_token')
             localStorage.removeItem('admin_id')
+            localStorage.removeItem('admin_role')
+            sessionStorage.removeItem('impersonate_mode')
+            sessionStorage.removeItem('impersonate_api_key')
             window.location.href = '/login'
           }
           break

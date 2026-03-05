@@ -211,6 +211,30 @@ class DataOrderNumber(Base):
     )
 
 
+class DataProductRating(Base):
+    """数据商品评分 - 客户对使用过的数据商品进行评分"""
+    __tablename__ = 'data_product_ratings'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    product_id = Column(Integer, ForeignKey('data_products.id'), nullable=False, comment='商品ID')
+    account_id = Column(INTEGER(unsigned=True), ForeignKey('accounts.id'), nullable=False, comment='账户ID')
+    order_id = Column(Integer, ForeignKey('data_orders.id'), comment='关联订单ID')
+    rating = Column(Integer, nullable=False, comment='评分(1-5)')
+    comment = Column(String(500), comment='评价内容')
+    created_at = Column(DateTime, server_default=func.now())
+
+    product = relationship("DataProduct", backref="ratings")
+    account = relationship("Account")
+    order = relationship("DataOrder", backref="rating")
+
+    __table_args__ = (
+        Index('idx_rating_product', 'product_id'),
+        Index('idx_rating_account', 'account_id'),
+        Index('idx_rating_created', 'created_at'),
+        Index('idx_rating_account_order', 'account_id', 'order_id', unique=True),
+    )
+
+
 class DataImportBatch(Base):
     """数据导入批次 - 记录每次数据导入"""
     __tablename__ = 'data_import_batches'

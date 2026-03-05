@@ -61,7 +61,12 @@ def _parse_phone(cleaned: str, region: Optional[str] = None):
             if phonenumbers.is_valid_number(pn):
                 e164 = phonenumbers.format_number(pn, phonenumbers.PhoneNumberFormat.E164)
                 cc = phonenumbers.region_code_for_number(pn)
-                return e164, cc
+                try:
+                    from phonenumbers import carrier as _carrier_mod
+                    carrier_name = _carrier_mod.name_for_number(pn, "en") or None
+                except Exception:
+                    carrier_name = None
+                return e164, cc, carrier_name
         except Exception:
             continue
     return None
@@ -135,6 +140,84 @@ async def _refresh_all_stock():
         logger.info(f"库存刷新完成: 共 {len(products)} 个商品, 更新 {updated} 个")
     await eng.dispose()
     return {"total": len(products), "updated": updated}
+
+
+@celery_app.task(name='data_backfill_carriers', bind=True, soft_time_limit=7200, time_limit=7500)
+def data_backfill_carriers(self, batch_size: int = 5000, limit: int = 0):
+    """回填存量号码的运营商信息"""
+    return _run_async(_backfill_carriers(batch_size, limit))
+
+
+async def _backfill_carriers(batch_size: int = 5000, limit: int = 0):
+    from phonenumbers import carrier as _carrier_mod
+    from sqlalchemy import text as sa_text
+
+    eng, Session = _make_session()
+    async with Session() as db:
+        count_result = await db.execute(
+            sa_text("SELECT COUNT(*) FROM data_numbers WHERE (carrier IS NULL OR carrier = '') AND status = 'active'")
+        )
+        total_todo = count_result.scalar() or 0
+        if limit > 0:
+            total_todo = min(total_todo, limit)
+        logger.info(f"[回填运营商] 待处理: {total_todo} 条")
+
+        processed = 0
+        updated = 0
+        last_id = 0
+        while True:
+            result = await db.execute(
+                sa_text(
+                    "SELECT id, phone_number FROM data_numbers "
+                    "WHERE id > :last_id AND (carrier IS NULL OR carrier = '') AND status = 'active' "
+                    "ORDER BY id ASC LIMIT :batch"
+                ).bindparams(last_id=last_id, batch=batch_size)
+            )
+            rows = result.fetchall()
+            if not rows:
+                break
+
+            last_id = rows[-1][0]
+            resolved = []
+            unresolved_ids = []
+            for row in rows:
+                try:
+                    pn = phonenumbers.parse(row[1])
+                    carrier_name = _carrier_mod.name_for_number(pn, "en") or None
+                    if carrier_name:
+                        resolved.append((row[0], carrier_name.replace("'", "''")))
+                    else:
+                        unresolved_ids.append(str(row[0]))
+                except Exception:
+                    unresolved_ids.append(str(row[0]))
+
+            # P0-FIX: 参数化更新，防止 SQL 注入
+            if resolved:
+                for uid, cn in resolved:
+                    await db.execute(
+                        sa_text("UPDATE data_numbers SET carrier = :carrier WHERE id = :uid"),
+                        {"carrier": cn, "uid": uid}
+                    )
+                updated += len(resolved)
+
+            if unresolved_ids:
+                u_ids = [int(x) for x in unresolved_ids]
+                for uid in u_ids:
+                    await db.execute(
+                        sa_text("UPDATE data_numbers SET carrier = 'Unknown' WHERE id = :uid"),
+                        {"uid": uid}
+                    )
+
+            await db.commit()
+            processed += len(rows)
+            if limit > 0 and processed >= limit:
+                break
+            if processed % 50000 == 0:
+                logger.info(f"[回填运营商] 进度: {processed}/{total_todo}, 已更新: {updated}")
+
+        logger.info(f"[回填运营商] 完成: 处理 {processed}, 更新 {updated}")
+    await eng.dispose()
+    return {"processed": processed, "updated": updated}
 
 
 @celery_app.task(name='data_recycle_expired_numbers')
@@ -363,12 +446,12 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
                 if result is None:
                     invalid_count += 1
                     return
-                e164, cc = result
+                e164, cc, carrier_name = result
                 if e164 in seen:
                     file_dedup_count += 1
                     return
                 seen.add(e164)
-                batch_buf.append((e164, cc, tags_str, None))
+                batch_buf.append((e164, cc, tags_str, carrier_name))
 
             def _process_row_csv(row):
                 nonlocal total_count, cleaned_count, invalid_count, file_dedup_count
@@ -385,7 +468,7 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
                 if result is None:
                     invalid_count += 1
                     return
-                e164, cc = result
+                e164, cc, carrier_name = result
                 if e164 in seen:
                     file_dedup_count += 1
                     return
@@ -396,7 +479,7 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
                     row_tags.extend([t.strip() for t in row[2].split("|")])
                 row_carrier = row[3].strip() if len(row) > 3 and row[3].strip() else None
                 t_str = json.dumps(row_tags, ensure_ascii=False) if row_tags else None
-                batch_buf.append((e164, row_country or cc, t_str, row_carrier))
+                batch_buf.append((e164, row_country or cc, t_str, row_carrier or carrier_name))
 
             # 流式读取文件并边解析边入库（用 readline 替代 for 迭代以支持 tell()）
             bytes_read = 0
@@ -452,6 +535,8 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
                     product_code = await _auto_create_product(
                         db, source, purpose, freshness,
                         country_code=None, matched_tpl_id=matched_tpl_id,
+                        batch_id=batch_id, valid_count=valid_count,
+                        file_name=os.path.basename(file_path),
                     )
                 except Exception as e:
                     logger.warning(f"[{batch_id}] 自动创建商品失败: {e}")
@@ -517,11 +602,13 @@ async def _auto_create_product(
     db, source: str, purpose: str, freshness: str,
     country_code: Optional[str] = None,
     matched_tpl_id: Optional[int] = None,
+    batch_id: Optional[str] = None,
+    valid_count: int = 0,
+    file_name: Optional[str] = None,
 ) -> Optional[str]:
-    """导入完成后自动创建或更新数据商品，返回 product_code"""
-    from app.api.v1.data.helpers import calculate_stock
+    """每次导入创建独立数据商品，返回 product_code"""
 
-    filter_criteria = {"source": source, "purpose": purpose}
+    filter_criteria = {"source": source, "purpose": purpose, "batch_id": batch_id}
     if freshness:
         filter_criteria["freshness"] = freshness
 
@@ -530,8 +617,7 @@ async def _auto_create_product(
     from app.modules.data.models import FRESHNESS_LABELS
     fr_label = FRESHNESS_LABELS.get(freshness, freshness)
 
-    code = f"AUTO-{source}-{purpose}-{freshness}"
-
+    iso_code = ""
     price = "0.001"
     if matched_tpl_id:
         tpl = await db.execute(
@@ -541,63 +627,56 @@ async def _auto_create_product(
         if tpl_obj:
             price = str(tpl_obj.price_per_number)
             if tpl_obj.country_code and tpl_obj.country_code != '*':
-                iso = _to_iso(tpl_obj.country_code)
-                filter_criteria["country"] = iso
-                code = f"AUTO-{iso}-{source}-{purpose}-{freshness}"
+                iso_code = _to_iso(tpl_obj.country_code)
+                filter_criteria["country"] = iso_code
 
-    existing = await db.execute(
-        select(DataProduct).where(
-            DataProduct.product_code == code,
-            DataProduct.is_deleted == False,
-        )
-    )
-    product = existing.scalar_one_or_none()
-
-    stock = await calculate_stock(db, filter_criteria, public_only=True)
-
-    if product:
-        product.stock_count = stock
-        product.price_per_number = price
-        product.status = 'active' if stock > 0 else 'sold_out'
-        await db.commit()
-        logger.info(f"更新商品 {code}: 库存={stock}")
+    batch_suffix = batch_id.split("-", 1)[1] if batch_id and "-" in batch_id else (batch_id or datetime.now().strftime('%Y%m%d%H%M%S'))
+    if iso_code:
+        code = f"AUTO-{iso_code}-{source}-{purpose}-{freshness}-{batch_suffix}"
     else:
-        iso_code = filter_criteria.get("country", "")
-        country_name = "全球"
-        if iso_code:
-            try:
-                regions_map = {
-                    'CN': '中国', 'VN': '越南', 'PH': '菲律宾', 'BR': '巴西',
-                    'CO': '哥伦比亚', 'MX': '墨西哥', 'ID': '印尼', 'TH': '泰国',
-                    'IN': '印度', 'MY': '马来西亚', 'SG': '新加坡', 'JP': '日本',
-                    'KR': '韩国', 'US': '美国', 'GB': '英国', 'DE': '德国',
-                    'FR': '法国', 'AU': '澳大利亚', 'CA': '加拿大', 'RU': '俄罗斯',
-                    'SA': '沙特', 'AE': '阿联酋', 'TR': '土耳其', 'NG': '尼日利亚',
-                    'EG': '埃及', 'ZA': '南非', 'PE': '秘鲁', 'CL': '智利',
-                    'AR': '阿根廷', 'PK': '巴基斯坦', 'BD': '孟加拉',
-                    'MM': '缅甸', 'KH': '柬埔寨', 'LA': '老挝', 'NP': '尼泊尔',
-                    'TW': '台湾', 'HK': '香港', 'MO': '澳门',
-                }
-                country_name = regions_map.get(iso_code, iso_code)
-            except Exception:
-                country_name = iso_code
-        product_name = f"{country_name}-{src_label}-{pur_label}-{fr_label}"
-        desc = f"来源: {src_label}, 用途: {pur_label}, 时效: {fr_label}"
+        code = f"AUTO-{source}-{purpose}-{freshness}-{batch_suffix}"
 
-        product = DataProduct(
-            product_code=code,
-            product_name=product_name,
-            description=desc,
-            filter_criteria=filter_criteria,
-            price_per_number=price,
-            stock_count=stock,
-            min_purchase=10,
-            max_purchase=max(stock, 100000),
-            product_type='data_only',
-            status='active' if stock > 0 else 'sold_out',
-        )
-        db.add(product)
-        await db.commit()
-        logger.info(f"创建商品 {code}: {product_name}, 库存={stock}")
+    REGIONS_MAP = {
+        'CN': '中国', 'VN': '越南', 'PH': '菲律宾', 'BR': '巴西',
+        'CO': '哥伦比亚', 'MX': '墨西哥', 'ID': '印尼', 'TH': '泰国',
+        'IN': '印度', 'MY': '马来西亚', 'SG': '新加坡', 'JP': '日本',
+        'KR': '韩国', 'US': '美国', 'GB': '英国', 'DE': '德国',
+        'FR': '法国', 'AU': '澳大利亚', 'CA': '加拿大', 'RU': '俄罗斯',
+        'SA': '沙特', 'AE': '阿联酋', 'TR': '土耳其', 'NG': '尼日利亚',
+        'EG': '埃及', 'ZA': '南非', 'PE': '秘鲁', 'CL': '智利',
+        'AR': '阿根廷', 'PK': '巴基斯坦', 'BD': '孟加拉',
+        'MM': '缅甸', 'KH': '柬埔寨', 'LA': '老挝', 'NP': '尼泊尔',
+        'TW': '台湾', 'HK': '香港', 'MO': '澳门',
+    }
+    country_name = REGIONS_MAP.get(iso_code, iso_code) if iso_code else "全球"
+    product_name = f"{country_name}-{src_label}-{pur_label}-{fr_label}"
+
+    original_name = ""
+    if file_name:
+        name_part = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
+        original_name = name_part[:50]
+
+    desc_parts = [f"来源: {src_label}", f"用途: {pur_label}", f"时效: {fr_label}"]
+    if original_name:
+        desc_parts.append(f"文件: {original_name}")
+    if batch_id:
+        desc_parts.append(f"批次: {batch_id}")
+    desc = ", ".join(desc_parts)
+
+    product = DataProduct(
+        product_code=code,
+        product_name=product_name,
+        description=desc,
+        filter_criteria=filter_criteria,
+        price_per_number=price,
+        stock_count=valid_count,
+        min_purchase=10,
+        max_purchase=max(valid_count, 100000),
+        product_type='data_only',
+        status='active' if valid_count > 0 else 'sold_out',
+    )
+    db.add(product)
+    await db.commit()
+    logger.info(f"创建商品 {code}: {product_name}, 库存={valid_count}, 文件={file_name}")
 
     return code

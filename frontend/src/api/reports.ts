@@ -54,9 +54,9 @@ export async function getStatistics(
   if (startDate) params.start_date = startDate;
   if (endDate) params.end_date = endDate;
 
-  // 管理员使用管理员 API
+  const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1';
   const adminToken = localStorage.getItem('admin_token');
-  if (adminToken) {
+  if (!isImpersonateMode && adminToken) {
     return request.get<StatisticsResponse>('/admin/statistics', { params });
   }
 
@@ -71,9 +71,9 @@ export async function getSuccessRate(
   startDate?: string,
   endDate?: string
 ): Promise<SuccessRateResponse> {
-  // 管理员模式下返回空数据
+  const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1';
   const adminToken = localStorage.getItem('admin_token');
-  if (adminToken) {
+  if (!isImpersonateMode && adminToken) {
     return {
       overall_rate: 0,
       by_channel: [],
@@ -93,9 +93,9 @@ export async function getSuccessRate(
  * 管理员模式下返回空数据（暂未实现管理员版本）
  */
 export async function getDailyStats(days: number = 7): Promise<DailyStatsResponse> {
-  // 管理员模式下返回空数据
+  const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1';
   const adminToken = localStorage.getItem('admin_token');
-  if (adminToken) {
+  if (!isImpersonateMode && adminToken) {
     return {
       success: true,
       days: days,

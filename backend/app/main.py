@@ -84,14 +84,8 @@ app.add_middleware(
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """处理Pydantic验证错误并记录详细信息"""
     errors = exc.errors()
-    body = None
-    try:
-        body = await request.body()
-        body = body.decode('utf-8')
-    except Exception:
-        pass
-    
-    logger.error(f"Pydantic验证错误: {errors}, body: {body}")
+    # P2-FIX: 不记录请求体，防止泄露密码/Token
+    logger.error(f"Pydantic验证错误: path={request.url.path}, errors={errors}")
     return JSONResponse(
         status_code=422,
         content={"detail": errors}

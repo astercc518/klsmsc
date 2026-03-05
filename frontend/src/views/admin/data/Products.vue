@@ -65,6 +65,18 @@
             <el-button size="small" :icon="Refresh" circle @click="handleRefreshStock(row)" title="刷新库存" />
           </template>
         </el-table-column>
+        <el-table-column label="评分" width="140" sortable :sort-by="(row: any) => row.rating?.avg || 0">
+          <template #default="{ row }">
+            <div v-if="row.rating?.total > 0" class="rating-cell" @click="openRatingDialog(row)">
+              <span class="rating-stars">
+                <span v-for="s in 5" :key="s" class="mini-star" :class="{ filled: s <= Math.round(row.rating.avg) }">★</span>
+              </span>
+              <span class="rating-num">{{ row.rating.avg }}</span>
+              <span class="rating-cnt">({{ row.rating.total }})</span>
+            </div>
+            <span v-else style="color:#c0c4cc;font-size:12px">暂无</span>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="80">
           <template #default="{ row }">
             <el-tag :type="row.status === 'active' ? 'success' : (row.status === 'sold_out' ? 'danger' : 'info')" size="small">
@@ -222,6 +234,99 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 评分管理弹窗 -->
+    <el-dialog v-model="ratingDialogVisible" :title="`评分管理 - ${ratingProduct?.product_name || ''}`" width="700px" @closed="ratingProduct = null">
+      <div v-loading="ratingLoading" class="rating-mgr">
+        <!-- 统计概览 -->
+        <div class="rating-overview" v-if="ratingStats">
+          <div class="ro-card">
+            <span class="ro-label">总评数</span>
+            <span class="ro-value">{{ ratingStats.total }}</span>
+          </div>
+          <div class="ro-card">
+            <span class="ro-label">平均分</span>
+            <span class="ro-value avg">{{ ratingStats.avg }}</span>
+          </div>
+          <div class="ro-card">
+            <span class="ro-label">历史最高</span>
+            <span class="ro-value best">{{ ratingStats.max }}★</span>
+          </div>
+          <div class="ro-card">
+            <span class="ro-label">近30天均分</span>
+            <span class="ro-value recent">{{ ratingStats.recent_avg || '-' }}</span>
+          </div>
+        </div>
+
+        <!-- 评分列表 -->
+        <el-table :data="ratingList" stripe border size="small" style="width: 100%; margin-top: 12px">
+          <el-table-column prop="account_name" label="客户" width="120" />
+          <el-table-column prop="order_no" label="订单号" width="180" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.order_no || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="评分" width="140">
+            <template #default="{ row }">
+              <span v-for="s in 5" :key="s" class="mini-star" :class="{ filled: s <= row.rating }">★</span>
+              <span style="margin-left:4px;font-weight:600">{{ row.rating }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="comment" label="评价" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.comment || '-' }}</template>
+          </el-table-column>
+          <el-table-column label="时间" width="160">
+            <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="120" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" type="primary" link @click="openEditRating(row)">修改</el-button>
+              <el-button size="small" type="danger" link @click="handleDeleteRating(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <div style="display:flex;justify-content:flex-end;margin-top:12px" v-if="ratingTotal > 20">
+          <el-pagination
+            v-model:current-page="ratingPage"
+            :page-size="20"
+            :total="ratingTotal"
+            layout="total, prev, pager, next"
+            @current-change="loadRatings"
+          />
+        </div>
+      </div>
+    </el-dialog>
+
+    <!-- 修改评分弹窗 -->
+    <el-dialog v-model="editRatingVisible" title="修改评分" width="400px" :close-on-click-modal="false">
+      <div class="edit-rating-body">
+        <div class="er-row">
+          <span class="er-label">客户：</span>
+          <span>{{ editRatingTarget.account_name }}</span>
+        </div>
+        <div class="er-row">
+          <span class="er-label">评分：</span>
+          <div class="er-stars">
+            <span
+              v-for="s in 5"
+              :key="s"
+              class="edit-star"
+              :class="{ active: s <= editRatingForm.rating, hover: s <= editRatingHover }"
+              @mouseenter="editRatingHover = s"
+              @mouseleave="editRatingHover = 0"
+              @click="editRatingForm.rating = s"
+            >★</span>
+          </div>
+        </div>
+        <div class="er-row" style="flex-direction:column;align-items:flex-start;gap:6px">
+          <span class="er-label">评价：</span>
+          <el-input v-model="editRatingForm.comment" type="textarea" :rows="3" maxlength="500" show-word-limit placeholder="评价内容（选填）" />
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="editRatingVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editRatingSaving" @click="submitEditRating">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -238,6 +343,9 @@ import {
   refreshProductStock,
   getPricingTemplates,
   importNumbers,
+  getProductRatings,
+  updateRating,
+  deleteRating,
   type PricingTemplate,
 } from '@/api/data-admin'
 import { findCountryByIso } from '@/constants/countries'
@@ -506,6 +614,82 @@ async function handleDelete(row: any) {
     if (e !== 'cancel') ElMessage.error(e.message || '删除失败')
   }
 }
+
+// ====== 评分管理 ======
+const ratingDialogVisible = ref(false)
+const ratingLoading = ref(false)
+const ratingProduct = ref<any>(null)
+const ratingStats = ref<any>(null)
+const ratingList = ref<any[]>([])
+const ratingTotal = ref(0)
+const ratingPage = ref(1)
+
+async function openRatingDialog(row: any) {
+  ratingProduct.value = row
+  ratingPage.value = 1
+  ratingDialogVisible.value = true
+  await loadRatings()
+}
+
+async function loadRatings() {
+  if (!ratingProduct.value) return
+  ratingLoading.value = true
+  try {
+    const res = await getProductRatings(ratingProduct.value.id, { page: ratingPage.value, page_size: 20 })
+    ratingStats.value = res.stats
+    ratingList.value = res.items || []
+    ratingTotal.value = res.total || 0
+  } catch { ratingList.value = [] }
+  finally { ratingLoading.value = false }
+}
+
+// 修改评分
+const editRatingVisible = ref(false)
+const editRatingSaving = ref(false)
+const editRatingHover = ref(0)
+const editRatingTarget = ref<any>({})
+const editRatingForm = ref({ rating: 0, comment: '' })
+
+function openEditRating(row: any) {
+  editRatingTarget.value = row
+  editRatingForm.value = { rating: row.rating, comment: row.comment || '' }
+  editRatingHover.value = 0
+  editRatingVisible.value = true
+}
+
+async function submitEditRating() {
+  if (!editRatingForm.value.rating) return
+  editRatingSaving.value = true
+  try {
+    await updateRating(editRatingTarget.value.id, {
+      rating: editRatingForm.value.rating,
+      comment: editRatingForm.value.comment || undefined,
+    })
+    ElMessage.success('评分已更新')
+    editRatingVisible.value = false
+    await loadRatings()
+    loadData()
+  } catch (e: any) {
+    ElMessage.error(e.message || '更新失败')
+  } finally { editRatingSaving.value = false }
+}
+
+async function handleDeleteRating(row: any) {
+  try {
+    await ElMessageBox.confirm(`确定删除该评分？`, '确认', { type: 'warning' })
+    await deleteRating(row.id)
+    ElMessage.success('评分已删除')
+    await loadRatings()
+    loadData()
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error(e.message || '删除失败')
+  }
+}
+
+function fmtDate(d: string) {
+  if (!d) return '-'
+  return new Date(d).toLocaleString('zh-CN')
+}
 </script>
 
 <style scoped>
@@ -534,4 +718,56 @@ async function handleDelete(row: any) {
 .import-result-card :deep(.el-card__body) {
   padding: 8px 12px;
 }
+
+/* 评分列 */
+.rating-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+.rating-cell:hover { background: #fdf6ec; }
+.rating-stars { display: inline-flex; gap: 1px; }
+.mini-star { font-size: 13px; color: #dcdfe6; }
+.mini-star.filled { color: #f7ba2a; }
+.rating-num { font-size: 13px; font-weight: 700; color: #e6a23c; }
+.rating-cnt { font-size: 11px; color: #909399; }
+
+/* 评分管理弹窗 */
+.rating-overview {
+  display: flex;
+  gap: 12px;
+}
+.ro-card {
+  flex: 1;
+  background: #f5f7fa;
+  border-radius: 8px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.ro-label { font-size: 12px; color: #909399; }
+.ro-value { font-size: 22px; font-weight: 700; color: #303133; }
+.ro-value.avg { color: #e6a23c; }
+.ro-value.best { color: #f56c6c; }
+.ro-value.recent { color: #409eff; }
+
+/* 修改评分弹窗 */
+.edit-rating-body { display: flex; flex-direction: column; gap: 14px; }
+.er-row { display: flex; align-items: center; gap: 8px; }
+.er-label { min-width: 50px; color: #606266; font-weight: 500; }
+.er-stars { display: inline-flex; gap: 4px; }
+.edit-star {
+  font-size: 26px;
+  color: #dcdfe6;
+  cursor: pointer;
+  transition: color 0.15s, transform 0.15s;
+}
+.edit-star.active { color: #f7ba2a; }
+.edit-star.hover { color: #f7ba2a; transform: scale(1.12); }
 </style>

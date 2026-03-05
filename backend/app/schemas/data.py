@@ -85,6 +85,7 @@ class DataOrderCreate(BaseModel):
     product_id: Optional[int] = None
     filter_criteria: Optional[dict] = None
     quantity: int
+    carrier: Optional[str] = None
 
 
 class DataBuyAndSend(BaseModel):
@@ -92,7 +93,8 @@ class DataBuyAndSend(BaseModel):
     filter_criteria: Optional[dict] = None
     quantity: int
     message: str
-    messages: Optional[List[str]] = None  # 多文案模式：均匀分配给不同号码
+    messages: Optional[List[str]] = None
+    carrier: Optional[str] = None
 
 
 class ComboBuyRequest(BaseModel):

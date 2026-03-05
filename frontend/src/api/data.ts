@@ -61,8 +61,12 @@ export interface DataOrder {
 
 // ============ 商品 ============
 
-export function getDataProducts(params?: { page?: number; page_size?: number; product_type?: string; source?: string; purpose?: string; freshness?: string }) {
+export function getDataProducts(params?: { page?: number; page_size?: number; product_type?: string; source?: string; purpose?: string; freshness?: string; carrier?: string }) {
   return request({ url: '/data/products', method: 'get', params })
+}
+
+export function getCarriers(params?: { country_code?: string }) {
+  return request({ url: '/data/carriers', method: 'get', params })
 }
 
 // ============ 预览 ============
@@ -81,7 +85,7 @@ export function buyCombo(data: { product_id: number; quantity: number }) {
   return request({ url: '/data/buy-combo', method: 'post', data })
 }
 
-export function buyAndSend(data: { product_id?: number; filter_criteria?: any; quantity: number; message: string; messages?: string[] }) {
+export function buyAndSend(data: { product_id?: number; filter_criteria?: any; quantity: number; message: string; messages?: string[]; carrier?: string }) {
   return request({ url: '/data/buy-and-send', method: 'post', data })
 }
 
@@ -101,6 +105,16 @@ export function getOrderDetail(orderId: number) {
 
 export function cancelOrder(orderId: number, data?: { reason?: string }) {
   return request({ url: `/data/orders/${orderId}/cancel`, method: 'post', data })
+}
+
+// ============ 评分 ============
+
+export function rateProduct(productId: number, params: { rating: number; order_id?: number; comment?: string }) {
+  return request({ url: `/data/products/${productId}/rate`, method: 'post', params })
+}
+
+export function getProductRatings(productId: number) {
+  return request({ url: `/data/products/${productId}/ratings`, method: 'get' })
 }
 
 // ============ 私库 ============

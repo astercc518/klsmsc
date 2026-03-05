@@ -44,77 +44,66 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 if bearer_token.startswith("ak_"):
                     api_key = bearer_token
         
-        # 如果没有API Key，跳过限流（可能是公开接口）
+        # P1-FIX: 无 API Key 时对敏感路径做 IP 级限流（防暴力破解）
+        ip_rate_paths = {"/api/v1/account/login", "/api/v1/admin/login",
+                         "/api/v1/account/register", "/api/v1/ai/generate-sms",
+                         "/api/v1/admin/telegram-login/send-code"}
         if not api_key:
-            return await call_next(request)
+            if request.url.path not in ip_rate_paths:
+                return await call_next(request)
+            api_key = f"ip:{request.client.host if request.client else 'unknown'}"
         
         # 获取客户端IP
         client_ip = request.client.host if request.client else "unknown"
         
+        rate_headers = {}
+        is_limited = False
         try:
-            # 检查限流
             redis_client = await get_redis_client()
-            
-            # 生成限流键（按分钟）
             current_minute = datetime.now().strftime("%Y%m%d%H%M")
             limit_key = f"ratelimit:{api_key}:{current_minute}"
-            
-            # 增加计数
             current = await redis_client.incr(limit_key.encode())
-            
-            # 第一次设置过期时间（60秒）
             if current == 1:
                 await redis_client.expire(limit_key.encode(), 60)
-            
-            # 获取账户限流配置（从缓存）
             account_limit = await self._get_account_limit(api_key, redis_client)
             if account_limit is None:
                 account_limit = self.default_limit
-            
-            # 检查是否超限
+
+            rate_headers = {
+                "X-RateLimit-Limit": str(account_limit),
+                "X-RateLimit-Remaining": str(max(0, account_limit - current)),
+                "X-RateLimit-Reset": str(int(time.time()) + 60),
+            }
+
             if current > account_limit:
+                is_limited = True
                 logger.warning(
                     f"API限流触发: api_key={api_key[:10]}..., "
                     f"IP={client_ip}, "
-                    f"当前={current}, "
-                    f"限制={account_limit}, "
+                    f"当前={current}, 限制={account_limit}, "
                     f"路径={request.url.path}"
                 )
-                
-                # BaseHTTPMiddleware 中直接 raise HTTPException 会导致 Starlette 异常传播问题，
-                # 这里改为直接返回响应，避免前端看到 500。
-                return JSONResponse(
-                    status_code=429,
-                    content={
-                        "success": False,
-                        "error": {
-                            "code": "RATE_LIMIT_EXCEEDED",
-                            "message": f"Rate limit exceeded: {account_limit} requests per minute",
-                            "details": {}
-                        }
-                    },
-                    headers={
-                        "X-RateLimit-Limit": str(account_limit),
-                        "X-RateLimit-Remaining": "0",
-                        "X-RateLimit-Reset": str(int(time.time()) + 60),
-                        "Retry-After": "60"
-                    }
-                )
-            
-            # 调用下一个中间件
-            response = await call_next(request)
-            
-            # 添加限流响应头
-            response.headers["X-RateLimit-Limit"] = str(account_limit)
-            response.headers["X-RateLimit-Remaining"] = str(max(0, account_limit - current))
-            response.headers["X-RateLimit-Reset"] = str(int(time.time()) + 60)
-            
-            return response
-            
         except Exception as e:
-            # 如果限流检查失败，记录日志但继续处理请求（降级策略）
-            logger.error(f"限流检查异常: {str(e)}", exc_info=e)
-            return await call_next(request)
+            logger.error(f"限流检查异常: {str(e)}")
+
+        if is_limited:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": "RATE_LIMIT_EXCEEDED",
+                        "message": f"Rate limit exceeded: {rate_headers.get('X-RateLimit-Limit', '?')} requests per minute",
+                        "details": {}
+                    }
+                },
+                headers={**rate_headers, "Retry-After": "60"},
+            )
+
+        response = await call_next(request)
+        for k, v in rate_headers.items():
+            response.headers[k] = v
+        return response
     
     async def _get_account_limit(self, api_key: str, redis_client) -> Optional[int]:
         """

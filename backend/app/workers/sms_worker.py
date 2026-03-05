@@ -7,6 +7,20 @@ from app.workers.celery_app import celery_app
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
 from app.database import AsyncSessionLocal
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from app.config import settings
+
+def _get_worker_session():
+    """为 worker 创建独立的数据库会话，避免与父进程共享连接池"""
+    eng = create_async_engine(
+        settings.DATABASE_URL,
+        echo=False,
+        pool_size=5,
+        max_overflow=5,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+    )
+    return async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)()
 from app.utils.logger import get_logger
 import asyncio
 
@@ -14,20 +28,12 @@ logger = get_logger(__name__)
 
 
 def _run_async(coro):
-    """在 Celery 同步 worker 中安全地执行异步协程"""
+    """在 Celery 同步 worker 中安全地执行异步协程，每次使用独立事件循环"""
+    loop = asyncio.new_event_loop()
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        new_loop = asyncio.new_event_loop()
-        try:
-            return new_loop.run_until_complete(coro)
-        finally:
-            new_loop.close()
-    else:
-        return asyncio.run(coro)
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 @celery_app.task(name='send_sms_task', bind=True, max_retries=3)
@@ -65,7 +71,8 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None) -> dic
         message_id: 消息ID
         http_credentials: HTTP通道凭据（可选），包含 username 和 password
     """
-    async with AsyncSessionLocal() as db:
+    db = _get_worker_session()
+    try:
         # 查询短信记录
         result = await db.execute(
             select(SMSLog).where(SMSLog.message_id == message_id)
@@ -76,18 +83,31 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None) -> dic
             logger.error(f"短信记录不存在: {message_id}")
             return {"success": False, "error": "Message not found"}
         
-        # 查询通道
-        result = await db.execute(
-            select(Channel).where(Channel.id == sms_log.channel_id)
-        )
-        channel = result.scalar_one_or_none()
-        
+        # 查询通道（若未指定则自动路由）
+        channel = None
+        if sms_log.channel_id:
+            result = await db.execute(
+                select(Channel).where(Channel.id == sms_log.channel_id)
+            )
+            channel = result.scalar_one_or_none()
+
         if not channel:
-            logger.error(f"通道不存在: {sms_log.channel_id}")
+            try:
+                from app.core.router import RoutingEngine
+                router = RoutingEngine(db)
+                country = sms_log.country_code or "PH"
+                channel = await router.select_channel(country)
+                if channel:
+                    sms_log.channel_id = channel.id
+            except Exception as route_err:
+                logger.warning(f"自动路由失败: {message_id}, {route_err}")
+
+        if not channel:
+            logger.error(f"无可用通道: {message_id}, channel_id={sms_log.channel_id}")
             sms_log.status = 'failed'
-            sms_log.error_message = "Channel not found"
+            sms_log.error_message = "No available channel"
             await db.commit()
-            return {"success": False, "error": "Channel not found"}
+            return {"success": False, "error": "No available channel"}
         
         logger.info(f"使用通道: {channel.channel_code} ({channel.protocol})")
         
@@ -148,8 +168,95 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None) -> dic
                 logger.warning(f"触发Webhook失败: {str(e)}")
         
         await db.commit()
+
+        # 更新批次进度
+        if sms_log.batch_id:
+            await _update_batch_progress(db, sms_log.batch_id)
         
         return {"success": success, "message_id": message_id, "status": sms_log.status}
+    finally:
+        await db.close()
+
+
+async def _update_batch_progress(db, batch_id: int):
+    """更新批次的发送进度和状态"""
+    try:
+        from app.modules.sms.sms_batch import SmsBatch, BatchStatus
+        from sqlalchemy import func as sa_func
+
+        stats = await db.execute(
+            select(
+                SMSLog.status,
+                sa_func.count().label('cnt')
+            ).where(SMSLog.batch_id == batch_id).group_by(SMSLog.status)
+        )
+        counts = {row.status: row.cnt for row in stats}
+        total = sum(counts.values())
+        sent = counts.get('sent', 0) + counts.get('delivered', 0)
+        failed = counts.get('failed', 0)
+        done = sent + failed
+
+        batch_result = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
+        batch = batch_result.scalar_one_or_none()
+        if not batch:
+            return
+
+        batch.success_count = sent
+        batch.failed_count = failed
+        batch.processing_count = total - done
+        batch.progress = int(done * 100 / total) if total > 0 else 0
+
+        if done >= total:
+            if failed == 0:
+                batch.status = BatchStatus.COMPLETED
+            elif sent == 0:
+                batch.status = BatchStatus.FAILED
+            else:
+                batch.status = BatchStatus.COMPLETED
+                batch.error_message = f"部分失败: {failed}/{total}"
+            batch.completed_at = datetime.now()
+
+        await db.commit()
+
+        # P0-FIX: 失败短信退款
+        if failed > 0 and done >= total:
+            await _refund_failed_sms(db, batch_id, batch.account_id)
+
+    except Exception as e:
+        logger.warning(f"更新批次进度失败: batch_id={batch_id}, {e}")
+
+
+async def _refund_failed_sms(db, batch_id: int, account_id: int):
+    """批次完成后，对发送失败的短信执行退款"""
+    try:
+        from sqlalchemy import func as sa_func
+        from app.modules.common.account import Account
+        from app.modules.common.balance_log import BalanceLog
+        from sqlalchemy import update as sa_update
+
+        result = await db.execute(
+            select(sa_func.sum(SMSLog.selling_price)).where(
+                SMSLog.batch_id == batch_id, SMSLog.status == 'failed'
+            )
+        )
+        refund_amount = float(result.scalar() or 0)
+        if refund_amount <= 0:
+            return
+
+        await db.execute(
+            sa_update(Account).where(Account.id == account_id)
+            .values(balance=Account.balance + refund_amount)
+        )
+        bal = await db.execute(select(Account.balance).where(Account.id == account_id))
+        db.add(BalanceLog(
+            account_id=account_id, change_type='refund', amount=refund_amount,
+            balance_after=float(bal.scalar()),
+            description=f"短信发送失败退款: batch_id={batch_id}"
+        ))
+        await db.commit()
+        logger.info(f"失败退款完成: batch={batch_id}, 退款={refund_amount}")
+    except Exception as e:
+        logger.error(f"退款失败: batch={batch_id}, {e}")
 
 
 async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: dict = None) -> bool:
@@ -381,17 +488,19 @@ async def _send_via_smpp(sms_log: SMSLog, channel: Channel) -> bool:
 
 async def _mark_failed(message_id: str, error_message: str):
     """标记短信为失败状态"""
-    async with AsyncSessionLocal() as db:
+    db = _get_worker_session()
+    try:
         result = await db.execute(
             select(SMSLog).where(SMSLog.message_id == message_id)
         )
         sms_log = result.scalar_one_or_none()
-        
         if sms_log:
             sms_log.status = 'failed'
             sms_log.error_message = error_message
             await db.commit()
             logger.info(f"已标记为失败: {message_id}")
+    finally:
+        await db.close()
 
 
 @celery_app.task(name='process_dlr_task')
@@ -417,7 +526,8 @@ async def _process_dlr_async(dlr_data: dict):
     """
     异步处理DLR
     """
-    async with AsyncSessionLocal() as db:
+    db = _get_worker_session()
+    try:
         message_id = dlr_data.get('message_id')
         status = dlr_data.get('status')
         
@@ -430,7 +540,6 @@ async def _process_dlr_async(dlr_data: dict):
             logger.warning(f"DLR对应的短信记录不存在: {message_id}")
             return
         
-        # 更新状态
         sms_log.status = status
         if status == 'delivered':
             sms_log.delivery_time = datetime.now()
@@ -440,7 +549,6 @@ async def _process_dlr_async(dlr_data: dict):
         await db.commit()
         logger.info(f"DLR处理完成: {message_id}, 状态: {status}")
         
-        # 触发Webhook回调
         try:
             from app.workers.webhook_worker import trigger_webhook
             await trigger_webhook(
@@ -454,6 +562,8 @@ async def _process_dlr_async(dlr_data: dict):
             )
         except Exception as e:
             logger.warning(f"触发Webhook失败: {str(e)}")
+    finally:
+        await db.close()
 
 
 # ============ 定时拉取 DLR 报告 ============
@@ -485,8 +595,8 @@ async def _fetch_dlr_reports_async():
     import httpx
     from app.core.dlr_handler import detect_and_parse_dlr, process_dlr_reports
     
-    async with AsyncSessionLocal() as db:
-        # 获取所有活跃的 HTTP 通道
+    db = _get_worker_session()
+    try:
         result = await db.execute(
             select(Channel).where(
                 Channel.protocol == 'HTTP',
@@ -564,6 +674,8 @@ async def _fetch_dlr_reports_async():
         total = total_success + total_fail
         logger.info(f"DLR 拉取完成: 成功={total_success}, 失败={total_fail}, 总计={total}")
         return {"success": True, "updated": total, "delivered": total_success, "failed": total_fail}
+    finally:
+        await db.close()
 
 
 def _build_dlr_pull_url(channel: Channel) -> str:

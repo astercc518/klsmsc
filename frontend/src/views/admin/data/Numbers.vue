@@ -248,22 +248,29 @@
           </el-descriptions>
         </el-card>
 
-        <!-- 第三步：上传文件 -->
-        <el-form-item :label="'③ ' + t('dataPool.selectFile') + ' (CSV/TXT)'">
+        <!-- 第三步：上传文件（支持多文件） -->
+        <el-form-item :label="'③ ' + t('dataPool.selectFile') + ' (CSV/TXT，支持多文件)'">
           <el-upload
             ref="uploadRef"
             :auto-upload="false"
-            :limit="1"
+            :limit="20"
+            multiple
             accept=".csv,.txt"
             :on-change="handleFileChange"
-            :on-remove="() => (importFile = null)"
+            :on-remove="handleFileRemove"
             :before-upload="beforeImportUpload"
             drag
           >
             <el-icon style="font-size: 40px; color: var(--el-color-primary)"><UploadFilled /></el-icon>
-            <div style="margin-top: 8px">{{ t('dataPool.selectFile') }}</div>
+            <div style="margin-top: 8px">拖拽文件到此处，或点击选择文件</div>
+            <div style="font-size: 12px; color: var(--el-text-color-secondary); margin-top: 4px">
+              支持同时选择多个文件
+            </div>
           </el-upload>
-          <div class="el-upload__tip">支持 CSV/TXT 格式，最大500MB，自动清洗无效数据</div>
+          <div class="el-upload__tip">支持 CSV/TXT 格式，最大500MB/文件，自动清洗无效数据</div>
+          <div v-if="importFiles.length > 1" style="margin-top: 8px; font-size: 13px; color: var(--el-color-primary); font-weight: 500">
+            已选择 {{ importFiles.length }} 个文件，将逐个提交导入任务
+          </div>
         </el-form-item>
 
         <el-divider content-position="left">其他参数（选择模板后自动填充）</el-divider>
@@ -304,27 +311,37 @@
           </el-col>
         </el-row>
 
-        <!-- 任务已提交 -->
-        <el-card v-if="importResult" shadow="never" class="import-result-card">
-          <div style="text-align:center;padding:16px 0">
-            <el-icon style="font-size:40px;color:var(--el-color-success)"><UploadFilled /></el-icon>
-            <div style="margin-top:12px;font-size:16px;font-weight:600;color:var(--el-color-success)">导入任务已提交</div>
-            <div style="margin-top:8px;font-size:13px;color:var(--el-text-color-secondary)">
-              批次号：{{ importResult.batch_id }}
+        <!-- 任务已提交（支持多文件结果） -->
+        <el-card v-if="importResults.length" shadow="never" class="import-result-card">
+          <div style="text-align:center;padding:12px 0 8px">
+            <el-icon style="font-size:36px;color:var(--el-color-success)"><UploadFilled /></el-icon>
+            <div style="margin-top:8px;font-size:16px;font-weight:600;color:var(--el-color-success)">
+              {{ importResults.length }} 个导入任务已提交
             </div>
-            <div style="margin-top:4px;font-size:13px;color:var(--el-text-color-secondary)">
-              文件大小：{{ importResult.file_size_mb }}MB，后台正在处理...
+          </div>
+          <div class="multi-result-list">
+            <div v-for="(r, idx) in importResults" :key="idx" class="multi-result-item" :class="{ 'is-error': r.error }">
+              <div class="multi-result-file">
+                <el-icon v-if="!r.error" color="#67C23A" :size="16"><UploadFilled /></el-icon>
+                <el-icon v-else color="#F56C6C" :size="16"><UploadFilled /></el-icon>
+                <span class="multi-result-name">{{ r.file_name }}</span>
+              </div>
+              <div v-if="!r.error" class="multi-result-info">
+                <span>批次号：{{ r.batch_id }}</span>
+                <span>{{ r.file_size_mb }}MB</span>
+              </div>
+              <div v-else class="multi-result-error">{{ r.error }}</div>
             </div>
-            <div style="margin-top:12px;font-size:12px;color:var(--el-text-color-regular)">
-              关闭弹窗后可在下方「导入任务」列表中查看实时进度
-            </div>
+          </div>
+          <div style="text-align:center;margin-top:8px;font-size:12px;color:var(--el-text-color-regular)">
+            关闭弹窗后可在下方「导入任务」列表中查看实时进度
           </div>
         </el-card>
       </el-form>
       <template #footer>
-        <el-button @click="importVisible = false">{{ importResult ? '关闭' : t('common.cancel') }}</el-button>
-        <el-button v-if="!importResult" type="primary" :loading="importing" @click="submitImport">
-          {{ importing ? t('dataPool.importing') : t('dataPool.startImport') }}
+        <el-button @click="importVisible = false">{{ importResults.length ? '关闭' : t('common.cancel') }}</el-button>
+        <el-button v-if="!importResults.length" type="primary" :loading="importing" @click="submitImport">
+          {{ importing ? `提交中 (${importSubmitIdx}/${importFiles.length})` : (importFiles.length > 1 ? `批量导入 (${importFiles.length} 个文件)` : t('dataPool.startImport')) }}
         </el-button>
       </template>
     </el-dialog>
@@ -400,7 +417,7 @@ const filters = reactive({ country: '', status: '', tag: '', batch_id: '', sourc
 // 导入弹窗
 const importVisible = ref(false)
 const importing = ref(false)
-const importFile = ref<File | null>(null)
+const importFiles = ref<File[]>([])
 const importTags = ref('')
 const importSource = ref('')
 const importSourceType = ref('')
@@ -409,13 +426,14 @@ const importFreshness = ref('')
 const importDataDate = ref('')
 const importCountryCode = ref('')
 const uploadRef = ref()
+const importSubmitIdx = ref(0)
 
 // 定价模板选择
 const templateList = ref<PricingTemplate[]>([])
 const templateListLoading = ref(false)
 const selectedTemplateId = ref<number | null>(null)
 const selectedTemplate = ref<PricingTemplate | null>(null)
-const importResult = ref<any>(null)
+const importResults = ref<any[]>([])
 
 // 导入任务列表
 const importTasks = ref<any[]>([])
@@ -499,7 +517,7 @@ function onTemplateSelect(id: number | null) {
 }
 
 function showImportDialog() {
-  importFile.value = null
+  importFiles.value = []
   importTags.value = ''
   importSource.value = ''
   importSourceType.value = ''
@@ -509,7 +527,8 @@ function showImportDialog() {
   importCountryCode.value = ''
   selectedTemplateId.value = null
   selectedTemplate.value = null
-  importResult.value = null
+  importResults.value = []
+  importSubmitIdx.value = 0
   importVisible.value = true
   loadTemplateList()
 }
@@ -523,19 +542,22 @@ function beforeImportUpload(file: File) {
   return true
 }
 
-function handleFileChange(file: any) {
+function handleFileChange(file: any, fileList: any[]) {
   const maxSize = 500 * 1024 * 1024
   if (file.raw && file.raw.size > maxSize) {
-    ElMessage.warning('文件大小不能超过 500MB')
-    importFile.value = null
-    uploadRef.value?.clearFiles()
+    ElMessage.warning(`文件 ${file.name} 大小超过 500MB，已跳过`)
+    fileList.splice(fileList.indexOf(file), 1)
     return
   }
-  importFile.value = file.raw
+  importFiles.value = fileList.map((f: any) => f.raw).filter(Boolean)
+}
+
+function handleFileRemove(_file: any, fileList: any[]) {
+  importFiles.value = fileList.map((f: any) => f.raw).filter(Boolean)
 }
 
 async function submitImport() {
-  if (!importFile.value) {
+  if (!importFiles.value.length) {
     ElMessage.warning(t('dataPool.pleaseSelectFile'))
     return
   }
@@ -548,10 +570,8 @@ async function submitImport() {
     return
   }
   importing.value = true
-  importResult.value = null
-
-  const formData = new FormData()
-  formData.append('file', importFile.value)
+  importResults.value = []
+  importSubmitIdx.value = 0
 
   const params: { source: string; purpose: string; data_date?: string; default_tags?: string; freshness?: string; country_code?: string; pricing_template_id?: number } = {
     source: importSourceType.value,
@@ -563,19 +583,36 @@ async function submitImport() {
   if (importTags.value) params.default_tags = importTags.value
   if (selectedTemplateId.value) params.pricing_template_id = selectedTemplateId.value
 
-  try {
-    const res = await importNumbers(formData, params)
-    if (res.success) {
-      importResult.value = res
-      ElMessage.success('导入任务已提交，后台处理中')
-      loadImportTasks()
-      startPolling()
+  let successCount = 0
+  for (let i = 0; i < importFiles.value.length; i++) {
+    importSubmitIdx.value = i + 1
+    const file = importFiles.value[i]
+    const formData = new FormData()
+    formData.append('file', file)
+    try {
+      const res = await importNumbers(formData, params)
+      if (res.success) {
+        importResults.value.push({
+          file_name: res.file_name || file.name,
+          batch_id: res.batch_id,
+          file_size_mb: res.file_size_mb,
+        })
+        successCount++
+      }
+    } catch (e: any) {
+      importResults.value.push({
+        file_name: file.name,
+        error: e.message || '提交失败',
+      })
     }
-  } catch (e: any) {
-    ElMessage.error(t('dataPool.importFailed') + ': ' + (e.message || ''))
-  } finally {
-    importing.value = false
   }
+
+  if (successCount > 0) {
+    ElMessage.success(`${successCount} 个导入任务已提交，后台处理中`)
+    loadImportTasks()
+    startPolling()
+  }
+  importing.value = false
 }
 
 // ====== 导入任务列表 ======
@@ -887,5 +924,57 @@ const progressColors = [
 
 .import-result-card :deep(.el-card__body) {
   padding: 8px 12px;
+}
+
+/* 多文件结果列表 */
+.multi-result-list {
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 8px 0;
+}
+
+.multi-result-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--el-color-success-light-9);
+  margin-bottom: 6px;
+  font-size: 13px;
+  gap: 12px;
+}
+
+.multi-result-item.is-error {
+  background: var(--el-color-danger-light-9);
+}
+
+.multi-result-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.multi-result-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.multi-result-info {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  flex-shrink: 0;
+}
+
+.multi-result-error {
+  font-size: 12px;
+  color: var(--el-color-danger);
+  flex-shrink: 0;
 }
 </style>

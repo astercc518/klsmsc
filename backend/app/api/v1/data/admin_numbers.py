@@ -483,3 +483,13 @@ async def recycle_expired_numbers(
 
     await db.commit()
     return {"success": True, "recycled": recycled}
+
+
+@router.post("/numbers/backfill-carriers")
+async def trigger_backfill_carriers(
+    admin=Depends(get_current_admin),
+):
+    """触发回填存量号码的运营商信息（异步任务）"""
+    from app.workers.celery_app import celery_app as _celery
+    _celery.send_task('data_backfill_carriers', args=[5000, 0], queue='data_tasks')
+    return {"success": True, "message": "运营商回填任务已提交，后台处理中"}

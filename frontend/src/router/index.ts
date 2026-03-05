@@ -311,7 +311,8 @@ router.beforeEach((to, from, next) => {
     sessionStorage.setItem('impersonate_api_key', to.query.api_key as string)
     if (to.query.account_id) sessionStorage.setItem('impersonate_account_id', to.query.account_id as string)
     if (to.query.account_name) sessionStorage.setItem('impersonate_account_name', to.query.account_name as string)
-    const redirect = (to.query.redirect as string) || '/sms/send'
+    let redirect = (to.query.redirect as string) || '/sms/send'
+    if (!redirect.startsWith('/') || redirect.startsWith('//')) redirect = '/sms/send'
     next(redirect)
     return
   }
@@ -321,6 +322,13 @@ router.beforeEach((to, from, next) => {
   const apiKey = localStorage.getItem('api_key')
   const adminToken = localStorage.getItem('admin_token')
   const isLoggedIn = !!(isImpersonateMode || apiKey || adminToken)
+
+  // P1-FIX: /admin/* 路径必须有 admin_token
+  const isAdminRoute = to.path.startsWith('/admin')
+  if (isAdminRoute && !adminToken) {
+    next('/dashboard')
+    return
+  }
 
   if (to.path !== '/login' && !isLoggedIn) {
     next('/login')

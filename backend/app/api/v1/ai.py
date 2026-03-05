@@ -1,11 +1,13 @@
 """AI 文案生成 API"""
 import re
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from app.config import settings
 from app.utils.logger import get_logger
+from app.core.auth import get_current_account
+from app.modules.common.account import Account
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -25,8 +27,8 @@ class GenerateSmsResponse(BaseModel):
 
 
 @router.get("/config")
-async def ai_config():
-    """返回 AI 功能是否可用（前端据此决定显示 AI 按钮或 fallback）"""
+async def ai_config(account: Account = Depends(get_current_account)):
+    """返回 AI 功能是否可用"""
     return {
         "ai_enabled": bool(settings.AI_API_KEY),
         "model": settings.AI_MODEL if settings.AI_API_KEY else None,
@@ -34,7 +36,7 @@ async def ai_config():
 
 
 @router.post("/generate-sms", response_model=GenerateSmsResponse)
-async def generate_sms(req: GenerateSmsRequest):
+async def generate_sms(req: GenerateSmsRequest, account: Account = Depends(get_current_account)):
     """调用外部 AI API 批量生成短信文案"""
     if not settings.AI_API_KEY:
         raise HTTPException(400, "AI 功能未配置，请在环境变量中设置 AI_API_KEY")

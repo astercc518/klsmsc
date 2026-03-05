@@ -64,8 +64,8 @@ class Settings(BaseSettings):
     # RabbitMQ配置
     RABBITMQ_HOST: str = "localhost"
     RABBITMQ_PORT: int = 5672
-    RABBITMQ_USER: str = "guest"
-    RABBITMQ_PASSWORD: str = "guest"
+    RABBITMQ_USER: str = "smsc_mq"
+    RABBITMQ_PASSWORD: str = ""
     RABBITMQ_VHOST: str = "/"
     
     @property

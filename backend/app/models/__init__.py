@@ -27,7 +27,7 @@ from app.modules.sms.channel_relations import ChannelCountry, ChannelCountrySend
 from app.modules.sms.supplier import Supplier, SupplierChannel, SupplierRate, SellRate, RateDeck, AccountRateDeck
 
 # Data Module
-from app.modules.data.models import DataNumber, DataProduct, DataOrder, DataImportBatch, DataOrderNumber, DataPricingTemplate
+from app.modules.data.models import DataNumber, DataProduct, DataOrder, DataImportBatch, DataOrderNumber, DataPricingTemplate, DataProductRating
 from app.modules.data.data_account import DataAccount, DataExtractionLog
 
 # Voice Module (New)
@@ -88,6 +88,7 @@ __all__ = [
     "DataAccount",
     "DataExtractionLog",
     "DataPricingTemplate",
+    "DataProductRating",
     # 通道关系模块
     "ChannelCountry",
     "ChannelCountrySenderId",

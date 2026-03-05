@@ -39,7 +39,7 @@ class SmsBatch(Base):
     
     # 状态
     status = Column(
-        Enum(BatchStatus),
+        Enum(BatchStatus, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=BatchStatus.PENDING,
         comment="批次状态"

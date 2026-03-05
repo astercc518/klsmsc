@@ -190,20 +190,33 @@ async def refund_order(
 
     refund = float(data.refund_amount or order.total_price or 0)
 
-    # 返还余额
-    if order.account and refund > 0:
-        order.account.balance = float(order.account.balance or 0) + refund
+    # P2-FIX: 原子退款 + 记录 BalanceLog
+    if order.account_id and refund > 0:
+        from sqlalchemy import update as sa_update
+        from app.modules.common.balance_log import BalanceLog
+        await db.execute(
+            sa_update(Account).where(Account.id == order.account_id)
+            .values(balance=Account.balance + refund)
+        )
+        bal_result = await db.execute(select(Account.balance).where(Account.id == order.account_id))
+        db.add(BalanceLog(
+            account_id=order.account_id, change_type='refund', amount=refund,
+            balance_after=float(bal_result.scalar()),
+            description=f"管理员退款: 订单{order.order_no}, 原因: {data.reason or '无'}"
+        ))
 
-    # 释放号码
+    # 批量释放号码
     on_result = await db.execute(
         select(DataOrderNumber).where(DataOrderNumber.order_id == order_id)
     )
     order_nums = on_result.scalars().all()
-    for on in order_nums:
-        num_result = await db.execute(select(DataNumber).where(DataNumber.id == on.number_id))
-        num = num_result.scalar_one_or_none()
-        if num:
-            num.account_id = None
+    if order_nums:
+        num_ids = [on.number_id for on in order_nums]
+        from sqlalchemy import update as sa_update2
+        await db.execute(
+            sa_update2(DataNumber).where(DataNumber.id.in_(num_ids))
+            .values(account_id=None)
+        )
 
     order.status = "cancelled"
     order.cancel_reason = data.reason or "管理员退款"

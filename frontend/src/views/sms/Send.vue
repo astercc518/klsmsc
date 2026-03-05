@@ -194,6 +194,28 @@
               <!-- 数据商店模式 -->
               <template v-if="numberSource === 'store'">
                 <div class="store-section">
+                  <!-- 运营商筛选 -->
+                  <div class="carrier-filter">
+                    <label class="carrier-label">运营商筛选:</label>
+                    <div class="carrier-tags">
+                      <span
+                        class="carrier-tag"
+                        :class="{ active: !selectedCarrier }"
+                        @click="selectCarrier('')"
+                      >全部</span>
+                      <span
+                        v-for="c in carrierList"
+                        :key="c.name"
+                        class="carrier-tag"
+                        :class="{ active: selectedCarrier === c.name }"
+                        @click="selectCarrier(c.name)"
+                      >
+                        {{ c.name }}
+                        <span class="carrier-count">{{ formatCount(c.count) }}</span>
+                      </span>
+                    </div>
+                  </div>
+
                   <div class="store-products" v-loading="loadingProducts">
                     <div
                       v-for="product in storeProducts"
@@ -206,6 +228,11 @@
                         <div class="sp-name">{{ product.product_name }}</div>
                         <div class="sp-meta">
                           库存: {{ product.stock_count?.toLocaleString() }} · ${{ product.price_per_number }}/条
+                          <span v-if="selectedCarrier" class="sp-carrier-badge">{{ selectedCarrier }}</span>
+                          <span v-if="product.rating?.avg > 0" class="sp-rating-badge">
+                            ★{{ product.rating.avg }}
+                            <span v-if="product.rating.recent_avg > 0" class="sp-rating-recent">近期{{ product.rating.recent_avg }}</span>
+                          </span>
                         </div>
                       </div>
                       <div class="sp-check" v-if="selectedProduct?.id === product.id">✓</div>
@@ -624,7 +651,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick } from '@element-plus/icons-vue'
 import { sendSMS } from '@/api/sms'
 import { getChannels } from '@/api/channel'
-import { getDataProducts, buyAndSend, type DataProduct } from '@/api/data'
+import { getDataProducts, buyAndSend, getCarriers, type DataProduct } from '@/api/data'
 import { getAiConfig, generateSmsContent } from '@/api/ai'
 import request from '@/api/index'
 
@@ -768,6 +795,10 @@ const storeProducts = ref<DataProduct[]>([])
 const selectedProduct = ref<DataProduct | null>(null)
 const storeQuantity = ref(1000)
 const storeSending = ref(false)
+
+// 运营商筛选
+const carrierList = ref<{ name: string; count: number }[]>([])
+const selectedCarrier = ref('')
 
 // AI
 const aiEnabled = ref(false)
@@ -1178,6 +1209,7 @@ const handleStoreSend = async () => {
       quantity: storeQuantity.value,
       message: sanitizeMessage(stripEmoji(replaceCustomVars(form.value.message))),
     }
+    if (selectedCarrier.value) payload.carrier = selectedCarrier.value
     if (multiMessages.value.length > 1) {
       payload.messages = multiMessages.value.map(m => sanitizeMessage(stripEmoji(replaceCustomVars(m))))
     }
@@ -1213,7 +1245,31 @@ const loadStats = async () => {
 
 const loadStoreProducts = async () => {
   loadingProducts.value = true
-  try { const res = await getDataProducts({}); if (res.success) storeProducts.value = res.items } catch (e) { console.error('Load products failed', e) } finally { loadingProducts.value = false }
+  try {
+    const params: any = {}
+    if (selectedCarrier.value) params.carrier = selectedCarrier.value
+    const res = await getDataProducts(params)
+    if (res.success) storeProducts.value = res.items
+  } catch (e) { console.error('Load products failed', e) } finally { loadingProducts.value = false }
+}
+
+const loadCarriers = async () => {
+  try {
+    const res = await getCarriers()
+    if (res.success) carrierList.value = res.carriers || []
+  } catch (e) { console.error('Load carriers failed', e) }
+}
+
+const selectCarrier = (name: string) => {
+  selectedCarrier.value = name
+  selectedProduct.value = null
+  loadStoreProducts()
+}
+
+const formatCount = (n: number) => {
+  if (n >= 10000) return `${(n / 10000).toFixed(1)}w`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
 }
 
 const checkServices = async () => {
@@ -1221,6 +1277,7 @@ const checkServices = async () => {
     const info = await request.get('/account/info')
     const svc = info?.services || info?.account?.services || ''
     hasDataService.value = svc.includes('data')
+    if (hasDataService.value) loadCarriers()
   } catch { hasDataService.value = false }
 }
 
@@ -1291,6 +1348,17 @@ onUnmounted(() => clearInterval(timeInterval))
 
 /* 数据商店区 */
 .store-section { border: 1px solid var(--border-default); border-radius: 10px; padding: 14px; background: var(--bg-input, #f9fafb); }
+
+/* 运营商筛选 */
+.carrier-filter { margin-bottom: 12px; }
+.carrier-label { font-size: 12px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; display: block; }
+.carrier-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.carrier-tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 12px; font-size: 12px; border-radius: 14px; border: 1px solid var(--border-default); background: var(--bg-card, white); color: var(--text-secondary); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+.carrier-tag:hover { border-color: var(--el-color-primary-light-5, #79bbff); color: var(--el-color-primary, #409eff); }
+.carrier-tag.active { border-color: var(--el-color-primary, #409eff); background: rgba(64, 158, 255, 0.1); color: var(--el-color-primary, #409eff); font-weight: 600; }
+.carrier-count { font-size: 10px; opacity: 0.7; }
+.sp-carrier-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: rgba(64, 158, 255, 0.12); color: var(--el-color-primary, #409eff); font-size: 10px; font-weight: 500; }
+
 .store-products { max-height: 240px; overflow-y: auto; margin-bottom: 12px; }
 .store-product-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border: 1px solid var(--border-default); border-radius: 8px; margin-bottom: 8px; cursor: pointer; transition: all 0.15s; background: var(--bg-card, white); }
 .store-product-item:hover { border-color: var(--el-color-primary-light-5, #79bbff); }
@@ -1299,6 +1367,8 @@ onUnmounted(() => clearInterval(timeInterval))
 .sp-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
 .sp-meta { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }
 .sp-check { width: 22px; height: 22px; border-radius: 50%; background: var(--el-color-primary, #409eff); color: white; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+.sp-rating-badge { display: inline-flex; align-items: center; gap: 3px; background: #fdf6ec; color: #e6a23c; padding: 0 5px; border-radius: 3px; font-size: 11px; font-weight: 600; margin-left: 6px; }
+.sp-rating-recent { color: #409eff; font-weight: 400; font-size: 10px; }
 .store-quantity { display: flex; align-items: center; gap: 12px; padding-top: 12px; border-top: 1px dashed var(--border-default); flex-wrap: wrap; }
 .store-quantity label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
 .store-cost { font-size: 13px; color: var(--text-secondary); }

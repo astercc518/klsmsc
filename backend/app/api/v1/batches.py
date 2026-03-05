@@ -54,7 +54,9 @@ async def upload_batch_file(
     """
     try:
         # 验证文件类型
-        if not file.filename.endswith('.csv'):
+        import os as _os
+        clean_name = _os.path.basename(file.filename or "upload.csv")
+        if not clean_name.lower().endswith('.csv'):
             raise HTTPException(status_code=400, detail="仅支持CSV文件")
         
         # 读取文件内容
@@ -96,7 +98,7 @@ async def upload_batch_file(
         
         # 保存文件
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_filename = f"{current_account.id}_{timestamp}_{file.filename}"
+        safe_filename = f"{current_account.id}_{timestamp}_{clean_name}"
         file_path = os.path.join(UPLOAD_DIR, safe_filename)
         
         with open(file_path, 'wb') as f:
