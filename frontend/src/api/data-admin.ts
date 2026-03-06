@@ -226,8 +226,8 @@ export function updateDataAccount(accountId: number, data: { country_code?: stri
   return request({ url: `/admin/data/accounts/${accountId}`, method: 'put', data })
 }
 
-export function deleteDataAccount(accountId: number) {
-  return request({ url: `/admin/data/accounts/${accountId}`, method: 'delete' })
+export function deleteDataAccount(accountId: number, force: boolean = false) {
+  return request({ url: `/admin/data/accounts/${accountId}`, method: 'delete', params: { force } })
 }
 
 export function rechargeDataAccount(accountId: number, data: { amount: number; remarks?: string }) {

@@ -10,7 +10,19 @@
 
     <!-- 顶部工具栏 -->
     <header class="topbar">
-      <button class="topbar-pill" @click="toggleTheme" :title="isDark ? 'Light' : 'Dark'">
+      <a href="/" class="topbar-logo" aria-label="SMSCPro">
+        <span class="topbar-logo-text">SMSC<em>Pro</em></span>
+      </a>
+      <nav class="topbar-nav" aria-label="官网导航">
+        <a href="/" class="topbar-nav-item">{{ $t('landing.nav.home') }}</a>
+        <a href="/#products" class="topbar-nav-item">{{ $t('landing.nav.smsProducts') }}</a>
+        <a href="/#solutions" class="topbar-nav-item">{{ $t('landing.nav.solutions') }}</a>
+        <a href="/#pricing" class="topbar-nav-item">{{ $t('landing.nav.pricing') }}</a>
+        <a href="/#faq" class="topbar-nav-item">{{ $t('landing.nav.support') }}</a>
+        <a href="/#about" class="topbar-nav-item">{{ $t('landing.nav.about') }}</a>
+      </nav>
+      <div class="topbar-right">
+        <button class="topbar-pill" @click="toggleTheme" :title="isDark ? 'Light' : 'Dark'">
         <transition name="icon-flip" mode="out-in">
           <svg v-if="isDark" key="sun" width="16" height="16" viewBox="0 0 16 16" fill="none">
             <circle cx="8" cy="8" r="3.2" stroke="currentColor" stroke-width="1.4"/>
@@ -24,6 +36,7 @@
       <button class="topbar-pill lang-pill" @click="toggleLang">
         {{ currentLang === 'zh-CN' ? 'EN' : '中文' }}
       </button>
+      </div>
     </header>
 
     <!-- 主体 -->
@@ -149,6 +162,7 @@
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1L2 3.2v2.8c0 2.8 1.9 5.3 4.5 6 2.6-.7 4.5-3.2 4.5-6V3.2L6.5 1Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M4.5 6.5l1.3 1.3L8.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span>{{ $t('login.securityNote') }}</span>
         </div>
+        <a href="/" class="card-website-link">{{ $t('login.backToWebsite') }}</a>
       </div>
 
       <p class="copyright" :class="{ show: mounted }">© 2024 {{ $t('brand.name') }}. All rights reserved.</p>
@@ -204,7 +218,7 @@ const toggleLang = () => {
   const newLang = currentLang.value === 'zh-CN' ? 'en-US' : 'zh-CN'
   currentLang.value = newLang
   locale.value = newLang
-  localStorage.setItem('language', newLang)
+  localStorage.setItem('locale', newLang)
 }
 
 // TG 验证登录
@@ -261,7 +275,7 @@ onMounted(async () => {
   isDark.value = savedTheme === 'dark'
   document.documentElement.setAttribute('data-theme', savedTheme)
   document.documentElement.classList.toggle('dark', isDark.value)
-  const savedLang = localStorage.getItem('language')
+  const savedLang = localStorage.getItem('locale')
   if (savedLang) { currentLang.value = savedLang; locale.value = savedLang }
   if (route.query.type === 'staff') loginType.value = 'staff'
 
@@ -462,16 +476,78 @@ const resetCaptcha = () => { captchaRef.value?.reset(); captchaVerified.value = 
   66% { transform: translate(-20px, 15px) scale(0.97); }
 }
 
-/* ---------- 顶部工具栏 ---------- */
 .topbar {
   position: fixed;
   top: 0; left: 0; right: 0;
   z-index: 100;
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 24px;
+  gap: 24px;
+  background: rgba(11, 13, 19, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.is-light .topbar {
+  background: rgba(255, 255, 255, 0.7);
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+
+.topbar-logo {
+  flex-shrink: 0;
+  text-decoration: none;
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--text-1);
+  letter-spacing: -0.02em;
+  transition: opacity 0.2s;
+}
+
+.topbar-logo:hover { opacity: 0.9; }
+
+.topbar-logo-text em {
+  font-style: normal;
+  color: var(--accent);
+}
+
+.topbar-right {
+  display: flex;
   align-items: center;
   gap: 6px;
-  padding: 16px 24px;
+}
+
+.topbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.topbar-nav-item {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  text-decoration: none;
+  border-radius: 10px;
+  transition: color 0.2s, background 0.2s;
+}
+
+.topbar-nav-item:hover {
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.is-light .topbar-nav-item {
+  color: rgba(29, 29, 31, 0.72);
+}
+
+.is-light .topbar-nav-item:hover {
+  color: var(--text-1);
+  background: rgba(0, 0, 0, 0.05);
 }
 
 .topbar-pill {
@@ -508,7 +584,37 @@ const resetCaptcha = () => { captchaRef.value?.reset(); captchaVerified.value = 
 
 .lang-pill { padding: 0 14px; }
 
-/* ---------- 主体布局 ---------- */
+/* 卡片下方官网链接，醒目可见 */
+.card-website-link {
+  display: block;
+  text-align: center;
+  margin-top: 12px;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent);
+  text-decoration: none;
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.1);
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.card-website-link:hover {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: var(--accent);
+}
+
+.is-light .card-website-link {
+  color: var(--accent);
+  border-color: rgba(0, 113, 227, 0.4);
+  background: rgba(0, 113, 227, 0.08);
+}
+
+.is-light .card-website-link:hover {
+  background: rgba(0, 113, 227, 0.15);
+}
+
 .main {
   flex: 1;
   display: flex;
@@ -852,6 +958,10 @@ const resetCaptcha = () => { captchaRef.value?.reset(); captchaVerified.value = 
 /* ---------- 响应式 ---------- */
 @media (max-width: 480px) {
   .main { padding: 70px 16px 32px; }
+  .topbar { padding: 12px 16px; gap: 12px; }
+  .topbar-logo { font-size: 1.1rem; }
+  .topbar-nav { gap: 0; }
+  .topbar-nav-item { padding: 6px 10px; font-size: 12px; }
   .card { padding: 24px 22px 22px; border-radius: 18px; }
   .hero-title { font-size: 26px; }
   .tab { font-size: 12px; padding: 8px 0; }

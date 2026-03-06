@@ -22,6 +22,9 @@ class Channel(Base):
     port = Column(Integer, comment="端口号")
     username = Column(String(100), comment="用户名")
     password = Column(String(255), comment="密码（加密存储）")
+    smpp_bind_mode = Column(String(20), default="transceiver", comment="SMPP绑定模式: transceiver/transmitter/receiver")
+    smpp_system_type = Column(String(13), default="", comment="SMPP system_type参数")
+    smpp_interface_version = Column(Integer, default=52, comment="SMPP接口版本(0x34=52=v3.4)")
     api_url = Column(String(500), comment="HTTP API地址")
     api_key = Column(String(255), comment="HTTP API密钥")
     

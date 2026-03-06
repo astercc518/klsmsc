@@ -467,79 +467,67 @@ async def get_sms_records(
     page: int = 1,
     page_size: int = 20,
     status: Optional[str] = None,
+    phone_number: Optional[str] = None,
+    message_id: Optional[str] = None,
+    channel_id: Optional[int] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     account_id: Optional[int] = None,
     auth_context: dict = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    获取短信发送记录
-    
-    - **page**: 页码（默认1）
-    - **page_size**: 每页数量（默认20）
-    - **status**: 状态过滤（可选）
-    - **start_date**: 开始日期（可选，格式 YYYY-MM-DD）
-    - **end_date**: 结束日期（可选，格式 YYYY-MM-DD）
-    - **account_id**: 账户ID过滤（仅管理员可用）
-    
-    管理员可以查看所有记录，客户账户只能查看自己的记录
-    """
+    """获取短信发送记录（带通道信息）"""
     from sqlalchemy import func, and_
+    from sqlalchemy.orm import aliased
     from datetime import datetime
-    
-    # 构建查询条件
+    from app.modules.sms.channel import Channel
+
     conditions = []
-    
-    # 根据用户类型过滤
+
     if auth_context["is_admin"]:
-        # 管理员可以查看所有记录，可选按账户ID过滤
         if account_id:
             conditions.append(SMSLog.account_id == account_id)
-        logger.info(f"管理员查询发送记录, account_id filter: {account_id}")
     else:
-        # 客户账户只能查看自己的记录
         conditions.append(SMSLog.account_id == auth_context["account_id"])
-    
+
     if status:
         conditions.append(SMSLog.status == status)
-    
+    if phone_number:
+        conditions.append(SMSLog.phone_number.like(f"%{phone_number}%"))
+    if message_id:
+        conditions.append(SMSLog.message_id.like(f"%{message_id}%"))
+    if channel_id:
+        conditions.append(SMSLog.channel_id == channel_id)
+
     if start_date:
         try:
-            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-            conditions.append(SMSLog.submit_time >= start_dt)
+            conditions.append(SMSLog.submit_time >= datetime.strptime(start_date, "%Y-%m-%d"))
         except ValueError:
             pass
-    
     if end_date:
         try:
-            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-            # 包含结束日期的整天
-            end_dt = end_dt.replace(hour=23, minute=59, second=59)
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
             conditions.append(SMSLog.submit_time <= end_dt)
         except ValueError:
             pass
-    
-    # 查询总数
-    if conditions:
-        count_query = select(func.count(SMSLog.id)).where(and_(*conditions))
-    else:
-        count_query = select(func.count(SMSLog.id))
-    count_result = await db.execute(count_query)
+
+    where_clause = and_(*conditions) if conditions else True
+
+    count_result = await db.execute(select(func.count(SMSLog.id)).where(where_clause))
     total = count_result.scalar() or 0
-    
-    # 查询记录
+
     offset = (page - 1) * page_size
-    if conditions:
-        query = select(SMSLog).where(
-            and_(*conditions)
-        ).order_by(SMSLog.id.desc()).offset(offset).limit(page_size)
-    else:
-        query = select(SMSLog).order_by(SMSLog.id.desc()).offset(offset).limit(page_size)
-    
+    query = (
+        select(SMSLog, Channel.channel_code, Channel.channel_name)
+        .outerjoin(Channel, SMSLog.channel_id == Channel.id)
+        .where(where_clause)
+        .order_by(SMSLog.id.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
     result = await db.execute(query)
-    records = result.scalars().all()
-    
+    rows = result.all()
+
     return {
         "success": True,
         "total": total,
@@ -550,22 +538,119 @@ async def get_sms_records(
             {
                 "id": r.id,
                 "message_id": r.message_id,
+                "upstream_message_id": r.upstream_message_id,
                 "account_id": r.account_id,
+                "channel_id": r.channel_id,
+                "channel_code": ch_code,
+                "channel_name": ch_name,
+                "batch_id": r.batch_id,
                 "phone_number": r.phone_number,
                 "country_code": r.country_code,
-                "message": r.message[:50] + "..." if r.message and len(r.message) > 50 else r.message,
+                "message": r.message,
                 "message_count": r.message_count,
                 "status": r.status,
-                "cost": float(r.selling_price) if r.selling_price else 0,
+                "cost_price": float(r.cost_price) if r.cost_price else 0,
+                "selling_price": float(r.selling_price) if r.selling_price else 0,
+                "profit": float(r.profit) if r.profit else 0,
                 "currency": r.currency,
                 "submit_time": r.submit_time.isoformat() if r.submit_time else None,
                 "sent_time": r.sent_time.isoformat() if r.sent_time else None,
                 "delivery_time": r.delivery_time.isoformat() if r.delivery_time else None,
-                "error_message": r.error_message
+                "error_message": r.error_message,
             }
-            for r in records
-        ]
+            for r, ch_code, ch_name in rows
+        ],
     }
+
+
+@router.get("/records/export")
+async def export_sms_records(
+    status: Optional[str] = None,
+    phone_number: Optional[str] = None,
+    channel_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    account_id: Optional[int] = None,
+    auth_context: dict = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db)
+):
+    """导出发送记录为 CSV"""
+    from sqlalchemy import and_
+    from datetime import datetime
+    from app.modules.sms.channel import Channel
+    from fastapi.responses import StreamingResponse
+    import csv
+    import io
+
+    conditions = []
+    if auth_context["is_admin"]:
+        if account_id:
+            conditions.append(SMSLog.account_id == account_id)
+    else:
+        conditions.append(SMSLog.account_id == auth_context["account_id"])
+
+    if status:
+        conditions.append(SMSLog.status == status)
+    if phone_number:
+        conditions.append(SMSLog.phone_number.like(f"%{phone_number}%"))
+    if channel_id:
+        conditions.append(SMSLog.channel_id == channel_id)
+    if start_date:
+        try:
+            conditions.append(SMSLog.submit_time >= datetime.strptime(start_date, "%Y-%m-%d"))
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+            conditions.append(SMSLog.submit_time <= end_dt)
+        except ValueError:
+            pass
+
+    where_clause = and_(*conditions) if conditions else True
+
+    query = (
+        select(SMSLog, Channel.channel_code, Channel.channel_name)
+        .outerjoin(Channel, SMSLog.channel_id == Channel.id)
+        .where(where_clause)
+        .order_by(SMSLog.id.desc())
+        .limit(10000)
+    )
+    result = await db.execute(query)
+    rows = result.all()
+
+    output = io.StringIO()
+    output.write('\ufeff')  # BOM for Excel
+    writer = csv.writer(output)
+    writer.writerow([
+        "ID", "消息ID", "上游消息ID", "账户ID", "通道", "手机号",
+        "国家", "内容", "条数", "状态", "成本价", "售价", "利润",
+        "币种", "提交时间", "发送时间", "送达时间", "错误信息"
+    ])
+
+    for r, ch_code, ch_name in rows:
+        writer.writerow([
+            r.id, r.message_id, r.upstream_message_id or "", r.account_id,
+            ch_code or "", r.phone_number, r.country_code or "",
+            (r.message or "")[:200], r.message_count,
+            r.status,
+            float(r.cost_price) if r.cost_price else 0,
+            float(r.selling_price) if r.selling_price else 0,
+            float(r.profit) if r.profit else 0,
+            r.currency or "USD",
+            r.submit_time.strftime("%Y-%m-%d %H:%M:%S") if r.submit_time else "",
+            r.sent_time.strftime("%Y-%m-%d %H:%M:%S") if r.sent_time else "",
+            r.delivery_time.strftime("%Y-%m-%d %H:%M:%S") if r.delivery_time else "",
+            r.error_message or "",
+        ])
+
+    output.seek(0)
+    filename = f"sms_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 # ============ 上游 DLR 回调接口 (推送模式) ============

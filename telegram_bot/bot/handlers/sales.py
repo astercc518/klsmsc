@@ -387,7 +387,7 @@ async def receive_custom_price(update: Update, context: ContextTypes.DEFAULT_TYP
         f"国家: {country_code}\n"
         f"模板: {template_name}\n"
         f"单价: ${final_price:.4f}\n"
-        f"有效期: 24小时\n\n"
+        f"有效期: 72小时\n\n"
         f"确认生成？",
         reply_markup=reply_markup,
         parse_mode='Markdown'
@@ -396,33 +396,32 @@ async def receive_custom_price(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def confirm_invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """确认并生成邀请码"""
+    """确认并生成授权码"""
     query = update.callback_query
     await query.answer()
-    
-    # 显示确认信息
+
     biz_type = context.user_data['business_type']
     country_code = context.user_data['country_code']
     template_name = context.user_data['template_name']
     final_price = context.user_data.get('final_price', context.user_data['default_price'])
-    
+
     keyboard = [
         [InlineKeyboardButton("✅ 确认生成", callback_data="confirm_generate")],
         [InlineKeyboardButton("❌ 取消", callback_data="cancel_all")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
     await query.edit_message_text(
-        f"📦 **确认邀请码信息**\n\n"
+        f"📦 *确认授权码信息*\n\n"
         f"业务类型: {biz_label}\n"
         f"国家: {country_code}\n"
         f"模板: {template_name}\n"
         f"单价: ${final_price:.4f}\n"
-        f"有效期: 24小时\n\n"
+        f"有效期: 72小时\n\n"
         f"确认生成？",
         reply_markup=reply_markup,
-        parse_mode='Markdown'
+        parse_mode='Markdown',
     )
     return CONFIRM
 
@@ -459,16 +458,23 @@ async def generate_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         service = InvitationService(db)
         code = await service.create_code(sales_id, config)
     
+    import os
+    bot_username = os.getenv('TELEGRAM_BOT_USERNAME', 'SMSCPro_bot')
+    invite_link = f"https://t.me/{bot_username}?start={code}"
+
     biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
     await query.edit_message_text(
-        f"✅ **邀请码已生成**\n\n"
+        f"✅ <b>授权码已生成</b>\n\n"
         f"📦 业务: {biz_label} - {country_code}\n"
         f"📋 模板: {context.user_data['template_name']}\n"
         f"💵 单价: ${final_price:.4f}\n"
-        f"⏰ 有效期: 24小时\n\n"
-        f"邀请码: `{code}`\n\n"
-        f"_(点击复制，发送给客户)_",
-        parse_mode='Markdown'
+        f"⏰ 有效期: 72小时\n\n"
+        f"📋 授权码: <code>{code}</code>\n"
+        f"🔗 开户链接:\n{invite_link}\n\n"
+        f"━━━━━━━━━━━━\n"
+        f"📤 将上方链接转发给客户\n"
+        f"客户点击链接即可自动开户",
+        parse_mode='HTML',
     )
     return ConversationHandler.END
 

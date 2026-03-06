@@ -90,13 +90,14 @@
         <el-table-column label="创建时间" width="160">
           <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.status === 'active'" size="small" type="warning" link @click="handleLogin(row)">登录</el-button>
-            <el-button size="small" type="success" link @click="openRechargeDialog(row)">充值</el-button>
+            <el-button v-if="row.status !== 'closed'" size="small" type="success" link @click="openRechargeDialog(row)">充值</el-button>
             <el-button size="small" type="primary" link @click="openEditDialog(row)">编辑</el-button>
             <el-button size="small" link @click="viewLogs(row)">记录</el-button>
-            <el-button v-if="row.status !== 'closed'" size="small" type="danger" link @click="handleDelete(row)">关闭</el-button>
+            <el-button v-if="row.status !== 'closed'" size="small" type="warning" link @click="handleClose(row)">关闭</el-button>
+            <el-button v-if="row.status === 'closed'" size="small" type="danger" link @click="handleForceDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -473,10 +474,10 @@ async function handleSync(row: any) {
 }
 
 // ====== 关闭 ======
-async function handleDelete(row: any) {
+async function handleClose(row: any) {
   try {
     await ElMessageBox.confirm(`确定关闭账户「${row.account_name}」？关闭后将无法充值和提取。`, '确认关闭', { type: 'warning' })
-    const res = await deleteDataAccount(row.id)
+    const res = await deleteDataAccount(row.id, false)
     if (res.success) {
       ElMessage.success('账户已关闭')
       loadData()
@@ -484,6 +485,25 @@ async function handleDelete(row: any) {
     }
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error(e.message || '操作失败')
+  }
+}
+
+// ====== 永久删除 ======
+async function handleForceDelete(row: any) {
+  try {
+    await ElMessageBox.confirm(
+      `确定永久删除账户「${row.account_name}」？此操作不可恢复！`,
+      '确认删除',
+      { type: 'error', confirmButtonText: '确认删除', cancelButtonText: '取消', confirmButtonClass: 'el-button--danger' }
+    )
+    const res = await deleteDataAccount(row.id, true)
+    if (res.success) {
+      ElMessage.success('账户已永久删除')
+      loadData()
+      loadStats()
+    }
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error(e.message || '删除失败')
   }
 }
 </script>

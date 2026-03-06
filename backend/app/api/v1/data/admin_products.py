@@ -46,7 +46,7 @@ async def list_products(
     product_ids = [p.id for p in products]
     rating_map = {}
     if product_ids:
-        recent_30d = datetime.utcnow() - timedelta(days=30)
+        recent_30d = datetime.now() - timedelta(days=30)
         all_stats = (await db.execute(
             select(
                 DataProductRating.product_id,
@@ -220,7 +220,7 @@ async def admin_get_product_ratings(
         ).where(DataProductRating.product_id == product_id)
     )).first()
 
-    recent_30d = datetime.utcnow() - timedelta(days=30)
+    recent_30d = datetime.now() - timedelta(days=30)
     recent_stats = (await db.execute(
         select(
             func.avg(DataProductRating.rating).label("avg"),

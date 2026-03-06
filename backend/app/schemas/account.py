@@ -28,7 +28,7 @@ class AccountInfoResponse(BaseModel):
     """账户信息响应"""
     id: int
     account_name: str
-    email: str
+    email: Optional[str] = None
     balance: float
     currency: str
     status: str
@@ -38,6 +38,7 @@ class AccountInfoResponse(BaseModel):
     rate_limit: Optional[int] = None
     tg_id: Optional[int] = None
     tg_username: Optional[str] = None
+    unit_price: Optional[float] = None  # 短信单价(USD/条)，用于前端预估费用
     created_at: str
 
 

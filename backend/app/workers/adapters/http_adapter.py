@@ -104,11 +104,12 @@ class HTTPAdapter:
             else:
                 template = 'default'
         
+        # SMSLog 模型无 sender_id 字段，优先从 channel 配置获取
+        sender = getattr(sms_log, 'sender_id', None) or self.channel.default_sender_id or ''
+
         if template == 'kaola':
-            # Kaola SMS 格式
             account = (self.channel.username or '').strip()
             password = (self.channel.password or self.channel.api_key or '').strip()
-            # Kaola 不接受 + 前缀，需要去掉
             mobile = sms_log.phone_number.lstrip('+') if sms_log.phone_number else ''
             return {
                 "action": "send",
@@ -116,27 +117,26 @@ class HTTPAdapter:
                 "password": password,
                 "mobile": mobile,
                 "content": sms_log.message,
-                "extno": sms_log.sender_id or self.channel.default_sender_id or ''
+                "extno": sender,
             }
         elif template == 'twilio':
             return {
                 "To": sms_log.phone_number,
-                "From": sms_log.sender_id,
-                "Body": sms_log.message
+                "From": sender,
+                "Body": sms_log.message,
             }
         elif template == 'nexmo':
             return {
                 "to": sms_log.phone_number,
-                "from": sms_log.sender_id,
-                "text": sms_log.message
+                "from": sender,
+                "text": sms_log.message,
             }
         else:
-            # 默认格式
             return {
                 "phone_number": sms_log.phone_number,
                 "message": sms_log.message,
-                "sender_id": sms_log.sender_id,
-                "message_id": sms_log.message_id
+                "sender_id": sender,
+                "message_id": sms_log.message_id,
             }
     
     def _build_headers(self) -> dict:

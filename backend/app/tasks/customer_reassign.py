@@ -25,7 +25,7 @@ async def calculate_actual_activity(account: Account) -> int:
     base_score = account.activity_score if account.activity_score is not None else 100
     last_update = account.activity_updated_at or account.created_at
     if last_update:
-        days_passed = (datetime.utcnow() - last_update).days
+        days_passed = (datetime.now() - last_update).days
         score = base_score - (days_passed * 5)
         return max(0, score)
     return base_score
@@ -49,7 +49,7 @@ async def get_sales_by_commission() -> list:
 async def get_inactive_customers() -> list:
     """获取需要重新分配的客户（活跃度为0超过10天）"""
     async with async_session_factory() as db:
-        ten_days_ago = datetime.utcnow() - timedelta(days=10)
+        ten_days_ago = datetime.now() - timedelta(days=10)
         
         # 查询活跃度为0开始时间超过10天的客户
         result = await db.execute(
@@ -177,7 +177,7 @@ async def update_activity_zero_tracking():
             
             # 如果活跃度为0且没有记录开始时间
             if actual_score == 0 and acc.activity_zero_since is None:
-                acc.activity_zero_since = datetime.utcnow()
+                acc.activity_zero_since = datetime.now()
                 updated += 1
             # 如果活跃度不为0但有记录开始时间，清除
             elif actual_score > 0 and acc.activity_zero_since is not None:

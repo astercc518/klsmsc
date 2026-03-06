@@ -18,8 +18,8 @@ celery_app.conf.update(
     task_serializer='json',
     accept_content=['json'],
     result_serializer='json',
-    timezone='UTC',
-    enable_utc=True,
+    timezone='Asia/Shanghai',
+    enable_utc=False,
     task_track_started=True,
     task_time_limit=30 * 60,  # 默认30分钟硬超时
     task_soft_time_limit=25 * 60,  # 默认25分钟软超时
@@ -32,6 +32,7 @@ celery_app.conf.task_routes = {
     'send_sms_task': {'queue': 'sms_send'},
     'process_dlr_task': {'queue': 'sms_dlr'},
     'fetch_dlr_reports_task': {'queue': 'sms_dlr'},
+    'dlr_timeout_check_task': {'queue': 'sms_dlr'},
 }
 
 # 任务队列
@@ -75,6 +76,11 @@ celery_app.conf.beat_schedule = {
     'data-expire-pending-orders': {
         'task': 'data_expire_pending_orders',
         'schedule': 1800.0,
+    },
+    # 每10分钟检查 DLR 超时记录
+    'dlr-timeout-check-every-10min': {
+        'task': 'dlr_timeout_check_task',
+        'schedule': 600.0,
     },
 }
 

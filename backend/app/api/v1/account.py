@@ -111,6 +111,7 @@ async def get_account_info(
         rate_limit=account.rate_limit,
         tg_id=tg_id,
         tg_username=tg_username,
+        unit_price=float(account.unit_price) if account.unit_price is not None else None,
         created_at=account.created_at.isoformat()
     )
 
@@ -232,13 +233,13 @@ async def login(
     current_score = account.activity_score if account.activity_score is not None else 100
     last_update = account.activity_updated_at or account.created_at
     if last_update:
-        days_passed = (datetime.utcnow() - last_update).days
+        days_passed = (datetime.now() - last_update).days
         actual_score = max(0, current_score - (days_passed * 5))
     else:
         actual_score = current_score
     account.activity_score = actual_score + 5
-    account.activity_updated_at = datetime.utcnow()
-    account.last_login_at = datetime.utcnow()
+    account.activity_updated_at = datetime.now()
+    account.last_login_at = datetime.now()
     await db.commit()
     
     # 返回API Key作为token

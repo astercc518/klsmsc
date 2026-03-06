@@ -31,6 +31,8 @@ from bot.handlers.recharge import recharge_handler
 from bot.handlers.balance import balance_command
 from bot.handlers.help import help_command, sales_help, tech_help
 from bot.handlers.menu import menu_handlers
+# 注册处理器
+from bot.handlers.register import register_conversation
 # 发送短信处理器
 from bot.handlers.send import send_conversation
 # 新增处理器
@@ -101,6 +103,7 @@ def main():
     app.add_handler(CommandHandler('help', help_command))
     app.add_handler(CommandHandler('sales_help', sales_help))
     app.add_handler(CommandHandler('tech_help', tech_help))
+    app.add_handler(register_conversation())
     app.add_handler(send_conversation())
     
     # 注册工单和便捷发送处理器

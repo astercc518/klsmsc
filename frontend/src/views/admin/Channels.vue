@@ -90,11 +90,16 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="channel_name" :label="$t('channels.channelName')" min-width="180">
+        <el-table-column prop="channel_name" :label="$t('channels.channelName')" min-width="200">
           <template #default="{ row }">
             <div class="channel-info">
               <span class="channel-name">{{ row.channel_name }}</span>
-              <span class="channel-host" v-if="row.host">{{ row.host }}:{{ row.port }}</span>
+              <span class="channel-host" v-if="row.host">
+                {{ row.host }}:{{ row.port }}
+                <el-tag v-if="row.protocol === 'SMPP'" size="small" effect="plain" type="info" style="margin-left:4px">
+                  {{ (row.smpp_bind_mode || 'transceiver').toUpperCase() }}
+                </el-tag>
+              </span>
             </div>
           </template>
         </el-table-column>
@@ -176,26 +181,40 @@
         <template v-if="channelForm.protocol === 'SMPP'">
           <el-divider content-position="left">{{ $t('channels.smppConnectionConfig') }}</el-divider>
           <el-row :gutter="20">
-            <el-col :span="16">
+            <el-col :span="12">
               <el-form-item :label="$t('channels.serverAddress')" required>
                 <el-input v-model="channelForm.host" :placeholder="$t('channels.hostPlaceholder')" />
               </el-form-item>
             </el-col>
-            <el-col :span="8">
+            <el-col :span="6">
               <el-form-item :label="$t('channels.port')" required>
                 <el-input-number v-model="channelForm.port" :min="1" :max="65535" style="width: 100%" />
               </el-form-item>
             </el-col>
+            <el-col :span="6">
+              <el-form-item label="Bind Mode">
+                <el-select v-model="channelForm.smpp_bind_mode" style="width: 100%">
+                  <el-option label="Transceiver (TX+RX)" value="transceiver" />
+                  <el-option label="Transmitter (TX)" value="transmitter" />
+                  <el-option label="Receiver (RX)" value="receiver" />
+                </el-select>
+              </el-form-item>
+            </el-col>
           </el-row>
           <el-row :gutter="20">
-            <el-col :span="12">
+            <el-col :span="8">
               <el-form-item :label="$t('channels.username')" required>
                 <el-input v-model="channelForm.username" placeholder="System ID" />
               </el-form-item>
             </el-col>
-            <el-col :span="12">
+            <el-col :span="8">
               <el-form-item :label="$t('channels.password')" required>
                 <el-input v-model="channelForm.password" type="password" show-password :placeholder="$t('channels.password')" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="System Type">
+                <el-input v-model="channelForm.smpp_system_type" placeholder="(可选)" />
               </el-form-item>
             </el-col>
           </el-row>
@@ -534,6 +553,8 @@ const channelForm = ref({
   port: 2775,
   username: '',
   password: '',
+  smpp_bind_mode: 'transceiver',
+  smpp_system_type: '',
   api_url: '',
   api_key: '',
   cost_rate: 0,
@@ -566,6 +587,8 @@ const handleEdit = (channel: any) => {
     port: channel.port || 2775,
     username: channel.username || '',
     password: channel.password || '',
+    smpp_bind_mode: channel.smpp_bind_mode || 'transceiver',
+    smpp_system_type: channel.smpp_system_type || '',
     api_url: channel.api_url || '',
     api_key: channel.api_key || '',
     cost_rate: channel.cost_rate || 0,
@@ -628,6 +651,8 @@ const resetChannelForm = () => {
     port: 2775,
     username: '',
     password: '',
+    smpp_bind_mode: 'transceiver',
+    smpp_system_type: '',
     api_url: '',
     api_key: '',
     cost_rate: 0,

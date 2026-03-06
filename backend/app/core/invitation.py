@@ -10,11 +10,13 @@ from typing import Dict, Optional, Tuple, Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.common.invitation_code import InvitationCode
-from app.modules.common.account import Account
+from app.modules.common.account import Account, AccountChannel
 from app.modules.common.account_pricing import AccountPricing
+from app.modules.common.account_template import AccountTemplate
 from app.modules.common.telegram_binding import TelegramBinding
 from app.modules.common.telegram_user import TelegramUser
 from app.modules.voice.voice_account import VoiceAccount
+from app.core.auth import AuthService
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -32,21 +34,26 @@ class InvitationService:
         self, 
         sales_id: int, 
         pricing_config: Dict, 
-        valid_hours: int = 24
+        valid_hours: int = 72
     ) -> str:
         """
-        生成邀请码
-        pricing_config example: {"business_type": "sms", "country": "CN", "price": 0.06}
+        生成邀请码（默认 72 小时有效期）
+        pricing_config example: {"business_type": "sms", "country": "PH", "price": 0.035}
         """
-        code = self._generate_code()
-        # 确保唯一性逻辑略（几率极低）
-        
+        for _ in range(5):
+            code = self._generate_code()
+            existing = await self.db.execute(
+                select(InvitationCode).where(InvitationCode.code == code)
+            )
+            if not existing.scalar_one_or_none():
+                break
+
         invite = InvitationCode(
             code=code,
             sales_id=sales_id,
-            pricing_config=pricing_config, # SQLAlchemy JSON type handles dict automatically
+            pricing_config=pricing_config,
             status="unused",
-            expires_at=datetime.now() + timedelta(hours=valid_hours)
+            expires_at=datetime.now() + timedelta(hours=valid_hours),
         )
         self.db.add(invite)
         await self.db.commit()
@@ -70,84 +77,162 @@ class InvitationService:
             
         return invite
 
-    async def activate_code(self, code_str: str, tg_id: int) -> Tuple[Optional[Account], str, Dict[str, Any]]:
+    async def activate_code(
+        self,
+        code_str: str,
+        tg_id: int,
+        tg_username: Optional[str] = None,
+        tg_first_name: Optional[str] = None,
+    ) -> Tuple[Optional[Account], str, Dict[str, Any]]:
         """
         激活邀请码：创建账户、绑定TG、应用定价
-        对于语音/数据业务，自动创建外部系统账户
-        
+        自动设置 tg_id / tg_username 并创建 TelegramUser
+
         Returns: (Account, Plain API Key, Extra Info)
         """
         invite = await self.get_valid_code(code_str)
         if not invite:
             raise ValueError("无效或已过期的邀请码")
-        
-        # 解析配置
+
         config = invite.pricing_config
         if isinstance(config, str):
             config = json.loads(config)
-        
+
         business_type = config.get('business_type', 'sms')
         country_code = config.get('country', 'global')
         template_id = config.get('template_id')
-        
-        # 1. 创建账户
+
+        # 1. 创建账户（含登录密码）
         api_key_plain = secrets.token_hex(32)
         account_name = f"TG_{tg_id}_{secrets.token_hex(2)}"
-        
+        login_password = secrets.token_urlsafe(10)
+
+        # 根据业务类型构建 services（短信账户默认同步开通数据服务）
+        svc_list = [business_type]
+        if business_type == 'sms' and 'data' not in svc_list:
+            svc_list.append('data')
+
         new_account = Account(
             account_name=account_name,
             sales_id=invite.sales_id,
             status='active',
             balance=0,
             api_key=api_key_plain,
-            rate_limit=1000
+            password_hash=AuthService.hash_password(login_password),
+            rate_limit=1000,
+            business_type=business_type,
+            services=','.join(svc_list),
+            country_code=country_code if country_code != 'global' else None,
+            unit_price=config.get('price', 0.05),
+            tg_id=tg_id,
+            tg_username=tg_username,
         )
         self.db.add(new_account)
-        await self.db.flush()  # 获取 ID
-        
-        # 2. 绑定 TG
+        await self.db.flush()
+
+        # 2. 将该 TG 用户的旧绑定全部置为非活跃，再创建新绑定
+        from sqlalchemy import update as sa_update
+        await self.db.execute(
+            sa_update(TelegramBinding)
+            .where(TelegramBinding.tg_id == tg_id)
+            .values(is_active=False)
+        )
         binding = TelegramBinding(
             tg_id=tg_id,
             account_id=new_account.id,
-            is_active=True
+            is_active=True,
         )
         self.db.add(binding)
-        
-        # 3. 应用定价配置
+
+        # 3. 创建 / 更新 TelegramUser
+        result = await self.db.execute(
+            select(TelegramUser).where(TelegramUser.tg_id == tg_id)
+        )
+        tg_user = result.scalar_one_or_none()
+        if tg_user:
+            tg_user.account_id = new_account.id
+            tg_user.first_name = tg_first_name
+            tg_user.username = tg_username
+        else:
+            tg_user = TelegramUser(
+                tg_id=tg_id,
+                username=tg_username,
+                first_name=tg_first_name,
+                account_id=new_account.id,
+            )
+            self.db.add(tg_user)
+
+        # 4. 应用定价配置
         pricing = AccountPricing(
             account_id=new_account.id,
             country_code=country_code,
             business_type=business_type,
-            price=config.get('price', 0.05)
+            price=config.get('price', 0.05),
         )
         self.db.add(pricing)
-        
-        # 4. 额外信息（用于返回给用户）
+
+        # 5. 根据模板绑定通道
+        if template_id:
+            try:
+                tpl_result = await self.db.execute(
+                    select(AccountTemplate).where(AccountTemplate.id == template_id)
+                )
+                template = tpl_result.scalar_one_or_none()
+                if template and template.channel_ids:
+                    ch_ids = template.channel_ids
+                    if isinstance(ch_ids, str):
+                        ch_ids = json.loads(ch_ids)
+                    for idx, ch_id in enumerate(ch_ids):
+                        ac = AccountChannel(
+                            account_id=new_account.id,
+                            channel_id=int(ch_id),
+                            is_default=(idx == 0),
+                            priority=idx,
+                        )
+                        self.db.add(ac)
+                    logger.info(f"账户 {new_account.id} 绑定通道: {ch_ids}")
+            except Exception as e:
+                logger.warning(f"绑定模板通道失败: {e}")
+
+        # 6. 同步创建数据账户（短信账户默认开通数据服务）
+        if 'data' in new_account.services:
+            try:
+                from app.modules.data.data_account import DataAccount
+                da = DataAccount(
+                    account_id=new_account.id,
+                    country_code=country_code if country_code != 'global' else '',
+                    balance=0,
+                    total_extracted=0,
+                    total_spent=0,
+                    status='active',
+                )
+                self.db.add(da)
+            except Exception as e:
+                logger.warning(f"自动创建数据账户失败: {e}")
+
+        # 6. 额外信息（含登录凭据，仅首次返回）
         extra_info = {
             "business_type": business_type,
-            "country_code": country_code
+            "country_code": country_code,
+            "template_name": config.get('template_name', ''),
+            "login_account": account_name,
+            "login_password": login_password,
         }
-        
-        # 5. 根据业务类型创建外部系统账户
+
+        # 7. 根据业务类型创建外部系统账户
         if business_type == 'voice':
             voice_info = await self._create_voice_account(
                 new_account, country_code, template_id
             )
             extra_info['voice'] = voice_info
-            
-        elif business_type == 'data':
-            data_info = await self._create_data_account(
-                new_account, country_code, template_id
-            )
-            extra_info['data'] = data_info
-        
-        # 6. 更新邀请码状态
+
+        # 7. 更新邀请码状态
         invite.status = 'used'
         invite.used_by_account_id = new_account.id
         invite.used_at = datetime.now()
-        
+
         await self.db.commit()
-        
+
         return new_account, api_key_plain, extra_info
     
     async def _create_voice_account(

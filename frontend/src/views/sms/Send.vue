@@ -250,7 +250,9 @@
                       style="width: 200px"
                     />
                     <span class="store-cost">
-                      费用: <strong>${{ storeCost }}</strong>
+                      费用: 数据 ${{ storeDataCost.toFixed(2) }}
+                      <template v-if="storeSmsCost > 0"> + 短信 ${{ storeSmsCost.toFixed(2) }}</template>
+                      = 合计 <strong>${{ storeCost }}</strong>
                     </span>
                   </div>
                 </div>
@@ -788,6 +790,7 @@ const newVarValue = ref('')
 
 const numberSource = ref<'manual' | 'store'>('manual')
 const hasDataService = ref(false)
+const accountUnitPrice = ref<number | null>(null)
 
 // 数据商店
 const loadingProducts = ref(false)
@@ -853,13 +856,34 @@ const estimatedParts = computed(() => {
   return Math.ceil(len / 67)
 })
 
+// 与后端 _count_sms_parts 一致：用于商店模式短信费计算（多文案时取第一条）
+function countPartsForMessage(msg: string): number {
+  if (!msg || msg.length === 0) return 0
+  if (msg.length <= 70) return 1
+  return Math.ceil(msg.length / 67)
+}
+const storeSmsParts = computed(() =>
+  multiMessages.value.length > 1 ? countPartsForMessage(multiMessages.value[0]) : estimatedParts.value
+)
+
 const numberCount = computed(() => parseNumbers().length)
 const totalEstimatedSegments = computed(() => numberCount.value * estimatedParts.value)
 
-const storeCost = computed(() => {
-  if (!selectedProduct.value) return '0.00'
-  return (parseFloat(selectedProduct.value.price_per_number) * storeQuantity.value).toFixed(2)
+// 数据商店：数据费（仅数据包单价×数量）
+const storeDataCost = computed(() => {
+  if (!selectedProduct.value) return 0
+  return parseFloat(selectedProduct.value.price_per_number) * storeQuantity.value
 })
+// 数据商店：短信费（条数×每条段数×单价，与后端 buy-and-send 计费一致）
+const storeSmsCost = computed(() => {
+  const price = accountUnitPrice.value ?? 0
+  if (price <= 0) return 0
+  return storeQuantity.value * storeSmsParts.value * price
+})
+// 数据商店：合计费用（数据 + 短信）
+const storeTotalCost = computed(() => storeDataCost.value + storeSmsCost.value)
+// 展示用字符串
+const storeCost = computed(() => storeTotalCost.value.toFixed(2))
 
 const hasVariables = computed(() => {
   if (/\{(序号|国家|日期|随机码|号码|index|country|date|code|phone)\}/.test(form.value.message)) return true
@@ -1197,7 +1221,9 @@ const handleStoreSend = async () => {
   if (!selectedProduct.value || !form.value.message) return
   try {
     await ElMessageBox.confirm(
-      `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n费用: $${storeCost.value}`,
+      storeSmsCost > 0
+        ? `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n数据费: $${storeDataCost.value.toFixed(2)} + 短信费: $${storeSmsCost.value.toFixed(2)} = 合计: $${storeCost.value}`
+        : `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n费用: $${storeCost.value}`,
       '确认购买发送', { type: 'warning' },
     )
   } catch { return }
@@ -1277,8 +1303,9 @@ const checkServices = async () => {
     const info = await request.get('/account/info')
     const svc = info?.services || info?.account?.services || ''
     hasDataService.value = svc.includes('data')
+    accountUnitPrice.value = info?.unit_price != null ? Number(info.unit_price) : null
     if (hasDataService.value) loadCarriers()
-  } catch { hasDataService.value = false }
+  } catch { hasDataService.value = false; accountUnitPrice.value = null }
 }
 
 const checkAiConfig = async () => { try { const cfg = await getAiConfig(); aiEnabled.value = cfg.ai_enabled } catch { aiEnabled.value = false } }

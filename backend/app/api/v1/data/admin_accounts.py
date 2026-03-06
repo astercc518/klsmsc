@@ -232,18 +232,24 @@ async def update_data_account(
 @router.delete("/accounts/{account_id}")
 async def delete_data_account(
     account_id: int,
+    force: bool = False,
     db: AsyncSession = Depends(get_db),
     admin=Depends(get_current_admin),
 ):
-    """删除数据账户（改为关闭状态）"""
+    """删除数据账户。force=false 关闭，force=true 永久删除"""
     result = await db.execute(select(DataAccount).where(DataAccount.id == account_id))
     da = result.scalar_one_or_none()
     if not da:
         raise HTTPException(status_code=404, detail="数据账户不存在")
 
+    if force:
+        await db.delete(da)
+        await db.commit()
+        return {"success": True, "message": "数据账户已永久删除"}
+
     da.status = "closed"
     await db.commit()
-    return {"success": True, "message": "账户已关闭"}
+    return {"success": True, "message": "数据账户已关闭"}
 
 
 # ============ 充值 ============

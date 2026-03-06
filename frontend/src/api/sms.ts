@@ -33,3 +33,8 @@ export const getSMSRecords = (params?: any) => {
   return request.get('/sms/records', { params })
 }
 
+// 导出发送记录 CSV
+export const exportSMSRecords = (params?: any) => {
+  return request.get('/sms/records/export', { params, responseType: 'blob' })
+}
+

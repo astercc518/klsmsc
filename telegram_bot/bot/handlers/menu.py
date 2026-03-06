@@ -112,16 +112,14 @@ def get_main_menu_tech():
 
 
 def get_main_menu_guest():
-    """游客菜单"""
+    """游客菜单 — 授权码开户为主入口"""
     keyboard = [
         [
-            InlineKeyboardButton("📝 我是客户 - 输入邀请码", callback_data="menu_enter_invite"),
+            InlineKeyboardButton("🔑 输入授权码开户", callback_data="menu_enter_invite"),
         ],
         [
-            InlineKeyboardButton("🔗 我是客户 - 绑定已有账户", callback_data="menu_bind_account"),
-        ],
-        [
-            InlineKeyboardButton("👔 我是员工 - 绑定账号", callback_data="menu_bind_staff"),
+            InlineKeyboardButton("🔗 绑定已有账户", callback_data="menu_bind_account"),
+            InlineKeyboardButton("👔 员工绑定", callback_data="menu_bind_staff"),
         ],
         [
             InlineKeyboardButton("❓ 帮助", callback_data="menu_help"),
@@ -338,12 +336,12 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await show_commission(query, context)
         return
     
-    # 游客输入邀请码
+    # 游客输入授权码开户
     if data == "menu_enter_invite":
         await query.edit_message_text(
-            "📝 请输入邀请码\n\n"
-            "请直接发送您收到的邀请码，例如：\n"
-            "`ABC123XYZ`",
+            "🔑 *授权码开户*\n\n"
+            "请输入销售提供的授权码（8位字母数字）：\n\n"
+            "例如：`K2THWKBO`",
             parse_mode='Markdown',
             reply_markup=get_back_menu()
         )
@@ -423,21 +421,19 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
         
-        # 显示模板选择 - 使用固定格式避免编码问题
         keyboard = []
         for tpl in templates:
-            # 使用国家名称映射 + 价格，避免数据库中文乱码
-            country_label = COUNTRY_NAMES.get(tpl.country_code, tpl.country_code)
             price = float(tpl.default_price) if tpl.default_price else 0
-            label = f"{country_label} - ${price:.4f}"
+            label = f"{tpl.template_name}  ${price:.4f}"
             keyboard.append([InlineKeyboardButton(label, callback_data=f"tpl_{tpl.id}")])
         keyboard.append([InlineKeyboardButton("🔙 返回", callback_data=f"biz_{biz_type}")])
-        
+
+        country_label = COUNTRY_NAMES.get(country_code, country_code)
         await query.edit_message_text(
-            f"🎯 创建开户邀请\n\n"
-            f"业务类型: {biz_label}\n"
-            f"国家: {country_code}\n\n"
-            f"请选择资费模板：",
+            f"🎯 创建开户授权码\n\n"
+            f"📦 业务类型: {biz_label}\n"
+            f"🌍 国家: {country_label}\n\n"
+            f"请选择开户模板：",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -462,23 +458,22 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
         
-        # 使用映射表构建模板名称，避免编码问题
         country_label = COUNTRY_NAMES.get(template.country_code, template.country_code)
-        biz_type = context.user_data.get('business_type', 'sms')
-        biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
-        template_label = f"{country_label}{biz_label}"
+        template_name = template.template_name or f"{country_label}标准版"
         price = float(template.default_price) if template.default_price else 0
-        
+
         context.user_data['template_info'] = {
-            'name': template_label,
+            'name': template_name,
             'default_price': price,
-            'country': template.country_code
+            'country': template.country_code,
         }
-        
+        context.user_data['template_name'] = template_name
+
         await query.edit_message_text(
-            f"🎯 创建开户邀请\n\n"
-            f"模板: {template_label}\n"
-            f"底价: ${price:.4f}\n\n"
+            f"🎯 创建开户授权码\n\n"
+            f"📋 模板: {template_name}\n"
+            f"🌍 国家: {country_label}\n"
+            f"💰 底价: ${price:.4f}\n\n"
             f"请输入客户单价（USD）：\n"
             f"例如: 0.05",
             reply_markup=get_back_menu()
@@ -1440,11 +1435,13 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             async with get_session() as db:
                 service = InvitationService(db)
+                tpl_name = context.user_data.get('template_name', '')
                 config = {
                     'business_type': context.user_data.get('business_type', 'sms'),
                     'country': context.user_data.get('country_code', ''),
                     'template_id': context.user_data.get('template_id'),
-                    'price': price
+                    'template_name': tpl_name,
+                    'price': price,
                 }
                 code = await service.create_code(
                     context.user_data.get('sales_id'),
@@ -1452,21 +1449,27 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     valid_hours=72
                 )
             
-            # 生成邀请链接
             import os
-            bot_username = os.getenv('TELEGRAM_BOT_USERNAME', 'klboos_bot')
+            bot_username = os.getenv('TELEGRAM_BOT_USERNAME', 'SMSCPro_bot')
             invite_link = f"https://t.me/{bot_username}?start={code}"
-            
+            biz_type = context.user_data.get('business_type', 'sms')
+            biz_label = {'sms': '短信', 'voice': '语音', 'data': '数据'}.get(biz_type, biz_type)
+            country = context.user_data.get('country_code', '')
+            country_label = COUNTRY_NAMES.get(country, country)
+
             await update.message.reply_text(
-                f"✅ 邀请码创建成功！\n\n"
-                f"📋 邀请码: `{code}`\n"
-                f"🔗 邀请链接:\n{invite_link}\n\n"
+                f"✅ <b>授权码创建成功！</b>\n\n"
+                f"📋 授权码: <code>{code}</code>\n"
+                f"🔗 开户链接:\n{invite_link}\n\n"
+                f"📦 模板: {tpl_name}\n"
+                f"🌍 国家/地区: {country_label}\n"
                 f"💰 客户单价: ${price}\n"
-                f"📦 业务类型: {context.user_data.get('business_type', 'sms')}\n"
                 f"⏰ 有效期: 72小时\n\n"
-                f"发送链接给客户，点击即可自动开户",
-                parse_mode='Markdown',
-                reply_markup=get_back_menu()
+                f"━━━━━━━━━━━━\n"
+                f"📤 将上方链接转发给客户\n"
+                f"客户点击链接即可自动开户",
+                parse_mode='HTML',
+                reply_markup=get_back_menu(),
             )
             context.user_data['waiting_for'] = None
             
@@ -1496,45 +1499,73 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ 请输入有效的金额，例如: 100 或 50.5")
         return
     
-    # 处理邀请码输入
+    # 处理授权码开户
     if waiting_for == 'invite_code':
-        code = text.strip()
-        
+        raw = text.strip()
+        # 支持客户粘贴完整链接，自动提取授权码
+        if '?start=' in raw:
+            raw = raw.split('?start=')[-1].split('&')[0].split(' ')[0]
+        code = raw.upper()
+        user = update.effective_user
+
         from app.core.invitation import InvitationService
-        
+
         try:
             async with get_session() as db:
                 service = InvitationService(db)
-                account, api_key, extra_info = await service.activate_code(code, tg_id)
-                
+                account, api_key, extra_info = await service.activate_code(
+                    code,
+                    tg_id,
+                    tg_username=user.username,
+                    tg_first_name=user.first_name,
+                )
+
                 context.user_data['account_id'] = account.id
                 context.user_data['user_type'] = 'customer'
-                
+                context.user_data['waiting_for'] = None
+
                 biz_type = extra_info.get('business_type', 'sms')
                 biz_label = {'sms': '短信', 'voice': '语音', 'data': '数据'}.get(biz_type, biz_type)
-                
-                await update.message.reply_text(
-                    f"🎉 开户成功！\n\n"
+                country_label = COUNTRY_NAMES.get(extra_info.get('country_code', ''), extra_info.get('country_code', ''))
+                tpl_name = extra_info.get('template_name', '')
+                login_account = extra_info.get('login_account', account.account_name)
+                login_password = extra_info.get('login_password', '')
+
+                msg = f"🎉 <b>开户成功！</b>\n\n"
+                if tpl_name:
+                    msg += f"📋 模板: {tpl_name}\n"
+                msg += (
                     f"📦 业务类型: {biz_label}\n"
-                    f"🆔 账户ID: {account.id}\n"
-                    f"👤 用户名: {account.account_name}\n"
-                    f"🔑 API Key: `{api_key}`\n\n"
-                    f"请妥善保存API Key",
-                    parse_mode='Markdown',
-                    reply_markup=get_main_menu_customer()
+                    f"🌍 国家/地区: {country_label}\n\n"
+                    f"━━━ 📱 平台登录信息 ━━━\n"
+                    f"🌐 平台地址: https://www.smscpro.com\n"
+                    f"👤 登录账户: <code>{login_account}</code>\n"
+                    f"🔒 登录密码: <code>{login_password}</code>\n\n"
+                    f"━━━ 🔧 API 接口信息 ━━━\n"
+                    f"🆔 账户ID: <code>{account.id}</code>\n"
+                    f"🔑 API Key: <code>{login_account}</code>\n"
+                    f"🔐 API Secret: <code>{api_key}</code>\n\n"
+                    f"⚠️ <i>请妥善保存以上信息，密码和密钥不会再次显示</i>\n\n"
+                    f"请选择操作："
                 )
-                context.user_data['waiting_for'] = None
-                
-        except ValueError as e:
+
+                await update.message.reply_text(
+                    msg,
+                    parse_mode='HTML',
+                    reply_markup=get_main_menu_customer(),
+                )
+
+        except ValueError:
             await update.message.reply_text(
-                f"❌ 激活失败: {str(e)}",
-                reply_markup=get_back_menu()
+                "❌ 授权码无效或已过期\n\n请联系销售获取新的授权码。",
+                reply_markup=get_main_menu_guest(),
             )
+            context.user_data['waiting_for'] = None
         except Exception as e:
-            logger.error(f"Activation error: {e}")
+            logger.error(f"Activation error: {e}", exc_info=True)
             await update.message.reply_text(
                 "❌ 系统错误，请稍后重试",
-                reply_markup=get_back_menu()
+                reply_markup=get_back_menu(),
             )
         return
     
@@ -1607,7 +1638,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         import redis as redis_lib
         try:
             r = redis_lib.Redis(host="redis", port=6379, decode_responses=True)
-            redis_key = f"account_tg_bind:{code}"
+            redis_key = f"acct_tg_bind:{code}"
             account_id_str = r.get(redis_key)
 
             if not account_id_str:
@@ -1782,8 +1813,8 @@ from telegram.ext import MessageHandler, filters
 # 导出回调处理器
 menu_handlers = [
     CallbackQueryHandler(
-        handle_menu_callback, 
-        pattern=r'^menu_|^biz_|^ticket_type_|^country_|^tpl_|^approve_|^reject_|^process_|^ticket_detail_|^close_ticket_|^menu_bind_account$|^menu_account_info$'
+        handle_menu_callback,
+        pattern=r'^(?!menu_register$|reg_)(?:menu_|biz_|ticket_type_|country_|tpl_|approve_|reject_|process_|ticket_detail_|close_ticket_|back_)'
     ),
     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
 ]

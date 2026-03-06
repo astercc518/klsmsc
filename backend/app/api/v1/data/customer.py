@@ -132,7 +132,7 @@ async def customer_list_products(
     from app.modules.data.models import DataProductRating
     rating_stats = {}
     if product_ids:
-        recent_30d = datetime.utcnow() - timedelta(days=30)
+        recent_30d = datetime.now() - timedelta(days=30)
         all_stats = (await db.execute(
             select(
                 DataProductRating.product_id,
@@ -994,7 +994,7 @@ async def get_product_ratings(
         ).where(DataProductRating.product_id == product_id)
     )).first()
 
-    recent_30d = datetime.utcnow() - timedelta(days=30)
+    recent_30d = datetime.now() - timedelta(days=30)
     recent_stats = (await db.execute(
         select(
             func.count().label("recent_count"),

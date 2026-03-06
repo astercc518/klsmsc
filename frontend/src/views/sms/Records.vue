@@ -7,266 +7,289 @@
         <p class="page-desc">{{ $t('smsRecords.pageDesc') }}</p>
       </div>
       <div class="header-actions">
-        <button class="refresh-btn" @click="loadRecords">
-          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <path d="M15 9C15 12.3137 12.3137 15 9 15C5.68629 15 3 12.3137 3 9C3 5.68629 5.68629 3 9 3C11.2091 3 13.1274 4.20055 14.1818 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            <path d="M12 6H15V3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
+        <button class="action-btn export" @click="handleExport" :disabled="exporting">
+          <el-icon><Download /></el-icon>
+          {{ exporting ? '导出中...' : '导出CSV' }}
+        </button>
+        <button class="action-btn refresh" @click="loadRecords">
+          <el-icon><Refresh /></el-icon>
           {{ $t('common.refresh') }}
         </button>
       </div>
     </div>
-    
+
+    <!-- 统计卡片 -->
+    <div class="stats-row">
+      <div class="stat-chip">
+        <span class="stat-chip-label">总记录</span>
+        <span class="stat-chip-value">{{ pagination.total }}</span>
+      </div>
+      <div class="stat-chip sent">
+        <span class="stat-chip-dot"></span>
+        <span class="stat-chip-label">已发送</span>
+        <span class="stat-chip-value">{{ statusCounts.sent }}</span>
+      </div>
+      <div class="stat-chip delivered">
+        <span class="stat-chip-dot"></span>
+        <span class="stat-chip-label">已送达</span>
+        <span class="stat-chip-value">{{ statusCounts.delivered }}</span>
+      </div>
+      <div class="stat-chip failed">
+        <span class="stat-chip-dot"></span>
+        <span class="stat-chip-label">失败</span>
+        <span class="stat-chip-value">{{ statusCounts.failed }}</span>
+      </div>
+      <div class="stat-chip expired">
+        <span class="stat-chip-dot"></span>
+        <span class="stat-chip-label">超时</span>
+        <span class="stat-chip-value">{{ statusCounts.expired }}</span>
+      </div>
+    </div>
+
     <!-- 筛选栏 -->
     <div class="filter-card">
       <div class="filter-content">
         <div class="filter-item" v-if="isAdmin">
           <label class="filter-label">{{ $t('smsRecords.customerAccount') }}</label>
-          <el-select 
-            v-model="searchForm.account_id" 
-            :placeholder="$t('smsRecords.allAccounts')" 
-            clearable 
-            size="large"
-            class="filter-select"
-          >
-            <el-option
-              v-for="acc in accounts"
-              :key="acc.id"
-              :label="`${acc.account_name} (ID: ${acc.id})`"
-              :value="acc.id"
-            />
+          <el-select v-model="searchForm.account_id" :placeholder="$t('smsRecords.allAccounts')" clearable size="large" class="filter-select">
+            <el-option v-for="acc in accounts" :key="acc.id" :label="`${acc.account_name} (${acc.id})`" :value="acc.id" />
           </el-select>
         </div>
-        
+
+        <div class="filter-item">
+          <label class="filter-label">手机号码</label>
+          <el-input v-model="searchForm.phone_number" placeholder="搜索号码" clearable size="large" class="filter-input" @keyup.enter="handleSearch" />
+        </div>
+
         <div class="filter-item">
           <label class="filter-label">{{ $t('smsRecords.statusFilter') }}</label>
-          <el-select 
-            v-model="searchForm.status" 
-            :placeholder="$t('smsRecords.allStatus')" 
-            clearable 
-            size="large"
-            class="filter-select"
-          >
-            <el-option :label="$t('smsStatus.pending')" value="pending">
-              <div class="status-option">
-                <span class="status-dot pending"></span>
-                {{ $t('smsStatus.pending') }}
-              </div>
-            </el-option>
-            <el-option :label="$t('smsStatus.queued')" value="queued">
-              <div class="status-option">
-                <span class="status-dot queued"></span>
-                {{ $t('smsStatus.queued') }}
-              </div>
-            </el-option>
-            <el-option :label="$t('smsStatus.sent')" value="sent">
-              <div class="status-option">
-                <span class="status-dot sent"></span>
-                {{ $t('smsStatus.sent') }}
-              </div>
-            </el-option>
-            <el-option :label="$t('smsStatus.delivered')" value="delivered">
-              <div class="status-option">
-                <span class="status-dot delivered"></span>
-                {{ $t('smsStatus.delivered') }}
-              </div>
-            </el-option>
-            <el-option :label="$t('smsStatus.failed')" value="failed">
-              <div class="status-option">
-                <span class="status-dot failed"></span>
-                {{ $t('smsStatus.failed') }}
-              </div>
+          <el-select v-model="searchForm.status" :placeholder="$t('smsRecords.allStatus')" clearable size="large" class="filter-select">
+            <el-option v-for="s in statusOptions" :key="s.value" :label="s.label" :value="s.value">
+              <div class="status-option"><span class="status-dot" :class="s.value"></span>{{ s.label }}</div>
             </el-option>
           </el-select>
         </div>
-        
+
+        <div class="filter-item" v-if="isAdmin">
+          <label class="filter-label">通道</label>
+          <el-select v-model="searchForm.channel_id" placeholder="全部通道" clearable size="large" class="filter-select">
+            <el-option v-for="ch in channels" :key="ch.id" :label="ch.channel_code" :value="ch.id" />
+          </el-select>
+        </div>
+
+        <div class="filter-item">
+          <label class="filter-label">日期范围</label>
+          <el-date-picker
+            v-model="dateRange"
+            type="daterange"
+            range-separator="~"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            format="YYYY-MM-DD"
+            value-format="YYYY-MM-DD"
+            size="large"
+            class="filter-date"
+            :shortcuts="dateShortcuts"
+          />
+        </div>
+
         <div class="filter-actions">
           <button class="filter-btn search" @click="handleSearch">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5"/>
-              <path d="M11 11L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
+            <el-icon><Search /></el-icon>
             {{ $t('smsRecords.query') }}
           </button>
-          <button class="filter-btn reset" @click="handleReset">
-            {{ $t('common.reset') }}
-          </button>
+          <button class="filter-btn reset" @click="handleReset">{{ $t('common.reset') }}</button>
         </div>
       </div>
     </div>
-    
+
     <!-- 数据表格 -->
     <div class="table-card">
       <div class="table-wrapper" v-loading="loading">
-        <table class="data-table" v-if="records.length > 0">
-          <thead>
-            <tr>
-              <th v-if="isAdmin">{{ $t('smsRecords.accountId') }}</th>
-              <th>{{ $t('smsRecords.messageId') }}</th>
-              <th>{{ $t('smsRecords.phoneNumber') }}</th>
-              <th>{{ $t('smsRecords.country') }}</th>
-              <th>{{ $t('smsRecords.content') }}</th>
-              <th>{{ $t('smsRecords.status') }}</th>
-              <th>{{ $t('smsRecords.cost') }}</th>
-              <th>{{ $t('smsRecords.submitTime') }}</th>
-              <th>{{ $t('common.action') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="record in records" :key="record.message_id">
-              <td v-if="isAdmin">
-                <span class="account-id">{{ record.account_id }}</span>
-              </td>
-              <td>
-                <span class="message-id">{{ record.message_id?.substring(0, 8) }}...</span>
-              </td>
-              <td>
-                <span class="phone-number">{{ record.phone_number }}</span>
-              </td>
-              <td>
-                <span class="country">{{ record.country_name || '-' }}</span>
-              </td>
-              <td class="message-cell">
-                <span class="message-preview">{{ record.message?.substring(0, 30) }}{{ record.message?.length > 30 ? '...' : '' }}</span>
-              </td>
-              <td>
-                <span class="status-badge" :class="record.status">
-                  {{ getStatusText(record.status) }}
-                </span>
-              </td>
-              <td>
-                <span class="cost">{{ record.total_cost }} {{ record.currency }}</span>
-              </td>
-              <td>
-                <span class="time">{{ record.submit_time }}</span>
-              </td>
-              <td>
-                <button class="detail-btn" @click="handleViewDetail(record)">
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.5"/>
-                    <path d="M1 8C2.5 4.5 5 2.5 8 2.5C11 2.5 13.5 4.5 15 8C13.5 11.5 11 13.5 8 13.5C5 13.5 2.5 11.5 1 8Z" stroke="currentColor" stroke-width="1.5"/>
-                  </svg>
-                  {{ $t('common.detail') }}
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        
-        <!-- 空状态 -->
-        <div class="empty-state" v-if="!loading && records.length === 0">
-          <div class="empty-icon">
-            <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-              <rect x="8" y="6" width="32" height="36" rx="4" stroke="currentColor" stroke-width="2"/>
-              <path d="M16 16H32M16 24H28M16 32H24" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-            </svg>
-          </div>
-          <h3 class="empty-title">{{ $t('smsRecords.noRecords') }}</h3>
-          <p class="empty-desc">{{ $t('smsRecords.noRecordsDesc') }}</p>
-          <button class="empty-action" @click="$router.push('/sms/send')">
-            {{ $t('smsSend.sendNow') }}
-          </button>
-        </div>
+        <el-table :data="records" class="records-table" :row-class-name="tableRowClassName" @row-click="handleViewDetail" empty-text="暂无记录" stripe>
+          <el-table-column v-if="isAdmin" prop="account_id" label="账户" width="70" align="center">
+            <template #default="{ row }">
+              <span class="mono-text">{{ row.account_id }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column prop="message_id" label="消息ID" width="140">
+            <template #default="{ row }">
+              <el-tooltip :content="row.message_id" placement="top">
+                <span class="mono-text clickable">{{ row.message_id?.substring(0, 12) }}...</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+
+          <el-table-column prop="phone_number" label="手机号码" width="150">
+            <template #default="{ row }">
+              <span class="phone-text">{{ row.phone_number }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column prop="country_code" label="国家" width="70" align="center">
+            <template #default="{ row }">
+              <span>{{ row.country_code || '-' }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="isAdmin" prop="channel_code" label="通道" width="140">
+            <template #default="{ row }">
+              <el-tag v-if="row.channel_code" size="small" :type="row.channel_code?.includes('SMPP') ? 'primary' : 'success'" effect="plain">
+                {{ row.channel_code }}
+              </el-tag>
+              <span v-else class="text-muted">-</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column prop="message" label="内容" min-width="200">
+            <template #default="{ row }">
+              <el-tooltip :content="row.message" placement="top" :show-after="500">
+                <span class="message-preview">{{ truncate(row.message, 40) }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+
+          <el-table-column prop="status" label="状态" width="100" align="center">
+            <template #default="{ row }">
+              <span class="status-badge" :class="row.status">{{ getStatusText(row.status) }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="isAdmin" label="费用" width="160">
+            <template #default="{ row }">
+              <div class="cost-cell">
+                <span class="cost-selling">{{ row.selling_price?.toFixed(4) }}</span>
+                <span class="cost-detail" v-if="row.cost_price">成本 {{ row.cost_price?.toFixed(4) }}</span>
+              </div>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="!isAdmin" prop="selling_price" label="费用" width="100" align="right">
+            <template #default="{ row }">
+              <span class="cost-selling">{{ row.selling_price?.toFixed(4) }} {{ row.currency }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column prop="submit_time" label="提交时间" width="170">
+            <template #default="{ row }">
+              <span class="time-text">{{ formatTime(row.submit_time) }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column label="" width="50" align="center" fixed="right">
+            <template #default="{ row }">
+              <el-icon class="detail-icon" @click.stop="handleViewDetail(row)"><View /></el-icon>
+            </template>
+          </el-table-column>
+        </el-table>
       </div>
-      
+
       <!-- 分页 -->
-      <div class="pagination-wrapper" v-if="records.length > 0">
+      <div class="pagination-wrapper" v-if="pagination.total > 0">
         <el-pagination
           v-model:current-page="pagination.page"
           v-model:page-size="pagination.pageSize"
           :total="pagination.total"
-          :page-sizes="[10, 20, 50, 100]"
-          layout="total, sizes, prev, pager, next"
+          :page-sizes="[20, 50, 100, 200]"
+          layout="total, sizes, prev, pager, next, jumper"
           @size-change="loadRecords"
           @current-change="loadRecords"
         />
       </div>
     </div>
-    
+
     <!-- 详情对话框 -->
-    <el-dialog 
-      v-model="detailVisible" 
-      :title="$t('smsRecords.smsDetail')" 
-      width="560px"
-      class="detail-dialog"
-    >
+    <el-dialog v-model="detailVisible" title="短信详情" width="640px" class="detail-dialog" destroy-on-close>
       <div class="detail-content" v-if="currentRecord">
-        <div class="detail-section">
-          <h4 class="detail-section-title">{{ $t('smsRecords.basicInfo') }}</h4>
-          <div class="detail-grid">
-            <div class="detail-item">
-              <span class="detail-label">{{ $t('smsRecords.messageId') }}</span>
-              <span class="detail-value mono">{{ currentRecord.message_id }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">{{ $t('smsRecords.phoneNumber') }}</span>
-              <span class="detail-value">{{ currentRecord.phone_number }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">{{ $t('smsRecords.country') }}</span>
-              <span class="detail-value">{{ currentRecord.country_name || '-' }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">{{ $t('smsRecords.carrier') }}</span>
-              <span class="detail-value">{{ currentRecord.operator || '-' }}</span>
-            </div>
+        <!-- 状态横幅 -->
+        <div class="status-banner" :class="currentRecord.status">
+          <span class="status-badge lg" :class="currentRecord.status">{{ getStatusText(currentRecord.status) }}</span>
+          <span class="status-time" v-if="currentRecord.sent_time">{{ formatTime(currentRecord.sent_time) }}</span>
+        </div>
+
+        <div class="detail-grid-3">
+          <div class="detail-card">
+            <span class="dc-label">消息ID</span>
+            <span class="dc-value mono">{{ currentRecord.message_id }}</span>
+          </div>
+          <div class="detail-card" v-if="currentRecord.upstream_message_id">
+            <span class="dc-label">上游消息ID</span>
+            <span class="dc-value mono">{{ currentRecord.upstream_message_id }}</span>
+          </div>
+          <div class="detail-card">
+            <span class="dc-label">手机号码</span>
+            <span class="dc-value">{{ currentRecord.phone_number }}</span>
+          </div>
+          <div class="detail-card">
+            <span class="dc-label">国家代码</span>
+            <span class="dc-value">{{ currentRecord.country_code || '-' }}</span>
+          </div>
+          <div class="detail-card" v-if="currentRecord.channel_code">
+            <span class="dc-label">发送通道</span>
+            <el-tag size="small" effect="plain">{{ currentRecord.channel_code }}</el-tag>
+          </div>
+          <div class="detail-card">
+            <span class="dc-label">短信条数</span>
+            <span class="dc-value">{{ currentRecord.message_count || 1 }}</span>
           </div>
         </div>
-        
+
         <div class="detail-section">
-          <h4 class="detail-section-title">{{ $t('smsRecords.smsContent') }}</h4>
-          <div class="message-box">
-            {{ currentRecord.message }}
-          </div>
+          <h4 class="section-title">短信内容</h4>
+          <div class="message-box">{{ currentRecord.message }}</div>
         </div>
-        
-        <div class="detail-section">
-          <h4 class="detail-section-title">{{ $t('smsRecords.sendStatus') }}</h4>
-          <div class="detail-grid">
-            <div class="detail-item">
-              <span class="detail-label">{{ $t('smsRecords.status') }}</span>
-              <span class="status-badge" :class="currentRecord.status">
-                {{ getStatusText(currentRecord.status) }}
+
+        <div class="detail-section" v-if="isAdmin">
+          <h4 class="section-title">费用信息</h4>
+          <div class="detail-grid-3">
+            <div class="detail-card">
+              <span class="dc-label">售价</span>
+              <span class="dc-value highlight">{{ currentRecord.selling_price?.toFixed(4) }} {{ currentRecord.currency }}</span>
+            </div>
+            <div class="detail-card">
+              <span class="dc-label">成本</span>
+              <span class="dc-value">{{ currentRecord.cost_price?.toFixed(4) }} {{ currentRecord.currency }}</span>
+            </div>
+            <div class="detail-card">
+              <span class="dc-label">利润</span>
+              <span class="dc-value" :class="currentRecord.profit >= 0 ? 'profit-positive' : 'profit-negative'">
+                {{ currentRecord.profit?.toFixed(4) }} {{ currentRecord.currency }}
               </span>
             </div>
-            <div class="detail-item">
-              <span class="detail-label">{{ $t('smsRecords.senderId') }}</span>
-              <span class="detail-value">{{ currentRecord.sender_id || '-' }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">{{ $t('smsRecords.parts') }}</span>
-              <span class="detail-value">{{ currentRecord.message_count || 1 }}</span>
-            </div>
-            <div class="detail-item">
-              <span class="detail-label">{{ $t('smsRecords.cost') }}</span>
-              <span class="detail-value highlight">{{ currentRecord.total_cost }} {{ currentRecord.currency }}</span>
-            </div>
           </div>
         </div>
-        
+
         <div class="detail-section">
-          <h4 class="detail-section-title">{{ $t('smsRecords.timeInfo') }}</h4>
-          <div class="detail-grid">
-            <div class="detail-item">
-              <span class="detail-label">{{ $t('smsRecords.submitTime') }}</span>
-              <span class="detail-value">{{ currentRecord.submit_time }}</span>
+          <h4 class="section-title">时间线</h4>
+          <div class="timeline">
+            <div class="timeline-item active">
+              <div class="tl-dot"></div>
+              <div class="tl-content">
+                <span class="tl-label">提交</span>
+                <span class="tl-time">{{ formatTime(currentRecord.submit_time) }}</span>
+              </div>
             </div>
-            <div class="detail-item">
-              <span class="detail-label">{{ $t('smsRecords.sentTime') }}</span>
-              <span class="detail-value">{{ currentRecord.sent_time || '-' }}</span>
+            <div class="timeline-item" :class="{ active: currentRecord.sent_time }">
+              <div class="tl-dot"></div>
+              <div class="tl-content">
+                <span class="tl-label">发送</span>
+                <span class="tl-time">{{ formatTime(currentRecord.sent_time) || '等待中' }}</span>
+              </div>
             </div>
-            <div class="detail-item" v-if="currentRecord.delivery_time">
-              <span class="detail-label">{{ $t('smsRecords.deliveryTime') }}</span>
-              <span class="detail-value">{{ currentRecord.delivery_time }}</span>
+            <div class="timeline-item" :class="{ active: currentRecord.delivery_time }">
+              <div class="tl-dot"></div>
+              <div class="tl-content">
+                <span class="tl-label">送达</span>
+                <span class="tl-time">{{ formatTime(currentRecord.delivery_time) || '等待中' }}</span>
+              </div>
             </div>
           </div>
         </div>
-        
+
         <div class="detail-section" v-if="currentRecord.error_message">
-          <h4 class="detail-section-title error">{{ $t('smsRecords.errorMsg') }}</h4>
-          <div class="error-box">
-            {{ currentRecord.error_message }}
-          </div>
+          <h4 class="section-title error-title">错误信息</h4>
+          <div class="error-box">{{ currentRecord.error_message }}</div>
         </div>
       </div>
     </el-dialog>
@@ -277,83 +300,109 @@
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { getSMSRecords } from '@/api/sms'
-import { getAccountsAdmin } from '@/api/admin'
+import { Download, Refresh, Search, View } from '@element-plus/icons-vue'
+import { getSMSRecords, exportSMSRecords } from '@/api/sms'
+import { getAccountsAdmin, getChannelsAdmin } from '@/api/admin'
 
 const { t } = useI18n()
 const loading = ref(false)
+const exporting = ref(false)
 const detailVisible = ref(false)
 const currentRecord = ref<any>(null)
 
 const isAdmin = computed(() => {
-  // 模拟登录模式下不是管理员
-  if (sessionStorage.getItem('impersonate_mode') === '1') {
-    return false
-  }
+  if (sessionStorage.getItem('impersonate_mode') === '1') return false
   return !!localStorage.getItem('admin_token')
 })
 
 const accounts = ref<any[]>([])
+const channels = ref<any[]>([])
+const dateRange = ref<string[] | null>(null)
 
 const searchForm = ref({
-  message_id: '',
   phone_number: '',
+  message_id: '',
   status: '',
   account_id: null as number | null,
+  channel_id: null as number | null,
 })
 
-const pagination = ref({
-  page: 1,
-  pageSize: 20,
-  total: 0,
-})
-
+const pagination = ref({ page: 1, pageSize: 20, total: 0 })
 const records = ref<any[]>([])
 
-const loadAccounts = async () => {
-  if (!isAdmin.value) return
-  try {
-    const res: any = await getAccountsAdmin({ page: 1, page_size: 100 })
-    if (res?.success || res?.accounts) {
-      accounts.value = res.accounts || []
-    }
-  } catch (error) {
-    console.error('Failed to load accounts:', error)
+const statusCounts = computed(() => {
+  const map: Record<string, number> = { sent: 0, delivered: 0, failed: 0, pending: 0, queued: 0, expired: 0 }
+  records.value.forEach(r => { if (map[r.status] !== undefined) map[r.status]++ })
+  return map
+})
+
+const statusOptions = computed(() => [
+  { value: 'pending', label: t('smsStatus.pending') },
+  { value: 'queued', label: t('smsStatus.queued') },
+  { value: 'sent', label: t('smsStatus.sent') },
+  { value: 'delivered', label: t('smsStatus.delivered') },
+  { value: 'failed', label: t('smsStatus.failed') },
+  { value: 'expired', label: t('smsStatus.expired') },
+])
+
+const dateShortcuts = [
+  { text: '今天', value: () => { const d = new Date(); return [d, d] } },
+  { text: '近7天', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 6); return [s, e] } },
+  { text: '近30天', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 29); return [s, e] } },
+]
+
+const truncate = (s: string | null, n: number) => {
+  if (!s) return '-'
+  return s.length > n ? s.substring(0, n) + '...' : s
+}
+
+const formatTime = (iso: string | null) => {
+  if (!iso) return ''
+  return iso.replace('T', ' ').substring(0, 19)
+}
+
+const getStatusText = (status: string) => {
+  const map: Record<string, string> = {
+    pending: t('smsStatus.pending'),
+    queued: t('smsStatus.queued'),
+    sent: t('smsStatus.sent'),
+    delivered: t('smsStatus.delivered'),
+    failed: t('smsStatus.failed'),
+    expired: t('smsStatus.expired'),
   }
+  return map[status] || status
+}
+
+const tableRowClassName = ({ row }: { row: any }) => {
+  if (row.status === 'failed') return 'row-failed'
+  if (row.status === 'expired') return 'row-expired'
+  return ''
+}
+
+const buildParams = () => {
+  const params: any = { page: pagination.value.page, page_size: pagination.value.pageSize }
+  if (searchForm.value.status) params.status = searchForm.value.status
+  if (searchForm.value.phone_number) params.phone_number = searchForm.value.phone_number
+  if (searchForm.value.message_id) params.message_id = searchForm.value.message_id
+  if (isAdmin.value && searchForm.value.account_id) params.account_id = searchForm.value.account_id
+  if (isAdmin.value && searchForm.value.channel_id) params.channel_id = searchForm.value.channel_id
+  if (dateRange.value && dateRange.value.length === 2) {
+    params.start_date = dateRange.value[0]
+    params.end_date = dateRange.value[1]
+  }
+  return params
 }
 
 const loadRecords = async () => {
   loading.value = true
   try {
-    const params: any = {
-      page: pagination.value.page,
-      page_size: pagination.value.pageSize,
-    }
-    
-    if (searchForm.value.status) {
-      params.status = searchForm.value.status
-    }
-    
-    if (isAdmin.value && searchForm.value.account_id) {
-      params.account_id = searchForm.value.account_id
-    }
-    
-    const res: any = await getSMSRecords(params)
-    
+    const res: any = await getSMSRecords(buildParams())
     if (res?.success) {
-      records.value = (res.records || []).map((r: any) => ({
-        ...r,
-        total_cost: r.cost || 0,
-        country_name: r.country_code || '-',
-      }))
+      records.value = res.records || []
       pagination.value.total = res.total || 0
-    } else {
-      records.value = []
-      pagination.value.total = 0
     }
   } catch (error: any) {
-    console.error('Failed to load send records:', error)
-    ElMessage.error(t('common.failed') + ': ' + (error.message || t('common.error')))
+    ElMessage.error('加载记录失败')
     records.value = []
   } finally {
     loading.value = false
@@ -366,12 +415,8 @@ const handleSearch = () => {
 }
 
 const handleReset = () => {
-  searchForm.value = {
-    message_id: '',
-    phone_number: '',
-    status: '',
-    account_id: null,
-  }
+  searchForm.value = { phone_number: '', message_id: '', status: '', account_id: null, channel_id: null }
+  dateRange.value = null
   handleSearch()
 }
 
@@ -380,19 +425,47 @@ const handleViewDetail = (row: any) => {
   detailVisible.value = true
 }
 
-const getStatusText = (status: string) => {
-  const statusKeys: Record<string, string> = {
-    pending: 'smsStatus.pending',
-    queued: 'smsStatus.queued',
-    sent: 'smsStatus.sent',
-    delivered: 'smsStatus.delivered',
-    failed: 'smsStatus.failed',
+const handleExport = async () => {
+  exporting.value = true
+  try {
+    const params = { ...buildParams() }
+    delete params.page
+    delete params.page_size
+    const res: any = await exportSMSRecords(params)
+    const blob = new Blob([res], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `sms_records_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  } catch {
+    ElMessage.error('导出失败')
+  } finally {
+    exporting.value = false
   }
-  return statusKeys[status] ? t(statusKeys[status]) : status
+}
+
+const loadAccounts = async () => {
+  if (!isAdmin.value) return
+  try {
+    const res: any = await getAccountsAdmin({ page: 1, page_size: 200 })
+    accounts.value = res?.accounts || []
+  } catch { /* ignore */ }
+}
+
+const loadChannels = async () => {
+  if (!isAdmin.value) return
+  try {
+    const res: any = await getChannelsAdmin()
+    channels.value = (res?.channels || []).filter((c: any) => c.status === 'active')
+  } catch { /* ignore */ }
 }
 
 onMounted(() => {
   loadAccounts()
+  loadChannels()
   loadRecords()
 })
 </script>
@@ -400,125 +473,155 @@ onMounted(() => {
 <style scoped>
 .records-page {
   width: 100%;
-  animation: fadeIn 0.5s var(--ease-default);
+  animation: fadeIn 0.4s ease;
 }
-
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(20px); }
+  from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* ========== 页面头部 ========== */
+/* 头部 */
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
-
 .page-title {
-  font-size: 28px;
+  font-size: 26px;
   font-weight: 700;
   color: var(--text-primary);
-  margin: 0 0 8px;
-  letter-spacing: -0.02em;
+  margin: 0 0 6px;
 }
-
 .page-desc {
-  font-size: 15px;
+  font-size: 14px;
   color: var(--text-tertiary);
   margin: 0;
 }
-
-.refresh-btn {
+.header-actions {
+  display: flex;
+  gap: 10px;
+}
+.action-btn {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 20px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-default);
-  border-radius: 12px;
-  color: var(--text-secondary);
+  gap: 6px;
+  padding: 9px 18px;
+  border-radius: 10px;
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s var(--ease-default);
+  transition: all 0.2s;
+  border: 1px solid var(--border-default);
+  background: var(--bg-input);
+  color: var(--text-secondary);
 }
-
-.refresh-btn:hover {
+.action-btn:hover {
   background: var(--bg-hover);
-  border-color: var(--border-hover);
   color: var(--text-primary);
 }
-
-/* ========== 筛选栏 ========== */
-.filter-card {
-  background: var(--bg-card);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid var(--border-default);
-  border-radius: 20px;
-  padding: 20px 24px;
-  margin-bottom: 24px;
+.action-btn.export {
+  background: rgba(50, 215, 75, 0.1);
+  border-color: rgba(50, 215, 75, 0.3);
+  color: #32d74b;
+}
+.action-btn.export:hover {
+  background: rgba(50, 215, 75, 0.2);
+}
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
+/* 统计行 */
+.stats-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.stat-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  font-size: 13px;
+}
+.stat-chip-label { color: var(--text-tertiary); }
+.stat-chip-value { font-weight: 600; color: var(--text-primary); }
+.stat-chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.stat-chip.sent .stat-chip-dot { background: var(--primary); }
+.stat-chip.delivered .stat-chip-dot { background: var(--success); }
+.stat-chip.failed .stat-chip-dot { background: var(--danger); }
+.stat-chip.expired .stat-chip-dot { background: #909399; }
+
+/* 筛选 */
+.filter-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
 .filter-content {
   display: flex;
-  gap: 20px;
+  gap: 16px;
   align-items: flex-end;
   flex-wrap: wrap;
 }
-
 .filter-item {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  min-width: 200px;
+  gap: 6px;
+  min-width: 160px;
 }
-
 .filter-label {
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--text-quaternary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
-
-:deep(.filter-select .el-input__wrapper) {
-  background: var(--bg-input) !important;
-  border: 1px solid var(--border-default) !important;
-  border-radius: 12px !important;
+:deep(.filter-select .el-input__wrapper),
+:deep(.filter-input .el-input__wrapper) {
+  border-radius: 10px !important;
 }
-
+:deep(.filter-date) {
+  --el-date-editor-width: 260px;
+}
 .status-option {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
 }
-
 .status-dot.pending { background: var(--info); }
 .status-dot.queued { background: var(--warning); }
 .status-dot.sent { background: var(--primary); }
 .status-dot.delivered { background: var(--success); }
 .status-dot.failed { background: var(--danger); }
-
+.status-dot.expired { background: #909399; }
 .filter-actions {
   display: flex;
   gap: 8px;
   margin-left: auto;
 }
-
 .filter-btn {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 10px 20px;
+  padding: 9px 18px;
   border-radius: 10px;
   font-size: 14px;
   font-weight: 500;
@@ -526,345 +629,222 @@ onMounted(() => {
   transition: all 0.2s;
   border: none;
 }
-
 .filter-btn.search {
   background: linear-gradient(135deg, #2997FF 0%, #0071E3 100%);
   color: white;
   box-shadow: 0 4px 12px rgba(41, 151, 255, 0.3);
 }
-
 .filter-btn.search:hover {
   transform: translateY(-1px);
   box-shadow: 0 6px 16px rgba(41, 151, 255, 0.4);
 }
-
 .filter-btn.reset {
   background: var(--bg-input);
   color: var(--text-secondary);
   border: 1px solid var(--border-default);
 }
 
-.filter-btn.reset:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-/* ========== 数据表格 ========== */
+/* 表格 */
 .table-card {
   background: var(--bg-card);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
   border: 1px solid var(--border-default);
-  border-radius: 20px;
+  border-radius: 16px;
   overflow: hidden;
 }
-
 .table-wrapper {
-  padding: 0;
-  min-height: 400px;
+  min-height: 300px;
 }
-
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
+:deep(.records-table) {
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: var(--bg-input);
+  --el-table-border-color: var(--border-subtle);
 }
-
-.data-table th {
-  padding: 16px 20px;
-  text-align: left;
+:deep(.records-table .el-table__header th) {
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-quaternary);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  background: var(--bg-input);
-  border-bottom: 1px solid var(--border-default);
+  letter-spacing: 0.05em;
+  color: var(--text-quaternary);
 }
-
-.data-table td {
-  padding: 16px 20px;
-  font-size: 14px;
-  color: var(--text-secondary);
-  border-bottom: 1px solid var(--border-subtle);
+:deep(.records-table .el-table__row) {
+  cursor: pointer;
   transition: background 0.15s;
 }
-
-.data-table tr:hover td {
-  background: rgba(41, 151, 255, 0.04);
+:deep(.records-table .el-table__row:hover > td) {
+  background: rgba(41, 151, 255, 0.04) !important;
 }
-
-.data-table tr:last-child td {
-  border-bottom: none;
+:deep(.records-table .row-failed > td) {
+  background: rgba(255, 69, 58, 0.03) !important;
 }
-
-.message-id {
+.mono-text {
   font-family: 'SF Mono', Monaco, monospace;
   font-size: 12px;
   color: var(--text-tertiary);
-  background: rgba(255, 255, 255, 0.04);
-  padding: 4px 8px;
-  border-radius: 6px;
 }
-
-.phone-number {
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.message-cell {
-  max-width: 200px;
-}
-
+.clickable { cursor: pointer; }
+.phone-text { font-weight: 500; color: var(--text-primary); }
+.text-muted { color: var(--text-quaternary); font-size: 12px; }
 .message-preview {
   display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text-tertiary);
+  font-size: 13px;
+  max-width: 300px;
 }
-
 .status-badge {
   display: inline-flex;
-  align-items: center;
-  padding: 4px 12px;
-  border-radius: 20px;
+  padding: 3px 10px;
+  border-radius: 16px;
   font-size: 12px;
   font-weight: 500;
 }
-
 .status-badge.pending { background: rgba(100, 210, 255, 0.15); color: var(--info); }
 .status-badge.queued { background: rgba(255, 159, 10, 0.15); color: var(--warning); }
 .status-badge.sent { background: rgba(41, 151, 255, 0.15); color: var(--primary); }
 .status-badge.delivered { background: rgba(50, 215, 75, 0.15); color: var(--success); }
 .status-badge.failed { background: rgba(255, 69, 58, 0.15); color: var(--danger); }
-
-.cost {
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.time {
-  font-size: 13px;
-  color: var(--text-tertiary);
-}
-
-.detail-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border-default);
-  border-radius: 8px;
-  color: var(--text-secondary);
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.detail-btn:hover {
-  background: rgba(41, 151, 255, 0.1);
-  border-color: var(--primary);
-  color: var(--primary);
-}
-
-/* ========== 空状态 ========== */
-.empty-state {
+.status-badge.expired { background: rgba(144, 147, 153, 0.15); color: #909399; }
+.status-badge.lg { font-size: 14px; padding: 6px 16px; }
+.cost-cell {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 80px 20px;
-  text-align: center;
+  gap: 2px;
 }
-
-.empty-icon {
-  color: var(--text-quaternary);
-  margin-bottom: 20px;
-}
-
-.empty-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin: 0 0 8px;
-}
-
-.empty-desc {
-  font-size: 14px;
-  color: var(--text-tertiary);
-  margin: 0 0 24px;
-}
-
-.empty-action {
-  padding: 12px 24px;
-  background: linear-gradient(135deg, #2997FF 0%, #0071E3 100%);
-  border: none;
-  border-radius: 12px;
-  color: white;
-  font-size: 14px;
-  font-weight: 500;
+.cost-selling { font-weight: 500; color: var(--text-primary); font-size: 13px; }
+.cost-detail { font-size: 11px; color: var(--text-quaternary); }
+.time-text { font-size: 13px; color: var(--text-tertiary); }
+.detail-icon {
   cursor: pointer;
-  transition: all 0.2s;
+  color: var(--text-quaternary);
+  font-size: 18px;
+  transition: color 0.2s;
 }
+.detail-icon:hover { color: var(--primary); }
 
-.empty-action:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(41, 151, 255, 0.35);
-}
-
-/* ========== 分页 ========== */
+/* 分页 */
 .pagination-wrapper {
-  padding: 20px 24px;
+  padding: 16px 20px;
   border-top: 1px solid var(--border-subtle);
   display: flex;
   justify-content: flex-end;
 }
 
-/* ========== 详情对话框 ========== */
-.detail-content {
-  padding: 0;
+/* 详情弹窗 */
+.detail-content { padding: 0 4px; }
+.status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-radius: 12px;
+  margin-bottom: 20px;
 }
+.status-banner.sent { background: rgba(41, 151, 255, 0.08); }
+.status-banner.delivered { background: rgba(50, 215, 75, 0.08); }
+.status-banner.failed { background: rgba(255, 69, 58, 0.08); }
+.status-banner.pending { background: rgba(100, 210, 255, 0.08); }
+.status-banner.queued { background: rgba(255, 159, 10, 0.08); }
+.status-banner.expired { background: rgba(144, 147, 153, 0.08); }
+.status-time { font-size: 13px; color: var(--text-tertiary); }
 
-.detail-section {
-  margin-bottom: 24px;
+.detail-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
 }
-
-.detail-section:last-child {
-  margin-bottom: 0;
+.detail-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  background: var(--bg-input);
+  border-radius: 10px;
 }
+.dc-label { font-size: 11px; color: var(--text-quaternary); text-transform: uppercase; letter-spacing: 0.04em; }
+.dc-value { font-size: 14px; font-weight: 500; color: var(--text-primary); word-break: break-all; }
+.dc-value.mono { font-family: 'SF Mono', Monaco, monospace; font-size: 11px; }
+.dc-value.highlight { color: var(--primary); font-weight: 600; }
+.profit-positive { color: var(--success) !important; }
+.profit-negative { color: var(--danger) !important; }
 
-.detail-section-title {
-  font-size: 13px;
+.detail-section { margin-bottom: 20px; }
+.section-title {
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  margin: 0 0 16px;
+  margin: 0 0 12px;
 }
-
-.detail-section-title.error {
-  color: var(--danger);
-}
-
-.detail-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16px;
-}
-
-.detail-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.detail-label {
-  font-size: 12px;
-  color: var(--text-quaternary);
-}
-
-.detail-value {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.detail-value.mono {
-  font-family: 'SF Mono', Monaco, monospace;
-  font-size: 12px;
-  word-break: break-all;
-}
-
-.detail-value.highlight {
-  color: var(--primary);
-  font-weight: 600;
-}
-
+.error-title { color: var(--danger); }
 .message-box {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--bg-input);
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  padding: 16px;
+  border-radius: 10px;
+  padding: 14px;
   font-size: 14px;
   line-height: 1.6;
   color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
 }
-
 .error-box {
-  background: rgba(255, 69, 58, 0.1);
+  background: rgba(255, 69, 58, 0.08);
   border: 1px solid rgba(255, 69, 58, 0.2);
-  border-radius: 12px;
-  padding: 16px;
-  font-size: 14px;
+  border-radius: 10px;
+  padding: 14px;
+  font-size: 13px;
   color: var(--danger);
 }
 
-/* ========== 响应式 ========== */
+/* 时间线 */
+.timeline { display: flex; flex-direction: column; gap: 0; }
+.timeline-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  position: relative;
+}
+.timeline-item::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 26px;
+  bottom: -10px;
+  width: 2px;
+  background: var(--border-default);
+}
+.timeline-item:last-child::before { display: none; }
+.tl-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--border-default);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.timeline-item.active .tl-dot { background: var(--primary); box-shadow: 0 0 0 4px rgba(41, 151, 255, 0.15); }
+.timeline-item.active::before { background: var(--primary); opacity: 0.3; }
+.tl-content { display: flex; justify-content: space-between; flex: 1; }
+.tl-label { font-size: 14px; font-weight: 500; color: var(--text-secondary); }
+.tl-time { font-size: 13px; color: var(--text-tertiary); }
+.timeline-item:not(.active) .tl-label { color: var(--text-quaternary); }
+.timeline-item:not(.active) .tl-time { color: var(--text-quaternary); font-style: italic; }
+
 @media (max-width: 1024px) {
-  .filter-content {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  
-  .filter-item {
-    min-width: auto;
-  }
-  
-  .filter-actions {
-    margin-left: 0;
-    margin-top: 8px;
-  }
-  
-  .data-table {
-    display: block;
-    overflow-x: auto;
-  }
+  .filter-content { flex-direction: column; align-items: stretch; }
+  .filter-item { min-width: auto; }
+  .filter-actions { margin-left: 0; }
+  .detail-grid-3 { grid-template-columns: repeat(2, 1fr); }
 }
-
 @media (max-width: 640px) {
-  .page-header {
-    flex-direction: column;
-    gap: 16px;
-    align-items: flex-start;
-  }
-  
-  .detail-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* ========== 亮色主题 - Apple Style ========== */
-[data-theme="light"] .filter-card {
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 0.5px solid rgba(0, 0, 0, 0.08);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-}
-
-[data-theme="light"] .table-card {
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 0.5px solid rgba(0, 0, 0, 0.08);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-}
-
-[data-theme="light"] .data-table th {
-  background: var(--bg-input);
-}
-
-[data-theme="light"] .data-table tr:hover td {
-  background: rgba(0, 122, 255, 0.04);
-}
-
-[data-theme="light"] .filter-btn.search {
-  background: var(--gradient-primary);
-  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.3);
-}
-
-[data-theme="light"] .filter-btn.search:hover {
-  box-shadow: 0 6px 16px rgba(0, 122, 255, 0.4);
+  .page-header { flex-direction: column; gap: 12px; align-items: flex-start; }
+  .stats-row { flex-direction: column; }
+  .detail-grid-3 { grid-template-columns: 1fr; }
 }
 </style>

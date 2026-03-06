@@ -747,3 +747,61 @@ def _is_error_dlr_response(resp_text: str) -> bool:
     ]
     
     return any(pattern in resp_text for pattern in error_patterns)
+
+
+# ============ DLR 超时处理 ============
+
+@celery_app.task(name='dlr_timeout_check_task')
+def dlr_timeout_check_task():
+    """
+    定时检查超时的 sent 记录
+    超过指定时间仍为 sent 的记录标记为 timeout
+    """
+    logger.info("开始检查 DLR 超时记录...")
+    try:
+        result = _run_async(_dlr_timeout_check_async())
+        return result
+    except Exception as e:
+        logger.error(f"DLR 超时检查失败: {str(e)}", exc_info=e)
+        return {"success": False, "error": str(e)}
+
+
+async def _dlr_timeout_check_async():
+    """异步检查并标记超时的 sent 记录"""
+    from datetime import timedelta
+    from sqlalchemy import and_, update, func
+
+    # 超过 4 小时仍为 sent 的记录视为超时
+    DLR_TIMEOUT_HOURS = 4
+
+    db = _get_worker_session()
+    try:
+        cutoff_time = datetime.now() - timedelta(hours=DLR_TIMEOUT_HOURS)
+
+        stmt = (
+            update(SMSLog)
+            .where(
+                and_(
+                    SMSLog.status == 'sent',
+                    SMSLog.sent_time < cutoff_time,
+                    SMSLog.sent_time.isnot(None),
+                )
+            )
+            .values(
+                status='expired',
+                error_message=f'DLR 超时: 超过{DLR_TIMEOUT_HOURS}小时未收到回执',
+            )
+        )
+
+        result = await db.execute(stmt)
+        await db.commit()
+        expired_count = result.rowcount
+
+        if expired_count > 0:
+            logger.info(f"DLR 超时: 标记 {expired_count} 条记录为 expired")
+        else:
+            logger.debug("DLR 超时检查: 无超时记录")
+
+        return {"success": True, "expired": expired_count}
+    finally:
+        await db.close()

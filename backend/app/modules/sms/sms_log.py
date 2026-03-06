@@ -21,7 +21,7 @@ class SMSLog(Base):
     message = Column(Text, comment="短信内容")
     message_count = Column(Integer, default=1, comment="短信条数")
     status = Column(
-        Enum("pending", "queued", "sent", "delivered", "failed", name="sms_status"),
+        Enum("pending", "queued", "sent", "delivered", "failed", "expired", name="sms_status"),
         nullable=False,
         default="pending",
         comment="状态"

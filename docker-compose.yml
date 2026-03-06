@@ -10,12 +10,13 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-sms_system}
       MYSQL_USER: ${MYSQL_USER:-smsuser}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+      TZ: Asia/Shanghai
     ports:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
-    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --character-set-client-handshake=FALSE --default-time-zone=+08:00
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpass123}"]
       interval: 10s
@@ -71,6 +72,7 @@ services:
       dockerfile: Dockerfile
     container_name: smsc-api
     environment:
+      TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       DATABASE_HOST: mysql
       DATABASE_PORT: 3306
@@ -114,6 +116,7 @@ services:
       dockerfile: Dockerfile
     container_name: smsc-worker
     environment:
+      TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       DATABASE_HOST: mysql
       DATABASE_PORT: 3306
@@ -149,6 +152,7 @@ services:
       dockerfile: Dockerfile
     container_name: smsc-beat
     environment:
+      TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       DATABASE_HOST: mysql
       DATABASE_PORT: 3306
@@ -183,6 +187,7 @@ services:
       dockerfile: Dockerfile
     container_name: smsc-bot
     environment:
+      TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       DATABASE_HOST: mysql
       DATABASE_PORT: 3306
@@ -192,6 +197,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-SMSCPro_bot}
     volumes:
       - ./telegram_bot:/app
       - ./backend:/backend # 挂载 backend 代码以供复用

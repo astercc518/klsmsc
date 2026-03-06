@@ -63,14 +63,15 @@ class ChannelCreateRequest(BaseModel):
     port: Optional[int] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    smpp_bind_mode: Optional[str] = "transceiver"
+    smpp_system_type: Optional[str] = ""
+    smpp_interface_version: Optional[int] = 0x34
     api_url: Optional[str] = None
     api_key: Optional[str] = None
     status: str = "active"
-    # 速率控制
     max_tps: int = 100
     concurrency: int = 1
     rate_control_window: int = 1000
-    # 路由参数 (默认)
     priority: int = 0
     weight: int = 100
     default_sender_id: Optional[str] = None
@@ -95,19 +96,19 @@ class ChannelCreateRequest(BaseModel):
 
 class ChannelUpdateRequest(BaseModel):
     channel_name: Optional[str] = None
-    # 速率控制
     max_tps: Optional[int] = None
     concurrency: Optional[int] = None
     rate_control_window: Optional[int] = None
-    # 路由参数
     priority: Optional[int] = None
     weight: Optional[int] = None
     status: Optional[str] = None
-    # 连接信息（可选）
     host: Optional[str] = None
     port: Optional[int] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    smpp_bind_mode: Optional[str] = None
+    smpp_system_type: Optional[str] = None
+    smpp_interface_version: Optional[int] = None
     api_url: Optional[str] = None
     api_key: Optional[str] = None
     default_sender_id: Optional[str] = None
@@ -1127,6 +1128,9 @@ async def list_channels_admin(
                 "port": ch.port,
                 "username": ch.username,
                 "api_url": ch.api_url,
+                "smpp_bind_mode": ch.smpp_bind_mode or "transceiver",
+                "smpp_system_type": ch.smpp_system_type or "",
+                "smpp_interface_version": ch.smpp_interface_version or 0x34,
                 "default_sender_id": ch.default_sender_id,
                 "supplier": supplier_map.get(ch.id),
                 "created_at": ch.created_at.isoformat() if ch.created_at else None
@@ -1167,8 +1171,10 @@ async def get_channel_admin(
             "host": ch.host,
             "port": ch.port,
             "username": ch.username,
-            # 安全起见不返回 password/api_key 明文
             "api_url": ch.api_url,
+            "smpp_bind_mode": ch.smpp_bind_mode or "transceiver",
+            "smpp_system_type": ch.smpp_system_type or "",
+            "smpp_interface_version": ch.smpp_interface_version or 0x34,
             "default_sender_id": ch.default_sender_id,
             "created_at": ch.created_at.isoformat() if ch.created_at else None,
             "updated_at": ch.updated_at.isoformat() if ch.updated_at else None,
@@ -1203,6 +1209,9 @@ async def create_channel(
         port=request.port,
         username=request.username,
         password=request.password,
+        smpp_bind_mode=request.smpp_bind_mode or "transceiver",
+        smpp_system_type=request.smpp_system_type or "",
+        smpp_interface_version=request.smpp_interface_version or 0x34,
         api_url=request.api_url,
         api_key=request.api_key,
         priority=request.priority,
@@ -1211,7 +1220,7 @@ async def create_channel(
         concurrency=request.concurrency,
         rate_control_window=request.rate_control_window,
         default_sender_id=request.default_sender_id.strip() if request.default_sender_id else None,
-        status=request.status
+        status=request.status,
     )
     
     db.add(channel)
@@ -1274,6 +1283,12 @@ async def update_channel(
         channel.api_key = request.api_key
     if request.default_sender_id is not None:
         channel.default_sender_id = request.default_sender_id
+    if request.smpp_bind_mode is not None:
+        channel.smpp_bind_mode = request.smpp_bind_mode
+    if request.smpp_system_type is not None:
+        channel.smpp_system_type = request.smpp_system_type
+    if request.smpp_interface_version is not None:
+        channel.smpp_interface_version = request.smpp_interface_version
     
     await db.commit()
     await db.refresh(channel)
@@ -1340,129 +1355,128 @@ async def channel_test_send(
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """通道测试发送"""
+    """通道测试发送 — 创建真实 SMSLog 记录"""
     from app.modules.sms.channel import Channel
     from app.modules.sms.sms_log import SMSLog
     import uuid
     from datetime import datetime
-    
+
     result = await db.execute(
         select(Channel).where(Channel.id == channel_id)
     )
     channel = result.scalar_one_or_none()
-    
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
-    
-    # 创建测试消息ID
+
     test_message_id = f"TEST_{uuid.uuid4().hex[:12]}"
     sender_id = request.sender_id or channel.default_sender_id or "TEST"
-    
+
+    # 解析国家代码
+    country_code = ""
+    phone = request.phone.lstrip("+")
+    try:
+        import phonenumbers
+        pn = phonenumbers.parse("+" + phone, None)
+        country_code = str(pn.country_code)
+    except Exception:
+        pass
+
+    # 先在数据库创建 SMSLog 记录（状态 pending）
+    sms_log = SMSLog(
+        message_id=test_message_id,
+        account_id=0,
+        channel_id=channel.id,
+        phone_number=request.phone,
+        country_code=country_code,
+        message=request.content,
+        message_count=1,
+        status="pending",
+        cost_price=0,
+        selling_price=0,
+        currency="USD",
+    )
+    db.add(sms_log)
+    await db.flush()
+
     try:
         if channel.protocol == "SMPP":
             from app.workers.adapters.smpp_adapter import SMPPAdapter
             adapter = SMPPAdapter(channel)
-            
-            # 创建模拟的 SMSLog 对象
-            class MockSMSLog:
-                def __init__(self):
-                    self.message_id = test_message_id
-                    self.phone_number = request.phone
-                    self.content = request.content
-                    self.message = request.content  # SMPP适配器使用message属性
-                    self.sender_id = sender_id
-            
-            mock_log = MockSMSLog()
-            
-            # 连接并发送
+
             connected = await adapter.connect()
             if not connected:
+                sms_log.status = "failed"
+                sms_log.error_message = adapter.last_error or "SMPP连接失败"
+                await db.commit()
                 return {
                     "success": False,
-                    "message": "SMPP连接失败",
+                    "message": sms_log.error_message,
                     "details": {
                         "channel": channel.channel_code,
                         "protocol": "SMPP",
-                        "host": f"{channel.host}:{channel.port}"
-                    }
-                }
-            
-            success, channel_msg_id, error = await adapter.send(mock_log)
-            await adapter.disconnect()
-            
-            if success:
-                return {
-                    "success": True,
-                    "message": "测试发送成功",
-                    "details": {
-                        "channel": channel.channel_code,
-                        "protocol": "SMPP",
+                        "host": f"{channel.host}:{channel.port}",
                         "message_id": test_message_id,
-                        "channel_message_id": channel_msg_id,
-                        "phone": request.phone
-                    }
+                    },
                 }
-            else:
-                return {
-                    "success": False,
-                    "message": f"发送失败: {error}",
-                    "details": {
-                        "channel": channel.channel_code,
-                        "protocol": "SMPP"
-                    }
-                }
-                
+
+            success, channel_msg_id, error = await adapter.send(sms_log)
+            await adapter.disconnect()
+
         elif channel.protocol == "HTTP":
             from app.workers.adapters.http_adapter import HTTPAdapter
             adapter = HTTPAdapter(channel)
-            
-            class MockSMSLog:
-                def __init__(self):
-                    self.message_id = test_message_id
-                    self.phone_number = request.phone
-                    self.content = request.content
-                    self.message = request.content  # HTTP适配器也可能使用message属性
-                    self.sender_id = sender_id
-            
-            mock_log = MockSMSLog()
-            success, channel_msg_id, error = await adapter.send(mock_log)
-            
-            if success:
-                return {
-                    "success": True,
-                    "message": "测试发送成功",
-                    "details": {
-                        "channel": channel.channel_code,
-                        "protocol": "HTTP",
-                        "message_id": test_message_id,
-                        "channel_message_id": channel_msg_id,
-                        "phone": request.phone
-                    }
-                }
-            else:
-                return {
-                    "success": False,
-                    "message": f"发送失败: {error}",
-                    "details": {
-                        "channel": channel.channel_code,
-                        "protocol": "HTTP",
-                        "api_url": channel.api_url
-                    }
-                }
+            success, channel_msg_id, error = await adapter.send(sms_log)
+
+        else:
+            sms_log.status = "failed"
+            sms_log.error_message = f"不支持的协议: {channel.protocol}"
+            await db.commit()
+            return {"success": False, "message": sms_log.error_message}
+
+        # 更新 SMSLog 状态
+        now = datetime.now()
+        if success:
+            sms_log.status = "sent"
+            sms_log.upstream_message_id = channel_msg_id
+            sms_log.sent_time = now
+        else:
+            sms_log.status = "failed"
+            sms_log.error_message = error
+
+        await db.commit()
+
+        if success:
+            return {
+                "success": True,
+                "message": "测试发送成功",
+                "details": {
+                    "channel": channel.channel_code,
+                    "protocol": channel.protocol,
+                    "message_id": test_message_id,
+                    "channel_message_id": channel_msg_id,
+                    "phone": request.phone,
+                },
+            }
         else:
             return {
                 "success": False,
-                "message": f"不支持的协议类型: {channel.protocol}"
+                "message": f"发送失败: {error}",
+                "details": {
+                    "channel": channel.channel_code,
+                    "protocol": channel.protocol,
+                    "message_id": test_message_id,
+                },
             }
-            
+
     except Exception as e:
         logger.error(f"测试发送异常: {str(e)}", exc_info=e)
+        sms_log.status = "failed"
+        sms_log.error_message = str(e)[:500]
+        await db.commit()
         return {
             "success": False,
             "message": f"测试发送异常: {str(e)}",
-            "details": {
-                "channel": channel.channel_code
-            }
+            "details": {"channel": channel.channel_code, "message_id": test_message_id},
         }
 
 
@@ -1495,32 +1509,31 @@ async def channel_check_status(
             connected = await adapter.connect()
             latency_ms = int((time.time() - start_time) * 1000)
             
+            details = {
+                "channel": channel.channel_code,
+                "protocol": "SMPP",
+                "host": channel.host,
+                "port": channel.port,
+                "bind_mode": adapter._bind_mode,
+                "system_type": adapter._system_type or "(empty)",
+                "latency_ms": latency_ms,
+            }
+            
             if connected:
                 await adapter.disconnect()
                 return {
                     "success": True,
                     "status": "online",
-                    "message": "SMPP连接正常",
-                    "details": {
-                        "channel": channel.channel_code,
-                        "protocol": "SMPP",
-                        "host": channel.host,
-                        "port": channel.port,
-                        "latency_ms": latency_ms
-                    }
+                    "message": f"SMPP连接正常 (bind_mode={adapter._bind_mode})",
+                    "details": details,
                 }
             else:
+                details["error"] = adapter.last_error or "Unknown"
                 return {
                     "success": False,
                     "status": "offline",
-                    "message": "SMPP连接失败",
-                    "details": {
-                        "channel": channel.channel_code,
-                        "protocol": "SMPP",
-                        "host": channel.host,
-                        "port": channel.port,
-                        "latency_ms": latency_ms
-                    }
+                    "message": adapter.last_error or "SMPP连接失败",
+                    "details": details,
                 }
                 
         elif channel.protocol == "HTTP":

@@ -31,60 +31,74 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         async with get_session() as db:
-            # 1. 检查是否带邀请码
+            # 1. 检查是否带邀请码（授权码开户）
             if args and len(args) > 0:
                 code = args[0]
                 try:
                     service = InvitationService(db)
-                    account, api_key, extra_info = await service.activate_code(code, tg_id)
-                    
-                    # 切换到新账户
+                    account, api_key, extra_info = await service.activate_code(
+                        code,
+                        tg_id,
+                        tg_username=user.username,
+                        tg_first_name=user.first_name,
+                    )
+
                     context.user_data['account_id'] = account.id
-                    
-                    # 构建基础消息
+                    context.user_data['user_type'] = 'customer'
+
                     business_type = extra_info.get('business_type', 'sms')
                     biz_label = {'sms': '短信', 'voice': '语音', 'data': '数据'}.get(business_type, business_type)
-                    
-                    msg = (
-                        f"🎉 **开户成功！**\n\n"
-                        f"📦 业务类型: {biz_label}\n"
-                        f"🆔 账户ID: `{account.id}`\n"
-                        f"👤 用户名: {account.account_name}\n"
-                        f"🔑 API Key: `{api_key}`\n"
-                        f"_(请妥善保存API Key)_\n\n"
+                    tpl_name = extra_info.get('template_name', '')
+                    login_account = extra_info.get('login_account', account.account_name)
+                    login_password = extra_info.get('login_password', '')
+
+                    msg = f"🎉 <b>开户成功！</b>\n\n"
+                    if tpl_name:
+                        msg += f"📋 模板: {tpl_name}\n"
+                    msg += (
+                        f"📦 业务类型: {biz_label}\n\n"
+                        f"━━━ 📱 平台登录信息 ━━━\n"
+                        f"🌐 平台地址: https://www.smscpro.com\n"
+                        f"👤 登录账户: <code>{login_account}</code>\n"
+                        f"🔒 登录密码: <code>{login_password}</code>\n\n"
+                        f"━━━ 🔧 API 接口信息 ━━━\n"
+                        f"🆔 账户ID: <code>{account.id}</code>\n"
+                        f"🔑 API Key: <code>{login_account}</code>\n"
+                        f"🔐 API Secret: <code>{api_key}</code>\n\n"
                     )
-                    
-                    # 添加语音账户信息
+
                     if business_type == 'voice' and extra_info.get('voice'):
                         voice_info = extra_info['voice']
                         if voice_info.get('success'):
                             msg += (
-                                f"📞 **语音账户信息**\n"
-                                f"OKCC账号: `{voice_info.get('okcc_account')}`\n"
-                                f"OKCC密码: `{voice_info.get('okcc_password')}`\n"
-                                f"_(请使用以上信息登录OKCC系统)_\n\n"
+                                f"📞 <b>语音账户信息</b>\n"
+                                f"OKCC账号: <code>{voice_info.get('okcc_account')}</code>\n"
+                                f"OKCC密码: <code>{voice_info.get('okcc_password')}</code>\n\n"
                             )
                         else:
                             msg += f"⚠️ 语音账户创建: {voice_info.get('message')}\n\n"
-                    
-                    # 添加数据账户信息
+
                     if business_type == 'data' and extra_info.get('data'):
                         data_info = extra_info['data']
                         if data_info.get('success'):
-                            msg += (
-                                f"📊 **数据账户信息**\n"
-                                f"{data_info.get('message')}\n\n"
-                            )
+                            msg += f"📊 <b>数据账户信息</b>\n{data_info.get('message')}\n\n"
                         else:
                             msg += f"⚠️ 数据账户创建: {data_info.get('message')}\n\n"
-                    
-                    msg += "发送 /help 查看可用指令。"
-                    
-                    await update.message.reply_text(msg, parse_mode='Markdown')
+
+                    msg += "⚠️ <i>请妥善保存以上信息，密码和密钥不会再次显示</i>\n\n请选择操作："
+
+                    await update.message.reply_text(
+                        msg,
+                        parse_mode='HTML',
+                        reply_markup=get_main_menu_customer(),
+                    )
                     return
-                    
+
                 except ValueError as e:
-                    await update.message.reply_text(f"❌ 激活失败: {str(e)}")
+                    await update.message.reply_text(
+                        f"❌ 授权码无效或已过期\n\n请联系销售获取新的授权码。",
+                        reply_markup=get_main_menu_guest(),
+                    )
                     return
                 except Exception as e:
                     logger.error(f"Activation error: {e}", exc_info=True)
@@ -131,29 +145,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             query = select(TelegramBinding).where(TelegramBinding.tg_id == tg_id)
             result = await db.execute(query)
             bindings = result.scalars().all()
-            
-            if not bindings:
-                logger.info(f"User {tg_id} has no bindings, sending welcome message")
-                try:
-                    await update.message.reply_text(
-                        "👋 欢迎使用 TG 业务助手\n\n"
-                        "支持短信、语音、数据三大业务\n\n"
-                        "请选择您的身份：",
-                        reply_markup=get_main_menu_guest()
+
+            # 过滤出有效绑定（账户未关闭/未删除）
+            valid_binding = None
+            for b in bindings:
+                acc_r = await db.execute(
+                    select(Account).where(
+                        Account.id == b.account_id,
+                        Account.status != 'closed',
+                        Account.is_deleted == False,
                     )
-                    logger.info(f"Welcome message sent to {tg_id}")
-                except Exception as e:
-                    logger.error(f"Failed to send welcome message: {e}")
+                )
+                acc = acc_r.scalar_one_or_none()
+                if acc:
+                    valid_binding = (b, acc)
+                    break
+
+            if not valid_binding:
+                logger.info(f"User {tg_id} has no active account, sending guest menu")
+                await update.message.reply_text(
+                    "👋 欢迎使用 TG 业务助手\n\n"
+                    "支持短信、语音、数据三大业务\n\n"
+                    "请选择操作：",
+                    reply_markup=get_main_menu_guest()
+                )
                 return
 
-            # 4. 确定当前活跃账户（已绑定客户）
-            active_binding = next((b for b in bindings if b.is_active), bindings[0])
+            # 4. 有效账户
+            active_binding, account = valid_binding
             context.user_data['account_id'] = active_binding.account_id
             context.user_data['user_type'] = 'customer'
-            
-            # 获取账户详情
-            acc_result = await db.execute(select(Account).where(Account.id == active_binding.account_id))
-            account = acc_result.scalar_one_or_none()
             
             balance_str = f"${account.balance:.2f}" if account else "N/A"
             account_name = account.account_name if account else "未知"
@@ -241,7 +262,7 @@ async def bind_account_by_code(update: Update, context: ContextTypes.DEFAULT_TYP
         redis_port = int(getattr(settings, "REDIS_PORT", 6379))
         redis_password = getattr(settings, "REDIS_PASSWORD", None)
         r = redis.Redis(host=redis_host, port=redis_port, password=redis_password or None, decode_responses=True)
-        redis_key = f"account_tg_bind:{code}"
+        redis_key = f"acct_tg_bind:{code}"
         account_id_str = r.get(redis_key)
 
         if not account_id_str:
