@@ -106,6 +106,8 @@ class Settings(BaseSettings):
     # DLR 回调安全配置
     DLR_CALLBACK_TOKEN: Optional[str] = None
     DLR_CALLBACK_IP_WHITELIST: str = ""
+    # 设为 true/1 时允许无认证回调（上游不支持 Token 时使用，生产环境建议用 Token 或 IP 白名单）
+    DLR_CALLBACK_OPEN: bool = False
 
     @property
     def dlr_callback_ip_list(self) -> List[str]:

@@ -1221,7 +1221,7 @@ const handleStoreSend = async () => {
   if (!selectedProduct.value || !form.value.message) return
   try {
     await ElMessageBox.confirm(
-      storeSmsCost > 0
+      storeSmsCost.value > 0
         ? `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n数据费: $${storeDataCost.value.toFixed(2)} + 短信费: $${storeSmsCost.value.toFixed(2)} = 合计: $${storeCost.value}`
         : `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n费用: $${storeCost.value}`,
       '确认购买发送', { type: 'warning' },

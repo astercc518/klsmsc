@@ -1,7 +1,11 @@
 """
 短信发送Worker
 """
+import json
+import threading
+import time
 from datetime import datetime
+from typing import Optional
 from sqlalchemy import select
 from app.workers.celery_app import celery_app
 from app.modules.sms.sms_log import SMSLog
@@ -25,6 +29,38 @@ from app.utils.logger import get_logger
 import asyncio
 
 logger = get_logger(__name__)
+
+# SMPP 延迟断开：发送后保持连接 N 秒以接收 DLR（deliver_sm 异步推送）
+_SMPP_DLR_WAIT_SECONDS = 300  # 5 分钟，部分上游 DLR 推送较慢
+_smpp_pending_disconnect = []
+_smpp_cleanup_lock = threading.Lock()
+
+
+def _smpp_schedule_delayed_disconnect(adapter):
+    """将 SMPP 适配器加入延迟断开队列，N 秒后断开以接收 deliver_sm（transceiver/transmitter 均使用，避免阻塞 Celery 任务）"""
+    if not adapter or not getattr(adapter, 'client', None):
+        return
+    with _smpp_cleanup_lock:
+        _smpp_pending_disconnect.append((adapter, time.time() + _SMPP_DLR_WAIT_SECONDS))
+    # 启动清理线程（仅首次）
+    if not hasattr(_smpp_schedule_delayed_disconnect, '_cleanup_started'):
+        def _cleanup_loop():
+            while True:
+                time.sleep(30)
+                now = time.time()
+                to_disconnect = []
+                with _smpp_cleanup_lock:
+                    to_remove = [i for i, (a, t) in enumerate(_smpp_pending_disconnect) if t <= now]
+                    for i in reversed(to_remove):
+                        to_disconnect.append(_smpp_pending_disconnect.pop(i)[0])
+                for a in to_disconnect:
+                    try:
+                        a._disconnect_sync()
+                    except Exception as e:
+                        logger.warning(f"SMPP 延迟断开失败: {e}")
+        t = threading.Thread(target=_cleanup_loop, daemon=True, name="smpp-dlr-cleanup")
+        t.start()
+        _smpp_schedule_delayed_disconnect._cleanup_started = True
 
 
 def _run_async(coro):
@@ -390,13 +426,18 @@ async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: di
                         # 请求成功，检查每个号码的提交结果
                         if result_list:
                             first_result = result_list[0]
-                            mid = first_result.get('mid', '')
-                            result_code = first_result.get('result', -1)
+                            # 支持多种上游返回的消息ID字段名
+                            mid = (first_result.get('mid') or first_result.get('msgid') or
+                                   first_result.get('taskid') or first_result.get('message_id') or
+                                   first_result.get('id') or '')
+                            result_code = first_result.get('result', first_result.get('status', -1))
+                            if isinstance(result_code, str) and result_code.isdigit():
+                                result_code = int(result_code)
                             
                             if result_code == 0:
-                                logger.info(f"HTTP发送成功: {sms_log.message_id}, mid={mid}, balance={balance}")
-                                # 保存上游消息ID
-                                sms_log.upstream_message_id = mid
+                                logger.info(f"HTTP发送成功: {sms_log.message_id}, upstream_id={mid}, balance={balance}")
+                                # 保存上游消息ID（DLR 回执匹配必需）
+                                sms_log.upstream_message_id = mid or None
                                 return True
                             else:
                                 error_desc = result_errors.get(result_code, f"未知错误({result_code})")
@@ -404,8 +445,15 @@ async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: di
                                 sms_log.error_message = f"上游错误: {error_desc}"
                                 return False
                         else:
-                            # 没有返回list，但status=0，认为成功
-                            logger.info(f"HTTP发送成功(无明细): {sms_log.message_id}, balance={balance}")
+                            # 没有返回list，但status=0，认为成功；尝试从响应顶层提取上游ID
+                            mid = (resp_data.get('mid') or resp_data.get('msgid') or
+                                   resp_data.get('taskid') or resp_data.get('message_id') or
+                                   resp_data.get('id') or '')
+                            if mid:
+                                sms_log.upstream_message_id = str(mid)
+                                logger.info(f"HTTP发送成功(无明细): {sms_log.message_id}, upstream_id={mid}")
+                            else:
+                                logger.info(f"HTTP发送成功(无明细): {sms_log.message_id}, balance={balance} (无上游ID，DLR可能无法匹配)")
                             return True
                     else:
                         # status != 0，请求失败
@@ -451,6 +499,7 @@ async def _send_via_smpp(sms_log: SMSLog, channel: Channel) -> bool:
     from app.workers.adapters.smpp_adapter import SMPPAdapter
     
     adapter = None
+    smpp_success = False
     try:
         logger.info(f"通过SMPP发送短信: {sms_log.message_id} via {channel.channel_code}")
         
@@ -459,12 +508,18 @@ async def _send_via_smpp(sms_log: SMSLog, channel: Channel) -> bool:
         
         # 发送短信
         success, channel_message_id, error_message = await adapter.send(sms_log)
+        smpp_success = success
         
         if success:
             # 保存上游消息ID
             if channel_message_id:
                 sms_log.upstream_message_id = channel_message_id
             logger.info(f"SMPP发送成功: {sms_log.message_id} -> {channel_message_id}")
+            # 加入延迟断开队列，后台保持连接以接收 DLR，不阻塞 worker
+            try:
+                _smpp_schedule_delayed_disconnect(adapter)
+            except Exception as e:
+                logger.warning(f"SMPP 加入延迟断开失败: {e}")
             return True
         else:
             sms_log.error_message = error_message or "SMPP send failed"
@@ -478,8 +533,8 @@ async def _send_via_smpp(sms_log: SMSLog, channel: Channel) -> bool:
             sms_log.error_message = error_msg
         return False
     finally:
-        # 断开连接（注意：实际生产环境应该使用连接池）
-        if adapter:
+        # SMPP 发送成功后已在 return 前加入延迟断开队列；失败时立即断开
+        if adapter and not smpp_success:
             try:
                 await adapter.disconnect()
             except Exception as e:
@@ -589,88 +644,134 @@ def fetch_dlr_reports_task():
 async def _fetch_dlr_reports_async():
     """
     异步拉取 DLR 报告
-    
-    支持多种上游格式（JSON/XML），使用统一的 DLR 处理模块
+
+    支持多种上游格式（JSON/XML），使用统一的 DLR 处理模块。
+    系统配置 dlr_report_url_override（JSON）可覆盖通道的 report URL，格式：
+    {"KAOLA_PH_HTTP": "https://xxx/report"} 或 {"KAOLA_PH_HTTP": {"url": "https://...", "method": "POST"}}
     """
     import httpx
     from app.core.dlr_handler import detect_and_parse_dlr, process_dlr_reports
-    
+    from app.modules.common.system_config import SystemConfig
+
     db = _get_worker_session()
     try:
-        result = await db.execute(
+        # 读取 DLR report URL 覆盖配置（系统配置 -> dlr_report_url_override，类型 json）
+        url_overrides = {}
+        try:
+            cfg_res = await db.execute(
+                select(SystemConfig).where(SystemConfig.config_key == 'dlr_report_url_override')
+            )
+            cfg = cfg_res.scalar_one_or_none()
+            if cfg and cfg.config_value:
+                raw = cfg.config_value
+                url_overrides = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # HTTP 通道：有 api_url 的参与拉取
+        http_result = await db.execute(
             select(Channel).where(
                 Channel.protocol == 'HTTP',
                 Channel.status == 'active',
                 Channel.is_deleted == False
             )
         )
-        channels = result.scalars().all()
-        
+        channels = list(http_result.scalars().all())
+        # SMPP 通道：若 dlr_report_url_override 配置了 report URL，也参与拉取（Kaola 等 SMPP 通道可通过 HTTP report 接口获取 DLR）
+        smpp_result = await db.execute(
+            select(Channel).where(
+                Channel.protocol == 'SMPP',
+                Channel.status == 'active',
+                Channel.is_deleted == False
+            )
+        )
+        smpp_channels = smpp_result.scalars().all()
+        for sc in smpp_channels:
+            ov = url_overrides.get(sc.channel_code)
+            if ov and (isinstance(ov, str) or (isinstance(ov, dict) and ov.get('url'))):
+                channels.append(sc)
+        pull_channels = [(c.channel_code, getattr(c, 'api_url', None) or '', bool(c.username or c.password or c.api_key)) for c in channels]
+        logger.info(f"DLR 拉取通道列表: {pull_channels}")
+
         total_success = 0
         total_fail = 0
-        
+
         for channel in channels:
-            if not channel.api_url:
+            # 解析 URL 覆盖（支持 "url" 或 直接字符串）
+            override_val = url_overrides.get(channel.channel_code)
+            url_override = None
+            report_method = 'GET'
+            if isinstance(override_val, str):
+                url_override = override_val
+            elif isinstance(override_val, dict) and override_val.get('url'):
+                url_override = override_val['url']
+                report_method = (override_val.get('method') or 'GET').upper()
+
+            # HTTP 通道需 api_url；SMPP 通道需 dlr_report_url_override 配置了 report URL
+            if not channel.api_url and not url_override:
                 continue
-            
-            # 获取凭据
+
             http_account = channel.username or ''
-            http_password = channel.password or ''
-            
+            http_password = channel.password or channel.api_key or ''
+
             if not http_account:
-                logger.debug(f"通道 {channel.channel_code} 没有配置凭据，跳过")
+                logger.warning(f"通道 {channel.channel_code} 未配置 username，跳过 DLR 拉取")
                 continue
-            
+
+            report_url = _build_dlr_pull_url(channel, url_override)
+            if not report_url:
+                logger.warning(f"通道 {channel.channel_code} 无有效 report URL，跳过")
+                continue
+            params = {
+                "action": "report",
+                "account": http_account,
+                "password": http_password
+            }
+
             try:
-                # 构造报告查询 URL
-                report_url = _build_dlr_pull_url(channel)
-                
-                params = {
-                    "action": "report",
-                    "account": http_account,
-                    "password": http_password
-                }
-                
-                logger.info(f"拉取 DLR: {channel.channel_code}, URL: {report_url}")
-                
+                logger.info(f"拉取 DLR: {channel.channel_code}, URL: {report_url}, method: {report_method}")
+
                 async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(report_url, params=params)
-                    
+                    if report_method == 'POST':
+                        response = await client.post(report_url, params=params)
+                    else:
+                        response = await client.get(report_url, params=params)
+
+                    # GET 返回 405 时尝试 POST（部分上游仅支持 POST）
+                    if response.status_code == 405 and report_method == 'GET':
+                        logger.info(f"[{channel.channel_code}] GET 返回 405，尝试 POST")
+                        response = await client.post(report_url, params=params)
+
                     if response.status_code == 200:
                         resp_text = response.text
                         content_type = response.headers.get('content-type', '')
-                        
-                        logger.debug(f"[{channel.channel_code}] DLR 响应: {resp_text[:500]}")
-                        
-                        # 检查是否为空响应
+
                         if _is_empty_dlr_response(resp_text):
-                            logger.debug(f"[{channel.channel_code}] DLR 响应为空，无新报告")
+                            logger.info(f"[{channel.channel_code}] DLR 响应为空（上游暂无回执）")
                             continue
-                        
-                        # 检查是否有错误
+
                         if _is_error_dlr_response(resp_text):
                             logger.warning(f"[{channel.channel_code}] DLR 响应错误: {resp_text[:200]}")
                             continue
-                        
-                        # 使用统一的解析器
+
                         reports = detect_and_parse_dlr(resp_text, content_type)
-                        
+
                         if reports:
                             logger.info(f"[{channel.channel_code}] 解析到 {len(reports)} 条 DLR 报告")
                             success, fail = await process_dlr_reports(
-                                reports, db, 
+                                reports, db,
                                 source=f"pull-{channel.channel_code}"
                             )
                             total_success += success
                             total_fail += fail
                         else:
-                            logger.debug(f"[{channel.channel_code}] 无有效 DLR 报告")
+                            logger.debug(f"[{channel.channel_code}] 无有效 DLR 报告，原始: {resp_text[:200]}")
                     else:
                         logger.warning(f"[{channel.channel_code}] 拉取 DLR 失败: HTTP {response.status_code}")
-                        
+
             except Exception as e:
                 logger.error(f"拉取通道 {channel.channel_code} DLR 失败: {str(e)}")
-        
+
         total = total_success + total_fail
         logger.info(f"DLR 拉取完成: 成功={total_success}, 失败={total_fail}, 总计={total}")
         return {"success": True, "updated": total, "delivered": total_success, "failed": total_fail}
@@ -678,28 +779,32 @@ async def _fetch_dlr_reports_async():
         await db.close()
 
 
-def _build_dlr_pull_url(channel: Channel) -> str:
+def _build_dlr_pull_url(channel: Channel, url_override: Optional[str] = None) -> str:
     """
     构建 DLR 拉取 URL
     
-    根据不同的通道类型构建对应的报告查询 URL
+    根据不同的通道类型构建对应的报告查询 URL。
+    若传入 url_override（来自系统配置 dlr_report_url_override），则优先使用。
     """
+    if url_override:
+        return url_override.strip()
+
     base_url = channel.api_url or ''
-    
-    # Kaola 格式: /smsv2 -> /sms?action=report
+
+    # Kaola 格式: /smsv2 -> /sms，report 使用 action=report 参数
     if 'kaolasms' in base_url.lower():
         base_url = base_url.replace('/smsv2', '/sms').replace('?action=send', '')
         if '?' in base_url:
             base_url = base_url.split('?')[0]
         return base_url
-    
+
     # 通用格式: 尝试替换或添加 /report 路径
     if base_url.endswith('/send'):
         return base_url.replace('/send', '/report')
-    
+
     if base_url.endswith('/sms'):
         return base_url + '/report'
-    
+
     # 默认直接使用
     return base_url
 
@@ -735,12 +840,13 @@ def _is_error_dlr_response(resp_text: str) -> bool:
     """
     resp_text = resp_text.lower()
     
-    # 常见错误标识
+    # 常见错误标识（含 Kaola 等上游的认证失败返回）
     error_patterns = [
         '<errorstatus>',
         '<error>',
         '"error":',
         'invalid_auth',
+        'con_invalid_auth',
         'authentication failed',
         'access denied',
         'unauthorized',

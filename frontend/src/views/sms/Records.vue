@@ -78,6 +78,13 @@
         </div>
 
         <div class="filter-item">
+          <label class="filter-label">国家</label>
+          <el-select v-model="searchForm.country_code" :placeholder="$t('smsRecords.allCountries')" clearable size="large" class="filter-select">
+            <el-option v-for="c in countryOptions" :key="c.dial" :label="c.name" :value="c.dial" />
+          </el-select>
+        </div>
+
+        <div class="filter-item">
           <label class="filter-label">日期范围</label>
           <el-date-picker
             v-model="dateRange"
@@ -127,9 +134,9 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="country_code" label="国家" width="70" align="center">
+          <el-table-column prop="country_code" label="国家" width="90" align="center">
             <template #default="{ row }">
-              <span>{{ row.country_code || '-' }}</span>
+              <span>{{ countryNameByDial(row.country_code) }}</span>
             </template>
           </el-table-column>
 
@@ -174,6 +181,12 @@
           <el-table-column prop="submit_time" label="提交时间" width="170">
             <template #default="{ row }">
               <span class="time-text">{{ formatTime(row.submit_time) }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column prop="delivery_time" :label="$t('smsRecords.deliveryTime')" width="170">
+            <template #default="{ row }">
+              <span class="time-text">{{ formatTime(row.delivery_time) || '-' }}</span>
             </template>
           </el-table-column>
 
@@ -222,12 +235,19 @@
             <span class="dc-value">{{ currentRecord.phone_number }}</span>
           </div>
           <div class="detail-card">
-            <span class="dc-label">国家代码</span>
-            <span class="dc-value">{{ currentRecord.country_code || '-' }}</span>
+            <span class="dc-label">国家</span>
+            <span class="dc-value">{{ countryNameByDial(currentRecord.country_code) }}</span>
           </div>
           <div class="detail-card" v-if="currentRecord.channel_code">
             <span class="dc-label">发送通道</span>
             <el-tag size="small" effect="plain">{{ currentRecord.channel_code }}</el-tag>
+          </div>
+          <div class="detail-card">
+            <span class="dc-label">上游状态</span>
+            <el-tag v-if="currentRecord.status === 'delivered'" size="small" type="success" effect="plain">已送达</el-tag>
+            <el-tag v-else-if="currentRecord.status === 'failed'" size="small" type="danger" effect="plain">失败</el-tag>
+            <el-tag v-else-if="currentRecord.upstream_message_id" size="small" type="success" effect="plain">发送成功</el-tag>
+            <span v-else class="text-muted">-</span>
           </div>
           <div class="detail-card">
             <span class="dc-label">短信条数</span>
@@ -303,8 +323,19 @@ import { ElMessage } from 'element-plus'
 import { Download, Refresh, Search, View } from '@element-plus/icons-vue'
 import { getSMSRecords, exportSMSRecords } from '@/api/sms'
 import { getAccountsAdmin, getChannelsAdmin } from '@/api/admin'
+import { COUNTRY_LIST, findCountryByDial } from '@/constants/countries'
 
 const { t } = useI18n()
+
+// 按国码显示中文国家名
+function countryNameByDial(dial: string | null): string {
+  if (!dial) return '-'
+  const c = findCountryByDial(dial)
+  return c ? c.name : dial
+}
+
+// 国家筛选选项（按中文名排序）
+const countryOptions = [...COUNTRY_LIST].sort((a, b) => a.name.localeCompare(b.name))
 const loading = ref(false)
 const exporting = ref(false)
 const detailVisible = ref(false)
@@ -325,6 +356,7 @@ const searchForm = ref({
   status: '',
   account_id: null as number | null,
   channel_id: null as number | null,
+  country_code: '' as string,
 })
 
 const pagination = ref({ page: 1, pageSize: 20, total: 0 })
@@ -386,6 +418,7 @@ const buildParams = () => {
   if (searchForm.value.message_id) params.message_id = searchForm.value.message_id
   if (isAdmin.value && searchForm.value.account_id) params.account_id = searchForm.value.account_id
   if (isAdmin.value && searchForm.value.channel_id) params.channel_id = searchForm.value.channel_id
+  if (searchForm.value.country_code) params.country_code = searchForm.value.country_code
   if (dateRange.value && dateRange.value.length === 2) {
     params.start_date = dateRange.value[0]
     params.end_date = dateRange.value[1]
@@ -415,7 +448,7 @@ const handleSearch = () => {
 }
 
 const handleReset = () => {
-  searchForm.value = { phone_number: '', message_id: '', status: '', account_id: null, channel_id: null }
+  searchForm.value = { phone_number: '', message_id: '', status: '', account_id: null, channel_id: null, country_code: '' }
   dateRange.value = null
   handleSearch()
 }

@@ -215,9 +215,16 @@ class CacheManager:
         return value
     
     async def invalidate_route_cache(self, country_code: Optional[str] = None):
-        """失效路由缓存"""
+        """失效路由缓存（国码与ISO两种格式均会失效）"""
         if country_code:
-            await self.delete_pattern(f"route:{country_code}")
+            from app.utils.phone_utils import country_to_dial_code, dial_to_country_code
+            codes = [country_code]
+            if country_code.isdigit():
+                codes.append(dial_to_country_code(country_code))
+            else:
+                codes.append(country_to_dial_code(country_code))
+            for c in set(codes):
+                await self.delete_pattern(f"route:{c}")
         else:
             await self.delete_pattern("route:*")
     

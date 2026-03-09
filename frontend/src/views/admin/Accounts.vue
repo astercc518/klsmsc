@@ -108,6 +108,16 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column :label="$t('customers.channel')" min-width="120">
+          <template #default="{ row }">
+            <template v-if="row.channels?.length">
+              <el-tag v-for="ch in row.channels" :key="ch.id" size="small" type="info" effect="plain" style="margin-right: 4px; margin-bottom: 2px">
+                {{ ch.channel_code }}
+              </el-tag>
+            </template>
+            <span v-else class="text-muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column :label="$t('customers.payment')" min-width="60" align="center">
           <template #default="{ row }">
             <el-tag :type="row.payment_type === 'prepaid' ? 'success' : 'warning'" size="small" effect="plain">

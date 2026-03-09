@@ -14,7 +14,15 @@ _COUNTRY_DIAL_MAP = {
     "EG": "20", "SA": "966", "AE": "971", "TR": "90", "IL": "972",
 }
 
+# 电话区号 → ISO 国家码（路由规则支持两种格式）
+_DIAL_TO_ISO = {v: k for k, v in _COUNTRY_DIAL_MAP.items()}
+
 
 def country_to_dial_code(country_code: str) -> str:
     """将国家二字码（如 PH）转换为电话区号（如 63），找不到则原样返回"""
     return _COUNTRY_DIAL_MAP.get(country_code.upper(), country_code)
+
+
+def dial_to_country_code(dial: str) -> str:
+    """将电话区号（如 63）转换为国家二字码（如 PH），找不到则原样返回"""
+    return _DIAL_TO_ISO.get(str(dial), str(dial))

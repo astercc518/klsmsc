@@ -358,6 +358,7 @@ export default {
     errorMsg: 'Error Message',
     accountId: 'Account ID',
     country: 'Country',
+    allCountries: 'All Countries',
     submitTime: 'Submit Time',
     smsDetail: 'SMS Detail',
     basicInfo: 'Basic Information',
@@ -492,6 +493,7 @@ export default {
     tgAccount: 'TG Account',
     country: 'Country',
     protocol: 'Protocol',
+    channel: 'Channel',
     payment: 'Payment',
     unitPrice: 'Unit Price',
     salesPerson: 'Sales',
@@ -740,6 +742,11 @@ export default {
     apiCredentialsPlaceholder: 'JSON format, e.g. {"account": "xxx", "password": "xxx"}',
     channelParams: 'Channel Parameters',
     defaultSidPlaceholder: 'Optional, Sender ID',
+    pricingCreateSuccess: 'Pricing created successfully',
+    pricingUpdateSuccess: 'Pricing updated successfully',
+    routingCreateSuccess: 'Routing rule created successfully',
+    routingUpdateSuccess: 'Routing rule updated successfully',
+    routingAutoCreated: ', routing auto-configured',
   },
   
   // Reports

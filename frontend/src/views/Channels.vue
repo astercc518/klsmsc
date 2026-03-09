@@ -393,7 +393,11 @@
       </div>
 
       <el-table :data="routingRules" v-loading="routingLoading" class="data-table">
-        <el-table-column prop="country_code" :label="$t('channels.countryCode')" width="120" />
+        <el-table-column prop="country_code" :label="$t('channels.countryCode')" width="120">
+          <template #default="{ row }">
+            {{ routingCountryLabel(row.country_code) }}
+          </template>
+        </el-table-column>
         <el-table-column prop="priority" :label="$t('channels.priority')" width="100" align="center" />
         <el-table-column prop="is_active" :label="$t('channels.enabled')" width="100" align="center">
           <template #default="{ row }">
@@ -428,7 +432,11 @@
     >
       <el-form :model="routingForm" label-width="80px">
         <el-form-item :label="$t('channels.countryCode')" required>
-          <el-input v-model="routingForm.country_code" :disabled="!!routingEditing" :placeholder="$t('channels.countryCodePlaceholder')" />
+          <CountrySelect
+            v-model="routingForm.country_code"
+            :disabled="!!routingEditing"
+            placeholder="选择国家（如泰国TH、菲律宾PH、越南VN）"
+          />
         </el-form-item>
         <el-form-item :label="$t('channels.priority')" required>
           <el-input-number v-model="routingForm.priority" :min="0" :max="1000" style="width: 100%" />
@@ -653,6 +661,8 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Plus, Refresh, Search, Connection, CircleCheck, Promotion, Link, CircleClose, Loading, Clock, Position, User, Edit, Money, Monitor, More, View, Guide, Delete, ChatDotSquare, ArrowDown } from '@element-plus/icons-vue'
+import CountrySelect from '@/components/CountrySelect.vue'
+import { findCountryByDial, findCountryByIso } from '@/constants/countries'
 import { getChannels } from '@/api/channel'
 import { 
   createChannel, 
@@ -1047,11 +1057,23 @@ const loadRoutingRules = async () => {
   }
 }
 
+const routingCountryLabel = (code: string) => {
+  if (!code) return '-'
+  const c = /^\d+$/.test(code) ? findCountryByDial(code) : findCountryByIso(code)
+  return c ? `${c.name} (${code})` : code
+}
+
 const openRoutingForm = (row?: any) => {
   routingEditing.value = row || null
+  // 路由支持国码(66)或ISO(TH)，编辑时若为国码则转为ISO以便CountrySelect显示
+  let countryCode = row?.country_code || ''
+  if (countryCode && /^\d+$/.test(countryCode)) {
+    const c = findCountryByDial(countryCode)
+    if (c) countryCode = c.iso
+  }
   Object.assign(routingForm, {
     id: row?.id || 0,
-    country_code: row?.country_code || '',
+    country_code: countryCode,
     priority: row?.priority ?? (routingChannel.value?.priority ?? 0),
     is_active: row?.is_active ?? true
   })
@@ -1155,7 +1177,7 @@ const savePricing = async () => {
       await updatePricing(pricingEditing.value.id, pricingForm.price_per_sms, pricingForm.currency)
       ElMessage.success(t('channels.pricingUpdateSuccess'))
     } else {
-      await createPricing({
+      const res = await createPricing({
         channel_id: pricingChannel.value.id,
         country_code: pricingForm.country_code,
         country_name: pricingForm.country_name,
@@ -1164,7 +1186,7 @@ const savePricing = async () => {
         mnc: pricingForm.mnc || undefined,
         operator_name: pricingForm.operator_name || undefined
       })
-      ElMessage.success(t('channels.pricingCreateSuccess'))
+      ElMessage.success(t('channels.pricingCreateSuccess') + (res?.routing_auto_created ? t('channels.routingAutoCreated') : ''))
     }
 
     pricingFormVisible.value = false

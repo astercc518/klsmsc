@@ -2,6 +2,7 @@
   <el-select
     v-model="selected"
     :placeholder="placeholder"
+    :disabled="disabled"
     filterable
     :filter-method="handleFilter"
     clearable
@@ -37,10 +38,12 @@ const props = withDefaults(defineProps<{
   modelValue?: string
   placeholder?: string
   showAllOption?: boolean
+  disabled?: boolean
 }>(), {
   modelValue: '',
   placeholder: '搜索国家 (名称/国码)',
   showAllOption: false,
+  disabled: false,
 })
 
 const emit = defineEmits<{

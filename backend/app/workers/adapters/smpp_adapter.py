@@ -21,6 +21,11 @@ _DLR_PATTERN = re.compile(
     r'stat:(?P<stat>\w+)\s+err:(?P<err>\d+)',
     re.IGNORECASE
 )
+# 备用格式：部分供应商使用简化格式，如 id:3 stat:DELIVRD 或 id:3 ... stat:DELIVRD err:000 或 stat:DELIVRD 000
+_DLR_PATTERN_FALLBACK = re.compile(
+    r'id:(?P<id>\S+).*?stat:(?P<stat>\w+)(?:\s+(?:err:)?(?P<err>\d+))?',
+    re.IGNORECASE | re.DOTALL
+)
 
 # 送达成功的 stat 值
 _DLR_DELIVERED_STATS = {'DELIVRD', 'ACCEPTD', 'DELIVERABLE'}
@@ -57,7 +62,13 @@ class SMPPAdapter:
         self.client = None
         self.connected = False
         self._lock = threading.Lock()
-        self._bind_mode = getattr(channel, "smpp_bind_mode", None) or "transceiver"
+        configured = getattr(channel, "smpp_bind_mode", None) or "transceiver"
+        self._bind_mode = configured
+        # Kaola SMPP (7099) 需 transceiver 才能接收 deliver_sm；若配置为 transmitter 则优先尝试 transceiver
+        host = (getattr(channel, "host", "") or "").lower()
+        if "kaolasms" in host and configured == "transmitter":
+            self._bind_mode = "transceiver"
+            logger.info(f"Kaola 通道 {channel.channel_code} 为接收 DLR 尝试 transceiver")
         self._system_type = getattr(channel, "smpp_system_type", None) or ""
         self._interface_version = getattr(channel, "smpp_interface_version", None) or 0x34
         self.last_error = None
@@ -173,18 +184,14 @@ class SMPPAdapter:
     @staticmethod
     def _extract_smpp_error_code(exc: Exception) -> Optional[int]:
         """从 smpplib 异常中提取 SMPP 状态码"""
-        # smpplib 抛出的异常格式: (f'({code}) ...', code)
-        if hasattr(exc, "args") and len(exc.args) >= 2:
-            try:
-                return int(exc.args[1])
-            except (ValueError, TypeError):
-                pass
-        # 也可能是 tuple 形式
-        if isinstance(exc.args[0], tuple) and len(exc.args[0]) >= 2:
-            try:
-                return int(exc.args[0][1])
-            except (ValueError, TypeError):
-                pass
+        try:
+            if hasattr(exc, "args") and exc.args:
+                if len(exc.args) >= 2:
+                    return int(exc.args[1])
+                if exc.args and isinstance(exc.args[0], tuple) and len(exc.args[0]) >= 2:
+                    return int(exc.args[0][1])
+        except (ValueError, TypeError, IndexError):
+            pass
         return None
 
     # ------------------------------------------------------------------ #
@@ -208,17 +215,24 @@ class SMPPAdapter:
                 # 轮询入站 PDU（处理 deliver_sm 等）
                 if can_receive and self.client:
                     try:
-                        self.client.read_once(ignore_error_codes=[],
-                                              timeout=0.1 if hasattr(self.client, 'read_once') else 0)
+                        self.client.read_once(ignore_error_codes=[], auto_send_enquire_link=True)
                     except Exception:
                         pass
 
-                # 心跳
+                # 心跳（smpplib 2.x 无 enquire_link 方法，需通过 PDU 发送）
                 if elapsed >= heartbeat_interval:
                     elapsed = 0
                     if self.client:
-                        self.client.enquire_link()
-                        logger.debug(f"SMPP心跳: {self.channel.channel_code}")
+                        try:
+                            if hasattr(self.client, "enquire_link"):
+                                self.client.enquire_link()
+                            else:
+                                import smpplib.smpp as _smpp
+                                pdu = _smpp.make_pdu("enquire_link", client=self.client)
+                                self.client.send_pdu(pdu)
+                            logger.debug(f"SMPP心跳: {self.channel.channel_code}")
+                        except Exception as e:
+                            logger.debug(f"SMPP心跳: {e}")
 
             except Exception as e:
                 logger.warning(f"SMPP心跳失败: {str(e)}")
@@ -248,6 +262,8 @@ class SMPPAdapter:
 
             m = _DLR_PATTERN.search(short_message)
             if not m:
+                m = _DLR_PATTERN_FALLBACK.search(short_message)
+            if not m:
                 logger.debug(
                     f"[{self.channel.channel_code}] deliver_sm 非 DLR 格式，跳过"
                 )
@@ -255,7 +271,7 @@ class SMPPAdapter:
 
             upstream_id = m.group("id")
             stat = m.group("stat").upper()
-            err = m.group("err")
+            err = m.group("err") if m.group("err") else "000"
 
             if stat in _DLR_DELIVERED_STATS:
                 new_status = "delivered"
@@ -306,18 +322,35 @@ class SMPPAdapter:
             )
             session = _asm(eng, class_=_AS, expire_on_commit=False)()
             try:
-                result = await session.execute(
-                    sa_select(SMSLog).where(
-                        and_(
-                            SMSLog.upstream_message_id == upstream_id,
-                            SMSLog.status.in_(["sent", "pending", "queued"]),
-                        )
+                # 统一转字符串匹配；兼容 B 端 submit_sm_resp 返回十进制、deliver_sm 回传十六进制（或反之）
+                upstream_id_str = str(upstream_id).strip()
+                candidate_ids = [upstream_id_str]
+                # 大小写变体（部分数据库/上游对十六进制 ID 大小写不一致）
+                if upstream_id_str and any(c in upstream_id_str.upper() for c in "ABCDEF"):
+                    candidate_ids.append(upstream_id_str.upper())
+                    candidate_ids.append(upstream_id_str.lower())
+                try:
+                    if upstream_id_str.startswith("0x") or upstream_id_str.startswith("0X"):
+                        candidate_ids.append(str(int(upstream_id_str, 16)))
+                    elif upstream_id_str.isdigit():
+                        candidate_ids.append(hex(int(upstream_id_str)))
+                    elif all(c in "0123456789abcdefABCDEF" for c in upstream_id_str):
+                        candidate_ids.append(str(int(upstream_id_str, 16)))
+                except (ValueError, TypeError):
+                    pass
+                candidate_ids = list(dict.fromkeys(candidate_ids))  # 去重
+
+                stmt = sa_select(SMSLog).where(
+                    and_(
+                        SMSLog.upstream_message_id.in_(candidate_ids),
+                        SMSLog.status.in_(["sent", "pending", "queued"]),
                     )
-                )
+                ).order_by(SMSLog.submit_time.desc()).limit(1)
+                result = await session.execute(stmt)
                 sms_log = result.scalar_one_or_none()
                 if not sms_log:
-                    logger.debug(
-                        f"SMPP DLR: 未找到 upstream_id={upstream_id}"
+                    logger.warning(
+                        f"SMPP DLR: 未找到 upstream_id={upstream_id} (尝试过 {candidate_ids})"
                     )
                     return
 
@@ -406,6 +439,12 @@ class SMPPAdapter:
                         registered_delivery=1,
                     )
 
+                    # 同步读取 submit_sm_resp 以获取真实 message_id（否则会误用 sequence 导致 DLR 无法匹配）
+                    try:
+                        self.client.read_once(ignore_error_codes=[], auto_send_enquire_link=False)
+                    except Exception:
+                        pass
+
                     # 优先从 resp handler 获取 message_id
                     if resp_message_ids:
                         mid = resp_message_ids[-1]
@@ -426,6 +465,8 @@ class SMPPAdapter:
 
             final_message_id = message_ids[0] if message_ids else None
             logger.info(f"SMPP发送成功: {sms_log.message_id} -> {final_message_id}")
+
+            # transceiver/receiver 模式下不在此断开，由 sms_worker 加入延迟断开队列，避免阻塞 Celery 任务
             return True, final_message_id, None
 
         except Exception as e:

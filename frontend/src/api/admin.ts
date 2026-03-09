@@ -297,6 +297,7 @@ export interface AdminAccount {
     real_name?: string | null;
     email?: string | null;
   } | null;
+  channels?: { id: number; channel_code: string }[];
   created_at?: string | null;
   updated_at?: string | null;
 }

@@ -71,7 +71,10 @@ async def get_current_account_or_admin(
                 account = result.scalar_one_or_none()
                 
                 if account:
-                    logger.info(f"管理员 {admin_id} 使用账户 {account.id} 发送短信")
+                    logger.info(
+                        f"管理员 {admin_id} 使用系统默认账户 {account.id} ({account.account_name}) 发送短信；"
+                        "若需按客户绑定通道发送，请使用「模拟登录」"
+                    )
                     return account
                 else:
                     raise AuthenticationError("No available account for admin SMS sending")
@@ -178,12 +181,13 @@ async def send_sms(
                 error={"code": "INVALID_CONTENT", "message": error_msg}
             )
         
-        # 3. 路由选择通道
+        # 3. 路由选择通道（账户已绑定通道时，仅在绑定通道中路由）
         routing_engine = RoutingEngine(db)
         channel = await routing_engine.select_channel(
             country_code=country_code,
             preferred_channel=request.channel_id,
-            strategy='priority'
+            strategy='priority',
+            account_id=account.id
         )
         
         if not channel:
@@ -351,9 +355,13 @@ async def send_batch_sms(
 
             country_code = phone_info['country_code']
 
-            # 2. 路由选择
+            # 2. 路由选择（账户已绑定通道时，仅在绑定通道中路由）
             routing_engine = RoutingEngine(db)
-            channel = await routing_engine.select_channel(country_code=country_code, strategy='priority')
+            channel = await routing_engine.select_channel(
+                country_code=country_code,
+                strategy='priority',
+                account_id=account.id
+            )
             if not channel:
                 failed += 1
                 results.append({"phone_number": phone_number, "success": False,
@@ -470,6 +478,7 @@ async def get_sms_records(
     phone_number: Optional[str] = None,
     message_id: Optional[str] = None,
     channel_id: Optional[int] = None,
+    country_code: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     account_id: Optional[int] = None,
@@ -498,6 +507,8 @@ async def get_sms_records(
         conditions.append(SMSLog.message_id.like(f"%{message_id}%"))
     if channel_id:
         conditions.append(SMSLog.channel_id == channel_id)
+    if country_code:
+        conditions.append(SMSLog.country_code == country_code)
 
     if start_date:
         try:
@@ -568,6 +579,7 @@ async def export_sms_records(
     status: Optional[str] = None,
     phone_number: Optional[str] = None,
     channel_id: Optional[int] = None,
+    country_code: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     account_id: Optional[int] = None,
@@ -595,6 +607,8 @@ async def export_sms_records(
         conditions.append(SMSLog.phone_number.like(f"%{phone_number}%"))
     if channel_id:
         conditions.append(SMSLog.channel_id == channel_id)
+    if country_code:
+        conditions.append(SMSLog.country_code == country_code)
     if start_date:
         try:
             conditions.append(SMSLog.submit_time >= datetime.strptime(start_date, "%Y-%m-%d"))
@@ -667,10 +681,19 @@ import ipaddress as _ipaddress
 def _verify_dlr_caller(request: Request) -> bool:
     """
     校验 DLR 回调请求来源：Token 或 IP 白名单。
-    两项都未配置时视为开放（向后兼容），配置了任一项则至少满足其一。
+    - DLR_CALLBACK_OPEN=true 时：允许所有回调（上游不支持认证时使用）
+    - 否则需配置 Token 或 IP 白名单，至少满足其一
     """
+    if getattr(settings, 'DLR_CALLBACK_OPEN', False):
+        return True
+
     token_ok: Optional[bool] = None
     ip_ok: Optional[bool] = None
+    client_ip = (
+        request.headers.get("X-Real-IP")
+        or (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
 
     # Token 校验
     if settings.DLR_CALLBACK_TOKEN:
@@ -683,11 +706,6 @@ def _verify_dlr_caller(request: Request) -> bool:
     # IP 白名单校验
     allowed_ips = settings.dlr_callback_ip_list
     if allowed_ips:
-        client_ip = (
-            request.headers.get("X-Real-IP")
-            or (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-            or (request.client.host if request.client else "")
-        )
         try:
             client_addr = _ipaddress.ip_address(client_ip)
             ip_ok = any(
@@ -699,9 +717,9 @@ def _verify_dlr_caller(request: Request) -> bool:
         except ValueError:
             ip_ok = False
 
-    # P2-FIX: 两项都未配置 → 拒绝（安全优先）
+    # 两项都未配置 → 拒绝
     if token_ok is None and ip_ok is None:
-        logger.warning(f"DLR回调未配置Token和IP白名单，拒绝请求: {client_ip}")
+        logger.warning(f"DLR回调认证失败: 未配置Token和IP白名单，拒绝请求 IP={client_ip}。可设置 DLR_CALLBACK_OPEN=true 或配置 Token/IP 白名单")
         return False
     # 任一通过即可
     if token_ok is True or ip_ok is True:

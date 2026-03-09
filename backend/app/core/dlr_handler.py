@@ -32,13 +32,14 @@ class DLRStatus(Enum):
     PENDING = "pending"          # 等待中
 
 
-# 常见的送达成功状态码/关键词
+# 常见的送达成功状态码/关键词（含 Kaola 等上游的 DELIVRD、DELIVRD 000 等）
 DELIVERED_CODES = {
     # 数字状态码
     '0', '1', '10', '100', '200',
     # 字符串状态
     'delivrd', 'delivered', 'success', 'ok', 'sent', 'accepted',
     'deliveredtonetwork', 'deliveredtoterminal', 'sm_deliveredtomob',
+    'dlvrd', 'submitted',
 }
 
 # 常见的失败状态码/关键词
@@ -65,8 +66,10 @@ def normalize_status(status_code: Any, error_code: str = '') -> DLRStatus:
     status_str = str(status_code).lower().strip() if status_code is not None else ''
     error_str = str(error_code).lower().strip() if error_code else ''
     
-    # 检查是否是送达成功
+    # 检查是否是送达成功（含 "delivrd 000"、"DELIVRD" 等变体）
     if status_str in DELIVERED_CODES or error_str in DELIVERED_CODES:
+        return DLRStatus.DELIVERED
+    if 'delivrd' in status_str or 'delivrd' in error_str:
         return DLRStatus.DELIVERED
     
     # 检查是否是失败
@@ -300,11 +303,18 @@ async def process_dlr_reports(
             message_id = report.get('message_id')
             if not message_id:
                 continue
+            msg_id_str = str(message_id)  # 统一转字符串，避免上游返回 int 导致匹配失败
             
-            # 查找对应的短信记录
-            query = select(SMSLog).where(SMSLog.upstream_message_id == message_id)
+            # 查找对应的短信记录：优先用上游消息ID匹配
+            query = select(SMSLog).where(SMSLog.upstream_message_id == msg_id_str)
             result = await db.execute(query)
             sms_log = result.scalar_one_or_none()
+            
+            # 兜底：部分上游会回传我们的 message_id，尝试用我们的 ID 匹配
+            if not sms_log:
+                query = select(SMSLog).where(SMSLog.message_id == msg_id_str)
+                result = await db.execute(query)
+                sms_log = result.scalar_one_or_none()
             
             # 如果没找到，尝试用手机号匹配
             if not sms_log and report.get('mobile'):
@@ -330,7 +340,6 @@ async def process_dlr_reports(
                 report.get('status_code'),
                 report.get('error_code', '')
             )
-            
             # 更新记录
             if dlr_status == DLRStatus.DELIVERED:
                 sms_log.status = 'delivered'

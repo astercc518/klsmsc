@@ -448,66 +448,112 @@ async def buy_and_send(
     if available < data.quantity:
         raise HTTPException(400, f"库存不足，当前可用: {available}")
 
-    # ---------- 1. 通道路由 ----------
+    # ---------- 1. 先锁定号码（防超卖） ----------
     from app.core.router import RoutingEngine
     from app.core.pricing import PricingEngine
     from app.modules.sms.sms_batch import SmsBatch, BatchStatus
     from app.modules.sms.sms_log import SMSLog
     from app.utils.queue import QueueManager
-
-    sample_query = build_filter_query(filter_criteria, public_only=True).limit(1)
-    sample_result = await db.execute(sample_query)
-    sample_num = sample_result.scalar_one_or_none()
-    if not sample_num:
-        raise HTTPException(400, "无可用号码")
-
-    # 用号码的 country_code 查找对应区号来路由（如PH→63）
-    phone_country = sample_num.country_code or "PH"
     from app.utils.phone_utils import country_to_dial_code
-    dial_code = country_to_dial_code(phone_country)
 
+    id_query = build_filter_query(filter_criteria, public_only=True).with_only_columns(DataNumber.id).limit(data.quantity)
+    id_result = await db.execute(id_query)
+    number_ids = [row[0] for row in id_result.fetchall()]
+    if len(number_ids) < data.quantity:
+        raise HTTPException(400, f"库存不足，仅剩 {len(number_ids)} 条")
+
+    # 原子锁定
+    lock_result = await db.execute(
+        sa_update(DataNumber)
+        .where(DataNumber.id.in_(number_ids), DataNumber.account_id.is_(None))
+        .values(account_id=account.id, last_used_at=datetime.now())
+    )
+    if lock_result.rowcount < data.quantity:
+        raise HTTPException(400, "号码已被抢购，请重试")
+
+    num_result = await db.execute(select(DataNumber).where(DataNumber.id.in_(number_ids)))
+    numbers = num_result.scalars().all()
+
+    # ---------- 2. 按每个号码的国家单独选通道（与手动发送一致，避免用样本导致通道错误） ----------
     routing_engine = RoutingEngine(db)
-    channel = None
-    for cc in [dial_code, phone_country]:
-        try:
-            channel = await routing_engine.select_channel(country_code=cc, strategy='priority')
-            if channel and channel.protocol == 'HTTP' and channel.api_url:
-                break
-            channel = None
-        except Exception:
-            continue
+    pricing_engine = PricingEngine(db)
+    msg_list = data.messages if data.messages and len(data.messages) > 1 else [data.message]
+    msg_count = len(msg_list)
+    var_tags = ("{序号}", "{国家}", "{日期}", "{随机码}", "{号码}", "{index}", "{country}", "{date}", "{code}", "{phone}")
+    msg_has_vars = [any(v in m for v in var_tags) for m in msg_list]
 
-    if not channel:
-        from sqlalchemy import select as sa_select
-        from app.modules.sms.channel import Channel
-        ch_result = await db.execute(
-            sa_select(Channel).where(
+    # 预计算每条短信的通道、价格、成本
+    num_plans = []  # [(num, channel, price_info, msg, parts, sell, cost), ...]
+    for idx, num in enumerate(numbers, start=1):
+        template = msg_list[(idx - 1) % msg_count]
+        msg = _render_sms_template(template, idx, num.phone_number, num.country_code) if msg_has_vars[(idx - 1) % msg_count] else template
+        parts = pricing_engine._count_sms_parts(msg)
+
+        phone_country = num.country_code or "PH"
+        dial_code = country_to_dial_code(phone_country)
+
+        channel = None
+        for cc in [dial_code, phone_country]:
+            try:
+                ch = await routing_engine.select_channel(
+                    country_code=cc,
+                    strategy='priority',
+                    account_id=account.id
+                )
+                if ch:
+                    # 支持 HTTP 与 SMPP，与手动发送一致
+                    if ch.protocol == 'HTTP':
+                        if ch.api_url:
+                            channel = ch
+                            break
+                    elif ch.protocol == 'SMPP':
+                        if ch.host and ch.port:
+                            channel = ch
+                            break
+            except Exception:
+                continue
+
+        if not channel:
+            from sqlalchemy import select as sa_select, or_, and_
+            from app.modules.sms.channel import Channel
+            from app.modules.common.account import AccountChannel
+            # 兜底：HTTP 或 SMPP 均可（与手动发送一致）
+            base_q = sa_select(Channel).where(
                 Channel.status == 'active',
                 Channel.is_deleted == False,
-                Channel.protocol == 'HTTP',
-                Channel.api_url.isnot(None),
-            ).order_by(Channel.priority.desc()).limit(1)
-        )
-        channel = ch_result.scalar_one_or_none()
+                or_(
+                    and_(Channel.protocol == 'HTTP', Channel.api_url.isnot(None)),
+                    and_(Channel.protocol == 'SMPP', Channel.host.isnot(None), Channel.port.isnot(None)),
+                ),
+            )
+            ac_result = await db.execute(
+                select(AccountChannel.channel_id).where(AccountChannel.account_id == account.id)
+            )
+            bound_ids = [r[0] for r in ac_result.all()]
+            if bound_ids:
+                base_q = base_q.where(Channel.id.in_(bound_ids))
+            ch_result = await db.execute(base_q.order_by(Channel.priority.desc()).limit(1))
+            channel = ch_result.scalar_one_or_none()
 
-    if not channel:
-        raise HTTPException(400, "无可用发送通道")
+        if not channel:
+            raise HTTPException(
+                400,
+                f"号码 {num.phone_number}（国家 {phone_country}）无可用发送通道，请检查账户通道绑定与路由规则"
+            )
 
-    # ---------- 2. 计费 ----------
-    pricing_engine = PricingEngine(db)
-    sample_msg = data.messages[0] if data.messages else data.message
-    price_info = await pricing_engine.get_price(channel.id, dial_code, account_id=account.id)
-    if not price_info:
-        price_info = await pricing_engine.get_price(channel.id, phone_country, account_id=account.id)
+        price_info = await pricing_engine.get_price(channel.id, dial_code, account_id=account.id)
+        if not price_info:
+            price_info = await pricing_engine.get_price(channel.id, phone_country, account_id=account.id)
+        sell = float(price_info['price']) * parts if price_info else 0.0
+        cost = float(channel.cost_rate or 0) * parts
+        currency = price_info['currency'] if price_info else 'USD'
+        num_plans.append((num, channel, price_info, msg, parts, sell, cost, currency))
 
-    sms_parts = pricing_engine._count_sms_parts(sample_msg)
-    sell_per_sms = float(price_info['price']) * sms_parts if price_info else 0.0
-    cost_per_sms = float(channel.cost_rate) * sms_parts if channel.cost_rate else 0.0
-    currency = price_info['currency'] if price_info else 'USD'
-
+    # 汇总费用
     data_cost = Decimal(str(unit_price)) * data.quantity
-    sms_cost = Decimal(str(sell_per_sms)) * data.quantity
+    sms_cost = sum(Decimal(str(p[5])) for p in num_plans)
     total_cost = data_cost + sms_cost
+    currency = num_plans[0][7] if num_plans else 'USD'
 
     # P0-FIX: 原子扣费
     deduct = await db.execute(
@@ -535,21 +581,7 @@ async def buy_and_send(
     db.add(order)
     await db.flush()
 
-    # ---------- 4. 获取并锁定号码 ----------
-    id_query = build_filter_query(filter_criteria, public_only=True).with_only_columns(DataNumber.id).limit(data.quantity)
-    id_result = await db.execute(id_query)
-    number_ids = [row[0] for row in id_result.fetchall()]
-
-    # P0-FIX: 防超卖
-    await db.execute(
-        sa_update(DataNumber)
-        .where(DataNumber.id.in_(number_ids), DataNumber.account_id.is_(None))
-        .values(account_id=account.id, last_used_at=datetime.now())
-    )
-
-    num_result = await db.execute(select(DataNumber).where(DataNumber.id.in_(number_ids)))
-    numbers = num_result.scalars().all()
-
+    # ---------- 4. 创建短信记录（每条使用该号码国家对应的通道） ----------
     batch_tag = f"BATCH-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
     sms_batch = SmsBatch(
         account_id=account.id,
@@ -560,21 +592,12 @@ async def buy_and_send(
     db.add(sms_batch)
     await db.flush()
 
-    # ---------- 5. 创建短信记录（含通道和计费） ----------
-    msg_list = data.messages if data.messages and len(data.messages) > 1 else [data.message]
-    msg_count = len(msg_list)
-
-    var_tags = ("{序号}", "{国家}", "{日期}", "{随机码}", "{号码}", "{index}", "{country}", "{date}", "{code}", "{phone}")
-    msg_has_vars = [any(v in m for v in var_tags) for m in msg_list]
-
     message_ids = []
-    for idx, num in enumerate(numbers, start=1):
+    channels_used = set()
+    for idx, (num, channel, price_info, msg, parts, sell, cost, _) in enumerate(num_plans, start=1):
         num.use_count = (num.use_count or 0) + 1
+        channels_used.add(channel.channel_code)
 
-        template = msg_list[(idx - 1) % msg_count]
-        msg = _render_sms_template(template, idx, num.phone_number, num.country_code) if msg_has_vars[(idx - 1) % msg_count] else template
-
-        parts = pricing_engine._count_sms_parts(msg)
         mid = f"msg_{uuid.uuid4().hex}"
         sms = SMSLog(
             message_id=mid,
@@ -586,8 +609,8 @@ async def buy_and_send(
             message=msg,
             message_count=parts,
             status="pending",
-            cost_price=float(channel.cost_rate or 0) * parts,
-            selling_price=float(price_info['price']) * parts if price_info else 0.0,
+            cost_price=cost,
+            selling_price=sell,
             currency=currency,
             submit_time=datetime.now(),
         )
@@ -603,7 +626,7 @@ async def buy_and_send(
     db.add(BalanceLog(
         account_id=account.id, change_type='charge', amount=-total_cost,
         balance_after=float(new_bal.scalar()),
-        description=f"DataSend: {len(numbers)} 条 × ({unit_price}+{sell_per_sms:.4f}) via {channel.channel_code}"
+        description=f"DataSend: {len(numbers)} 条 via {','.join(sorted(channels_used))}"
     ))
 
     await db.commit()
@@ -619,7 +642,7 @@ async def buy_and_send(
         "order_no": order.order_no,
         "batch_id": batch_tag,
         "queued": queued,
-        "channel": channel.channel_code,
+        "channel": ",".join(sorted(channels_used)) if channels_used else "-",
         "cost": {"data": data_cost, "sms": sms_cost, "total": total_cost, "currency": currency},
     }
 

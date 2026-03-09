@@ -519,11 +519,15 @@ async def list_accounts_admin(
     total_result = await db.execute(select(func.count(Account.id)).where(where_expr))
     total = total_result.scalar() or 0
 
-    from sqlalchemy.orm import selectinload
+    from sqlalchemy.orm import selectinload, joinedload
+    from app.modules.common.account import AccountChannel
     
     result = await db.execute(
         select(Account)
-        .options(selectinload(Account.sales))
+        .options(
+            selectinload(Account.sales),
+            selectinload(Account.account_channels).joinedload(AccountChannel.channel),
+        )
         .where(where_expr)
         .order_by(Account.created_at.desc())
         .limit(safe_limit)
@@ -573,6 +577,11 @@ async def list_accounts_admin(
                     "email": a.sales.email if a.sales else None
                 } if a.sales else None,
                 "sales_id": a.sales_id,
+                "channels": [
+                    {"id": ac.channel.id, "channel_code": ac.channel.channel_code}
+                    for ac in (a.account_channels or [])
+                    if ac.channel
+                ] if a.account_channels else [],
                 "created_at": a.created_at.isoformat() if a.created_at else None,
                 "updated_at": a.updated_at.isoformat() if a.updated_at else None,
                 "last_login_at": a.last_login_at.isoformat() if a.last_login_at else None,
@@ -1420,7 +1429,15 @@ async def channel_test_send(
                 }
 
             success, channel_msg_id, error = await adapter.send(sms_log)
-            await adapter.disconnect()
+            # transceiver 模式下不立即断开，加入延迟断开队列以接收 DLR（与正常发送流程一致）
+            if success and getattr(adapter, 'client', None) and getattr(adapter, '_bind_mode', '') in ('transceiver', 'receiver'):
+                try:
+                    from app.workers.sms_worker import _smpp_schedule_delayed_disconnect
+                    _smpp_schedule_delayed_disconnect(adapter)
+                except Exception:
+                    await adapter.disconnect()
+            else:
+                await adapter.disconnect()
 
         elif channel.protocol == "HTTP":
             from app.workers.adapters.http_adapter import HTTPAdapter
@@ -1640,6 +1657,28 @@ async def channel_check_status(
                 "latency_ms": latency_ms
             }
         }
+
+
+# --- DLR 手动拉取（调试用）---
+
+@router.post("/dlr/fetch", response_model=dict)
+async def admin_dlr_fetch(
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """
+    手动触发 DLR 拉取任务（调试用）
+    将 fetch_dlr_reports_task 加入队列，Worker 会拉取 HTTP 通道及配置了 dlr_report_url_override 的 SMPP 通道的送达回执
+    """
+    from app.workers.sms_worker import fetch_dlr_reports_task
+    try:
+        fetch_dlr_reports_task.delay()
+        return {
+            "success": True,
+            "message": "DLR 拉取任务已加入队列，请查看 Worker 日志获取结果",
+        }
+    except Exception as e:
+        logger.error(f"手动 DLR 拉取失败: {str(e)}", exc_info=e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Routing Rules Management ---
@@ -1869,22 +1908,52 @@ async def create_pricing(
     )
     
     db.add(pricing)
+    await db.flush()
+
+    # 自动创建路由规则：若该通道+国家尚无路由，则新增一条
+    from app.modules.sms.routing_rule import RoutingRule
+    from app.utils.phone_utils import country_to_dial_code, dial_to_country_code
+    codes_to_check = [request.country_code]
+    if request.country_code.isdigit():
+        codes_to_check.append(dial_to_country_code(request.country_code))
+    else:
+        codes_to_check.append(country_to_dial_code(request.country_code))
+    route_exists = await db.execute(
+        select(RoutingRule).where(
+            RoutingRule.channel_id == request.channel_id,
+            RoutingRule.country_code.in_(codes_to_check)
+        )
+    )
+    routing_auto_created = False
+    if route_exists.scalar_one_or_none() is None:
+        route = RoutingRule(
+            channel_id=request.channel_id,
+            country_code=request.country_code,
+            priority=0,
+            is_active=True,
+        )
+        db.add(route)
+        routing_auto_created = True
+        logger.info(f"自动创建路由规则: {request.country_code} -> channel {request.channel_id}")
+
     await db.commit()
     await db.refresh(pricing)
-    
+
     logger.info(f"费率规则创建成功: {pricing.country_code} - {pricing.channel_id}")
 
-    # 失效价格缓存（该通道/国家）
+    # 失效价格与路由缓存
     try:
         from app.utils.cache import get_cache_manager
         cache_manager = await get_cache_manager()
         await cache_manager.invalidate_price_cache(channel_id=pricing.channel_id, country_code=pricing.country_code)
+        await cache_manager.invalidate_route_cache(country_code=pricing.country_code)
     except Exception:
         pass
-    
+
     return {
         "success": True,
         "pricing_id": pricing.id,
+        "routing_auto_created": routing_auto_created,
         "message": "Pricing rule created successfully"
     }
 
