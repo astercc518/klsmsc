@@ -70,6 +70,9 @@
             <el-option :label="$t('staff.locked')" value="locked" />
           </el-select>
           <el-button @click="loadData" :icon="Refresh">{{ $t('common.refresh') }}</el-button>
+          <el-button type="warning" :loading="syncing" @click="showClearTgDialog" :icon="Connection">
+            {{ $t('staff.clearStaffTg') }}
+          </el-button>
         </div>
       </div>
 
@@ -142,7 +145,7 @@
                     <el-dropdown-item @click="toggleStatus(row)">
                       {{ row.status === 'active' ? $t('staff.disableAccount') : $t('staff.enableAccount') }}
                     </el-dropdown-item>
-                    <el-dropdown-item divided @click="confirmDelete(row)" style="color: #f56c6c">{{ $t('common.delete') }}</el-dropdown-item>
+                    <el-dropdown-item divided @click="showOffboardDialog(row)" style="color: #f56c6c">{{ $t('staff.offboard') }}</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
@@ -191,6 +194,40 @@
       </template>
     </el-dialog>
 
+    <!-- 离职处理对话框 -->
+    <el-dialog
+      v-model="offboardDialogVisible"
+      :title="$t('staff.offboard')"
+      width="480px"
+      destroy-on-close
+    >
+      <div class="offboard-preview">
+        <p class="offboard-desc">{{ $t('staff.offboardDesc', { name: offboardTarget?.real_name || offboardTarget?.username }) }}</p>
+        <el-skeleton v-if="!offboardPreview" :rows="2" animated class="mb-12" />
+        <el-descriptions v-if="offboardPreview" :column="1" border size="small">
+          <el-descriptions-item :label="$t('staff.offboardCustomers')">{{ offboardPreview.customer_count }}</el-descriptions-item>
+          <el-descriptions-item :label="$t('staff.offboardInvites')">{{ offboardPreview.unused_invite_count }}</el-descriptions-item>
+        </el-descriptions>
+        <el-form-item v-if="offboardPreview && (offboardPreview.customer_count > 0 || offboardPreview.unused_invite_count > 0) && activeSalesList.length" :label="$t('staff.reassignTo')" class="mt-12">
+          <el-select v-model="offboardReassignId" :placeholder="$t('staff.selectReassignSales')" clearable style="width: 100%">
+            <el-option
+              v-for="s in activeSalesList"
+              :key="s.id"
+              :label="`${s.real_name || s.username} (${s.username})`"
+              :value="s.id"
+            />
+          </el-select>
+          <div class="offboard-hint">{{ $t('staff.offboardReassignHint') }}</div>
+        </el-form-item>
+      </div>
+      <template #footer>
+        <el-button @click="offboardDialogVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="danger" @click="submitOffboard" :loading="offboarding">
+          {{ $t('staff.offboardConfirm') }}
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 重置密码对话框 -->
     <el-dialog v-model="resetDialogVisible" :title="$t('staff.resetPassword')" width="400px">
       <el-form :model="resetForm" ref="resetFormRef" label-width="80px">
@@ -211,7 +248,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, User } from '@element-plus/icons-vue'
+import { Plus, Refresh, User, Connection } from '@element-plus/icons-vue'
 import request from '@/api/index'
 import { formatDate } from '@/utils/date'
 
@@ -242,6 +279,13 @@ const submitting = ref(false)
 const resetDialogVisible = ref(false)
 const resetForm = ref({ password: '' })
 const resetting = ref(false)
+const syncing = ref(false)
+const offboardDialogVisible = ref(false)
+const offboardPreview = ref<{ customer_count: number; unused_invite_count: number } | null>(null)
+const offboardTarget = ref<Staff | null>(null)
+const offboardReassignId = ref<number | null>(null)
+const offboarding = ref(false)
+const activeSalesList = ref<Staff[]>([])
 
 const filters = ref({
   role: '',
@@ -289,6 +333,40 @@ const getRoleType = (role: string) => {
     finance: 'info'
   }
   return map[role] || 'info'
+}
+
+const syncInactiveTelegram = async (username?: string) => {
+  syncing.value = true
+  try {
+    const params = username ? { username } : {}
+    const res = await request.post('/admin/users/sync-inactive-telegram', null, { params })
+    if (res?.success) {
+      ElMessage.success(res.message || t('staff.syncInactiveSuccess', { count: res.cleared_count ?? 0 }))
+      await loadData()
+    }
+  } catch (e: any) {
+    ElMessage.error(e.message || t('staff.syncInactiveFailed'))
+  } finally {
+    syncing.value = false
+  }
+}
+
+const showClearTgDialog = async () => {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      t('staff.clearStaffTgPrompt'),
+      t('staff.clearStaffTg'),
+      {
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel'),
+        inputPlaceholder: 'KL04',
+        inputValidator: () => true,
+      }
+    )
+    await syncInactiveTelegram(value?.trim() || undefined)
+  } catch {
+    // 用户取消
+  }
 }
 
 const loadData = async () => {
@@ -417,24 +495,48 @@ const toggleStatus = async (row: Staff) => {
   }
 }
 
-const confirmDelete = async (row: Staff) => {
+const showOffboardDialog = async (row: Staff) => {
+  offboardTarget.value = row
+  offboardReassignId.value = null
+  offboardPreview.value = null
+  offboardDialogVisible.value = true
   try {
-    await ElMessageBox.confirm(
-      t('staff.confirmDeleteStaff', { name: row.real_name || row.username }),
-      t('staff.confirmDelete'),
-      {
-        confirmButtonText: t('common.confirm'),
-        cancelButtonText: t('common.cancel'),
-        type: 'warning'
+    const res = await request.get(`/admin/users/${row.id}/offboard-preview`)
+    if (res?.success && res.staff) {
+      offboardPreview.value = {
+        customer_count: res.customer_count ?? 0,
+        unused_invite_count: res.unused_invite_count ?? 0
       }
-    )
-    await request.delete(`/admin/users/${row.id}`)
-    ElMessage.success(t('staff.deleteSuccess'))
-    loadData()
-  } catch (e: any) {
-    if (e !== 'cancel') {
-      ElMessage.error(e.response?.data?.detail || t('staff.deleteFailed'))
     }
+    const salesRes = await request.get('/admin/users', { params: { role: 'sales', status: 'active' } })
+    activeSalesList.value = (salesRes?.users || []).filter((s: Staff) => s.id !== row.id)
+  } catch (e: any) {
+    ElMessage.error(e.message || t('staff.loadFailed'))
+    offboardDialogVisible.value = false
+  }
+}
+
+const submitOffboard = async () => {
+  if (!offboardTarget.value) return
+  offboarding.value = true
+  try {
+    const res = await request.post(`/admin/users/${offboardTarget.value.id}/offboard`, {
+      reassign_sales_id: offboardReassignId.value || undefined
+    })
+    if (res?.success) {
+      const msg = [
+        t('staff.offboardSuccess'),
+        res.customers_reassigned > 0 ? t('staff.offboardCustomersReassigned', { count: res.customers_reassigned }) : '',
+        res.invites_transferred > 0 ? t('staff.offboardInvitesTransferred', { count: res.invites_transferred }) : ''
+      ].filter(Boolean).join('；')
+      ElMessage.success(msg)
+      offboardDialogVisible.value = false
+      loadData()
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || t('staff.offboardFailed'))
+  } finally {
+    offboarding.value = false
   }
 }
 
@@ -523,6 +625,12 @@ onMounted(() => {
   padding: 0 20px;
   font-weight: 500;
 }
+
+.mt-12 { margin-top: 12px; }
+.mb-12 { margin-bottom: 12px; }
+.offboard-preview { padding: 4px 0; }
+.offboard-desc { margin: 0 0 12px; color: var(--text-secondary); font-size: 14px; }
+.offboard-hint { margin-top: 6px; font-size: 12px; color: var(--text-tertiary); }
 
 /* 统计卡片 */
 .stats-row {

@@ -71,3 +71,12 @@ export const unbindAccountTelegram = () => {
   return request.post('/account/telegram-unbind')
 }
 
+// 客户 TG 验证登录
+export const sendAccountTelegramCode = (identifier: string) => {
+  return request.post('/account/telegram-login/send-code', { identifier })
+}
+
+export const verifyAccountTelegramCode = (identifier: string, code: string) => {
+  return request.post('/account/telegram-login/verify', { identifier, code })
+}
+

@@ -1,7 +1,9 @@
 """
 账户管理API路由
 """
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import get_db
@@ -247,6 +249,147 @@ async def login(
         success=True,
         token=account.api_key,
         account_id=account.id
+    )
+
+
+class AccountTelegramSendCodeRequest(BaseModel):
+    identifier: str  # 账户名或邮箱
+
+
+class AccountTelegramVerifyRequest(BaseModel):
+    identifier: str
+    code: str
+
+
+async def _get_account_tg_id(db: AsyncSession, account: Account) -> Optional[int]:
+    """获取账户的 tg_id（Account 或 TelegramBinding）"""
+    if account.tg_id:
+        return account.tg_id
+    from app.modules.common.telegram_binding import TelegramBinding
+    bind_result = await db.execute(
+        select(TelegramBinding).where(
+            TelegramBinding.account_id == account.id,
+            TelegramBinding.is_active == True,
+        ).limit(1)
+    )
+    binding = bind_result.scalar_one_or_none()
+    return binding.tg_id if binding else None
+
+
+@router.post("/telegram-login/send-code", response_model=dict)
+async def account_telegram_send_code(
+    request: AccountTelegramSendCodeRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """客户账户 TG 验证登录 - 发送验证码（支持账户名或邮箱）"""
+    import random
+    from sqlalchemy import or_
+    from app.utils.cache import get_redis_client
+    from app.services.notification_service import notification_service
+
+    identifier = (request.identifier or "").strip()
+    if not identifier:
+        return {"success": False, "error": "invalid_username"}
+
+    result = await db.execute(
+        select(Account).where(
+            or_(Account.account_name == identifier, Account.email == identifier),
+            Account.is_deleted == False,
+            Account.status == "active",
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        return {"success": False, "error": "account_not_bound"}
+
+    tg_id = await _get_account_tg_id(db, account)
+    if not tg_id:
+        return {"success": False, "error": "account_not_bound"}
+
+    redis_client = await get_redis_client()
+    cooldown_key = f"tg_otp_cd_acct:{identifier}"
+    if await redis_client.exists(cooldown_key):
+        ttl = await redis_client.ttl(cooldown_key)
+        return {"success": False, "error": "cooldown", "remaining": max(ttl, 1)}
+
+    code = f"{random.randint(100000, 999999)}"
+    otp_key = f"tg_otp_acct:{identifier}"
+    await redis_client.setex(otp_key, 300, code.encode("utf-8"))
+    await redis_client.setex(cooldown_key, 60, b"1")
+
+    msg = (
+        f"🔐 *考拉出海 登录验证码*\n\n"
+        f"验证码: `{code}`\n"
+        f"有效期: 5 分钟\n\n"
+        f"如非本人操作，请忽略此消息。"
+    )
+    sent = await notification_service.notify_user(str(tg_id), msg)
+    if not sent:
+        await redis_client.delete(otp_key)
+        await redis_client.delete(cooldown_key)
+        return {"success": False, "error": "send_failed"}
+
+    logger.info(f"客户 TG 验证码已发送: {identifier} -> account_id={account.id}")
+    return {"success": True, "message": "code_sent", "user_type": "account"}
+
+
+@router.post("/telegram-login/verify", response_model=AccountLoginResponse)
+async def account_telegram_verify(
+    request: AccountTelegramVerifyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """客户账户 TG 验证登录 - 校验验证码并登录"""
+    from sqlalchemy import or_
+    from app.utils.cache import get_redis_client
+
+    identifier = (request.identifier or "").strip()
+    code = (request.code or "").strip()
+    if not identifier or not code or len(code) != 6 or not code.isdigit():
+        return AccountLoginResponse(success=False, error="code_invalid")
+
+    redis_client = await get_redis_client()
+    verify_fail_key = f"tg_otp_fail_acct:{identifier}"
+    fail_count = await redis_client.get(verify_fail_key)
+    if fail_count and int(fail_count) >= 5:
+        return AccountLoginResponse(success=False, error="too_many_attempts")
+
+    result = await db.execute(
+        select(Account).where(
+            or_(Account.account_name == identifier, Account.email == identifier),
+            Account.is_deleted == False,
+            Account.status == "active",
+        )
+    )
+    account = result.scalar_one_or_none()
+    if not account:
+        return AccountLoginResponse(success=False, error="account_not_bound")
+
+    tg_id = await _get_account_tg_id(db, account)
+    if not tg_id:
+        return AccountLoginResponse(success=False, error="account_not_bound")
+
+    otp_key = f"tg_otp_acct:{identifier}"
+    stored = await redis_client.get(otp_key)
+    if not stored:
+        return AccountLoginResponse(success=False, error="code_expired")
+    if stored.decode("utf-8") != code:
+        await redis_client.incr(verify_fail_key)
+        if not await redis_client.ttl(verify_fail_key):
+            await redis_client.expire(verify_fail_key, 900)
+        return AccountLoginResponse(success=False, error="code_invalid")
+
+    await redis_client.delete(otp_key)
+    await redis_client.delete(verify_fail_key)
+
+    from datetime import datetime
+    account.last_login_at = datetime.now()
+    await db.commit()
+
+    logger.info(f"客户 TG 验证登录成功: {account.account_name} (id={account.id})")
+    return AccountLoginResponse(
+        success=True,
+        token=account.api_key,
+        account_id=account.id,
     )
 
 

@@ -69,3 +69,30 @@ export function deleteConfig(key: string) {
     method: 'delete'
   })
 }
+
+// --- 系统日志 ---
+export function getSystemLogs(params?: {
+  page?: number
+  page_size?: number
+  module?: string
+  action?: string
+  keyword?: string
+  admin_name?: string
+  start_date?: string
+  end_date?: string
+}): Promise<{ total: number; items: any[]; page: number; page_size: number }> {
+  return request({ url: '/admin/system/logs', method: 'get', params })
+}
+
+export function getSystemLogModules(): Promise<{ modules: Record<string, string> }> {
+  return request({ url: '/admin/system/logs/modules', method: 'get' })
+}
+
+export function getSystemLogStats(): Promise<{ total: number; today: number; by_module: Record<string, { count: number; label: string }> }> {
+  return request({ url: '/admin/system/logs/stats', method: 'get' })
+}
+
+// --- 服务管理 ---
+export function getServicesStatus(): Promise<{ services: Record<string, { name: string; status: string; message: string }> }> {
+  return request({ url: '/admin/system/services', method: 'get' })
+}

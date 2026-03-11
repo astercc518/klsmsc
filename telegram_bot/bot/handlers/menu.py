@@ -86,6 +86,7 @@ def get_main_menu_sales():
             InlineKeyboardButton("📊 业绩统计", callback_data="menu_sales_stats"),
         ],
         [
+            InlineKeyboardButton("📋 报价查询", callback_data="menu_pricing"),
             InlineKeyboardButton("❓ 帮助", callback_data="menu_help"),
         ],
     ]
@@ -105,6 +106,7 @@ def get_main_menu_tech():
         ],
         [
             InlineKeyboardButton("🎯 创建邀请", callback_data="menu_invite"),
+            InlineKeyboardButton("📋 报价查询", callback_data="menu_pricing"),
             InlineKeyboardButton("❓ 帮助", callback_data="menu_help"),
         ],
     ]
@@ -255,7 +257,10 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         # 检查是否是销售
         async with get_session() as db:
             admin_result = await db.execute(
-                select(AdminUser).where(AdminUser.tg_id == tg_id)
+                select(AdminUser).where(
+                AdminUser.tg_id == tg_id,
+                AdminUser.status == 'active'
+            )
             )
             admin = admin_result.scalar_one_or_none()
             
@@ -389,6 +394,27 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # 待审核充值
     if data == "menu_pending_recharge":
         await show_pending_recharge(query, context)
+        return
+    
+    # 报价查询（销售/技术）
+    if data == "menu_pricing":
+        await show_pricing_menu(query, context, tg_id)
+        return
+    
+    # 报价查询 - 按国家
+    if data.startswith("pricing_country_"):
+        country_code = data.replace("pricing_country_", "")
+        await show_pricing_by_country(query, context, country_code)
+        return
+    
+    # 报价查询 - 查看全部
+    if data == "pricing_all":
+        await show_pricing_all(query, context)
+        return
+    
+    # 报价查询 - 国家列表
+    if data == "pricing_country_list":
+        await show_pricing_country_list(query, context)
         return
     
     # 处理国家选择（邀请流程）
@@ -601,7 +627,10 @@ async def show_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
     async with get_session() as db:
         # 检查是否是员工
         admin_result = await db.execute(
-            select(AdminUser).where(AdminUser.tg_id == tg_id)
+            select(AdminUser).where(
+                AdminUser.tg_id == tg_id,
+                AdminUser.status == 'active'
+            )
         )
         admin = admin_result.scalar_one_or_none()
         
@@ -896,7 +925,10 @@ async def show_my_customers(query, context):
     async with get_session() as db:
         # 获取销售员工信息
         admin_result = await db.execute(
-            select(AdminUser).where(AdminUser.tg_id == tg_id)
+            select(AdminUser).where(
+                AdminUser.tg_id == tg_id,
+                AdminUser.status == 'active'
+            )
         )
         admin = admin_result.scalar_one_or_none()
         
@@ -961,7 +993,10 @@ async def show_commission(query, context):
     
     async with get_session() as db:
         admin_result = await db.execute(
-            select(AdminUser).where(AdminUser.tg_id == tg_id)
+            select(AdminUser).where(
+                AdminUser.tg_id == tg_id,
+                AdminUser.status == 'active'
+            )
         )
         admin = admin_result.scalar_one_or_none()
         
@@ -1069,6 +1104,158 @@ async def show_pending_recharge(query, context):
         )
 
 
+async def show_pricing_menu(query, context, tg_id: int):
+    """报价查询入口 - 仅销售/技术可用"""
+    async with get_session() as db:
+        admin_result = await db.execute(
+            select(AdminUser).where(
+                AdminUser.tg_id == tg_id,
+                AdminUser.status == 'active'
+            )
+        )
+        admin = admin_result.scalar_one_or_none()
+        if not admin or admin.role not in ['sales', 'super_admin', 'admin']:
+            await query.edit_message_text(
+                "❌ 仅销售/管理员可使用报价查询",
+                reply_markup=get_back_menu()
+            )
+            return
+
+    keyboard = [
+        [InlineKeyboardButton("🌍 按国家查询", callback_data="pricing_country_list")],
+        [InlineKeyboardButton("📋 查看全部报价", callback_data="pricing_all")],
+        [InlineKeyboardButton("🔙 返回", callback_data="menu_main")],
+    ]
+    await query.edit_message_text(
+        "📋 报价查询\n\n"
+        "请选择查询方式：",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def show_pricing_country_list(query, context):
+    """显示有报价的国家列表"""
+    from app.modules.sms.country_pricing import CountryPricing
+    from app.modules.sms.channel import Channel
+
+    async with get_session() as db:
+        result = await db.execute(
+            select(CountryPricing.country_code, CountryPricing.country_name)
+            .distinct()
+            .order_by(CountryPricing.country_code)
+        )
+        countries = result.all()
+
+    if not countries:
+        await query.edit_message_text(
+            "📋 报价查询\n\n暂无报价数据",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="menu_pricing")]])
+        )
+        return
+
+    keyboard = []
+    row = []
+    for country_code, country_name in countries:
+        label = country_name or COUNTRY_NAMES.get(country_code, country_code)
+        row.append(InlineKeyboardButton(label, callback_data=f"pricing_country_{country_code}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_pricing")])
+
+    await query.edit_message_text(
+        "📋 报价查询 - 按国家\n\n请选择国家：",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def show_pricing_by_country(query, context, country_code: str):
+    """显示指定国家的报价"""
+    from app.modules.sms.country_pricing import CountryPricing
+    from app.modules.sms.channel import Channel
+
+    country_code = country_code.upper()
+    async with get_session() as db:
+        result = await db.execute(
+            select(CountryPricing, Channel)
+            .join(Channel, CountryPricing.channel_id == Channel.id)
+            .where(CountryPricing.country_code == country_code)
+            .order_by(CountryPricing.price_per_sms)
+        )
+        rows = result.all()
+
+    if not rows:
+        country_label = COUNTRY_NAMES.get(country_code, country_code)
+        await query.edit_message_text(
+            f"📋 {country_label} ({country_code})\n\n暂无报价数据",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="pricing_country_list")]])
+        )
+        return
+
+    lines = [f"📋 {COUNTRY_NAMES.get(country_code, country_code)} ({country_code}) 报价\n"]
+    for pricing, channel in rows:
+        price = float(pricing.price_per_sms)
+        curr = pricing.currency or "USD"
+        lines.append(f"• {channel.channel_name}: ${price:.4f} {curr}/条")
+
+    keyboard = [[InlineKeyboardButton("🔙 返回", callback_data="pricing_country_list")]]
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def show_pricing_all(query, context):
+    """显示全部报价（按国家分组）"""
+    from app.modules.sms.country_pricing import CountryPricing
+    from app.modules.sms.channel import Channel
+
+    async with get_session() as db:
+        result = await db.execute(
+            select(CountryPricing, Channel)
+            .join(Channel, CountryPricing.channel_id == Channel.id)
+            .order_by(CountryPricing.country_code, CountryPricing.price_per_sms)
+        )
+        rows = result.all()
+
+    if not rows:
+        await query.edit_message_text(
+            "📋 全部报价\n\n暂无报价数据",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="menu_pricing")]])
+        )
+        return
+
+    # 按国家分组
+    by_country = {}
+    for pricing, channel in rows:
+        cc = pricing.country_code
+        if cc not in by_country:
+            by_country[cc] = []
+        by_country[cc].append((pricing, channel))
+
+    lines = ["📋 全部报价\n"]
+    for cc in sorted(by_country.keys()):
+        country_label = COUNTRY_NAMES.get(cc, cc)
+        lines.append(f"\n🌍 {country_label} ({cc})")
+        for pricing, channel in by_country[cc]:
+            price = float(pricing.price_per_sms)
+            curr = pricing.currency or "USD"
+            lines.append(f"  • {channel.channel_name}: ${price:.4f} {curr}/条")
+
+    # Telegram 消息长度限制约 4096
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3997] + "\n\n...(已截断)"
+
+    keyboard = [[InlineKeyboardButton("🔙 返回", callback_data="menu_pricing")]]
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
 async def approve_recharge(query, context, order_id: int, approved: bool):
     """审批充值"""
     tg_id = query.from_user.id
@@ -1076,7 +1263,10 @@ async def approve_recharge(query, context, order_id: int, approved: bool):
     async with get_session() as db:
         # 验证管理员权限
         admin_result = await db.execute(
-            select(AdminUser).where(AdminUser.tg_id == tg_id)
+            select(AdminUser).where(
+                AdminUser.tg_id == tg_id,
+                AdminUser.status == 'active'
+            )
         )
         admin = admin_result.scalar_one_or_none()
         
@@ -1214,7 +1404,10 @@ async def close_ticket(query, context, ticket_id: int):
     async with get_session() as db:
         # 验证权限
         admin_result = await db.execute(
-            select(AdminUser).where(AdminUser.tg_id == tg_id)
+            select(AdminUser).where(
+                AdminUser.tg_id == tg_id,
+                AdminUser.status == 'active'
+            )
         )
         admin = admin_result.scalar_one_or_none()
         
@@ -1304,7 +1497,10 @@ async def show_sales_stats(query, context):
     
     async with get_session() as db:
         admin_result = await db.execute(
-            select(AdminUser).where(AdminUser.tg_id == tg_id)
+            select(AdminUser).where(
+                AdminUser.tg_id == tg_id,
+                AdminUser.status == 'active'
+            )
         )
         admin = admin_result.scalar_one_or_none()
         
@@ -1362,7 +1558,10 @@ async def show_customer_tickets(query, context):
     
     async with get_session() as db:
         admin_result = await db.execute(
-            select(AdminUser).where(AdminUser.tg_id == tg_id)
+            select(AdminUser).where(
+                AdminUser.tg_id == tg_id,
+                AdminUser.status == 'active'
+            )
         )
         admin = admin_result.scalar_one_or_none()
         
@@ -1450,7 +1649,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             
             import os
-            bot_username = os.getenv('TELEGRAM_BOT_USERNAME', 'SMSCPro_bot')
+            bot_username = os.getenv('TELEGRAM_BOT_USERNAME', 'kaolachbot')
             invite_link = f"https://t.me/{bot_username}?start={code}"
             biz_type = context.user_data.get('business_type', 'sms')
             biz_label = {'sms': '短信', 'voice': '语音', 'data': '数据'}.get(biz_type, biz_type)
@@ -1538,7 +1737,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📦 业务类型: {biz_label}\n"
                     f"🌍 国家/地区: {country_label}\n\n"
                     f"━━━ 📱 平台登录信息 ━━━\n"
-                    f"🌐 平台地址: https://www.smscpro.com\n"
+                    f"🌐 平台地址: https://www.kaolach.com\n"
                     f"👤 登录账户: <code>{login_account}</code>\n"
                     f"🔒 登录密码: <code>{login_password}</code>\n\n"
                     f"━━━ 🔧 API 接口信息 ━━━\n"
@@ -1583,7 +1782,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         async with get_session() as db:
             result = await db.execute(
-                select(AdminUser).where(AdminUser.username == username)
+                select(AdminUser).where(
+                AdminUser.username == username,
+                AdminUser.status == 'active'
+            )
             )
             admin = result.scalar_one_or_none()
             
@@ -1814,7 +2016,7 @@ from telegram.ext import MessageHandler, filters
 menu_handlers = [
     CallbackQueryHandler(
         handle_menu_callback,
-        pattern=r'^(?!menu_register$|reg_)(?:menu_|biz_|ticket_type_|country_|tpl_|approve_|reject_|process_|ticket_detail_|close_ticket_|back_)'
+        pattern=r'^(?!menu_register$|reg_)(?:menu_|biz_|ticket_type_|country_|tpl_|pricing_|approve_|reject_|process_|ticket_detail_|close_ticket_|back_)'
     ),
     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
 ]

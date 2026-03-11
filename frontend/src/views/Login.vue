@@ -10,8 +10,9 @@
 
     <!-- 顶部工具栏 -->
     <header class="topbar">
-      <a href="/" class="topbar-logo" aria-label="SMSCPro">
-        <span class="topbar-logo-text">SMSC<em>Pro</em></span>
+      <a href="/" class="topbar-logo" aria-label="考拉出海">
+        <img src="/favicon.svg" alt="" class="topbar-logo-icon" width="28" height="28" />
+        <span class="topbar-logo-text">Kao<em>lach</em></span>
       </a>
       <nav class="topbar-nav" aria-label="官网导航">
         <a href="/" class="topbar-nav-item">{{ $t('landing.nav.home') }}</a>
@@ -43,28 +44,7 @@
     <main class="main">
       <div class="hero" :class="{ show: mounted }">
         <div class="logo-mark">
-          <div class="logo-ring">
-            <svg width="52" height="52" viewBox="0 0 48 48" fill="none">
-              <defs>
-                <linearGradient id="lg" x1="4" y1="4" x2="44" y2="44">
-                  <stop stop-color="#6366F1"/><stop offset="1" stop-color="#A855F7"/>
-                </linearGradient>
-                <filter id="glow"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-              </defs>
-              <circle cx="24" cy="24" r="20" stroke="url(#lg)" stroke-width="0.8" opacity="0.2"/>
-              <circle cx="24" cy="24" r="14" stroke="url(#lg)" stroke-width="0.5" opacity="0.1" stroke-dasharray="2 3"/>
-              <path d="M24 6 L27.5 20 L42 24 L27.5 28 L24 42 L20.5 28 L6 24 L20.5 20 Z" fill="url(#lg)" opacity="0.9"/>
-              <circle cx="24" cy="24" r="3.5" fill="#fff" opacity="0.9" filter="url(#glow)"/>
-              <g fill="url(#lg)" opacity="0.75">
-                <circle cx="24" cy="4" r="1.6"/><circle cx="44" cy="24" r="1.6"/>
-                <circle cx="24" cy="44" r="1.6"/><circle cx="4" cy="24" r="1.6"/>
-              </g>
-              <g stroke="url(#lg)" stroke-width="0.5" opacity="0.15">
-                <line x1="24" y1="4" x2="44" y2="24"/><line x1="44" y1="24" x2="24" y2="44"/>
-                <line x1="24" y1="44" x2="4" y2="24"/><line x1="4" y1="24" x2="24" y2="4"/>
-              </g>
-            </svg>
-          </div>
+          <img src="/favicon.svg" alt="考拉出海" class="logo-mark-img" width="64" height="64" />
         </div>
         <h1 class="hero-title">{{ $t('brand.name') }}</h1>
         <p class="hero-sub">{{ $t('login.subtitle') }}</p>
@@ -83,9 +63,9 @@
         <!-- TG 登录 -->
         <div v-if="loginType === 'telegram'" class="form-area">
           <div class="field">
-            <label>{{ $t('login.username') }}</label>
+            <label>{{ $t('login.tgIdentifier') }}</label>
             <div class="input-wrap">
-              <input type="text" v-model="tgForm.username" :placeholder="$t('login.enterStaffUsername')" autocomplete="username" />
+              <input type="text" v-model="tgForm.username" :placeholder="$t('login.tgIdentifierPlaceholder')" autocomplete="username" />
             </div>
           </div>
 
@@ -99,7 +79,17 @@
             <div class="field">
               <label>{{ $t('login.tgVerifyCode') }}</label>
               <div class="input-wrap">
-                <input type="text" v-model="tgForm.code" :placeholder="$t('login.tgEnterCode')" maxlength="6" autocomplete="one-time-code" />
+                <input
+                ref="tgCodeInputRef"
+                type="text"
+                v-model="tgForm.code"
+                :placeholder="$t('login.tgEnterCode')"
+                maxlength="6"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                autocomplete="one-time-code"
+                @input="tgForm.code = tgForm.code.replace(/\D/g, '').slice(0, 6)"
+              />
               </div>
             </div>
             <button class="btn-primary" :disabled="loading || !tgForm.code" @click="handleTgVerify">
@@ -171,13 +161,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { adminLogin, sendTelegramLoginCode, verifyTelegramLoginCode } from '@/api/admin'
-import { login as accountLogin, getAccountInfo } from '@/api/account'
+import { sendAccountTelegramCode, verifyAccountTelegramCode, getAccountInfo, login as accountLogin } from '@/api/account'
 import SliderCaptcha from '@/components/SliderCaptcha.vue'
 
 const { t, locale } = useI18n()
@@ -221,27 +211,71 @@ const toggleLang = () => {
   localStorage.setItem('locale', newLang)
 }
 
-// TG 验证登录
+// TG 验证登录（支持客户账户和员工，先尝试客户）
 const tgForm = reactive({ username: '', code: '' })
+const tgUserType = ref<'account' | 'admin'>('account')  // 发送成功后记录类型
 const tgCodeSent = ref(false)
 const tgSending = ref(false)
 const tgCooldown = ref(0)
+const tgCodeInputRef = ref<HTMLInputElement>()
 let tgTimer: ReturnType<typeof setInterval> | null = null
 
+watch(tgCodeSent, (sent) => {
+  if (sent) nextTick(() => tgCodeInputRef.value?.focus())
+})
+
 const handleSendTgCode = async () => {
-  if (!tgForm.username) { ElMessage.warning(t('login.enterUsername')); return }
+  const identifier = tgForm.username?.trim()
+  if (!identifier) { ElMessage.warning(t('login.enterUsername')); return }
   tgSending.value = true
   try {
-    const res: any = await sendTelegramLoginCode(tgForm.username)
+    let res: any = await sendAccountTelegramCode(identifier)
     if (res?.success) {
+      tgForm.username = identifier
+      tgUserType.value = 'account'
       tgCodeSent.value = true
-      tgCooldown.value = 60
+      tgCooldown.value = res.remaining ?? 60
       tgTimer = setInterval(() => {
         tgCooldown.value--
         if (tgCooldown.value <= 0 && tgTimer) { clearInterval(tgTimer); tgTimer = null }
       }, 1000)
       ElMessage.success(t('login.tgCodeSentSuccess'))
+    } else if (res?.error === 'account_not_bound') {
+      res = await sendTelegramLoginCode(identifier)
+      if (res?.success) {
+        tgForm.username = identifier
+        tgUserType.value = 'admin'
+        tgCodeSent.value = true
+        tgCooldown.value = res.remaining ?? 60
+        tgTimer = setInterval(() => {
+          tgCooldown.value--
+          if (tgCooldown.value <= 0 && tgTimer) { clearInterval(tgTimer); tgTimer = null }
+        }, 1000)
+        ElMessage.success(t('login.tgCodeSentSuccess'))
+      } else {
+        if (res?.error === 'cooldown' && res?.remaining) {
+          tgForm.username = identifier
+          tgUserType.value = 'admin'
+          tgCodeSent.value = true
+          tgCooldown.value = res.remaining
+          tgTimer = setInterval(() => {
+            tgCooldown.value--
+            if (tgCooldown.value <= 0 && tgTimer) { clearInterval(tgTimer); tgTimer = null }
+          }, 1000)
+        }
+        ElMessage.error(mapLoginError(res?.error || 'send_failed'))
+      }
     } else {
+      if (res?.error === 'cooldown' && res?.remaining) {
+        tgForm.username = identifier
+        tgUserType.value = 'account'
+        tgCodeSent.value = true
+        tgCooldown.value = res.remaining
+        tgTimer = setInterval(() => {
+          tgCooldown.value--
+          if (tgCooldown.value <= 0 && tgTimer) { clearInterval(tgTimer); tgTimer = null }
+        }, 1000)
+      }
       ElMessage.error(mapLoginError(res?.error || 'send_failed'))
     }
   } catch (e: any) {
@@ -250,20 +284,37 @@ const handleSendTgCode = async () => {
 }
 
 const handleTgVerify = async () => {
-  if (!tgForm.code) return
+  const code = tgForm.code?.replace(/\D/g, '')
+  if (!code || code.length !== 6) {
+    ElMessage.warning(t('login.tgEnterCode'))
+    return
+  }
   loading.value = true
   try {
-    const res = await verifyTelegramLoginCode(tgForm.username, tgForm.code)
-    if (res.success && res.token) {
-      localStorage.removeItem('api_key'); localStorage.removeItem('account_id'); localStorage.removeItem('account_name')
-      sessionStorage.removeItem('impersonate_mode')
-      localStorage.setItem('admin_token', res.token)
-      localStorage.setItem('admin_id', String(res.admin_id || ''))
-      localStorage.setItem('admin_role', res.role || '')
-      localStorage.setItem('account_name', res.username || tgForm.username)
-      ElMessage.success(`${t('login.welcomeBack')}, ${res.username || tgForm.username}`)
-      router.push('/dashboard')
-    } else { ElMessage.error(mapLoginError(res.error || '')) }
+    if (tgUserType.value === 'account') {
+      const res: any = await verifyAccountTelegramCode(tgForm.username.trim(), code)
+      if (res?.success && res?.token) {
+        localStorage.removeItem('admin_token'); localStorage.removeItem('admin_id'); localStorage.removeItem('admin_role')
+        sessionStorage.removeItem('impersonate_mode')
+        localStorage.setItem('api_key', res.token)
+        localStorage.setItem('account_id', String(res.account_id || ''))
+        try { const info: any = await getAccountInfo(); if (info?.account_name) localStorage.setItem('account_name', info.account_name) } catch {}
+        ElMessage.success(t('login.loginSuccess'))
+        router.push('/dashboard')
+      } else { ElMessage.error(mapLoginError(res?.error || '')) }
+    } else {
+      const res = await verifyTelegramLoginCode(tgForm.username.trim(), code)
+      if (res.success && res.token) {
+        localStorage.removeItem('api_key'); localStorage.removeItem('account_id'); localStorage.removeItem('account_name')
+        sessionStorage.removeItem('impersonate_mode')
+        localStorage.setItem('admin_token', res.token)
+        localStorage.setItem('admin_id', String(res.admin_id || ''))
+        localStorage.setItem('admin_role', res.role || '')
+        localStorage.setItem('account_name', res.username || tgForm.username)
+        ElMessage.success(`${t('login.welcomeBack')}, ${res.username || tgForm.username}`)
+        router.push('/dashboard')
+      } else { ElMessage.error(mapLoginError(res.error || '')) }
+    }
   } catch (e: any) { ElMessage.error(e.message || t('common.error')) }
   finally { loading.value = false }
 }
@@ -334,6 +385,7 @@ const mapLoginError = (error: string): string => {
     tg_not_bound: t('login.tgNotBound'), code_expired: t('login.tgCodeExpired'),
     code_invalid: t('login.tgCodeInvalid'), send_failed: t('login.tgSendFailed'),
     account_not_bound: t('login.tgNotBound'), cooldown: t('login.tgCooldown'),
+    too_many_attempts: t('login.tgTooManyAttempts'), invalid_username: t('login.enterUsername'),
   }
   return m[error] || error
 }
@@ -498,6 +550,9 @@ const resetCaptcha = () => { captchaRef.value?.reset(); captchaVerified.value = 
 
 .topbar-logo {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   text-decoration: none;
   font-size: 1.25rem;
   font-weight: 800;
@@ -505,6 +560,7 @@ const resetCaptcha = () => { captchaRef.value?.reset(); captchaVerified.value = 
   letter-spacing: -0.02em;
   transition: opacity 0.2s;
 }
+.topbar-logo-icon { border-radius: 6px; }
 
 .topbar-logo:hover { opacity: 0.9; }
 
@@ -637,6 +693,7 @@ const resetCaptcha = () => { captchaRef.value?.reset(); captchaVerified.value = 
 .hero.show { opacity: 1; transform: translateY(0); }
 
 .logo-mark { margin-bottom: 20px; display: flex; justify-content: center; }
+.logo-mark-img { border-radius: 14px; box-shadow: 0 8px 24px rgba(59,130,246,.3); }
 
 .logo-ring {
   width: 72px; height: 72px;

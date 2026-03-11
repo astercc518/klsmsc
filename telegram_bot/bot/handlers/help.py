@@ -15,7 +15,10 @@ async def get_user_role(tg_id: int) -> str:
     async with AsyncSessionLocal() as session:
         # 检查是否是管理员/销售
         admin_result = await session.execute(
-            select(AdminUser).where(AdminUser.tg_id == tg_id)
+            select(AdminUser).where(
+            AdminUser.tg_id == tg_id,
+            AdminUser.status == 'active'
+        )
         )
         admin = admin_result.scalar_one_or_none()
         if admin:

@@ -60,7 +60,10 @@ async def get_admin_user(tg_id: int):
     """获取绑定的管理员"""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(AdminUser).where(AdminUser.tg_id == tg_id)
+            select(AdminUser).where(
+            AdminUser.tg_id == tg_id,
+            AdminUser.status == 'active'
+        )
         )
         return result.scalar_one_or_none()
 

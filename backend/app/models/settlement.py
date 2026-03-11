@@ -195,6 +195,65 @@ class CustomerBillDetail(Base):
     bill = relationship("CustomerBill", back_populates="details")
 
 
+class SalesCommissionSettlement(Base):
+    """销售佣金结算单"""
+    __tablename__ = 'sales_commission_settlements'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    settlement_no = Column(String(50), unique=True, nullable=False, comment='结算单号')
+    
+    # 关联
+    sales_id = Column(INTEGER(unsigned=True), ForeignKey('admin_users.id'), nullable=False, comment='销售ID')
+    
+    # 结算周期
+    period_start = Column(DateTime, nullable=False, comment='周期开始')
+    period_end = Column(DateTime, nullable=False, comment='周期结束')
+    
+    # 汇总数据
+    total_sms_count = Column(Integer, default=0, comment='总短信条数')
+    total_revenue = Column(Numeric(14, 4), default=0, comment='客户消费总额(营收)')
+    commission_rate = Column(Numeric(5, 2), default=0, comment='佣金比例(%)')
+    commission_amount = Column(Numeric(14, 4), default=0, comment='佣金金额')
+    currency = Column(String(10), default='USD', comment='币种')
+    
+    # 状态
+    status = Column(Enum('draft', 'confirmed', 'paid', 'cancelled', name='commission_status_enum'),
+                    default='draft', comment='状态')
+    
+    # 支付信息
+    payment_method = Column(String(50), comment='支付方式')
+    payment_reference = Column(String(100), comment='支付凭证/流水号')
+    paid_by = Column(INTEGER(unsigned=True), ForeignKey('admin_users.id'), comment='支付人ID')
+    paid_at = Column(DateTime, comment='支付时间')
+    notes = Column(Text, comment='备注')
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # 关系
+    sales = relationship("AdminUser", foreign_keys=[sales_id])
+    details = relationship("SalesCommissionDetail", back_populates="settlement")
+
+
+class SalesCommissionDetail(Base):
+    """销售佣金明细 - 按客户汇总"""
+    __tablename__ = 'sales_commission_details'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    settlement_id = Column(Integer, ForeignKey('sales_commission_settlements.id'), nullable=False, comment='结算单ID')
+    
+    account_id = Column(INTEGER(unsigned=True), ForeignKey('accounts.id'), nullable=False, comment='客户ID')
+    total_sms_count = Column(Integer, default=0, comment='短信条数')
+    total_revenue = Column(Numeric(14, 4), default=0, comment='客户消费金额')
+    commission_rate = Column(Numeric(5, 2), default=0, comment='佣金比例(%)')
+    commission_amount = Column(Numeric(14, 4), default=0, comment='佣金金额')
+    
+    created_at = Column(DateTime, server_default=func.now())
+    
+    settlement = relationship("SalesCommissionSettlement", back_populates="details")
+    account = relationship("Account")
+
+
 class ProfitReport(Base):
     """利润报表 - 每日汇总"""
     __tablename__ = 'profit_reports'

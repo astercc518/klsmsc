@@ -56,7 +56,7 @@ async def get_bot_token_from_db() -> str:
         )
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT config_value FROM system_config WHERE config_key = 'telegram_bot_token' AND is_active = 1"
+                "SELECT config_value FROM system_config WHERE config_key = 'telegram_bot_token'"
             )
             row = await cur.fetchone()
         conn.close()

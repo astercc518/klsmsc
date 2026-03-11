@@ -47,7 +47,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # P1-FIX: 无 API Key 时对敏感路径做 IP 级限流（防暴力破解）
         ip_rate_paths = {"/api/v1/account/login", "/api/v1/admin/login",
                          "/api/v1/account/register", "/api/v1/ai/generate-sms",
-                         "/api/v1/admin/telegram-login/send-code"}
+                         "/api/v1/admin/telegram-login/send-code",
+                         "/api/v1/admin/telegram-login/verify",
+                         "/api/v1/account/telegram-login/send-code",
+                         "/api/v1/account/telegram-login/verify"}
         if not api_key:
             if request.url.path not in ip_rate_paths:
                 return await call_next(request)

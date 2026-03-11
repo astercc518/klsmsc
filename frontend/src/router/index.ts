@@ -196,7 +196,7 @@ const routes: RouteRecordRaw[] = [
       {
         path: '/admin/system/config',
         name: 'SystemConfig',
-        component: () => import('@/views/system/Config.vue'),
+        component: () => import('@/views/system/Index.vue'),
         meta: { titleKey: 'menu.systemConfig', icon: 'Setting' },
       },
       {

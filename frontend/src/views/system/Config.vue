@@ -1,66 +1,61 @@
 <template>
   <div class="config-container">
-    <el-card>
-      <template #header>
-        <div class="card-header">
-          <span>{{ $t('systemConfig.title') }}</span>
-          <el-button type="primary" @click="showCreateDialog">{{ $t('systemConfig.addConfig') }}</el-button>
-        </div>
-      </template>
-
-      <!-- 筛选器 -->
-      <el-form :inline="true" class="filter-form" style="margin-bottom: 20px">
-        <el-form-item :label="$t('systemConfig.search')">
-          <el-input 
-            v-model="searchText" 
-            :placeholder="$t('systemConfig.searchPlaceholder')" 
-            style="width: 300px"
-            clearable
-            @keyup.enter="loadData"
-          />
-        </el-form-item>
-        <el-form-item :label="$t('systemConfig.configType')">
-          <el-select v-model="filterPublic" clearable :placeholder="$t('systemConfig.all')" style="width: 150px">
-            <el-option :label="$t('systemConfig.public')" :value="true" />
-            <el-option :label="$t('systemConfig.private')" :value="false" />
-          </el-select>
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="loadData">{{ $t('smsRecords.query') }}</el-button>
-          <el-button @click="resetFilters">{{ $t('common.reset') }}</el-button>
-        </el-form-item>
-      </el-form>
-
-      <!-- 列表 -->
-      <el-table :data="configs" v-loading="loading" style="width: 100%">
-        <el-table-column prop="config_key" :label="$t('systemConfig.configKey')" width="200" />
-        <el-table-column prop="config_value" :label="$t('systemConfig.configValue')">
-          <template #default="scope">
-            <span v-if="scope.row.config_key.includes('token') || scope.row.config_key.includes('password')">
-              {{ maskSensitive(scope.row.config_value) }}
-            </span>
-            <span v-else>{{ scope.row.config_value }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="config_type" :label="$t('systemConfig.type')" width="100" />
-        <el-table-column prop="description" :label="$t('systemConfig.description')" />
-        <el-table-column prop="is_public" :label="$t('systemConfig.isPublic')" width="80">
-          <template #default="scope">
-            <el-tag :type="scope.row.is_public ? 'success' : 'info'">
-              {{ scope.row.is_public ? $t('systemConfig.yes') : $t('systemConfig.no') }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column :label="$t('common.action')" width="150">
-          <template #default="scope">
-            <el-button link type="primary" size="small" @click="handleEdit(scope.row)">{{ $t('common.edit') }}</el-button>
-            <el-button link type="danger" size="small" @click="handleDelete(scope.row)">{{ $t('common.delete') }}</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+    <el-card shadow="never" class="filter-card">
+      <div class="config-header">
+        <el-form :inline="true" class="filter-form">
+      <el-form-item :label="$t('systemConfig.search')">
+        <el-input 
+          v-model="searchText" 
+          :placeholder="$t('systemConfig.searchPlaceholder')" 
+          style="width: 300px"
+          clearable
+          @keyup.enter="loadData"
+        />
+      </el-form-item>
+      <el-form-item :label="$t('systemConfig.configType')">
+        <el-select v-model="filterPublic" clearable :placeholder="$t('systemConfig.all')" style="width: 150px">
+          <el-option :label="$t('systemConfig.public')" :value="true" />
+          <el-option :label="$t('systemConfig.private')" :value="false" />
+        </el-select>
+      </el-form-item>
+      <el-form-item>
+        <el-button type="primary" @click="loadData">{{ $t('smsRecords.query') }}</el-button>
+        <el-button @click="resetFilters">{{ $t('common.reset') }}</el-button>
+      </el-form-item>
+      <el-form-item class="config-actions">
+        <el-button type="primary" @click="showCreateDialog">{{ $t('systemConfig.addConfig') }}</el-button>
+      </el-form-item>
+        </el-form>
+      </div>
     </el-card>
-
-    <!-- 创建/编辑对话框 -->
+    <el-card shadow="never" class="table-card">
+    <el-table :data="configs" v-loading="loading" stripe style="width: 100%">
+      <el-table-column prop="config_key" :label="$t('systemConfig.configKey')" width="200" />
+      <el-table-column prop="config_value" :label="$t('systemConfig.configValue')">
+        <template #default="scope">
+          <span v-if="scope.row.config_key.includes('token') || scope.row.config_key.includes('password')">
+            {{ maskSensitive(scope.row.config_value) }}
+          </span>
+          <span v-else>{{ scope.row.config_value }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="config_type" :label="$t('systemConfig.type')" width="100" />
+      <el-table-column prop="description" :label="$t('systemConfig.description')" />
+      <el-table-column prop="is_public" :label="$t('systemConfig.isPublic')" width="80">
+        <template #default="scope">
+          <el-tag :type="scope.row.is_public ? 'success' : 'info'">
+            {{ scope.row.is_public ? $t('systemConfig.yes') : $t('systemConfig.no') }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column :label="$t('common.action')" width="150">
+        <template #default="scope">
+          <el-button link type="primary" size="small" @click="handleEdit(scope.row)">{{ $t('common.edit') }}</el-button>
+          <el-button link type="danger" size="small" @click="handleDelete(scope.row)">{{ $t('common.delete') }}</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+    </el-card>
     <el-dialog 
       v-model="dialogVisible" 
       :title="editingConfig ? $t('systemConfig.editConfig') : $t('systemConfig.addConfig')" 
@@ -246,15 +241,11 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.config-container {
-  width: 100%;
-}
-.filter-form {
-  margin-bottom: 20px;
-}
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
+.config-container { width: 100%; }
+.filter-card { margin-bottom: 16px; }
+.filter-card :deep(.el-card__body) { padding: 16px 20px; }
+.config-header { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
+.filter-form { margin-bottom: 0; flex: 1; }
+.config-actions { margin-left: auto; }
+.table-card :deep(.el-card__body) { padding: 16px 20px; }
 </style>

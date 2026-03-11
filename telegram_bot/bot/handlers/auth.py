@@ -58,7 +58,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     msg += (
                         f"📦 业务类型: {biz_label}\n\n"
                         f"━━━ 📱 平台登录信息 ━━━\n"
-                        f"🌐 平台地址: https://www.smscpro.com\n"
+                        f"🌐 平台地址: https://www.kaolach.com\n"
                         f"👤 登录账户: <code>{login_account}</code>\n"
                         f"🔒 登录密码: <code>{login_password}</code>\n\n"
                         f"━━━ 🔧 API 接口信息 ━━━\n"
@@ -106,7 +106,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
             # 2. 检查是否是员工/管理员
-            admin_query = select(AdminUser).where(AdminUser.tg_id == tg_id)
+            admin_query = select(AdminUser).where(
+                AdminUser.tg_id == tg_id,
+                AdminUser.status == 'active'
+            )
             admin_result = await db.execute(admin_query)
             admin = admin_result.scalar_one_or_none()
             

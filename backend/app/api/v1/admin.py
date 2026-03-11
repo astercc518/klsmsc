@@ -1,9 +1,9 @@
 """
 管理员API路由
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List
 from datetime import datetime
@@ -281,19 +281,23 @@ async def telegram_login_send_code(
     from app.utils.cache import get_redis_client
     from app.services.notification_service import notification_service
 
+    username = (request.username or "").strip()
+    if not username:
+        return {"success": False, "error": "invalid_username"}
+
     result = await db.execute(
-        select(AdminUser).where(AdminUser.username == request.username)
+        select(AdminUser).where(
+            AdminUser.username == username,
+            AdminUser.status == "active",
+        )
     )
     admin = result.scalar_one_or_none()
 
     if not admin or not admin.tg_id:
         return {"success": False, "error": "account_not_bound"}
 
-    if admin.status != "active":
-        return {"success": False, "error": "account_disabled"}
-
     redis_client = await get_redis_client()
-    cooldown_key = f"tg_otp_cd:{request.username}"
+    cooldown_key = f"tg_otp_cd:{username}"
 
     # 60 秒冷却
     if await redis_client.exists(cooldown_key):
@@ -301,13 +305,13 @@ async def telegram_login_send_code(
         return {"success": False, "error": "cooldown", "remaining": max(ttl, 1)}
 
     code = f"{random.randint(100000, 999999)}"
-    otp_key = f"tg_otp:{request.username}"
+    otp_key = f"tg_otp:{username}"
 
     await redis_client.setex(otp_key, 300, code.encode("utf-8"))
     await redis_client.setex(cooldown_key, 60, b"1")
 
     msg = (
-        f"🔐 *SMSCPro 登录验证码*\n\n"
+        f"🔐 *考拉出海 登录验证码*\n\n"
         f"验证码: `{code}`\n"
         f"有效期: 5 分钟\n\n"
         f"如非本人操作，请忽略此消息。"
@@ -319,7 +323,7 @@ async def telegram_login_send_code(
         await redis_client.delete(cooldown_key)
         return {"success": False, "error": "send_failed"}
 
-    logger.info(f"Telegram 验证码已发送: {request.username} -> tg_id={admin.tg_id}")
+    logger.info(f"Telegram 验证码已发送: {username} -> tg_id={admin.tg_id}")
     return {"success": True, "message": "code_sent"}
 
 
@@ -331,31 +335,44 @@ async def telegram_login_verify(
     """Telegram 验证登录 - 校验验证码并登录"""
     from app.utils.cache import get_redis_client
 
+    username = (request.username or "").strip()
+    code = (request.code or "").strip()
+    if not username or not code or len(code) != 6 or not code.isdigit():
+        return AdminLoginResponse(success=False, error="code_invalid")
+
+    # 验证码错误次数限制（防暴力破解）
+    redis_client = await get_redis_client()
+    verify_fail_key = f"tg_otp_fail:{username}"
+    fail_count = await redis_client.get(verify_fail_key)
+    if fail_count and int(fail_count) >= 5:
+        return AdminLoginResponse(success=False, error="too_many_attempts")
+
     result = await db.execute(
-        select(AdminUser).where(AdminUser.username == request.username)
+        select(AdminUser).where(
+            AdminUser.username == username,
+            AdminUser.status == "active",
+        )
     )
     admin = result.scalar_one_or_none()
 
     if not admin or not admin.tg_id:
         return AdminLoginResponse(success=False, error="tg_not_bound")
 
-    if admin.status == "locked":
-        return AdminLoginResponse(success=False, error="account_locked")
-    if admin.status != "active":
-        return AdminLoginResponse(success=False, error="account_disabled")
-
-    redis_client = await get_redis_client()
-    otp_key = f"tg_otp:{request.username}"
+    otp_key = f"tg_otp:{username}"
     stored = await redis_client.get(otp_key)
 
     if not stored:
         return AdminLoginResponse(success=False, error="code_expired")
 
-    if stored.decode("utf-8") != request.code.strip():
+    if stored.decode("utf-8") != code:
+        await redis_client.incr(verify_fail_key)
+        if not await redis_client.ttl(verify_fail_key):
+            await redis_client.expire(verify_fail_key, 900)  # 15 分钟内 5 次错误则锁定
         return AdminLoginResponse(success=False, error="code_invalid")
 
-    # 验证通过，删除 OTP
+    # 验证通过，删除 OTP 和失败计数
     await redis_client.delete(otp_key)
+    await redis_client.delete(verify_fail_key)
 
     admin.last_login_at = datetime.now()
     admin.login_failed_count = 0
@@ -2264,7 +2281,7 @@ async def get_admin_statistics(
     管理员系统级统计
     """
     from app.modules.sms.sms_log import SMSLog
-    from sqlalchemy import func, and_, case
+    from sqlalchemy import func, and_, case, or_
     
     # 默认时间范围：最近30天
     if not end_date:
@@ -2278,12 +2295,14 @@ async def get_admin_statistics(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format")
     
-    # 全系统统计
+    # 全系统统计（含收入、利润）
     query = select(
         func.count(SMSLog.id).label("total_sent"),
         func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
         func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
-        func.sum(SMSLog.cost_price).label("total_cost")
+        func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("total_pending"),
+        func.sum(SMSLog.cost_price).label("total_cost"),
+        func.sum(SMSLog.selling_price).label("total_revenue")
     ).where(
         and_(
             SMSLog.submit_time >= start_dt,
@@ -2297,17 +2316,141 @@ async def get_admin_statistics(
     total_sent = row.total_sent or 0
     total_delivered = row.total_delivered or 0
     total_failed = row.total_failed or 0
+    total_pending = row.total_pending or 0
     total_cost = float(row.total_cost or 0)
+    total_revenue = float(row.total_revenue or 0)
+    total_profit = total_revenue - total_cost
     success_rate = (total_delivered / total_sent * 100) if total_sent > 0 else 0.0
     
     return {
         "total_sent": total_sent,
         "total_delivered": total_delivered,
         "total_failed": total_failed,
+        "total_pending": total_pending,
         "success_rate": round(success_rate, 2),
         "total_cost": round(total_cost, 4),
+        "total_revenue": round(total_revenue, 4),
+        "total_profit": round(total_profit, 4),
         "currency": "USD"
     }
+
+
+@router.get("/reports/success-rate", response_model=dict)
+async def get_admin_success_rate(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """管理员：按通道/国家成功率分析（全系统）"""
+    from app.modules.sms.sms_log import SMSLog
+    from app.modules.sms.channel import Channel
+    from sqlalchemy import func, and_, case
+
+    if not end_date:
+        end_date = datetime.now().date().isoformat()
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).date().isoformat()
+    try:
+        start_dt = datetime.fromisoformat(start_date)
+        end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    base_filter = and_(
+        SMSLog.submit_time >= start_dt,
+        SMSLog.submit_time < end_dt
+    )
+
+    # 按通道统计
+    ch_query = select(
+        Channel.id, Channel.channel_code, Channel.channel_name,
+        func.count(SMSLog.id).label("total"),
+        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered")
+    ).join(SMSLog, Channel.id == SMSLog.channel_id).where(base_filter).group_by(
+        Channel.id, Channel.channel_code, Channel.channel_name
+    )
+    ch_result = await db.execute(ch_query)
+    by_channel = []
+    for r in ch_result:
+        t, d = r.total or 0, r.delivered or 0
+        by_channel.append({
+            "channel_id": r.id, "channel_code": r.channel_code, "channel_name": r.channel_name,
+            "total": t, "delivered": d, "success_rate": round(d / t * 100, 2) if t > 0 else 0
+        })
+
+    # 按国家统计 Top 15
+    country_query = select(
+        SMSLog.country_code,
+        func.count(SMSLog.id).label("total"),
+        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered")
+    ).where(base_filter, SMSLog.country_code.isnot(None)).group_by(
+        SMSLog.country_code
+    ).order_by(func.count(SMSLog.id).desc()).limit(15)
+    country_result = await db.execute(country_query)
+    by_country = []
+    for r in country_result:
+        t, d = r.total or 0, r.delivered or 0
+        by_country.append({
+            "country_code": r.country_code, "total": t, "delivered": d,
+            "success_rate": round(d / t * 100, 2) if t > 0 else 0
+        })
+
+    total_query = select(
+        func.count(SMSLog.id).label("total"),
+        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered")
+    ).where(base_filter)
+    tr = (await db.execute(total_query)).first()
+    overall = round((tr.delivered or 0) / (tr.total or 1) * 100, 2)
+
+    return {"overall_rate": overall, "by_channel": by_channel, "by_country": by_country}
+
+
+@router.get("/reports/daily-stats", response_model=dict)
+async def get_admin_daily_stats(
+    days: int = Query(7, ge=1, le=90),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """管理员：每日统计（全系统，用于图表）"""
+    from app.modules.sms.sms_log import SMSLog
+    from sqlalchemy.sql import text
+
+    if start_date and end_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date).date()
+            end_dt = datetime.fromisoformat(end_date).date() + timedelta(days=1)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+    else:
+        end_dt = datetime.now().date()
+        start_dt = end_dt - timedelta(days=max(1, min(90, days)) - 1)
+
+    query = text("""
+        SELECT DATE(submit_time) as date,
+            COUNT(*) as total_sent,
+            SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as total_delivered,
+            SUM(cost_price) as total_cost,
+            SUM(selling_price) as total_revenue
+        FROM sms_logs
+        WHERE submit_time >= :start_date AND submit_time < :end_date
+        GROUP BY DATE(submit_time)
+        ORDER BY date ASC
+    """)
+    result = await db.execute(query, {"start_date": start_dt, "end_date": end_dt})
+    statistics = []
+    for row in result:
+        ts, td = row.total_sent or 0, row.total_delivered or 0
+        cost, rev = float(row.total_cost or 0), float(row.total_revenue or 0)
+        statistics.append({
+            "date": row.date.isoformat() if row.date else None,
+            "total_sent": ts, "total_delivered": td,
+            "success_rate": round(td / ts * 100, 2) if ts > 0 else 0,
+            "total_cost": cost, "total_revenue": rev, "total_profit": round(rev - cost, 4)
+        })
+    return {"success": True, "days": (end_dt - start_dt).days, "statistics": statistics}
 
 
 @router.get("/users", response_model=dict)
@@ -2382,6 +2525,16 @@ class StaffUpdateRequest(BaseModel):
     role: Optional[str] = None
     status: Optional[str] = None
     password: Optional[str] = None  # 可选重置密码
+
+
+def _clear_staff_telegram_binding(staff: AdminUser) -> bool:
+    """清除员工的业务助手(Telegram Bot)绑定数据，删除/禁用/锁定时同步调用"""
+    if staff.tg_id or staff.tg_username:
+        staff.tg_id = None
+        staff.tg_username = None
+        logger.info(f"员工 {staff.username} 已同步清除业务助手绑定")
+        return True
+    return False
 
 
 @router.post("/users", response_model=dict)
@@ -2460,6 +2613,9 @@ async def update_staff(
         staff.role = request.role
     if request.status is not None:
         staff.status = request.status
+        # 设为 inactive 或 locked 时同步清除业务助手绑定
+        if request.status in ('inactive', 'locked'):
+            _clear_staff_telegram_binding(staff)
     if request.password:
         staff.password_hash = AuthService.hash_password(request.password)
     
@@ -2471,13 +2627,199 @@ async def update_staff(
     }
 
 
+@router.post("/users/sync-inactive-telegram", response_model=dict)
+async def sync_inactive_staff_telegram(
+    username: Optional[str] = Query(None, description="指定用户名则强制清除该员工的TG绑定（不限状态）"),
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """清除已删除(inactive)员工的 Telegram 绑定。传 username 可强制清除指定员工（如 KL04）"""
+    if admin.role not in ['super_admin', 'admin']:
+        raise HTTPException(status_code=403, detail="无权限")
+    
+    from sqlalchemy import func
+    
+    if username:
+        # 强制清除指定用户名的 TG 绑定（不限 status）
+        result = await db.execute(
+            sa_update(AdminUser)
+            .where(AdminUser.username == username.strip())
+            .where(AdminUser.tg_id.isnot(None))
+            .values(tg_id=None, tg_username=None)
+        )
+        await db.commit()
+        cleared = 1 if result.rowcount and result.rowcount > 0 else 0
+        logger.info(f"强制清除员工 {username} 的 Telegram 绑定, rowcount={result.rowcount}")
+        return {
+            "success": True,
+            "message": f"已清除 {username} 的 Telegram 绑定",
+            "cleared_count": cleared,
+        }
+    
+    # 清除所有 inactive/locked 且仍有 tg_id 的员工（非 active 即视为已删除/禁用）
+    from sqlalchemy import or_
+    non_active = or_(AdminUser.status == 'inactive', AdminUser.status == 'locked')
+    count_result = await db.execute(
+        select(func.count()).select_from(AdminUser).where(
+            non_active,
+            AdminUser.tg_id.isnot(None),
+        )
+    )
+    to_clear = count_result.scalar() or 0
+    
+    await db.execute(
+        sa_update(AdminUser)
+        .where(non_active)
+        .where(AdminUser.tg_id.isnot(None))
+        .values(tg_id=None, tg_username=None)
+    )
+    await db.commit()
+    
+    logger.info(f"已清除 {to_clear} 个已删除员工的 Telegram 绑定")
+    
+    return {
+        "success": True,
+        "message": "已清除已删除员工的 Telegram 绑定",
+        "cleared_count": to_clear,
+    }
+
+
+class OffboardStaffRequest(BaseModel):
+    """离职处理请求"""
+    reassign_sales_id: Optional[int] = None  # 客户转移目标销售ID，0或null表示解绑不分配
+
+
+@router.get("/users/{user_id}/offboard-preview", response_model=dict)
+async def offboard_staff_preview(
+    user_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """离职处理预览：返回该员工关联的客户数、未使用邀请码数等"""
+    if admin.role not in ['super_admin', 'admin']:
+        raise HTTPException(status_code=403, detail="无权限")
+    
+    result = await db.execute(select(AdminUser).where(AdminUser.id == user_id))
+    staff = result.scalar_one_or_none()
+    if not staff:
+        raise HTTPException(status_code=404, detail="员工不存在")
+    
+    from sqlalchemy import func
+    from app.modules.common.invitation_code import InvitationCode
+    
+    # 客户数
+    cust_result = await db.execute(
+        select(func.count()).select_from(Account).where(
+            Account.sales_id == user_id,
+            Account.is_deleted == False,
+            Account.status != 'closed',
+        )
+    )
+    customer_count = cust_result.scalar() or 0
+    
+    # 未使用邀请码数
+    invite_result = await db.execute(
+        select(func.count()).select_from(InvitationCode).where(
+            InvitationCode.sales_id == user_id,
+            InvitationCode.status == 'unused',
+        )
+    )
+    unused_invite_count = invite_result.scalar() or 0
+    
+    return {
+        "success": True,
+        "staff": {
+            "id": staff.id,
+            "username": staff.username,
+            "real_name": staff.real_name,
+            "role": staff.role,
+        },
+        "customer_count": customer_count,
+        "unused_invite_count": unused_invite_count,
+    }
+
+
+@router.post("/users/{user_id}/offboard", response_model=dict)
+async def offboard_staff(
+    user_id: int,
+    request: OffboardStaffRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """员工离职处理：禁用账户、清除Bot绑定、转移客户、转移邀请码"""
+    if admin.role not in ['super_admin', 'admin']:
+        raise HTTPException(status_code=403, detail="无权限")
+    
+    result = await db.execute(select(AdminUser).where(AdminUser.id == user_id))
+    staff = result.scalar_one_or_none()
+    if not staff:
+        raise HTTPException(status_code=404, detail="员工不存在")
+    
+    if staff.role == 'super_admin':
+        raise HTTPException(status_code=403, detail="不能删除超级管理员")
+    
+    if staff.id == admin.id:
+        raise HTTPException(status_code=400, detail="不能删除自己")
+    
+    from app.modules.common.invitation_code import InvitationCode
+    
+    # 1. 转移客户
+    customers_reassigned = 0
+    if request.reassign_sales_id and request.reassign_sales_id > 0:
+        new_sales = await db.execute(
+            select(AdminUser).where(
+                AdminUser.id == request.reassign_sales_id,
+                AdminUser.status == 'active',
+            )
+        )
+        if new_sales.scalar_one_or_none():
+            acc_result = await db.execute(
+                sa_update(Account)
+                .where(
+                    Account.sales_id == user_id,
+                    Account.is_deleted == False,
+                )
+                .values(sales_id=request.reassign_sales_id)
+            )
+            customers_reassigned = acc_result.rowcount or 0
+            logger.info(f"员工 {staff.username} 离职：{customers_reassigned} 个客户已转移至 {request.reassign_sales_id}")
+    
+    # 2. 转移未使用邀请码（sales_id 非空，需转移给他人）
+    invites_transferred = 0
+    target_sales_id = request.reassign_sales_id if (request.reassign_sales_id and request.reassign_sales_id > 0) else admin.id
+    inv_result = await db.execute(
+        sa_update(InvitationCode)
+        .where(
+            InvitationCode.sales_id == user_id,
+            InvitationCode.status == 'unused',
+        )
+        .values(sales_id=target_sales_id)
+    )
+    invites_transferred = inv_result.rowcount or 0
+    if invites_transferred > 0:
+        logger.info(f"员工 {staff.username} 离职：{invites_transferred} 个未使用邀请码已转移")
+    
+    # 3. 禁用账户 + 清除 Bot 绑定
+    staff.status = 'inactive'
+    _clear_staff_telegram_binding(staff)
+    
+    await db.commit()
+    
+    return {
+        "success": True,
+        "message": "员工离职处理完成",
+        "customers_reassigned": customers_reassigned,
+        "invites_transferred": invites_transferred,
+    }
+
+
 @router.delete("/users/{user_id}", response_model=dict)
 async def delete_staff(
     user_id: int,
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除员工（设为inactive）"""
+    """删除员工（设为inactive），仅清除Bot绑定，不转移客户。建议使用 /offboard 接口"""
     if admin.role not in ['super_admin', 'admin']:
         raise HTTPException(status_code=403, detail="无权限删除员工")
     
@@ -2494,6 +2836,8 @@ async def delete_staff(
         raise HTTPException(status_code=400, detail="不能删除自己")
     
     staff.status = 'inactive'
+    # 删除员工时同步清除业务助手绑定
+    _clear_staff_telegram_binding(staff)
     await db.commit()
     
     return {

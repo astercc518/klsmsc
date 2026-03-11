@@ -7,8 +7,11 @@ export interface StatisticsResponse {
   total_sent: number;
   total_delivered: number;
   total_failed: number;
+  total_pending?: number;
   success_rate: number;
   total_cost: number;
+  total_revenue?: number;
+  total_profit?: number;
   currency: string;
 }
 
@@ -39,6 +42,8 @@ export interface DailyStatsResponse {
     total_delivered: number;
     success_rate: number;
     total_cost: number;
+    total_revenue?: number;
+    total_profit?: number;
   }>;
 }
 
@@ -71,20 +76,15 @@ export async function getSuccessRate(
   startDate?: string,
   endDate?: string
 ): Promise<SuccessRateResponse> {
-  const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1';
-  const adminToken = localStorage.getItem('admin_token');
-  if (!isImpersonateMode && adminToken) {
-    return {
-      overall_rate: 0,
-      by_channel: [],
-      by_country: []
-    };
-  }
-
   const params: any = {};
   if (startDate) params.start_date = startDate;
   if (endDate) params.end_date = endDate;
 
+  const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1';
+  const adminToken = localStorage.getItem('admin_token');
+  if (!isImpersonateMode && adminToken) {
+    return request.get<SuccessRateResponse>('/admin/reports/success-rate', { params });
+  }
   return request.get<SuccessRateResponse>('/reports/success-rate', { params });
 }
 
@@ -95,13 +95,8 @@ export async function getSuccessRate(
 export async function getDailyStats(days: number = 7): Promise<DailyStatsResponse> {
   const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1';
   const adminToken = localStorage.getItem('admin_token');
-  if (!isImpersonateMode && adminToken) {
-    return {
-      success: true,
-      days: days,
-      statistics: []
-    };
-  }
-
-  return request.get<DailyStatsResponse>('/reports/daily-stats', { params: { days } });
+  const url = (!isImpersonateMode && adminToken)
+    ? '/admin/reports/daily-stats'
+    : '/reports/daily-stats';
+  return request.get<DailyStatsResponse>(url, { params: { days } });
 }

@@ -1,7 +1,7 @@
 """结算系统API"""
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, and_, or_, case
 from sqlalchemy.orm import selectinload
 from typing import Optional, List
 from pydantic import BaseModel, Field
@@ -55,6 +55,46 @@ def generate_bill_no() -> str:
 
 
 # ============ 供应商结算 ============
+
+@router.get("/summary")
+async def get_settlements_summary(
+    supplier_id: Optional[int] = None,
+    status: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin)
+):
+    """获取结算单汇总统计"""
+    query = select(
+        func.count(Settlement.id).label("total_count"),
+        func.coalesce(func.sum(Settlement.final_amount), 0).label("total_amount"),
+        func.sum(case((Settlement.status == 'draft', 1), else_=0)).label("draft_count"),
+        func.sum(case((Settlement.status == 'pending', 1), else_=0)).label("pending_count"),
+        func.sum(case((Settlement.status == 'confirmed', 1), else_=0)).label("confirmed_count"),
+        func.sum(case((Settlement.status == 'paid', 1), else_=0)).label("paid_count"),
+    ).select_from(Settlement)
+    if supplier_id:
+        query = query.where(Settlement.supplier_id == supplier_id)
+    if status:
+        query = query.where(Settlement.status == status)
+    if start_date:
+        query = query.where(Settlement.period_start >= start_date)
+    if end_date:
+        query = query.where(Settlement.period_end <= end_date)
+    row = (await db.execute(query)).first()
+    return {
+        "success": True,
+        "summary": {
+            "total_count": row.total_count or 0,
+            "total_amount": float(row.total_amount or 0),
+            "draft_count": row.draft_count or 0,
+            "pending_count": row.pending_count or 0,
+            "confirmed_count": row.confirmed_count or 0,
+            "paid_count": row.paid_count or 0,
+        }
+    }
+
 
 @router.get("")
 async def get_settlements(
@@ -636,15 +676,32 @@ async def get_customer_bills(
     }
 
 
+class CustomerBillCreate(BaseModel):
+    account_id: int = Field(..., description="账户ID")
+    period_start: datetime = Field(..., description="账单周期开始")
+    period_end: datetime = Field(..., description="账单周期结束")
+    due_days: Optional[int] = Field(7, description="到期天数(从周期结束起)")
+
+
+class CustomerBillPay(BaseModel):
+    amount: float = Field(..., gt=0, description="收款金额")
+    payment_method: Optional[str] = Field(None, description="支付方式")
+    payment_reference: Optional[str] = Field(None, description="流水号")
+    notes: Optional[str] = None
+
+
 @customer_bill_router.post("/generate")
 async def generate_customer_bill(
-    account_id: int,
-    period_start: datetime,
-    period_end: datetime,
+    data: CustomerBillCreate,
     db: AsyncSession = Depends(get_db),
     admin: AdminUser = Depends(get_current_admin)
 ):
     """生成客户账单"""
+    account_id = data.account_id
+    period_start = data.period_start
+    period_end = data.period_end
+    due_days = data.due_days or 7
+
     # 验证账户
     account = await db.get(Account, account_id)
     if not account:
@@ -670,6 +727,7 @@ async def generate_customer_bill(
     total_success = sum(row.success_count or 0 for row in stats_rows)
     total_amount = sum(float(row.total_amount or 0) for row in stats_rows)
     
+    due_date = period_end + timedelta(days=due_days) if due_days else None
     bill = CustomerBill(
         bill_no=generate_bill_no(),
         account_id=account_id,
@@ -680,7 +738,8 @@ async def generate_customer_bill(
         total_amount=total_amount,
         outstanding_amount=total_amount,
         currency=account.currency or 'USD',
-        status='draft'
+        status='draft',
+        due_date=due_date
     )
     db.add(bill)
     await db.flush()
@@ -709,4 +768,66 @@ async def generate_customer_bill(
     }
 
 
-router.include_router(customer_bill_router)
+@customer_bill_router.get("/{bill_id}")
+async def get_customer_bill_detail(
+    bill_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin)
+):
+    """获取客户账单详情"""
+    result = await db.execute(
+        select(CustomerBill)
+        .options(selectinload(CustomerBill.account), selectinload(CustomerBill.details))
+        .where(CustomerBill.id == bill_id)
+    )
+    bill = result.scalar_one_or_none()
+    if not bill:
+        raise HTTPException(status_code=404, detail="账单不存在")
+    details = [
+        {"country_code": d.country_code, "country_name": d.country_name, "sms_count": d.sms_count,
+         "success_count": d.success_count, "unit_price": float(d.unit_price or 0),
+         "total_amount": float(d.total_amount or 0)}
+        for d in bill.details
+    ]
+    return {
+        "success": True,
+        "bill": {
+            "id": bill.id, "bill_no": bill.bill_no, "account_id": bill.account_id,
+            "account_name": bill.account.account_name if bill.account else None,
+            "period_start": bill.period_start.isoformat() if bill.period_start else None,
+            "period_end": bill.period_end.isoformat() if bill.period_end else None,
+            "total_sms_count": bill.total_sms_count, "total_success_count": bill.total_success_count,
+            "total_amount": float(bill.total_amount or 0), "paid_amount": float(bill.paid_amount or 0),
+            "outstanding_amount": float(bill.outstanding_amount or 0), "status": bill.status,
+            "due_date": bill.due_date.isoformat() if bill.due_date else None,
+            "currency": bill.currency, "notes": bill.notes,
+            "created_at": bill.created_at.isoformat() if bill.created_at else None,
+            "details": details
+        }
+    }
+
+
+@customer_bill_router.post("/{bill_id}/pay")
+async def pay_customer_bill(
+    bill_id: int,
+    data: CustomerBillPay,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin)
+):
+    """客户账单收款（支持部分收款）"""
+    bill = await db.get(CustomerBill, bill_id)
+    if not bill:
+        raise HTTPException(status_code=404, detail="账单不存在")
+    outstanding = float(bill.outstanding_amount or 0)
+    if data.amount > outstanding:
+        raise HTTPException(status_code=400, detail=f"收款金额不能超过待付金额 {outstanding:.2f}")
+    bill.paid_amount = (bill.paid_amount or 0) + Decimal(str(data.amount))
+    bill.outstanding_amount = Decimal(str(outstanding - data.amount))
+    bill.status = 'paid' if bill.outstanding_amount <= 0 else 'partial'
+    if data.notes:
+        bill.notes = (bill.notes or '') + f"\n收款: {data.amount}, {data.notes}"
+    await db.commit()
+    return {"success": True, "message": "收款成功", "outstanding_amount": float(bill.outstanding_amount)}
+
+
+# customer_bill_router 已在 main.py 中直接注册到 /api/v1/admin/bills

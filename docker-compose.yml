@@ -200,7 +200,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-SMSCPro_bot}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-kaolachbot}
     volumes:
       - ./telegram_bot:/app
       - ./backend:/backend # 挂载 backend 代码以供复用

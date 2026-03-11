@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     """应用配置"""
     
     # 应用配置
-    APP_NAME: str = "SMSCPro Gateway"
+    APP_NAME: str = "考拉出海 Gateway"
     APP_ENV: str = "development"
     APP_DEBUG: bool = True
     APP_HOST: str = "0.0.0.0"

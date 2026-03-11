@@ -37,7 +37,10 @@ async def bind_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     async with get_session() as db:
         # 验证账号
-        query = select(AdminUser).where(AdminUser.username == username)
+        query = select(AdminUser).where(
+            AdminUser.username == username,
+            AdminUser.status == 'active'
+        )
         result = await db.execute(query)
         admin = result.scalar_one_or_none()
         
@@ -71,7 +74,10 @@ async def invite_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     async with get_session() as db:
         # 验证是否为销售
-        query = select(AdminUser).where(AdminUser.tg_id == tg_id)
+        query = select(AdminUser).where(
+            AdminUser.tg_id == tg_id,
+            AdminUser.status == 'active'
+        )
         result = await db.execute(query)
         sales = result.scalar_one_or_none()
         
@@ -459,7 +465,7 @@ async def generate_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         code = await service.create_code(sales_id, config)
     
     import os
-    bot_username = os.getenv('TELEGRAM_BOT_USERNAME', 'SMSCPro_bot')
+    bot_username = os.getenv('TELEGRAM_BOT_USERNAME', 'kaolachbot')
     invite_link = f"https://t.me/{bot_username}?start={code}"
 
     biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)

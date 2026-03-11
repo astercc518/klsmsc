@@ -52,7 +52,7 @@ _is_dev = (settings.APP_ENV == "development")
 
 app = FastAPI(
     title=settings.APP_NAME,
-    description="SMSCPro - 企业级国际短信网关系统 | smscpro.com",
+    description="考拉出海 - 企业级国际短信网关系统 | kaolach.com",
     version="1.0.0",
     docs_url="/docs" if _is_dev else None,
     redoc_url="/redoc" if _is_dev else None,
@@ -145,6 +145,7 @@ from app.api.v1 import (
     sms, account, channels, admin, reports, bot_admin, system_config,
     templates, api_keys, batches, scheduled_tasks, sub_accounts, packages,
     notifications, security_logs, suppliers, tickets, settlements,
+    sales_commission,
     channel_relations, voice, account_templates, ai, admin_logs
 )
 from app.api.v1.data import (
@@ -171,6 +172,8 @@ app.include_router(security_logs.router, prefix="/api/v1", tags=["Security Logs"
 app.include_router(suppliers.router, prefix="/api/v1", tags=["Suppliers"])
 app.include_router(tickets.router, prefix="/api/v1", tags=["Tickets"])
 app.include_router(settlements.router, prefix="/api/v1", tags=["Settlements"])
+app.include_router(settlements.customer_bill_router, prefix="/api/v1", tags=["客户账单"])
+app.include_router(sales_commission.router, prefix="/api/v1", tags=["销售佣金"])
 # 数据业务模块
 app.include_router(admin_numbers_router, prefix="/api/v1/admin/data", tags=["数据管理-号码"])
 app.include_router(admin_products_router, prefix="/api/v1/admin/data", tags=["数据管理-商品"])

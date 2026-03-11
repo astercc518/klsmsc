@@ -37,7 +37,11 @@ from app.modules.voice.models import VoiceRoute, VoiceCall
 from app.modules.common.account_pricing import AccountPricing
 from app.models.scheduled_task import ScheduledTask
 from app.models.sub_account import SubAccount
-from app.models.settlement import Settlement, SettlementDetail, SettlementLog, CustomerBill, CustomerBillDetail, ProfitReport
+from app.models.settlement import (
+    Settlement, SettlementDetail, SettlementLog,
+    CustomerBill, CustomerBillDetail, ProfitReport,
+    SalesCommissionSettlement, SalesCommissionDetail
+)
 
 __all__ = [
     "Account",
@@ -79,6 +83,8 @@ __all__ = [
     "CustomerBill",
     "CustomerBillDetail",
     "ProfitReport",
+    "SalesCommissionSettlement",
+    "SalesCommissionDetail",
     # 数据业务模块
     "DataNumber",
     "DataProduct",

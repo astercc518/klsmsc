@@ -26,8 +26,11 @@ class StatisticsResponse(BaseModel):
     total_sent: int
     total_delivered: int
     total_failed: int
+    total_pending: int = 0  # pending + queued
     success_rate: float
     total_cost: float
+    total_revenue: float = 0.0  # 销售收入（selling_price 汇总）
+    total_profit: float = 0.0   # 毛利（revenue - cost）
     currency: str
 
 
@@ -77,7 +80,9 @@ async def get_statistics(
         func.count(SMSLog.id).label("total_sent"),
         func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
         func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
-        func.sum(SMSLog.selling_price).label("total_cost")
+        func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("total_pending"),
+        func.sum(SMSLog.cost_price).label("total_cost"),
+        func.sum(SMSLog.selling_price).label("total_revenue")
     ).where(
         and_(
             SMSLog.account_id == account.id,
@@ -92,8 +97,10 @@ async def get_statistics(
     total_sent = row.total_sent or 0
     total_delivered = row.total_delivered or 0
     total_failed = row.total_failed or 0
+    total_pending = row.total_pending or 0
     total_cost = float(row.total_cost or 0)
-    
+    total_revenue = float(row.total_revenue or 0)
+    total_profit = total_revenue - total_cost
     success_rate = (total_delivered / total_sent * 100) if total_sent > 0 else 0.0
     
     logger.info(f"查询统计: 账户={account.id}, 总计={total_sent}, 成功率={success_rate:.2f}%")
@@ -102,9 +109,12 @@ async def get_statistics(
         total_sent=total_sent,
         total_delivered=total_delivered,
         total_failed=total_failed,
+        total_pending=total_pending,
         success_rate=round(success_rate, 2),
-        total_cost=total_cost,
-        currency=account.currency
+        total_cost=round(total_cost, 4),
+        total_revenue=round(total_revenue, 4),
+        total_profit=round(total_profit, 4),
+        currency=account.currency or "USD"
     )
 
 
@@ -233,13 +243,14 @@ async def get_daily_stats(
     end_date = datetime.now().date()
     start_date = end_date - timedelta(days=days-1)
     
-    # 使用SQL聚合按日期统计
+    # 使用SQL聚合按日期统计（含成本、收入、利润）
     query = text("""
         SELECT 
             DATE(submit_time) as date,
             COUNT(*) as total_sent,
             SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as total_delivered,
-            SUM(selling_price) as total_cost
+            SUM(cost_price) as total_cost,
+            SUM(selling_price) as total_revenue
         FROM sms_logs
         WHERE account_id = :account_id
             AND submit_time >= :start_date
@@ -263,12 +274,16 @@ async def get_daily_stats(
         total_delivered = row.total_delivered or 0
         success_rate = (total_delivered / total_sent * 100) if total_sent > 0 else 0.0
         
+        cost = float(row.total_cost or 0)
+        revenue = float(row.total_revenue or 0)
         daily_stats.append({
             "date": row.date.isoformat() if row.date else None,
             "total_sent": total_sent,
             "total_delivered": total_delivered,
             "success_rate": round(success_rate, 2),
-            "total_cost": float(row.total_cost or 0)
+            "total_cost": cost,
+            "total_revenue": revenue,
+            "total_profit": round(revenue - cost, 4)
         })
     
     return {

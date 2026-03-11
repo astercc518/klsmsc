@@ -3,8 +3,9 @@
     <!-- ===== 顶部导航 ===== -->
     <header class="hd" :class="{ fixed: scrolled }">
       <div class="w hd-inner">
-        <a href="/" class="hd-logo" aria-label="SMSCPro 首页">
-          <span class="hd-logo-text">SMSC<em>Pro</em></span>
+        <a href="/" class="hd-logo" aria-label="考拉出海 首页">
+          <img src="/favicon.svg" alt="" class="hd-logo-icon" width="32" height="32" />
+          <span class="hd-logo-text">Kao<em>lach</em></span>
         </a>
         <nav class="hd-nav" :class="{ show: mobileMenu }" aria-label="主导航">
           <a href="#" class="hd-nav-item" @click.prevent="scrollTop">{{ $t('landing.nav.home') }}</a>
@@ -64,7 +65,7 @@
         <div class="hero-left">
           <div class="hero-glass">
             <div class="hero-kw">
-              <span>SMSCPro</span>
+              <span>考拉出海</span>
               <span>Bulk</span>
               <span>SMS</span>
             </div>
@@ -89,7 +90,7 @@
               <div class="phone-notch"></div>
               <div class="phone-screen">
                 <div class="phone-msg phone-msg-in">Hi, 您的验证码是 385921</div>
-                <div class="phone-msg phone-msg-in">【SMSCPro】尊敬的用户，您的订单已发货...</div>
+                <div class="phone-msg phone-msg-in">【考拉出海】尊敬的用户，您的订单已发货...</div>
                 <div class="phone-msg phone-msg-out">收到，谢谢！</div>
                 <div class="phone-msg phone-msg-in">限时优惠！全场5折起...</div>
               </div>
@@ -196,7 +197,7 @@
       <div class="w">
         <p class="sec-label">{{ $t('landing.sections.faq') }}</p>
         <h2 class="sec-title">{{ $t('landing.sections.faqTitle') }}</h2>
-        <p class="sec-desc">SMSCPro 目标是让您轻松开始使用群发短信并充分利用它的诸多优势。无论您是群发 SMS 的新手还是经验丰富的用户，您都会找到有关功能、定价等常见问题的答案。</p>
+        <p class="sec-desc">考拉出海 目标是让您轻松开始使用群发短信并充分利用它的诸多优势。无论您是群发 SMS 的新手还是经验丰富的用户，您都会找到有关功能、定价等常见问题的答案。</p>
         <div class="sec-actions">
           <router-link to="/login" class="btn-main btn-sm">前往支持中心</router-link>
           <a href="#contact" class="btn-outline btn-sm">{{ $t('landing.nav.contact') }}</a>
@@ -215,7 +216,7 @@
       <div class="w">
         <p class="sec-label">{{ $t('landing.sections.flow') }}</p>
         <h2 class="sec-title">{{ $t('landing.sections.flowTitle') }}</h2>
-        <p class="sec-desc">欢迎使用 SMSCPro，开启您的云上之旅！以简单、安全和可靠的方式在几分钟内发送批量短信，推动业务绩效</p>
+        <p class="sec-desc">欢迎使用 考拉出海，开启您的云上之旅！以简单、安全和可靠的方式在几分钟内发送批量短信，推动业务绩效</p>
         <div class="flow-row">
           <div class="flow-step" v-for="(s,i) in flowSteps" :key="i">
             <span class="flow-badge">step {{ i+1 }}</span>
@@ -237,17 +238,14 @@
         <h2 class="sec-title">{{ $t('landing.contact.sectionTitle') }}</h2>
         <div class="contact-card">
           <div class="contact-logo">
-            <div class="contact-logo-ring">
-              <span class="contact-logo-icon">SMSC</span>
-              <span class="contact-logo-label">SMSCPro</span>
-            </div>
+            <img src="/logo.svg" alt="考拉出海" class="contact-logo-img" />
           </div>
           <h3 class="contact-title">{{ $t('landing.contact.title') }}</h3>
-          <p class="contact-username">@SMSCPro_bot</p>
+          <p class="contact-username">@kaolachbot</p>
           <p class="contact-desc">{{ $t('landing.contact.line1') }}</p>
           <p class="contact-desc">{{ $t('landing.contact.line2') }}</p>
           <p class="contact-desc">{{ $t('landing.contact.line3') }}</p>
-          <a href="https://t.me/SMSCPro_bot" target="_blank" rel="noopener noreferrer" class="contact-btn">{{ $t('landing.contact.sendMessage') }}</a>
+          <a href="https://t.me/kaolachbot" target="_blank" rel="noopener noreferrer" class="contact-btn">{{ $t('landing.contact.sendMessage') }}</a>
         </div>
       </div>
     </section>
@@ -277,7 +275,7 @@
     <footer class="ft">
       <div class="w ft-inner">
         <div class="ft-brand">
-          <span class="hd-logo-text" style="font-size:1.5rem">SMSC<em>Pro</em></span>
+          <span class="hd-logo-text" style="font-size:1.5rem">Kao<em>lach</em></span>
           <p>我们致力于创新通信解决方案，让 SMS 消息自由传递，满足您所有短信营销需求。您可以毫不费力地发送一次性验证码、通知、时事通讯、提醒和营销短信。</p>
         </div>
         <div class="ft-col">
@@ -293,11 +291,11 @@
         <div class="ft-col">
           <h5>关于</h5>
           <a href="#contact">联系我们</a>
-          <a href="#about">关于 SMSCPro</a>
+          <a href="#about">关于 考拉出海</a>
         </div>
       </div>
       <div class="w ft-bottom">
-        <p>© 2024 - {{ new Date().getFullYear() }} SMSCPro. All Rights Reserved.</p>
+        <p>© 2024 - {{ new Date().getFullYear() }} 考拉出海. All Rights Reserved.</p>
         <div class="ft-links">
           <a href="#faq">支持中心</a>
           <a href="#about">服务条款</a>
@@ -356,7 +354,7 @@ function toggleLang() {
 
 onMounted(() => {
   window.addEventListener('scroll', onScroll, { passive: true })
-  document.title = 'SMSCPro - 国际短信群发解决方案 | 免费测试 即充即用'
+  document.title = '考拉出海 - 国际短信群发解决方案 | 免费测试 即充即用'
   const savedTheme = localStorage.getItem('theme') || 'dark'
   isDark.value = savedTheme === 'dark'
   document.documentElement.setAttribute('data-theme', savedTheme)
@@ -392,10 +390,10 @@ const products = [
 ]
 
 const advantages = [
-  { icon: IconGlobeAlt, title: '超广覆盖、自由联通', desc: 'SMSCPro 支持 190 多个国家/地区的 800 多个电信网络运营商，便于出海企业简单、安全、稳定的一站式通讯解决方案与您的全球用户实现无障碍的即时通讯连接' },
+  { icon: IconGlobeAlt, title: '超广覆盖、自由联通', desc: '考拉出海 支持 190 多个国家/地区的 800 多个电信网络运营商，便于出海企业简单、安全、稳定的一站式通讯解决方案与您的全球用户实现无障碍的即时通讯连接' },
   { icon: IconEnvelope, title: '不限行业、内容宽松', desc: '我们致力于创新通信解决方案，让 SMS 消息自由传递，满足您所有短信营销需求。覆盖互联网、金融、信贷、投资、棋牌、游戏、电商、教育等众多领域短信群发' },
   { icon: IconBolt, title: '优质通道、高效并发', desc: '创新的通信解决方案，确保您的短信送达至目标受众的设备，分布式服务器，数据秒级触达，高效并发响应与海量数据吞吐引擎支持，安全稳定，秒级触达，高到达率' },
-  { icon: IconChartBar, title: '独立后台、实时报告', desc: '通过 SMSCPro 强大的独立后台可以轻松、快速、高效地向客户、潜在客户发送大量短信，保障每一条信息透明化查询，所有通信服务提供可视化图表呈现' },
+  { icon: IconChartBar, title: '独立后台、实时报告', desc: '通过 考拉出海 强大的独立后台可以轻松、快速、高效地向客户、潜在客户发送大量短信，保障每一条信息透明化查询，所有通信服务提供可视化图表呈现' },
 ]
 
 const priceFeatures = [
@@ -405,12 +403,12 @@ const priceFeatures = [
 ]
 
 const faqs = [
-  { q: '可以发送哪些内容，限制行业吗？', a: 'SMSCPro 可以发送博彩、贷款、催款、众筹、股票、保险、房地产、教育、直播、培训、信用卡提额、投资理财、中奖、抽奖、交友、App推广等类型的短信；没有行业限制' },
+  { q: '可以发送哪些内容，限制行业吗？', a: '考拉出海 可以发送博彩、贷款、催款、众筹、股票、保险、房地产、教育、直播、培训、信用卡提额、投资理财、中奖、抽奖、交友、App推广等类型的短信；没有行业限制' },
   { q: '三网（移动、联通和电信）都可以发吗？', a: '全球 190+ 国家/地区的 800+ 运营商全覆盖，无论您需要发送什么内容，都可以找到适合的短信方案' },
-  { q: '如何通过 SMSCPro 发送短信？', a: 'SMSCPro 提供两种发送批量短信的方式 - 通过独立后台和通过我们的短信 API。无论您选择独立后台还是 API，使用 SMSCPro 都可以轻松发送批量 SMS 消息，从而提升业务成果。' },
-  { q: '批量发送短信如何计费？', a: 'SMSCPro 零月租费零服务费，所有通道价格透明，根据需求自助选择价格方案；计费清晰合理，按照实际发送量计费，保障每一条信息透明化查询，所有通信服务提供可视化图表呈现' },
+  { q: '如何通过 考拉出海 发送短信？', a: '考拉出海 提供两种发送批量短信的方式 - 通过独立后台和通过我们的短信 API。无论您选择独立后台还是 API，使用 考拉出海 都可以轻松发送批量 SMS 消息，从而提升业务成果。' },
+  { q: '批量发送短信如何计费？', a: '考拉出海 零月租费零服务费，所有通道价格透明，根据需求自助选择价格方案；计费清晰合理，按照实际发送量计费，保障每一条信息透明化查询，所有通信服务提供可视化图表呈现' },
   { q: '数据在后台是否安全？', a: '银行级数据加密技术、256位密钥证书、HTTPS加密、访问权限控制、用户数据隔离等多重数据安全保护机制，自研监控系统、短信自动分流、支持故障无缝切换、业内领先的技术保障' },
-  { q: '你们提供哪些方面的支持？', a: 'SMSCPro 提供的支持取决于您的具体需求和要求。包括：帮助中心、客服支持、技术支持和商务支持，您可以根据遇到的问题选择相应的支持服务' },
+  { q: '你们提供哪些方面的支持？', a: '考拉出海 提供的支持取决于您的具体需求和要求。包括：帮助中心、客服支持、技术支持和商务支持，您可以根据遇到的问题选择相应的支持服务' },
 ]
 
 const flowSteps = [
@@ -423,7 +421,7 @@ const flowSteps = [
 
 <style>
 /* ============================================================
-   SMSCPro Landing — 完全模仿 GoTone SMS 风格（非 scoped 以确保样式生效）
+   考拉出海 Landing — 完全模仿 GoTone SMS 风格（非 scoped 以确保样式生效）
    ============================================================ */
 .landing-site {
   --blue: #3478f6;
@@ -541,7 +539,8 @@ const flowSteps = [
 .landing-site .hd { position: fixed; top: 0; left: 0; right: 0; z-index: 300; transition: background .3s, border-color .3s, box-shadow .3s; background: transparent; }
 .landing-site .hd.fixed { background: rgba(11,13,26,.92); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border); box-shadow: 0 2px 20px rgba(0,0,0,.3); }
 .landing-site .hd-inner { display: flex; align-items: center; height: 68px; }
-.landing-site .hd-logo { display: flex; align-items: center; gap: 6px; flex-shrink: 0; cursor: pointer; }
+.landing-site .hd-logo { display: flex; align-items: center; gap: 8px; flex-shrink: 0; cursor: pointer; }
+.landing-site .hd-logo-icon { flex-shrink: 0; border-radius: 6px; }
 .landing-site .hd-logo:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 6px; }
 .landing-site .hd-logo-text { font-size: 1.4rem; font-weight: 800; color: #fff; letter-spacing: -.02em; }
 .landing-site .hd-logo-text em { font-style: normal; color: var(--blue); }
@@ -803,6 +802,10 @@ const flowSteps = [
   box-shadow: 0 24px 48px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.06);
 }
 .landing-site .contact-logo { margin-bottom: 24px; }
+.landing-site .contact-logo-img {
+  width: 140px; height: auto; display: block; margin: 0 auto;
+  border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.2);
+}
 .landing-site .contact-logo-ring {
   display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
   width: 88px; height: 88px;

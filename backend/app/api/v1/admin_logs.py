@@ -152,3 +152,44 @@ async def get_log_stats(
     except Exception as e:
         logger.error(f"获取日志统计失败: {e}")
         raise
+
+
+@router.get("/admin/system/services", summary="服务健康状态")
+async def get_services_status(
+    _current_admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取各依赖服务健康状态"""
+    from app.config import settings
+
+    async def check_mysql():
+        try:
+            await db.execute(text("SELECT 1"))
+            return {"status": "ok", "message": "连接正常"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)[:100]}
+
+    def check_redis():
+        try:
+            import redis
+            r = redis.Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=settings.REDIS_DB,
+                password=settings.REDIS_PASSWORD or None,
+                socket_connect_timeout=2
+            )
+            r.ping()
+            return {"status": "ok", "message": "连接正常"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)[:100]}
+
+    mysql_result = await check_mysql()
+    redis_result = check_redis()
+
+    return {
+        "services": {
+            "mysql": {"name": "MySQL", **mysql_result},
+            "redis": {"name": "Redis", **redis_result},
+        }
+    }

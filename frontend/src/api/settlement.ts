@@ -65,6 +65,16 @@ export interface CustomerBill {
 
 // ============ 供应商结算接口 ============
 
+// 获取结算单汇总
+export function getSettlementsSummary(params?: {
+  supplier_id?: number
+  status?: string
+  start_date?: string
+  end_date?: string
+}) {
+  return request.get('/admin/settlements/summary', { params })
+}
+
 // 获取结算单列表
 export function getSettlements(params?: {
   page?: number
@@ -146,11 +156,103 @@ export function getCustomerBills(params?: {
   return request.get('/admin/bills', { params })
 }
 
+// 获取客户账单详情
+export function getCustomerBillDetail(billId: number) {
+  return request.get(`/admin/bills/${billId}`)
+}
+
+// 客户账单收款
+export function payCustomerBill(billId: number, data: {
+  amount: number
+  payment_method?: string
+  payment_reference?: string
+  notes?: string
+}) {
+  return request.post(`/admin/bills/${billId}/pay`, data)
+}
+
 // 生成客户账单
 export function generateCustomerBill(data: {
   account_id: number
   period_start: string
   period_end: string
+  due_days?: number
 }) {
-  return request.post('/admin/bills/generate', null, { params: data })
+  return request.post('/admin/bills/generate', data)
+}
+
+// ============ 销售佣金结算接口 ============
+
+export interface CommissionSettlement {
+  id: number
+  settlement_no: string
+  sales_id: number
+  sales_name?: string
+  period_start: string
+  period_end: string
+  total_sms_count: number
+  total_revenue: number
+  commission_rate: number
+  commission_amount: number
+  currency: string
+  status: string
+  paid_at?: string
+  created_at?: string
+}
+
+// 获取销售佣金汇总
+export function getCommissionSummary(params?: {
+  sales_id?: number
+  status?: string
+  start_date?: string
+  end_date?: string
+}) {
+  return request.get('/admin/sales-commission/summary', { params })
+}
+
+// 获取销售佣金结算单列表
+export function getCommissionSettlements(params?: {
+  page?: number
+  page_size?: number
+  sales_id?: number
+  status?: string
+  start_date?: string
+  end_date?: string
+}) {
+  return request.get('/admin/sales-commission', { params })
+}
+
+// 生成销售佣金结算单
+export function generateCommissionSettlement(params: {
+  sales_id: number
+  year: number
+  month: number
+}) {
+  return request.post('/admin/sales-commission/generate', null, { params })
+}
+
+// 获取销售佣金结算单详情
+export function getCommissionSettlementDetail(settlementId: number) {
+  return request.get(`/admin/sales-commission/${settlementId}`)
+}
+
+// 确认销售佣金结算单
+export function confirmCommissionSettlement(settlementId: number) {
+  return request.post(`/admin/sales-commission/${settlementId}/confirm`)
+}
+
+// 支付销售佣金结算单
+export function payCommissionSettlement(settlementId: number, data: {
+  payment_method: string
+  payment_reference?: string
+  notes?: string
+}) {
+  return request.post(`/admin/sales-commission/${settlementId}/pay`, data)
+}
+
+// 取消销售佣金结算单
+export function cancelCommissionSettlement(settlementId: number, reason: string) {
+  return request.post(`/admin/sales-commission/${settlementId}/cancel`, null, {
+    params: { reason }
+  })
 }
