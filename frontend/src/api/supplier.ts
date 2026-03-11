@@ -106,6 +106,11 @@ export function deleteSupplier(supplierId: number) {
   return request.delete(`/admin/suppliers/${supplierId}`)
 }
 
+// 从资源报价文件导入供应商报价（data/resource_pricing.json）
+export function importFromResourcePricing() {
+  return request.post('/admin/suppliers/import-from-resource-pricing')
+}
+
 // 获取供应商费率列表
 export function getSupplierRates(supplierId: number, params?: {
   page?: number

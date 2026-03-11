@@ -9,37 +9,26 @@ from app.modules.common.account import Account
 from app.modules.common.admin_user import AdminUser
 from app.modules.common.ticket import Ticket
 from app.modules.common.recharge_order import RechargeOrder
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, text
 from datetime import datetime, timedelta
 import secrets
 
-# 国家名称映射（避免编码问题）
+# 国家名称映射（避免编码问题，用于报价查询等展示）
 COUNTRY_NAMES = {
-    'CN': '中国',
-    'US': '美国',
-    'GB': '英国',
-    'SG': '新加坡',
-    'JP': '日本',
-    'KR': '韩国',
-    'TH': '泰国',
-    'VN': '越南',
-    'MY': '马来西亚',
-    'ID': '印尼',
-    'PH': '菲律宾',
-    'IN': '印度',
-    'AU': '澳大利亚',
-    'CA': '加拿大',
-    'DE': '德国',
-    'FR': '法国',
-    'IT': '意大利',
-    'ES': '西班牙',
-    'RU': '俄罗斯',
-    'BR': '巴西',
-    'MX': '墨西哥',
-    'HK': '香港',
-    'TW': '台湾',
-    'AE': '阿联酋',
-    'SA': '沙特',
+    'CN': '中国', 'US': '美国', 'GB': '英国', 'SG': '新加坡', 'JP': '日本', 'KR': '韩国',
+    'TH': '泰国', 'VN': '越南', 'MY': '马来西亚', 'ID': '印尼', 'PH': '菲律宾', 'IN': '印度',
+    'AU': '澳大利亚', 'CA': '加拿大', 'DE': '德国', 'FR': '法国', 'IT': '意大利', 'ES': '西班牙',
+    'RU': '俄罗斯', 'BR': '巴西', 'MX': '墨西哥', 'HK': '香港', 'TW': '台湾', 'AE': '阿联酋',
+    'SA': '沙特', 'BD': '孟加拉', 'PK': '巴基斯坦', 'EG': '埃及', 'ZA': '南非', 'KE': '肯尼亚',
+    'NG': '尼日利亚', 'CL': '智利', 'CO': '哥伦比亚', 'PE': '秘鲁', 'AR': '阿根廷', 'TR': '土耳其',
+    'IL': '以色列', 'QA': '卡塔尔', 'KW': '科威特', 'OM': '阿曼', 'BH': '巴林', 'LB': '黎巴嫩',
+    'DK': '丹麦', 'SE': '瑞典', 'NO': '挪威', 'FI': '芬兰', 'NL': '荷兰', 'BE': '比利时',
+    'CH': '瑞士', 'AT': '奥地利', 'PL': '波兰', 'CZ': '捷克', 'RO': '罗马尼亚', 'HU': '匈牙利',
+    'GR': '希腊', 'PT': '葡萄牙', 'IE': '爱尔兰', 'NZ': '新西兰', 'VE': '委内瑞拉', 'EC': '厄瓜多尔',
+    'BO': '玻利维亚', 'KH': '柬埔寨', 'LA': '老挝', 'MM': '缅甸', 'BN': '文莱', 'LK': '斯里兰卡',
+    'KZ': '哈萨克斯坦', 'LT': '立陶宛', 'GH': '加纳', 'MA': '摩洛哥', 'DZ': '阿尔及利亚',
+    'TN': '突尼斯', 'UG': '乌干达', 'TZ': '坦桑尼亚', 'ET': '埃塞俄比亚', 'SN': '塞内加尔',
+    'CM': '喀麦隆', 'CI': '科特迪瓦', 'ZM': '赞比亚', 'JO': '约旦',
 }
 
 
@@ -401,6 +390,11 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await show_pricing_menu(query, context, tg_id)
         return
     
+    # 报价查询 - 国家列表（必须先于 pricing_country_ 检查，否则会误匹配）
+    if data == "pricing_country_list":
+        await show_pricing_country_list(query, context)
+        return
+    
     # 报价查询 - 按国家
     if data.startswith("pricing_country_"):
         country_code = data.replace("pricing_country_", "")
@@ -410,11 +404,6 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # 报价查询 - 查看全部
     if data == "pricing_all":
         await show_pricing_all(query, context)
-        return
-    
-    # 报价查询 - 国家列表
-    if data == "pricing_country_list":
-        await show_pricing_country_list(query, context)
         return
     
     # 处理国家选择（邀请流程）
@@ -1134,29 +1123,32 @@ async def show_pricing_menu(query, context, tg_id: int):
 
 
 async def show_pricing_country_list(query, context):
-    """显示有报价的国家列表"""
-    from app.modules.sms.country_pricing import CountryPricing
-    from app.modules.sms.channel import Channel
-
-    async with get_session() as db:
-        result = await db.execute(
-            select(CountryPricing.country_code, CountryPricing.country_name)
-            .distinct()
-            .order_by(CountryPricing.country_code)
+    """显示有报价的国家列表（数据来源：资源报价 supplier_rates，使用原生 SQL 避免 ORM 模型加载问题）"""
+    try:
+        async with get_session() as db:
+            result = await db.execute(
+                text("SELECT DISTINCT country_code FROM supplier_rates WHERE status = 'active' ORDER BY country_code")
+            )
+            countries = result.scalars().all()
+    except Exception as e:
+        logger.exception("报价国家列表查询失败: %s", e)
+        await query.edit_message_text(
+            f"❌ 查询失败: {str(e)[:100]}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="menu_pricing")]])
         )
-        countries = result.all()
+        return
 
     if not countries:
         await query.edit_message_text(
-            "📋 报价查询\n\n暂无报价数据",
+            "📋 报价查询\n\n暂无报价数据，请先在【资源报价】页面导入成本表",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="menu_pricing")]])
         )
         return
 
     keyboard = []
     row = []
-    for country_code, country_name in countries:
-        label = country_name or COUNTRY_NAMES.get(country_code, country_code)
+    for (country_code,) in countries:
+        label = COUNTRY_NAMES.get(country_code, country_code)
         row.append(InlineKeyboardButton(label, callback_data=f"pricing_country_{country_code}"))
         if len(row) == 2:
             keyboard.append(row)
@@ -1166,25 +1158,34 @@ async def show_pricing_country_list(query, context):
     keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_pricing")])
 
     await query.edit_message_text(
-        "📋 报价查询 - 按国家\n\n请选择国家：",
+        "📋 报价查询 - 按国家\n\n请选择国家（数据来源：资源报价）：",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 async def show_pricing_by_country(query, context, country_code: str):
-    """显示指定国家的报价"""
-    from app.modules.sms.country_pricing import CountryPricing
-    from app.modules.sms.channel import Channel
-
+    """显示指定国家的报价（数据来源：资源报价 supplier_rates，使用原生 SQL）"""
     country_code = country_code.upper()
-    async with get_session() as db:
-        result = await db.execute(
-            select(CountryPricing, Channel)
-            .join(Channel, CountryPricing.channel_id == Channel.id)
-            .where(CountryPricing.country_code == country_code)
-            .order_by(CountryPricing.price_per_sms)
+    try:
+        async with get_session() as db:
+            result = await db.execute(
+                text("""
+                    SELECT r.cost_price, r.sell_price, r.currency, s.supplier_name
+                    FROM supplier_rates r
+                    JOIN suppliers s ON r.supplier_id = s.id
+                    WHERE r.country_code = :cc AND r.status = 'active' AND (s.is_deleted = 0 OR s.is_deleted IS NULL)
+                    ORDER BY r.cost_price
+                """),
+                {"cc": country_code}
+            )
+            rows = result.fetchall()
+    except Exception as e:
+        logger.exception("报价查询失败: %s", e)
+        await query.edit_message_text(
+            f"❌ 查询失败: {str(e)[:100]}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="pricing_country_list")]])
         )
-        rows = result.all()
+        return
 
     if not rows:
         country_label = COUNTRY_NAMES.get(country_code, country_code)
@@ -1194,11 +1195,13 @@ async def show_pricing_by_country(query, context, country_code: str):
         )
         return
 
-    lines = [f"📋 {COUNTRY_NAMES.get(country_code, country_code)} ({country_code}) 报价\n"]
-    for pricing, channel in rows:
-        price = float(pricing.price_per_sms)
-        curr = pricing.currency or "USD"
-        lines.append(f"• {channel.channel_name}: ${price:.4f} {curr}/条")
+    lines = [f"📋 {COUNTRY_NAMES.get(country_code, country_code)} ({country_code}) 资源报价\n"]
+    for row in rows:
+        cost = float(row[0])
+        sell = float(row[1]) if row[1] else cost
+        curr = row[2] or "USD"
+        supplier_name = row[3] or "-"
+        lines.append(f"• {supplier_name}: 成本 ${cost:.4f} 售价 ${sell:.4f} {curr}/条")
 
     keyboard = [[InlineKeyboardButton("🔙 返回", callback_data="pricing_country_list")]]
     await query.edit_message_text(
@@ -1208,41 +1211,50 @@ async def show_pricing_by_country(query, context, country_code: str):
 
 
 async def show_pricing_all(query, context):
-    """显示全部报价（按国家分组）"""
-    from app.modules.sms.country_pricing import CountryPricing
-    from app.modules.sms.channel import Channel
-
-    async with get_session() as db:
-        result = await db.execute(
-            select(CountryPricing, Channel)
-            .join(Channel, CountryPricing.channel_id == Channel.id)
-            .order_by(CountryPricing.country_code, CountryPricing.price_per_sms)
+    """显示全部报价（按国家分组，数据来源：资源报价 supplier_rates，使用原生 SQL）"""
+    try:
+        async with get_session() as db:
+            result = await db.execute(
+                text("""
+                    SELECT r.country_code, r.cost_price, r.sell_price, r.currency, s.supplier_name
+                    FROM supplier_rates r
+                    JOIN suppliers s ON r.supplier_id = s.id
+                    WHERE r.status = 'active' AND (s.is_deleted = 0 OR s.is_deleted IS NULL)
+                    ORDER BY r.country_code, r.cost_price
+                """)
+            )
+            rows = result.fetchall()
+    except Exception as e:
+        logger.exception("全部报价查询失败: %s", e)
+        await query.edit_message_text(
+            f"❌ 查询失败: {str(e)[:100]}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="menu_pricing")]])
         )
-        rows = result.all()
+        return
 
     if not rows:
         await query.edit_message_text(
-            "📋 全部报价\n\n暂无报价数据",
+            "📋 全部报价\n\n暂无报价数据，请先在【资源报价】页面导入成本表",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 返回", callback_data="menu_pricing")]])
         )
         return
 
     # 按国家分组
     by_country = {}
-    for pricing, channel in rows:
-        cc = pricing.country_code
+    for row in rows:
+        cc, cost_price, sell_price, curr, supplier_name = row[0], row[1], row[2], row[3], row[4]
         if cc not in by_country:
             by_country[cc] = []
-        by_country[cc].append((pricing, channel))
+        by_country[cc].append((cost_price, sell_price, curr or "USD", supplier_name or "-"))
 
-    lines = ["📋 全部报价\n"]
+    lines = ["📋 全部报价（资源报价）\n"]
     for cc in sorted(by_country.keys()):
         country_label = COUNTRY_NAMES.get(cc, cc)
         lines.append(f"\n🌍 {country_label} ({cc})")
-        for pricing, channel in by_country[cc]:
-            price = float(pricing.price_per_sms)
-            curr = pricing.currency or "USD"
-            lines.append(f"  • {channel.channel_name}: ${price:.4f} {curr}/条")
+        for cost_price, sell_price, curr, supplier_name in by_country[cc]:
+            cost = float(cost_price)
+            sell = float(sell_price) if sell_price else cost
+            lines.append(f"  • {supplier_name}: 成本 ${cost:.4f} 售价 ${sell:.4f} {curr}/条")
 
     # Telegram 消息长度限制约 4096
     text = "\n".join(lines)

@@ -1259,6 +1259,11 @@ export default {
     confirmImport: 'Confirm Import',
     importSuccess: 'Successfully imported {count} rates',
     importFailed: 'Import failed',
+    // Import from cost file
+    importFromCost: 'Import from Cost',
+    importFromCostConfirm: 'Import suppliers and rates from data/resource_pricing.json. Existing suppliers will get rates updated. Continue?',
+    importFromCostSuccess: 'Import successful',
+    importFromCostFailed: 'Import failed',
   },
   
   // Templates

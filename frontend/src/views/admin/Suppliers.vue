@@ -7,6 +7,10 @@
       </div>
       <div class="header-right">
         <el-button @click="loadSuppliers" :icon="Refresh">{{ $t('common.refresh') }}</el-button>
+        <el-button type="success" @click="handleImportFromCost" :loading="importing">
+          <el-icon><Upload /></el-icon>
+          {{ $t('suppliers.importFromCost') }}
+        </el-button>
         <el-button type="primary" @click="showCreateDialog">
           <el-icon><Plus /></el-icon>
           {{ $t('suppliers.addSupplier') }}
@@ -504,10 +508,11 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, computed, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Plus, Refresh, Search, CircleCheck, OfficeBuilding, Message, Phone, DocumentAdd, Download, Upload, Connection, Grid } from '@element-plus/icons-vue'
 import {
   getSuppliers, createSupplier, updateSupplier, deleteSupplier as deleteSupplierApi,
+  importFromResourcePricing,
   type Supplier
 } from '@/api/supplier'
 
@@ -572,6 +577,7 @@ const formatCost = (value: number | undefined) => {
 
 // 数据
 const loading = ref(false)
+const importing = ref(false)
 const suppliers = ref<Supplier[]>([])
 const stats = reactive({
   active_count: 0,
@@ -1147,7 +1153,29 @@ const parseCSV = (content: string): BatchRateRow[] => {
   return rates
 }
 
-import { ElMessageBox } from 'element-plus'
+// 从成本表导入供应商报价
+const handleImportFromCost = async () => {
+  try {
+    await ElMessageBox.confirm(
+      t('suppliers.importFromCostConfirm'),
+      t('suppliers.importFromCost'),
+      { type: 'info', confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel') }
+    )
+  } catch {
+    return
+  }
+  importing.value = true
+  try {
+    const res: any = await importFromResourcePricing()
+    ElMessage.success(res.message || t('suppliers.importFromCostSuccess'))
+    await loadSuppliers()
+  } catch (error: any) {
+    const msg = error.response?.data?.detail || error.message || t('suppliers.importFromCostFailed')
+    ElMessage.error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+  } finally {
+    importing.value = false
+  }
+}
 
 onMounted(() => {
   loadSuppliers()

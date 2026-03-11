@@ -1322,6 +1322,11 @@ export default {
     confirmImport: '确认导入',
     importSuccess: '成功导入 {count} 条报价',
     importFailed: '导入失败',
+    // 从成本表导入
+    importFromCost: '从成本表导入',
+    importFromCostConfirm: '将从 data/resource_pricing.json 导入供应商及报价。若供应商已存在则仅更新报价。确定继续？',
+    importFromCostSuccess: '导入成功',
+    importFromCostFailed: '导入失败',
   },
   
   // 短信模板

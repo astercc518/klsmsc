@@ -1,4 +1,8 @@
 """供应商管理API"""
+import json
+import time
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_
@@ -218,6 +222,103 @@ async def get_suppliers(
             }
             for s in suppliers
         ]
+    }
+
+
+@router.post("/import-from-resource-pricing")
+async def import_from_resource_pricing(
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin)
+):
+    """
+    从 data/resource_pricing.json 导入供应商报价到 supplier_rates 表
+    自动创建不存在的供应商，批量导入各供应商的国家报价
+    """
+    data_path = Path("/app/data/resource_pricing.json")
+    if not data_path.exists():
+        raise HTTPException(status_code=404, detail="资源报价文件不存在，请先运行 scripts/generate_resource_pricing.py 生成")
+
+    with open(data_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    by_supplier = data.get("by_supplier", {})
+    if not by_supplier:
+        raise HTTPException(status_code=400, detail="资源报价文件为空或格式不正确")
+
+    created_suppliers = 0
+    imported_rates = 0
+
+    for supplier_name, info in by_supplier.items():
+        countries = info.get("countries", {})
+        if not countries:
+            continue
+
+        # 查找或创建供应商
+        result = await db.execute(
+            select(Supplier).where(
+                Supplier.supplier_name == supplier_name,
+                Supplier.is_deleted == False
+            )
+        )
+        supplier = result.scalar_one_or_none()
+
+        if not supplier:
+            safe = supplier_name.replace(" ", "_").replace("通信", "").replace("短信", "")[:10] or "SUP"
+            code = f"SP_{safe}_{int(time.time() % 100000)}"
+            supplier = Supplier(
+                supplier_code=code,
+                supplier_name=supplier_name,
+                business_type="sms",
+                status="active",
+                cost_currency="USD",
+            )
+            db.add(supplier)
+            await db.flush()
+            created_suppliers += 1
+
+        supplier_id = supplier.id
+
+        for country_code, item in countries.items():
+            cost = item.get("cost_usd") or item.get("price_usd")
+            sale = item.get("sale_usd") or item.get("price_usd")
+            if cost is None or float(cost) <= 0:
+                continue
+
+            typ = (item.get("type") or "SMS").lower()
+            business_type = "data" if typ == "data" else "sms"
+
+            # 避免重复：若该供应商+国家+业务类型已存在则跳过
+            exist = await db.execute(
+                select(SupplierRate.id).where(
+                    SupplierRate.supplier_id == supplier_id,
+                    SupplierRate.country_code == country_code,
+                    SupplierRate.business_type == business_type,
+                ).limit(1)
+            )
+            if exist.scalar_one_or_none():
+                continue
+
+            rate = SupplierRate(
+                supplier_id=supplier_id,
+                business_type=business_type,
+                country_code=country_code,
+                resource_type="card",
+                business_scope="otp",
+                cost_price=Decimal(str(cost)),
+                sell_price=Decimal(str(sale)) if sale else Decimal("0"),
+                remark=item.get("description"),
+                currency="USD",
+            )
+            db.add(rate)
+            imported_rates += 1
+
+    await db.commit()
+
+    return {
+        "success": True,
+        "message": f"导入完成：新增 {created_suppliers} 个供应商，导入 {imported_rates} 条报价",
+        "created_suppliers": created_suppliers,
+        "imported_rates": imported_rates,
     }
 
 
