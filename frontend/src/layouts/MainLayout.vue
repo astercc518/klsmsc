@@ -73,6 +73,16 @@
                 </div>
                 <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.sendRecords') }}</span>
               </div>
+              
+              <div class="nav-item" :class="{ active: isActive('/sms/approvals') }" @click="navigate('/sms/approvals')">
+                <div class="nav-icon">
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <path d="M4 10L8 14L16 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/>
+                  </svg>
+                </div>
+                <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.smsApprovals') }}</span>
+              </div>
             </div>
 
             <!-- 语音业务 -->
@@ -258,6 +268,16 @@
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.businessAudit') }}</span>
                 </div>
 
+                <div class="nav-item" :class="{ active: isActive('/admin/business-knowledge') }" @click="navigate('/admin/business-knowledge')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M4 4h12v12H4V4z" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M7 8h6M7 11h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.businessKnowledge') }}</span>
+                </div>
+
                 <div class="nav-item" :class="{ active: isActive('/admin/tickets') }" @click="navigate('/admin/tickets')">
                   <div class="nav-icon">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -347,6 +367,27 @@
                     </svg>
                   </div>
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.dataReport') }}</span>
+                </div>
+
+                <div class="nav-item" :class="{ active: isActive('/sms/recharge-records') }" @click="navigate('/sms/recharge-records')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <rect x="2" y="5" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M2 11H18" stroke="currentColor" stroke-width="1.5"/>
+                      <circle cx="14" cy="14" r="2" stroke="currentColor" stroke-width="1.5"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.rechargeRecords') }}</span>
+                </div>
+
+                <div class="nav-item" :class="{ active: isActive('/sms/send-stats') }" @click="navigate('/sms/send-stats')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M2 16H18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                      <path d="M4 16V10M8 16V6M12 16V8M16 16V4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.sendStats') }}</span>
                 </div>
               </div>
 
@@ -597,15 +638,15 @@
                   <path d="M9 2C11.5 4 12.5 6.5 12.5 9C12.5 11.5 11.5 14 9 16" stroke="currentColor" stroke-width="1.5"/>
                   <path d="M9 2C6.5 4 5.5 6.5 5.5 9C5.5 11.5 6.5 14 9 16" stroke="currentColor" stroke-width="1.5"/>
                 </svg>
-                <span class="lang-text-header">{{ currentLocale === 'zh-CN' ? '中' : 'EN' }}</span>
+                <span class="lang-text-header">{{ currentLocale === 'zh-CN' ? $t('language.shortZh') : $t('language.shortEn') }}</span>
               </button>
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="zh-CN" :class="{ active: currentLocale === 'zh-CN' }">
-                    🇨🇳 中文
+                    🇨🇳 {{ $t('language.zh') }}
                   </el-dropdown-item>
                   <el-dropdown-item command="en-US" :class="{ active: currentLocale === 'en-US' }">
-                    🇺🇸 English
+                    🇺🇸 {{ $t('language.en') }}
                   </el-dropdown-item>
                 </el-dropdown-menu>
               </template>

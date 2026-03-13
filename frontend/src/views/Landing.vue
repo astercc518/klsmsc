@@ -47,7 +47,7 @@
             <svg v-if="isDark" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="3.2" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M3.4 12.6l1.3-1.3M11.3 4.7l1.3-1.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
             <svg v-else width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.6 9.8A6 6 0 0 1 6.2 2.4a6 6 0 1 0 7.4 7.4Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
-          <button type="button" class="hd-pill" @click="toggleLang">{{ currentLang === 'zh-CN' ? 'EN' : '中文' }}</button>
+          <button type="button" class="hd-pill" @click="toggleLang">{{ currentLang === 'zh-CN' ? $t('language.shortEn') : $t('language.zh') }}</button>
           <router-link to="/login" class="hd-btn-test">{{ $t('landing.nav.freeTest') }}</router-link>
           <button type="button" class="hd-burger" @click="mobileMenu=!mobileMenu" aria-label="打开菜单" aria-expanded="false" :aria-expanded="mobileMenu"><span/><span/><span/></button>
         </div>
@@ -65,7 +65,7 @@
         <div class="hero-left">
           <div class="hero-glass">
             <div class="hero-kw">
-              <span>考拉出海</span>
+              <span>{{ $t('brand.name') }}</span>
               <span>Bulk</span>
               <span>SMS</span>
             </div>
@@ -89,10 +89,10 @@
             <div class="phone-frame">
               <div class="phone-notch"></div>
               <div class="phone-screen">
-                <div class="phone-msg phone-msg-in">Hi, 您的验证码是 385921</div>
-                <div class="phone-msg phone-msg-in">【考拉出海】尊敬的用户，您的订单已发货...</div>
-                <div class="phone-msg phone-msg-out">收到，谢谢！</div>
-                <div class="phone-msg phone-msg-in">限时优惠！全场5折起...</div>
+                <div class="phone-msg phone-msg-in">{{ $t('landing.phoneMsg1') }}</div>
+                <div class="phone-msg phone-msg-in">{{ $t('landing.phoneMsg2') }}</div>
+                <div class="phone-msg phone-msg-out">{{ $t('landing.phoneMsg3') }}</div>
+                <div class="phone-msg phone-msg-in">{{ $t('landing.phoneMsg4') }}</div>
               </div>
             </div>
           </div>
@@ -105,16 +105,16 @@
       <div class="w">
         <p class="sec-label">{{ $t('landing.sections.solutions') }}</p>
         <h2 class="sec-title">{{ $t('landing.sections.solutionsTitle') }}</h2>
-        <p class="sec-desc">全面的行业场景解决方案，满足不同客户的个性化服务，覆盖互联网、金融、信贷、投资、棋牌、游戏、电商、教育等众多领域</p>
+        <p class="sec-desc">{{ $t('landing.solutionsDesc') }}</p>
         <div class="sec-actions">
-          <router-link to="/login" class="btn-main">立即开户</router-link>
-          <a href="#faq" class="btn-outline">在线咨询</a>
+          <router-link to="/login" class="btn-main">{{ $t('landing.ctaOpenAccount') }}</router-link>
+          <a href="#faq" class="btn-outline">{{ $t('landing.ctaOnlineConsult') }}</a>
         </div>
         <div class="sol-grid">
           <div class="sol-card" v-for="s in solutions" :key="s.title">
             <h4>{{ s.title }}</h4>
             <p>{{ s.desc }}</p>
-            <a href="#products" class="sol-link">了解详情 →</a>
+            <a href="#products" class="sol-link">{{ $t('landing.solLink') }} →</a>
           </div>
         </div>
       </div>
@@ -125,7 +125,7 @@
       <div class="w">
         <p class="sec-label">{{ $t('landing.sections.products') }}</p>
         <h2 class="sec-title">{{ $t('landing.sections.productsTitle') }}</h2>
-        <p class="sec-desc">通过独立后台短信群发和短信接口触发方式，为用户提供国际短信标准通道、验证码短信、营销短信、HTTP/SMPP API 等短信服务</p>
+        <p class="sec-desc">{{ $t('landing.productsDesc') }}</p>
         <div class="prod-tabs">
           <button v-for="(p,i) in products" :key="i" :class="['ptab', {active: prodIdx===i}]" @click="prodIdx=i" type="button">
             <span class="ptab-icon" aria-hidden="true"><component :is="p.icon" /></span>
@@ -139,8 +139,8 @@
               <p>{{ item.desc }}</p>
             </div>
             <div class="prod-btns">
-              <router-link to="/login" class="btn-main btn-sm">立即体验</router-link>
-              <a href="#pricing" class="btn-outline btn-sm">了解详情</a>
+              <router-link to="/login" class="btn-main btn-sm">{{ $t('landing.ctaTryNow') }}</router-link>
+              <a href="#pricing" class="btn-outline btn-sm">{{ $t('landing.ctaLearnMore') }}</a>
             </div>
           </div>
           <div class="prod-visual">
@@ -160,7 +160,7 @@
       <div class="w">
         <p class="sec-label">{{ $t('landing.sections.advantages') }}</p>
         <h2 class="sec-title">{{ $t('landing.sections.advantagesTitle') }}</h2>
-        <p class="sec-desc">致力使用优质的群发 SMS 解决方案将您的营销内容通过我们的高质量SMS网关送达至目标受众的设备</p>
+        <p class="sec-desc">{{ $t('landing.advantagesDesc') }}</p>
         <div class="adv-grid">
           <div class="adv-card" v-for="a in advantages" :key="a.title">
             <div class="adv-icon" aria-hidden="true"><component :is="a.icon" /></div>
@@ -176,12 +176,12 @@
       <div class="w">
         <p class="sec-label">{{ $t('landing.sections.pricingLabel') }}</p>
         <h2 class="sec-title">{{ $t('landing.sections.pricingTitle') }}</h2>
-        <p class="sec-desc">零月租费零服务费，按照实际发送量计费，价格透明</p>
+        <p class="sec-desc">{{ $t('landing.pricingDesc') }}</p>
         <div class="coverage-nums">
-          <div class="cn"><span class="cn-val">190+</span><span class="cn-label">国家/地区</span></div>
-          <div class="cn"><span class="cn-val">800+</span><span class="cn-label">运营商网络</span></div>
-          <div class="cn"><span class="cn-val">95%+</span><span class="cn-label">到达率</span></div>
-          <div class="cn"><span class="cn-val">3min</span><span class="cn-label">平均查看</span></div>
+          <div class="cn"><span class="cn-val">190+</span><span class="cn-label">{{ $t('landing.coverageLabels.countries') }}</span></div>
+          <div class="cn"><span class="cn-val">800+</span><span class="cn-label">{{ $t('landing.coverageLabels.operators') }}</span></div>
+          <div class="cn"><span class="cn-val">95%+</span><span class="cn-label">{{ $t('landing.coverageLabels.delivery') }}</span></div>
+          <div class="cn"><span class="cn-val">3min</span><span class="cn-label">{{ $t('landing.coverageLabels.viewTime') }}</span></div>
         </div>
         <div class="price-cards">
           <div class="price-card" v-for="p in priceFeatures" :key="p.title">
@@ -197,9 +197,9 @@
       <div class="w">
         <p class="sec-label">{{ $t('landing.sections.faq') }}</p>
         <h2 class="sec-title">{{ $t('landing.sections.faqTitle') }}</h2>
-        <p class="sec-desc">考拉出海 目标是让您轻松开始使用群发短信并充分利用它的诸多优势。无论您是群发 SMS 的新手还是经验丰富的用户，您都会找到有关功能、定价等常见问题的答案。</p>
+        <p class="sec-desc">{{ $t('landing.faqDesc') }}</p>
         <div class="sec-actions">
-          <router-link to="/login" class="btn-main btn-sm">前往支持中心</router-link>
+          <router-link to="/login" class="btn-main btn-sm">{{ $t('landing.ctaSupport') }}</router-link>
           <a href="#contact" class="btn-outline btn-sm">{{ $t('landing.nav.contact') }}</a>
         </div>
         <div class="faq-list">
@@ -216,7 +216,7 @@
       <div class="w">
         <p class="sec-label">{{ $t('landing.sections.flow') }}</p>
         <h2 class="sec-title">{{ $t('landing.sections.flowTitle') }}</h2>
-        <p class="sec-desc">欢迎使用 考拉出海，开启您的云上之旅！以简单、安全和可靠的方式在几分钟内发送批量短信，推动业务绩效</p>
+        <p class="sec-desc">{{ $t('landing.flowDesc') }}</p>
         <div class="flow-row">
           <div class="flow-step" v-for="(s,i) in flowSteps" :key="i">
             <span class="flow-badge">step {{ i+1 }}</span>
@@ -225,8 +225,8 @@
           </div>
         </div>
         <div class="sec-actions">
-          <router-link to="/login" class="btn-main">立即体验</router-link>
-          <a href="#products" class="btn-outline">查看详细步骤</a>
+          <router-link to="/login" class="btn-main">{{ $t('landing.ctaTryNow') }}</router-link>
+          <a href="#products" class="btn-outline">{{ $t('landing.ctaViewSteps') }}</a>
         </div>
       </div>
     </section>
@@ -253,12 +253,9 @@
     <!-- ===== 数字事实 ===== -->
     <section class="sec sec-facts">
       <div class="w">
-        <h3 class="sec-title" style="font-size:1.4rem">关于 SMS 的重要事实 - 在移动互联网时代，SMS 是接触潜在客户的最直接方式之一</h3>
+        <h3 class="sec-title" style="font-size:1.4rem">{{ $t('landing.factsTitle') }}</h3>
         <div class="facts-grid">
-          <div class="fact-item"><span class="fact-val">1520 万</span><span class="fact-lbl">全世界每分钟发送的短信条数</span></div>
-          <div class="fact-item"><span class="fact-val">95%</span><span class="fact-lbl">短信在送达后三分钟内被阅读</span></div>
-          <div class="fact-item"><span class="fact-val">98%</span><span class="fact-lbl">已发送的短信被用户查看</span></div>
-          <div class="fact-item"><span class="fact-val">10倍+</span><span class="fact-lbl">选择 SMS 营销可以获得更多利润</span></div>
+          <div class="fact-item" v-for="(f, i) in $tm('landing.facts')" :key="i"><span class="fact-val">{{ f.val }}</span><span class="fact-lbl">{{ f.lbl }}</span></div>
         </div>
       </div>
     </section>
@@ -276,29 +273,29 @@
       <div class="w ft-inner">
         <div class="ft-brand">
           <span class="hd-logo-text" style="font-size:1.5rem">Kao<em>lach</em></span>
-          <p>我们致力于创新通信解决方案，让 SMS 消息自由传递，满足您所有短信营销需求。您可以毫不费力地发送一次性验证码、通知、时事通讯、提醒和营销短信。</p>
+          <p>{{ $t('landing.footerDesc') }}</p>
         </div>
         <div class="ft-col">
-          <h5>产品 &amp; 解决方案</h5>
-          <a href="#products">国际短信</a>
-          <a href="#products">验证码短信</a>
-          <a href="#products">营销短信</a>
-          <a href="#products">短信 API</a>
-          <a href="#pricing">覆盖范围 &amp; 定价</a>
-          <a href="#flow">使用流程</a>
-          <a href="#faq">常见问题</a>
+          <h5>{{ $t('landing.footerProducts') }}</h5>
+          <a href="#products">{{ $t('landing.nav.intlSms') }}</a>
+          <a href="#products">{{ $t('landing.nav.verifySms') }}</a>
+          <a href="#products">{{ $t('landing.nav.marketingSms') }}</a>
+          <a href="#products">{{ $t('landing.nav.smsApi') }}</a>
+          <a href="#pricing">{{ $t('landing.nav.pricing') }}</a>
+          <a href="#flow">{{ $t('landing.nav.flow') }}</a>
+          <a href="#faq">{{ $t('landing.nav.faq') }}</a>
         </div>
         <div class="ft-col">
-          <h5>关于</h5>
-          <a href="#contact">联系我们</a>
-          <a href="#about">关于 考拉出海</a>
+          <h5>{{ $t('landing.footerAbout') }}</h5>
+          <a href="#contact">{{ $t('landing.footerContact') }}</a>
+          <a href="#about">{{ $t('landing.footerAboutUs') }}</a>
         </div>
       </div>
       <div class="w ft-bottom">
-        <p>© 2024 - {{ new Date().getFullYear() }} 考拉出海. All Rights Reserved.</p>
+        <p>© 2024 - {{ new Date().getFullYear() }} {{ $t('brand.name') }}. All Rights Reserved.</p>
         <div class="ft-links">
-          <a href="#faq">支持中心</a>
-          <a href="#about">服务条款</a>
+          <a href="#faq">{{ $t('landing.footerSupport') }}</a>
+          <a href="#about">{{ $t('landing.footerTerms') }}</a>
         </div>
       </div>
     </footer>
@@ -306,11 +303,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, h } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { setLocale, getLocale } from '@/i18n'
 
-const { locale } = useI18n()
+const { t, locale } = useI18n()
 const isDark = ref(true)
 const currentLang = ref<string>(locale.value)
 const scrolled = ref(false)
@@ -352,9 +349,10 @@ function toggleLang() {
   setLocale(newLang as 'zh-CN' | 'en-US')
 }
 
+watch(locale, () => { document.title = t('landing.pageTitle') })
 onMounted(() => {
   window.addEventListener('scroll', onScroll, { passive: true })
-  document.title = '考拉出海 - 国际短信群发解决方案 | 免费测试 即充即用'
+  document.title = t('landing.pageTitle')
   const savedTheme = localStorage.getItem('theme') || 'dark'
   isDark.value = savedTheme === 'dark'
   document.documentElement.setAttribute('data-theme', savedTheme)
@@ -364,59 +362,57 @@ onMounted(() => {
 })
 onUnmounted(() => window.removeEventListener('scroll', onScroll))
 
-const solutions = [
-  { title: '金融信贷', desc: '银行、保险、证券、基金、租赁、信贷，打造无界精准的获客，高效触达的短信营销' },
-  { title: '投资理财', desc: '期货、投资、融资、担保、典当、拍卖，理财信息通知、提现短信提醒、理财产品推荐等' },
-  { title: '电商物流', desc: 'C2C、O2O、B2B、B2C、快递公司、物流公司、速运，打造基于全渠道来源的精细化营销体系' },
-  { title: '体育棋牌', desc: '短信验证、活动推送、用户召回、赛事通知，低成本精准触达目标用户群体' },
-  { title: '娱乐直播', desc: '游戏直播、娱乐直播、婚恋，提高产品的知名度和传播能力，助力运营推广和用户转化维护' },
-  { title: '游戏行业', desc: '掌机手游、主机端游、线下桌游、赛事资讯，为游戏行业提供低成本、安全稳定的云通信解决方案' },
-]
+const solutionKeys = ['finance', 'invest', 'ecommerce', 'sports', 'entertainment', 'game'] as const
+const solutions = computed(() => solutionKeys.map(k => ({
+  title: t(`landing.solutions.${k}.title`),
+  desc: t(`landing.solutions.${k}.desc`),
+})))
 
-const products = [
-  { icon: IconGlobe, label: '国际短信（标准通道）', items: [
-    { title: '国际验证码/通知短信', desc: '支持海外APP、网站、开发者、海外电商、海外物流等，在网上注册、在线支付、转账、短信验证等环节提供了短信验证解决方案，帮助核验用户身份，保护用户账号、财产安全。' },
-    { title: '国际营销短信', desc: '为出海企业提供简单、安全、稳定的国际短信群发服务，适用于出海节日问候、活动邀请、新品上线、产品促销、折扣信息等营销类场景。' },
+const products = computed(() => [
+  { icon: IconGlobe, label: t('landing.productLabels.intl'), items: [
+    { title: t('landing.productIntl.0.title'), desc: t('landing.productIntl.0.desc') },
+    { title: t('landing.productIntl.1.title'), desc: t('landing.productIntl.1.desc') },
   ]},
-  { icon: IconPhone, label: '验证码 / 通知短信', items: [
-    { title: '验证码短信', desc: '通过短信给平台用户发送随机数字验证码的一种验证方式。可应用于APP、网站的注册登录、支付认证，以及密码找回等场景。' },
-    { title: '通知短信', desc: '通过短信给用户发送提醒和通知类信息，如节日祝福、会议通知、收货通知、上课提醒、支付提醒等。实现精准的通知服务，增强用户粘性。' },
-    { title: '营销短信', desc: '通过短信向消费者发送特价提示、优惠券、促销活动等营销类信息，可附带网站或平台短链接，是一种可实现精准获客的营销方式。' },
+  { icon: IconPhone, label: t('landing.productLabels.verify'), items: [
+    { title: t('landing.productVerify.0.title'), desc: t('landing.productVerify.0.desc') },
+    { title: t('landing.productVerify.1.title'), desc: t('landing.productVerify.1.desc') },
+    { title: t('landing.productVerify.2.title'), desc: t('landing.productVerify.2.desc') },
   ]},
-  { icon: IconPlug, label: '短信 API', items: [
-    { title: 'HTTP RESTful API', desc: '标准 HTTP API 接口，支持单发、群发、状态回调、余额查询等功能，对接简单，5分钟完成集成，文档齐全。' },
-    { title: 'SMPP v3.4 协议', desc: '支持 SMPP v3.4 标准协议，适合大批量高并发发送场景。提供 transceiver / transmitter 双绑定模式，稳定可靠。' },
+  { icon: IconPlug, label: t('landing.productLabels.api'), items: [
+    { title: t('landing.productApi.0.title'), desc: t('landing.productApi.0.desc') },
+    { title: t('landing.productApi.1.title'), desc: t('landing.productApi.1.desc') },
   ]},
-]
+])
 
-const advantages = [
-  { icon: IconGlobeAlt, title: '超广覆盖、自由联通', desc: '考拉出海 支持 190 多个国家/地区的 800 多个电信网络运营商，便于出海企业简单、安全、稳定的一站式通讯解决方案与您的全球用户实现无障碍的即时通讯连接' },
-  { icon: IconEnvelope, title: '不限行业、内容宽松', desc: '我们致力于创新通信解决方案，让 SMS 消息自由传递，满足您所有短信营销需求。覆盖互联网、金融、信贷、投资、棋牌、游戏、电商、教育等众多领域短信群发' },
-  { icon: IconBolt, title: '优质通道、高效并发', desc: '创新的通信解决方案，确保您的短信送达至目标受众的设备，分布式服务器，数据秒级触达，高效并发响应与海量数据吞吐引擎支持，安全稳定，秒级触达，高到达率' },
-  { icon: IconChartBar, title: '独立后台、实时报告', desc: '通过 考拉出海 强大的独立后台可以轻松、快速、高效地向客户、潜在客户发送大量短信，保障每一条信息透明化查询，所有通信服务提供可视化图表呈现' },
-]
+const advKeys = ['coverage', 'industry', 'channel', 'report'] as const
+const advantages = computed(() => [
+  { icon: IconGlobeAlt, title: t(`landing.advantages.${advKeys[0]}.title`), desc: t(`landing.advantages.${advKeys[0]}.desc`) },
+  { icon: IconEnvelope, title: t(`landing.advantages.${advKeys[1]}.title`), desc: t(`landing.advantages.${advKeys[1]}.desc`) },
+  { icon: IconBolt, title: t(`landing.advantages.${advKeys[2]}.title`), desc: t(`landing.advantages.${advKeys[2]}.desc`) },
+  { icon: IconChartBar, title: t(`landing.advantages.${advKeys[3]}.title`), desc: t(`landing.advantages.${advKeys[3]}.desc`) },
+])
 
-const priceFeatures = [
-  { title: '按量计费', desc: '零月租费零服务费，所有通道价格透明，根据需求自助选择价格方案；计费清晰合理，按照实际发送量计费' },
-  { title: '全球覆盖', desc: '东南亚、中东、拉美、欧美、非洲全覆盖，支持 SMS 标准通道与直连通道，不同国家/地区单价透明可查' },
-  { title: '安全合规', desc: '银行级数据加密技术、256位密钥证书、HTTPS加密、访问权限控制、用户数据隔离等多重数据安全保护机制' },
-]
+const priceFeatures = computed(() => [
+  { title: t('landing.priceFeatures.0.title'), desc: t('landing.priceFeatures.0.desc') },
+  { title: t('landing.priceFeatures.1.title'), desc: t('landing.priceFeatures.1.desc') },
+  { title: t('landing.priceFeatures.2.title'), desc: t('landing.priceFeatures.2.desc') },
+])
 
-const faqs = [
-  { q: '可以发送哪些内容，限制行业吗？', a: '考拉出海 可以发送博彩、贷款、催款、众筹、股票、保险、房地产、教育、直播、培训、信用卡提额、投资理财、中奖、抽奖、交友、App推广等类型的短信；没有行业限制' },
-  { q: '三网（移动、联通和电信）都可以发吗？', a: '全球 190+ 国家/地区的 800+ 运营商全覆盖，无论您需要发送什么内容，都可以找到适合的短信方案' },
-  { q: '如何通过 考拉出海 发送短信？', a: '考拉出海 提供两种发送批量短信的方式 - 通过独立后台和通过我们的短信 API。无论您选择独立后台还是 API，使用 考拉出海 都可以轻松发送批量 SMS 消息，从而提升业务成果。' },
-  { q: '批量发送短信如何计费？', a: '考拉出海 零月租费零服务费，所有通道价格透明，根据需求自助选择价格方案；计费清晰合理，按照实际发送量计费，保障每一条信息透明化查询，所有通信服务提供可视化图表呈现' },
-  { q: '数据在后台是否安全？', a: '银行级数据加密技术、256位密钥证书、HTTPS加密、访问权限控制、用户数据隔离等多重数据安全保护机制，自研监控系统、短信自动分流、支持故障无缝切换、业内领先的技术保障' },
-  { q: '你们提供哪些方面的支持？', a: '考拉出海 提供的支持取决于您的具体需求和要求。包括：帮助中心、客服支持、技术支持和商务支持，您可以根据遇到的问题选择相应的支持服务' },
-]
+const faqs = computed(() => [
+  { q: t('landing.faqs.0.q'), a: t('landing.faqs.0.a') },
+  { q: t('landing.faqs.1.q'), a: t('landing.faqs.1.a') },
+  { q: t('landing.faqs.2.q'), a: t('landing.faqs.2.a') },
+  { q: t('landing.faqs.3.q'), a: t('landing.faqs.3.a') },
+  { q: t('landing.faqs.4.q'), a: t('landing.faqs.4.a') },
+  { q: t('landing.faqs.5.q'), a: t('landing.faqs.5.a') },
+])
 
-const flowSteps = [
-  { title: '免认证开户', desc: '注册即开通，无需复杂资质审核' },
-  { title: '购买发信套餐', desc: '按需充值，即充即用，灵活选择' },
-  { title: '批量发送短信', desc: '后台上传号码一键发送或 API 对接' },
-  { title: '查看发信报告', desc: '发送记录、状态、费用清晰可查' },
-]
+const flowSteps = computed(() => [
+  { title: t('landing.flowSteps.0.title'), desc: t('landing.flowSteps.0.desc') },
+  { title: t('landing.flowSteps.1.title'), desc: t('landing.flowSteps.1.desc') },
+  { title: t('landing.flowSteps.2.title'), desc: t('landing.flowSteps.2.desc') },
+  { title: t('landing.flowSteps.3.title'), desc: t('landing.flowSteps.3.desc') },
+])
 </script>
 
 <style>

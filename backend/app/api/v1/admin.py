@@ -76,6 +76,7 @@ class ChannelCreateRequest(BaseModel):
     weight: int = 100
     default_sender_id: Optional[str] = None
     description: Optional[str] = None
+    supplier_id: Optional[int] = None  # 关联供应商ID
     
     @field_validator('protocol')
     @classmethod
@@ -112,6 +113,7 @@ class ChannelUpdateRequest(BaseModel):
     api_url: Optional[str] = None
     api_key: Optional[str] = None
     default_sender_id: Optional[str] = None
+    supplier_id: Optional[int] = None  # 关联供应商ID
 
 
 class PricingCreateRequest(BaseModel):
@@ -510,23 +512,30 @@ async def list_accounts_admin(
     keyword: Optional[str] = None,
     status: Optional[str] = None,
     business_type: Optional[str] = None,
+    sales_id: Optional[int] = None,
     limit: int = 50,
     offset: int = 0,
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """管理员：获取账户列表"""
+    """管理员：获取账户列表（支持按员工 sales_id 筛选）"""
     from sqlalchemy import func, or_, and_
     import json
 
     safe_limit = max(1, min(limit, 200))
     safe_offset = max(0, offset)
 
+    # 销售角色只能看到自己名下的客户
+    if admin.role == "sales":
+        sales_id = admin.id
+
     where_clauses = [Account.is_deleted == False]
     if status:
         where_clauses.append(Account.status == status)
     if business_type:
         where_clauses.append(Account.business_type == business_type)
+    if sales_id is not None:
+        where_clauses.append(Account.sales_id == sales_id)
     if keyword:
         kw = f"%{keyword.strip()}%"
         where_clauses.append(or_(Account.email.like(kw), Account.account_name.like(kw)))
@@ -976,7 +985,7 @@ async def adjust_account_balance(
     if amount == 0:
         raise HTTPException(status_code=400, detail="Amount cannot be zero")
 
-    allowed_types = {"charge", "refund", "deposit", "withdraw", "adjustment"}
+    allowed_types = {"charge", "refund", "deposit", "withdraw", "adjustment", "refund_recharge"}
     change_type = request.change_type
     if not change_type:
         change_type = "deposit" if amount > 0 else "withdraw"
@@ -1064,16 +1073,92 @@ async def list_balance_logs_admin(
                 "id": l.id,
                 "change_type": l.change_type,
                 "amount": float(l.amount),
-                "balance_before": float(l.balance_before),
+                "balance_before": float(l.balance_after or 0) - float(l.amount),
                 "balance_after": float(l.balance_after),
-                "currency": l.currency,
-                "transaction_id": l.transaction_id,
                 "description": l.description,
                 "created_at": l.created_at.isoformat() if l.created_at else None,
             }
             for l in logs
         ],
     }
+
+
+@router.get("/recharge-logs", response_model=dict)
+async def list_recharge_logs_admin(
+    account_id: Optional[int] = Query(None, description="客户账户ID"),
+    sales_id: Optional[int] = Query(None, description="归属销售ID"),
+    change_type: Optional[str] = Query(None, description="变动类型: deposit/withdraw/refund_recharge"),
+    start_date: Optional[str] = Query(None, description="开始日期 YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """充值记录查询（含退补充值，退补充值不计算业绩/成本）"""
+    from app.modules.common.balance_log import BalanceLog
+    from sqlalchemy import func, and_
+    # 充值相关类型
+    recharge_types = ["deposit", "withdraw", "refund_recharge"]
+    if change_type:
+        recharge_types = [change_type] if change_type in recharge_types else []
+
+    query = select(BalanceLog, Account).join(Account, BalanceLog.account_id == Account.id).where(BalanceLog.change_type.in_(recharge_types))
+    if account_id:
+        query = query.where(BalanceLog.account_id == account_id)
+    if sales_id:
+        query = query.where(Account.sales_id == sales_id)
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date)
+            query = query.where(BalanceLog.created_at >= start_dt)
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+            query = query.where(BalanceLog.created_at < end_dt)
+        except ValueError:
+            pass
+
+    # 先查总数
+    count_q = select(func.count(BalanceLog.id)).select_from(BalanceLog).join(Account, BalanceLog.account_id == Account.id)
+    count_q = count_q.where(BalanceLog.change_type.in_(recharge_types))
+    if account_id:
+        count_q = count_q.where(BalanceLog.account_id == account_id)
+    if sales_id:
+        count_q = count_q.where(Account.sales_id == sales_id)
+    if start_date:
+        try:
+            count_q = count_q.where(BalanceLog.created_at >= datetime.fromisoformat(start_date))
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            count_q = count_q.where(BalanceLog.created_at < datetime.fromisoformat(end_date) + timedelta(days=1))
+        except ValueError:
+            pass
+    total = await db.scalar(count_q) or 0
+
+    query = query.order_by(BalanceLog.created_at.desc())
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    rows = result.all()
+
+    logs = []
+    for l, acc in rows:
+        logs.append({
+            "id": l.id,
+            "account_id": l.account_id,
+            "account_name": acc.account_name if acc else None,
+            "change_type": l.change_type,
+            "amount": float(l.amount),
+            "balance_after": float(l.balance_after),
+            "description": l.description,
+            "created_at": l.created_at.isoformat() if l.created_at else None,
+            "exclude_performance": l.change_type == "refund_recharge",
+        })
+    return {"success": True, "total": total, "page": page, "page_size": page_size, "logs": logs}
 
 
 @router.delete("/accounts/{account_id}", response_model=dict)
@@ -1174,12 +1259,26 @@ async def get_channel_admin(
 ):
     """获取通道详情（管理员）"""
     from app.modules.sms.channel import Channel
+    from app.modules.sms.supplier import SupplierChannel, Supplier
 
     result = await db.execute(select(Channel).where(Channel.id == channel_id))
     ch = result.scalar_one_or_none()
 
     if not ch:
         raise HTTPException(status_code=404, detail="Channel not found")
+
+    # 获取关联供应商
+    supplier_info = None
+    sc_result = await db.execute(
+        select(SupplierChannel, Supplier)
+        .join(Supplier, SupplierChannel.supplier_id == Supplier.id)
+        .where(SupplierChannel.channel_id == channel_id, SupplierChannel.status == 'active')
+        .limit(1)
+    )
+    sc_row = sc_result.first()
+    if sc_row:
+        _, supplier = sc_row
+        supplier_info = {"id": supplier.id, "supplier_code": supplier.supplier_code, "supplier_name": supplier.supplier_name}
 
     return {
         "success": True,
@@ -1202,6 +1301,8 @@ async def get_channel_admin(
             "smpp_system_type": ch.smpp_system_type or "",
             "smpp_interface_version": ch.smpp_interface_version or 0x34,
             "default_sender_id": ch.default_sender_id,
+            "supplier": supplier_info,
+            "supplier_id": supplier_info["id"] if supplier_info else None,
             "created_at": ch.created_at.isoformat() if ch.created_at else None,
             "updated_at": ch.updated_at.isoformat() if ch.updated_at else None,
         },
@@ -1252,6 +1353,17 @@ async def create_channel(
     db.add(channel)
     await db.commit()
     await db.refresh(channel)
+    
+    # 关联供应商
+    if request.supplier_id:
+        from app.modules.sms.supplier import SupplierChannel
+        sc = SupplierChannel(
+            supplier_id=request.supplier_id,
+            channel_id=channel.id,
+            status='active'
+        )
+        db.add(sc)
+        await db.commit()
     
     logger.info(f"通道创建成功: {channel.channel_code}")
     
@@ -1315,6 +1427,21 @@ async def update_channel(
         channel.smpp_system_type = request.smpp_system_type
     if request.smpp_interface_version is not None:
         channel.smpp_interface_version = request.smpp_interface_version
+    
+    # 更新供应商关联（仅当请求中显式包含 supplier_id 时处理，传 null 表示清除）
+    updated_fields = request.model_dump(exclude_unset=True)
+    if 'supplier_id' in updated_fields:
+        from app.modules.sms.supplier import SupplierChannel
+        await db.execute(
+            SupplierChannel.__table__.delete().where(SupplierChannel.channel_id == channel_id)
+        )
+        if request.supplier_id:
+            sc = SupplierChannel(
+                supplier_id=request.supplier_id,
+                channel_id=channel_id,
+                status='active'
+            )
+            db.add(sc)
     
     await db.commit()
     await db.refresh(channel)
@@ -2335,6 +2462,86 @@ async def get_admin_statistics(
     }
 
 
+@router.get("/send-statistics", response_model=dict)
+async def get_send_statistics(
+    account_id: Optional[int] = Query(None, description="客户账户ID"),
+    sales_id: Optional[int] = Query(None, description="归属销售/员工ID"),
+    channel_id: Optional[int] = Query(None, description="通道ID"),
+    report_type: str = Query("day", description="报表类型: day/week/month/quarter/year"),
+    start_date: Optional[str] = Query(None, description="开始日期 YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """发送统计查询：支持按员工、通道、客户账户筛选"""
+    from app.modules.sms.sms_log import SMSLog
+    from sqlalchemy import func, and_, case, or_
+
+    if not end_date:
+        end_date = datetime.now().date().isoformat()
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).date().isoformat()
+    try:
+        start_dt = datetime.fromisoformat(start_date)
+        end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    # 销售角色只能看自己的客户
+    if admin.role == "sales":
+        sales_id = admin.id
+
+    base = (
+        select(
+            SMSLog.account_id,
+            func.count(SMSLog.id).label("submit_total"),
+            func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("success_count"),
+            func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("pending_count"),
+            func.avg(SMSLog.selling_price).label("avg_unit_price"),
+            func.sum(SMSLog.cost_price).label("total_cost"),
+            func.sum(SMSLog.selling_price).label("total_revenue"),
+        )
+        .where(and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt))
+    )
+    if account_id:
+        base = base.where(SMSLog.account_id == account_id)
+    if channel_id:
+        base = base.where(SMSLog.channel_id == channel_id)
+    if sales_id:
+        base = base.join(Account, SMSLog.account_id == Account.id).where(Account.sales_id == sales_id)
+
+    base = base.group_by(SMSLog.account_id)
+    result = await db.execute(base)
+    rows = result.all()
+
+    # 获取账户名称
+    account_ids = list({r.account_id for r in rows})
+    acc_map = {}
+    if account_ids:
+        acc_res = await db.execute(select(Account.id, Account.account_name).where(Account.id.in_(account_ids)))
+        for row in acc_res:
+            acc_map[row.id] = row.account_name
+
+    items = []
+    for r in rows:
+        submit_total = r.submit_total or 0
+        success_count = r.success_count or 0
+        success_rate = (success_count / submit_total * 100) if submit_total > 0 else 0
+        items.append({
+            "account_id": r.account_id,
+            "account_name": acc_map.get(r.account_id, "-"),
+            "submit_total": submit_total,
+            "success_count": success_count,
+            "success_rate": round(success_rate, 2),
+            "avg_unit_price": round(float(r.avg_unit_price or 0), 4),
+            "total_cost": round(float(r.total_cost or 0), 4),
+            "total_revenue": round(float(r.total_revenue or 0), 4),
+        })
+    return {"success": True, "total": len(items), "items": items, "filters": {"start_date": start_date, "end_date": end_date, "report_type": report_type}}
+
+
 @router.get("/reports/success-rate", response_model=dict)
 async def get_admin_success_rate(
     start_date: Optional[str] = None,
@@ -2549,13 +2756,37 @@ async def create_staff(
         raise HTTPException(status_code=403, detail="无权限创建员工")
     
     # 检查用户名是否已存在
-    existing = await db.execute(
+    existing_result = await db.execute(
         select(AdminUser).where(AdminUser.username == request.username)
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="用户名已存在")
+    existing_staff = existing_result.scalar_one_or_none()
     
-    # 创建员工
+    if existing_staff:
+        # 若为在职状态，不允许重复创建
+        if existing_staff.status == 'active':
+            raise HTTPException(status_code=400, detail="用户名已存在")
+        # 若为已禁用/锁定状态，复用该账户并重新激活
+        existing_staff.password_hash = AuthService.hash_password(request.password)
+        existing_staff.real_name = request.real_name
+        existing_staff.tg_username = request.tg_username
+        existing_staff.commission_rate = request.commission_rate or 0
+        existing_staff.role = request.role
+        existing_staff.status = 'active'
+        existing_staff.login_failed_count = 0  # 重置登录失败次数
+        await db.commit()
+        await db.refresh(existing_staff)
+        return {
+            "success": True,
+            "message": "员工创建成功",
+            "user": {
+                "id": existing_staff.id,
+                "username": existing_staff.username,
+                "real_name": existing_staff.real_name,
+                "role": existing_staff.role
+            }
+        }
+    
+    # 创建新员工
     new_staff = AdminUser(
         username=request.username,
         password_hash=AuthService.hash_password(request.password),
@@ -2889,3 +3120,87 @@ async def impersonate_staff(
         "role": staff.role,
         "message": f"以 {staff.real_name or staff.username} 身份登录"
     }
+
+
+@router.get("/debug/supplier-group")
+async def debug_supplier_group(
+    account_id: Optional[int] = Query(None, description="账户ID"),
+    tg_id: Optional[int] = Query(None, description="Telegram用户ID，与account_id二选一"),
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    诊断供应商群 ID 解析逻辑，用于排查「供应商群未配置」问题。
+    返回账户绑定的通道、通道关联的供应商、供应商的 telegram_group_id 等信息。
+    支持 account_id 或 tg_id 参数。
+    """
+    from app.modules.common.account import AccountChannel
+    from app.modules.common.telegram_binding import TelegramBinding
+    from app.modules.sms.channel import Channel
+    from app.modules.sms.supplier import SupplierChannel, Supplier
+
+    if not account_id and tg_id:
+        bind_r = await db.execute(
+            select(TelegramBinding.account_id).where(
+                TelegramBinding.tg_id == tg_id,
+                TelegramBinding.is_active == True
+            ).limit(1)
+        )
+        bind_row = bind_r.first()
+        if not bind_row:
+            return {"error": "该 TG 用户未绑定账户", "tg_id": tg_id}
+        account_id = bind_row[0]
+        result = {"tg_id": tg_id, "account_id": account_id, "bound_channels": [], "all_channels": [], "resolved_group_id": None}
+    elif account_id:
+        result = {"account_id": account_id, "bound_channels": [], "all_channels": [], "resolved_group_id": None}
+    else:
+        return {"error": "请提供 account_id 或 tg_id 参数"}
+    try:
+        # 1. 账户绑定的通道
+        ac_result = await db.execute(
+            select(AccountChannel.channel_id, AccountChannel.priority)
+            .where(AccountChannel.account_id == account_id)
+            .order_by(AccountChannel.priority.desc())
+        )
+        bound = ac_result.all()
+        channel_ids = [r[0] for r in bound]
+        result["bound_channels"] = [{"channel_id": r[0], "priority": r[1]} for r in bound]
+
+        # 2. 若无绑定，取全部通道
+        if not channel_ids:
+            ch_result = await db.execute(
+                select(Channel.id, Channel.channel_code, Channel.channel_name)
+                .where(Channel.status == 'active', Channel.is_deleted == False)
+                .order_by(Channel.priority.desc())
+            )
+            channel_ids = [r[0] for r in ch_result.all()]
+            result["all_channels"] = [{"id": r[0], "code": r[1], "name": r[2]} for r in ch_result.all()]
+
+        # 3. 遍历通道查供应商
+        checked = []
+        for ch_id in channel_ids:
+            sc_result = await db.execute(
+                select(SupplierChannel, Supplier)
+                .join(Supplier, SupplierChannel.supplier_id == Supplier.id)
+                .where(
+                    SupplierChannel.channel_id == ch_id,
+                    SupplierChannel.status == 'active',
+                    Supplier.is_deleted == False
+                )
+                .limit(1)
+            )
+            sc_row = sc_result.first()
+            if sc_row:
+                _, supplier = sc_row
+                supp_tg = getattr(supplier, 'telegram_group_id', None)
+                checked.append({"channel_id": ch_id, "supplier": getattr(supplier, 'supplier_name', ''), "telegram_group_id": str(supp_tg) if supp_tg else None})
+                if supp_tg and str(supp_tg).strip():
+                    result["resolved_group_id"] = str(supp_tg).strip()
+                    result["resolved_from"] = f"channel_id={ch_id} supplier={getattr(supplier, 'supplier_name', '')}"
+                    break
+            else:
+                checked.append({"channel_id": ch_id, "supplier": None, "telegram_group_id": None})
+        result["checked"] = checked
+    except Exception as e:
+        result["error"] = str(e)
+    return result

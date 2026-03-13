@@ -19,7 +19,8 @@ from app.schemas.sms import (
     SMSSendResponse,
     SMSStatusResponse,
     BatchSMSRequest,
-    BatchSMSResponse
+    BatchSMSResponse,
+    SMSApprovalSubmitRequest,
 )
 from fastapi.responses import JSONResponse
 from app.utils.logger import get_logger
@@ -417,6 +418,304 @@ async def send_batch_sms(
         failed=failed,
         messages=results
     )
+
+
+# ============ 短信审核（Web 端与 Bot 同步） ============
+
+async def _get_test_countries_for_account(db, account_id: int) -> str:
+    """从账户绑定通道获取测试国家列表（审核消息不显示用户信息）"""
+    from sqlalchemy import text
+    from app.modules.common.account import AccountChannel
+
+    try:
+        ac_result = await db.execute(
+            select(AccountChannel.channel_id).where(AccountChannel.account_id == account_id).order_by(AccountChannel.priority.desc())
+        )
+        channel_ids = [r[0] for r in ac_result.all()]
+        if not channel_ids:
+            return "-"
+        placeholders = ",".join([str(int(cid)) for cid in channel_ids])
+        sql = text(f"""
+            SELECT DISTINCT cc.country_code, cc.country_name
+            FROM channel_countries cc
+            WHERE cc.channel_id IN ({placeholders}) AND cc.status = 'active'
+            LIMIT 10
+        """)
+        raw = await db.execute(sql)
+        rows = raw.all()
+        if not rows:
+            return "-"
+        names = []
+        seen = set()
+        for r in rows:
+            name = (r[1] or "").strip() or (r[0] or "")
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+        return "、".join(names) if names else "-"
+    except Exception as e:
+        logger.warning("获取账户测试国家失败: %s", e)
+        return "-"
+
+
+async def _forward_approval_to_telegram(approval_id: int, account_id: int, content: str, db) -> bool:
+    """将审核消息转发到供应商群（仅显示测试国家+测试内容，不显示用户信息）"""
+    import os
+    import httpx
+    from app.modules.common.sms_content_approval import SmsContentApproval
+    from app.services.config_service import ConfigService
+
+    configs = await ConfigService.get_by_category("telegram", db)
+    bot_token = configs.get("telegram_bot_token") or os.getenv("TELEGRAM_BOT_TOKEN")
+    admin_group_id = (configs.get("telegram_admin_group_id") or os.getenv("TELEGRAM_ADMIN_GROUP_ID") or "").strip()
+
+    if not bot_token or not admin_group_id:
+        logger.warning("未配置 telegram_bot_token 或 telegram_admin_group_id，无法转发审核")
+        return False
+
+    test_countries = await _get_test_countries_for_account(db, account_id)
+    msg_text = (
+        f"📋 *短信内容待审核*\n\n"
+        f"🌍 测试国家: {test_countries}\n"
+        f"📝 测试内容:\n{content[:500]}{'...' if len(content) > 500 else ''}"
+    )
+    payload = {
+        "chat_id": int(admin_group_id),
+        "text": msg_text,
+        "parse_mode": "Markdown",
+        "reply_markup": {
+            "inline_keyboard": [[
+                {"text": "✅ 通过", "callback_data": f"approve_sms_{approval_id}"},
+                {"text": "❌ 拒绝", "callback_data": f"reject_sms_{approval_id}"},
+            ]]
+        }
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                json=payload
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("ok") and data.get("result", {}).get("message_id"):
+                    # 更新转发信息
+                    result = await db.execute(select(SmsContentApproval).where(SmsContentApproval.id == approval_id))
+                    a = result.scalar_one_or_none()
+                    if a:
+                        a.forwarded_to_group = admin_group_id
+                        a.forwarded_message_id = data["result"]["message_id"]
+                        await db.commit()
+                    return True
+            logger.error(f"Telegram 转发失败: {resp.status_code} {resp.text}")
+    except Exception as e:
+        logger.exception("转发审核到 Telegram 失败: %s", e)
+    return False
+
+
+@router.post("/approval")
+async def submit_sms_approval(
+    request: SMSApprovalSubmitRequest,
+    account: Account = Depends(get_current_account_or_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    提交短信审核（Web 端）
+    创建审核记录并转发到供应商群，审核通过后客户需在 Web 或 Bot 中点击「立即发送」
+    """
+    from app.modules.common.sms_content_approval import SmsContentApproval
+    from app.services.config_service import ConfigService
+
+    configs = await ConfigService.get_by_category("telegram", db)
+    enable_review = (configs.get("telegram_enable_sms_content_review") or "true").lower() == "true"
+    admin_group_id = (configs.get("telegram_admin_group_id") or "").strip()
+
+    if not enable_review or not admin_group_id:
+        raise HTTPException(
+            status_code=400,
+            detail="短信审核功能未启用或未配置供应商群，请直接使用发送接口"
+        )
+
+    # 验证号码和内容
+    is_valid_phone, error_msg, phone_info = Validator.validate_phone_number(request.phone_number)
+    if not is_valid_phone:
+        raise HTTPException(status_code=400, detail=error_msg)
+    is_valid_content, content_err, _ = Validator.validate_content(request.message)
+    if not is_valid_content:
+        raise HTTPException(status_code=400, detail=content_err)
+
+    import secrets
+    approval_no = f"SA{datetime.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(2).upper()}"
+    approval = SmsContentApproval(
+        approval_no=approval_no,
+        account_id=account.id,
+        tg_user_id="web",  # Web 端来源
+        phone_number=phone_info["e164_format"],
+        content=request.message,
+        status="pending",
+    )
+    db.add(approval)
+    await db.commit()
+    await db.refresh(approval)
+
+    ok = await _forward_approval_to_telegram(
+        approval.id, account.id, approval.content, db
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="转发至供应商群失败，请稍后重试")
+
+    return {
+        "success": True,
+        "approval_no": approval_no,
+        "approval_id": approval.id,
+        "message": "已提交审核，审核通过后会通知您，请点击「立即发送」进行发送"
+    }
+
+
+@router.get("/approvals")
+async def list_sms_approvals(
+    status: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+    account_id: Optional[int] = None,
+    auth_context: dict = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取当前账户的短信审核列表（管理员可传 account_id 查询指定账户）"""
+    from app.modules.common.sms_content_approval import SmsContentApproval
+
+    aid = auth_context.get("account_id") or account_id
+    if not aid:
+        raise HTTPException(status_code=401, detail="需要账户认证或指定 account_id")
+
+    conditions = [SmsContentApproval.account_id == aid]
+    if status:
+        conditions.append(SmsContentApproval.status == status)
+
+    result = await db.execute(
+        select(SmsContentApproval)
+        .where(*conditions)
+        .order_by(SmsContentApproval.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    items = result.scalars().all()
+
+    from sqlalchemy import func
+    total_result = await db.execute(
+        select(func.count(SmsContentApproval.id)).where(*conditions)
+    )
+    total = total_result.scalar() or 0
+
+    return {
+        "success": True,
+        "total": total,
+        "items": [
+            {
+                "id": a.id,
+                "approval_no": a.approval_no,
+                "phone_number": a.phone_number,
+                "content": (a.content or "")[:100] + ("..." if len(a.content or "") > 100 else ""),
+                "status": a.status,
+                "reviewed_at": a.reviewed_at.isoformat() if a.reviewed_at else None,
+                "reviewed_by_name": a.reviewed_by_name,
+                "message_id": a.message_id,
+                "send_error": a.send_error,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
+            for a in items
+        ]
+    }
+
+
+@router.post("/approval/{approval_id}/execute")
+async def execute_approved_sms(
+    approval_id: int,
+    account: Account = Depends(get_current_account_or_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    执行审核通过的短信发送（客户点击「立即发送」）
+    仅限审核状态为 approved 且未发送的记录
+    """
+    from app.modules.common.sms_content_approval import SmsContentApproval
+
+    result = await db.execute(
+        select(SmsContentApproval, Account)
+        .join(Account, SmsContentApproval.account_id == Account.id)
+        .where(SmsContentApproval.id == approval_id)
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="审核记录不存在")
+
+    approval, acc = row
+    if approval.account_id != account.id:
+        raise HTTPException(status_code=403, detail="无权操作此审核记录")
+
+    if approval.status != "approved":
+        raise HTTPException(status_code=400, detail="该短信未通过审核或已拒绝")
+
+    if approval.message_id:
+        raise HTTPException(status_code=400, detail="该短信已发送")
+
+    # 调用发送逻辑（复用 send_sms 核心逻辑）
+    from app.utils.validator import Validator
+    is_valid_phone, _, phone_info = Validator.validate_phone_number(approval.phone_number)
+    if not is_valid_phone:
+        raise HTTPException(status_code=400, detail="号码格式无效")
+
+    routing_engine = RoutingEngine(db)
+    channel = await routing_engine.select_channel(
+        country_code=phone_info["country_code"],
+        account_id=account.id
+    )
+    if not channel:
+        raise HTTPException(status_code=400, detail="无可用通道")
+
+    pricing_engine = PricingEngine(db)
+    charge_result = await pricing_engine.calculate_and_charge(
+        account_id=account.id,
+        channel_id=channel.id,
+        country_code=phone_info["country_code"],
+        message=approval.content
+    )
+    if not charge_result["success"]:
+        raise HTTPException(status_code=400, detail=charge_result.get("error", "计费失败"))
+
+    message_id = f"msg_{uuid.uuid4().hex}"
+    sms_log = SMSLog(
+        message_id=message_id,
+        account_id=account.id,
+        channel_id=channel.id,
+        phone_number=phone_info["e164_format"],
+        country_code=phone_info["country_code"],
+        message=approval.content,
+        message_count=charge_result["message_count"],
+        status="queued",
+        cost_price=charge_result["total_base_cost"],
+        selling_price=charge_result["total_cost"],
+        currency=charge_result["currency"],
+        submit_time=datetime.now(),
+    )
+    db.add(sms_log)
+    await db.flush()
+
+    from app.utils.queue import QueueManager
+    qm = QueueManager()
+    qm.queue_sms(message_id)
+
+    approval.message_id = message_id
+    approval.send_error = None
+    await db.commit()
+
+    return {
+        "success": True,
+        "message_id": message_id,
+        "cost": charge_result["total_cost"],
+        "currency": charge_result.get("currency", "USD"),
+        "message": "发送成功，可在发送记录中查看"
+    }
 
 
 @router.get("/stats")

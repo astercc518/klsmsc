@@ -145,7 +145,7 @@ from app.api.v1 import (
     sms, account, channels, admin, reports, bot_admin, system_config,
     templates, api_keys, batches, scheduled_tasks, sub_accounts, packages,
     notifications, security_logs, suppliers, tickets, settlements,
-    sales_commission,
+    sales_commission, knowledge,
     channel_relations, voice, account_templates, ai, admin_logs
 )
 from app.api.v1.data import (
@@ -174,6 +174,7 @@ app.include_router(tickets.router, prefix="/api/v1", tags=["Tickets"])
 app.include_router(settlements.router, prefix="/api/v1", tags=["Settlements"])
 app.include_router(settlements.customer_bill_router, prefix="/api/v1", tags=["客户账单"])
 app.include_router(sales_commission.router, prefix="/api/v1", tags=["销售佣金"])
+app.include_router(knowledge.router, prefix="/api/v1", tags=["知识库"])
 # 数据业务模块
 app.include_router(admin_numbers_router, prefix="/api/v1/admin/data", tags=["数据管理-号码"])
 app.include_router(admin_products_router, prefix="/api/v1/admin/data", tags=["数据管理-商品"])

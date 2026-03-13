@@ -1,5 +1,5 @@
 """工单系统模型"""
-from sqlalchemy import Column, Integer, String, Enum, Text, DateTime, Boolean, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Enum, Text, DateTime, Boolean, ForeignKey, JSON, BigInteger
 from sqlalchemy.dialects.mysql import INTEGER
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -45,10 +45,10 @@ class Ticket(Base):
     assigned_to = Column(INTEGER(unsigned=True), ForeignKey('admin_users.id'), comment='分配给(管理员ID)')
     assigned_at = Column(DateTime, comment='分配时间')
     
-    # 创建信息
+    # 创建信息（created_by_id 可为 Telegram 用户 ID，需 BIGINT）
     created_by_type = Column(Enum('account', 'admin', 'telegram', 'system', name='created_by_type_enum'), 
                             default='account', comment='创建人类型')
-    created_by_id = Column(Integer, comment='创建人ID')
+    created_by_id = Column(BigInteger, comment='创建人ID(账户/管理员/Telegram用户ID)')
     
     # 解决信息
     resolved_at = Column(DateTime, comment='解决时间')
@@ -57,7 +57,7 @@ class Ticket(Base):
     
     # 关闭信息
     closed_at = Column(DateTime, comment='关闭时间')
-    closed_by = Column(Integer, comment='关闭人ID')
+    closed_by = Column(BigInteger, comment='关闭人ID')
     close_reason = Column(String(255), comment='关闭原因')
     
     # 评价

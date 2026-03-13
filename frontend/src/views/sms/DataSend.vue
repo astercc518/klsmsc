@@ -239,9 +239,9 @@
       </div>
 
       <template #footer>
-        <el-button @click="showTemplateEngine = false">取消</el-button>
+        <el-button @click="showTemplateEngine = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :disabled="selectedTplIdx < 0" @click="applyTplResult">
-          使用选中文案
+          {{ t('smsSend.applySelectedText') }}
         </el-button>
       </template>
     </el-dialog>
@@ -287,9 +287,9 @@
       </div>
 
       <template #footer>
-        <el-button @click="showAiDialog = false">取消</el-button>
+        <el-button @click="showAiDialog = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :disabled="selectedAiIdx < 0" @click="applyAiResult">
-          使用选中文案
+          {{ t('smsSend.applySelectedText') }}
         </el-button>
       </template>
     </el-dialog>

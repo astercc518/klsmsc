@@ -339,6 +339,7 @@
             <el-option :label="$t('customers.autoDetect')" value="" />
             <el-option :label="$t('customers.depositType')" value="deposit" />
             <el-option :label="$t('customers.withdrawType')" value="withdraw" />
+            <el-option :label="$t('customers.refundRechargeType')" value="refund_recharge" />
             <el-option :label="$t('customers.adjustmentType')" value="adjustment" />
           </el-select>
         </el-form-item>
@@ -438,8 +439,9 @@ import {
   type AdminAccount,
 } from '@/api/admin'
 import request from '@/api/index'
+import { COUNTRY_LIST, findCountryByIso } from '@/constants/countries'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 // Props
 const props = defineProps<{
@@ -474,6 +476,8 @@ let pageSize = 20
 const keyword = ref('')
 const statusFilter = ref('')
 const businessTypeFilter = ref(props.defaultBusinessType || '')
+const salesIdFilter = ref<number | null>(null)
+const filterSalesList = ref<any[]>([])
 
 const loadAccounts = async () => {
   loading.value = true
@@ -567,34 +571,16 @@ const whitelistText = ref('')
 
 const createdCreds = reactive<{ api_key: string; api_secret: string }>({ api_key: '', api_secret: '' })
 
-// 国家列表
-const countryList = ref([
-  { code: 'PH', name: '菲律宾' },
-  { code: 'ID', name: '印度尼西亚' },
-  { code: 'MY', name: '马来西亚' },
-  { code: 'TH', name: '泰国' },
-  { code: 'VN', name: '越南' },
-  { code: 'SG', name: '新加坡' },
-  { code: 'IN', name: '印度' },
-  { code: 'PK', name: '巴基斯坦' },
-  { code: 'BD', name: '孟加拉国' },
-  { code: 'CN', name: '中国' },
-  { code: 'HK', name: '中国香港' },
-  { code: 'TW', name: '中国台湾' },
-  { code: 'JP', name: '日本' },
-  { code: 'KR', name: '韩国' },
-  { code: 'US', name: '美国' },
-  { code: 'GB', name: '英国' },
-  { code: 'AU', name: '澳大利亚' },
-  { code: 'DE', name: '德国' },
-  { code: 'FR', name: '法国' },
-  { code: 'BR', name: '巴西' },
-  { code: 'MX', name: '墨西哥' },
-  { code: 'NG', name: '尼日利亚' },
-  { code: 'ZA', name: '南非' },
-  { code: 'AE', name: '阿联酋' },
-  { code: 'SA', name: '沙特阿拉伯' },
-])
+// 国家列表（按语言显示名称）
+const COUNTRY_CODES = ['PH', 'ID', 'MY', 'TH', 'VN', 'SG', 'IN', 'PK', 'BD', 'CN', 'HK', 'TW', 'JP', 'KR', 'US', 'GB', 'AU', 'DE', 'FR', 'BR', 'MX', 'NG', 'ZA', 'AE', 'SA']
+const countryList = computed(() => {
+  const isZh = locale.value.startsWith('zh')
+  return COUNTRY_CODES.map(code => {
+    const c = findCountryByIso(code)
+    const name = c ? (isZh ? c.name : c.en) : code
+    return { code, name }
+  })
+})
 
 const form = reactive<any>({
   id: 0,

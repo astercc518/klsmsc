@@ -46,6 +46,24 @@ DESC sms_batches;
 DESC invitation_codes;
 ```
 
+#### 退补充值迁移（充值功能支持退补充值）
+
+```bash
+# 为 balance_logs 添加 refund_recharge 类型
+mysql -u smsuser -p sms_system < scripts/add_refund_recharge.sql
+```
+
+**Docker 环境**：
+```bash
+docker compose exec mysql mysql -u root -p sms_system < scripts/add_refund_recharge.sql
+```
+
+**验证**：
+```sql
+SHOW COLUMNS FROM balance_logs LIKE 'change_type';
+-- 应包含 refund_recharge
+```
+
 ---
 
 ### 第二步：配置环境变量

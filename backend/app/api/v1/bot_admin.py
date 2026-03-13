@@ -798,6 +798,7 @@ class BotConfigUpdate(BaseModel):
     enable_batch_review: Optional[bool] = None
     enable_balance_query: Optional[bool] = None
     enable_send_sms: Optional[bool] = None
+    enable_sms_content_review: Optional[bool] = None
     enable_ticket: Optional[bool] = None
     welcome_message: Optional[str] = None
     help_message: Optional[str] = None
@@ -857,6 +858,7 @@ async def get_bot_config(
             "enable_batch_review": configs.get('telegram_enable_batch_review', 'true') == 'true',
             "enable_balance_query": configs.get('telegram_enable_balance_query', 'true') == 'true',
             "enable_send_sms": configs.get('telegram_enable_send_sms', 'true') == 'true',
+            "enable_sms_content_review": configs.get('telegram_enable_sms_content_review', 'true') == 'true',
             "enable_ticket": configs.get('telegram_enable_ticket', 'true') == 'true',
             "welcome_message": configs.get('telegram_welcome_message', ''),
             "help_message": configs.get('telegram_help_message', ''),
@@ -893,6 +895,7 @@ async def update_bot_config(
         'enable_batch_review': 'telegram_enable_batch_review',
         'enable_balance_query': 'telegram_enable_balance_query',
         'enable_send_sms': 'telegram_enable_send_sms',
+        'enable_sms_content_review': 'telegram_enable_sms_content_review',
         'enable_ticket': 'telegram_enable_ticket',
         'welcome_message': 'telegram_welcome_message',
         'help_message': 'telegram_help_message',

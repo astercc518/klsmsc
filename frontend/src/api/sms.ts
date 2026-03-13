@@ -38,3 +38,20 @@ export const exportSMSRecords = (params?: any) => {
   return request.get('/sms/records/export', { params, responseType: 'blob' })
 }
 
+// ========== 短信审核（与 Bot 同步） ==========
+
+// 提交短信审核
+export const submitSmsApproval = (data: { phone_number: string; message: string }) => {
+  return request.post('/sms/approval', data)
+}
+
+// 获取短信审核列表
+export const getSmsApprovals = (params?: { status?: string; limit?: number; offset?: number; account_id?: number }) => {
+  return request.get('/sms/approvals', { params })
+}
+
+// 执行审核通过的短信发送
+export const executeApprovedSms = (approvalId: number) => {
+  return request.post(`/sms/approval/${approvalId}/execute`)
+}
+

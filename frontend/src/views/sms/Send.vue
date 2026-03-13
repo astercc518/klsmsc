@@ -321,6 +321,11 @@
                   {{ $t('smsSend.sending') }}... ({{ sendProgress }}/{{ numberCount }})
                 </template>
               </button>
+              <!-- 单条时可提交审核 -->
+              <button v-if="numberSource === 'manual' && numberCount === 1" type="button" class="btn-audit" :disabled="loading || !form.phone_numbers_text || !form.message || approvalSubmitting" @click="handleSubmitApproval">
+                <template v-if="!approvalSubmitting">📋 提交审核</template>
+                <template v-else>提交中...</template>
+              </button>
 
               <!-- 商店模式发送按钮 -->
               <button v-if="numberSource === 'store'" type="button" class="btn-send" :disabled="storeSending || !selectedProduct || !form.message" @click="handleStoreSend">
@@ -565,9 +570,9 @@
       </div>
 
       <template #footer>
-        <el-button @click="showTemplateEngine = false">取消</el-button>
-        <el-button v-if="tplSelectedSet.size === 1" type="primary" @click="applySingleTpl">使用选中文案</el-button>
-        <el-button v-if="tplSelectedSet.size > 1" type="primary" @click="applyMultiTpl">使用 {{ tplSelectedSet.size }} 条文案</el-button>
+        <el-button @click="showTemplateEngine = false">{{ t('common.cancel') }}</el-button>
+        <el-button v-if="tplSelectedSet.size === 1" type="primary" @click="applySingleTpl">{{ t('smsSend.applySelectedText') }}</el-button>
+        <el-button v-if="tplSelectedSet.size > 1" type="primary" @click="applyMultiTpl">{{ t('smsSend.applyNumItems', { n: tplSelectedSet.size }) }}</el-button>
       </template>
     </el-dialog>
 
@@ -637,9 +642,9 @@
       </div>
 
       <template #footer>
-        <el-button @click="showAiDialog = false">取消</el-button>
-        <el-button v-if="aiSelectedSet.size === 1" type="primary" @click="applySingleAi">使用选中文案</el-button>
-        <el-button v-if="aiSelectedSet.size > 1" type="primary" @click="applyMultiAi">使用 {{ aiSelectedSet.size }} 条文案</el-button>
+        <el-button @click="showAiDialog = false">{{ t('common.cancel') }}</el-button>
+        <el-button v-if="aiSelectedSet.size === 1" type="primary" @click="applySingleAi">{{ t('smsSend.applySelectedText') }}</el-button>
+        <el-button v-if="aiSelectedSet.size > 1" type="primary" @click="applyMultiAi">{{ t('smsSend.applyNumItems', { n: aiSelectedSet.size }) }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -651,7 +656,7 @@ import type { FormInstance } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick } from '@element-plus/icons-vue'
-import { sendSMS } from '@/api/sms'
+import { sendSMS, submitSmsApproval } from '@/api/sms'
 import { getChannels } from '@/api/channel'
 import { getDataProducts, buyAndSend, getCarriers, type DataProduct } from '@/api/data'
 import { getAiConfig, generateSmsContent } from '@/api/ai'
@@ -1166,6 +1171,36 @@ const handlePreview = () => {
   ElMessageBox.alert(hasVariables.value ? previewSms.value : form.value.message, t('smsSend.previewTitle'), { confirmButtonText: t('common.confirm') })
 }
 
+// ============ 提交审核（单条） ============
+
+const approvalSubmitting = ref(false)
+const handleSubmitApproval = async () => {
+  const numbers = parseNumbers()
+  if (numbers.length !== 1) {
+    ElMessage.warning('提交审核仅支持单条，请先输入一个号码')
+    return
+  }
+  if (!form.value.message) {
+    ElMessage.warning(t('smsSend.pleaseEnterContent'))
+    return
+  }
+  let phone = numbers[0].trim()
+  if (!phone.startsWith('+')) phone = '+' + phone
+  approvalSubmitting.value = true
+  try {
+    await submitSmsApproval({
+      phone_number: phone,
+      message: sanitizeMessage(stripEmoji(replaceCustomVars(form.value.message))),
+    })
+    ElMessage.success('已提交审核，审核通过后可点击「立即发送」')
+    handleReset()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '提交失败')
+  } finally {
+    approvalSubmitting.value = false
+  }
+}
+
 // ============ 手动发送 ============
 
 const handleSend = async () => {
@@ -1410,10 +1445,13 @@ onUnmounted(() => clearInterval(timeInterval))
 :deep(.custom-textarea .el-textarea__inner) { background: var(--bg-input) !important; border: 1px solid var(--border-default) !important; border-radius: 10px !important; color: var(--text-primary) !important; font-size: 14px !important; line-height: 1.5 !important; }
 
 .form-footer { display: flex; gap: 12px; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border-default); }
-.btn-reset, .btn-send { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: 500; cursor: pointer; border: none; transition: all 0.2s; }
+.btn-reset, .btn-send, .btn-audit { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px 20px; border-radius: 10px; font-size: 14px; font-weight: 500; cursor: pointer; border: none; transition: all 0.2s; }
 .btn-reset { background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--border-default); }
 .btn-reset:hover { background: var(--bg-hover); }
 .btn-send { flex: 1; background: var(--gradient-primary); color: white; }
+.btn-audit { background: var(--el-color-warning); color: white; }
+.btn-audit:hover:not(:disabled) { opacity: 0.9; }
+.btn-audit:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-send:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(102, 126, 234, 0.4); }
 .btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
 .spinner { animation: spin 1s linear infinite; }

@@ -94,6 +94,10 @@
             <el-switch v-model="config.enable_send_sms" />
             <span class="switch-desc">{{ $t('bot.sendSmsDesc') }}</span>
           </el-form-item>
+          <el-form-item :label="$t('bot.smsContentReview')">
+            <el-switch v-model="config.enable_sms_content_review" />
+            <span class="switch-desc">{{ $t('bot.smsContentReviewDesc') }}</span>
+          </el-form-item>
           <el-form-item :label="$t('bot.ticketSystem')">
             <el-switch v-model="config.enable_ticket" />
             <span class="switch-desc">{{ $t('bot.ticketSystemDesc') }}</span>
@@ -195,6 +199,7 @@ const config = reactive({
   enable_batch_review: true,
   enable_balance_query: true,
   enable_send_sms: true,
+  enable_sms_content_review: true,
   enable_ticket: true,
   welcome_message: '',
   help_message: '',

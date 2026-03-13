@@ -13,6 +13,7 @@ from app.modules.common.admin_operation_log import AdminOperationLog
 from app.modules.common.invitation_code import InvitationCode
 from app.modules.common.account_template import AccountTemplate
 from app.modules.common.recharge_order import RechargeOrder
+from app.modules.common.sms_content_approval import SmsContentApproval
 from app.modules.common.package import Package, AccountPackage
 from app.modules.common.security_log import SecurityLog, LoginAttempt
 from app.modules.common.notification import Notification

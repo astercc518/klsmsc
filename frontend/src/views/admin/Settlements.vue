@@ -679,7 +679,7 @@
               {{ commissionStatusMap[currentCommissionSettlement.status] }}
             </el-tag>
           </el-descriptions-item>
-          <el-descriptions-item :label="$t('settlements.revenueAmount')">{{ formatMoney(currentCommissionSettlement.total_revenue) }}</el-descriptions-item>
+          <el-descriptions-item :label="$t('settlements.commissionRevenue')">{{ formatMoney(currentCommissionSettlement.total_revenue) }}</el-descriptions-item>
           <el-descriptions-item :label="$t('settlements.commissionRate')">{{ currentCommissionSettlement.commission_rate }}%</el-descriptions-item>
           <el-descriptions-item :label="$t('settlements.commissionAmount')">
             <strong>{{ formatMoney(currentCommissionSettlement.commission_amount) }}</strong>
@@ -689,7 +689,7 @@
         <el-table :data="currentCommissionSettlement.details" size="small" max-height="250">
           <el-table-column prop="account_name" :label="$t('settlements.customer')" width="120" />
           <el-table-column prop="total_sms_count" :label="$t('settlements.smsCount')" width="80" />
-          <el-table-column prop="total_revenue" :label="$t('settlements.revenueAmount')" width="100">
+          <el-table-column prop="total_revenue" :label="$t('settlements.commissionRevenue')" width="100">
             <template #default="{ row }">{{ formatMoney(row.total_revenue) }}</template>
           </el-table-column>
           <el-table-column prop="commission_amount" :label="$t('settlements.commissionAmount')" width="100">

@@ -7,6 +7,7 @@ export interface Supplier {
   supplier_code: string
   supplier_name: string
   supplier_group?: string
+  telegram_group_id?: string
   supplier_type: string
   business_type?: string
   country?: string
@@ -31,7 +32,13 @@ export interface Supplier {
 export interface SupplierCreate {
   supplier_code: string
   supplier_name: string
+  supplier_group?: string
+  telegram_group_id?: string
   supplier_type?: string
+  business_type?: string
+  cost_currency?: string
+  status?: string
+  notes?: string
   contact_person?: string
   contact_email?: string
   contact_phone?: string
@@ -40,14 +47,12 @@ export interface SupplierCreate {
   api_key?: string
   api_secret?: string
   protocol?: string
-  status?: string
   priority?: number
   settlement_currency?: string
   settlement_period?: string
   settlement_day?: number
   payment_method?: string
   credit_limit?: number
-  notes?: string
 }
 
 export interface SupplierRate {
@@ -86,6 +91,14 @@ export function getSuppliers(params?: {
   return request.get('/admin/suppliers', { params })
 }
 
+// 按业务类型分组获取供应商（短信/语音/数据）
+export function getSuppliersByBusinessType(params?: {
+  keyword?: string
+  status?: string
+}) {
+  return request.get('/admin/suppliers/by-business-type', { params })
+}
+
 // 获取供应商详情
 export function getSupplier(supplierId: number) {
   return request.get(`/admin/suppliers/${supplierId}`)
@@ -109,6 +122,34 @@ export function deleteSupplier(supplierId: number) {
 // 从资源报价文件导入供应商报价（data/resource_pricing.json）
 export function importFromResourcePricing() {
   return request.post('/admin/suppliers/import-from-resource-pricing')
+}
+
+// 从语音报价文件导入语音供应商及报价（data/resource_voice_pricing.json）
+export function importFromVoicePricing() {
+  return request.post('/admin/suppliers/import-from-voice-pricing')
+}
+
+// 获取语音业务报价参考数据（data/resource_voice_pricing.json）
+export function getVoicePricingReference() {
+  return request.get<{
+    success: boolean
+    flat_list: Array<{
+      gateway_name: string
+      supplier: string
+      country: string
+      country_code: string
+      prefix: string
+      cost_usd: number
+      sale_usd: number
+      billing_model: string
+      billing_desc: string
+      full_desc: string
+      description: string | null
+    }>
+    total_records: number
+    supplier_count: number
+    country_count: number
+  }>('/admin/suppliers/voice-pricing-reference')
 }
 
 // 获取供应商费率列表

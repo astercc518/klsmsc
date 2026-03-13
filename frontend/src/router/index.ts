@@ -55,6 +55,24 @@ const routes: RouteRecordRaw[] = [
         meta: { titleKey: 'menu.sendRecords', icon: 'List' },
       },
       {
+        path: '/sms/approvals',
+        name: 'SmsApprovals',
+        component: () => import('@/views/sms/Approvals.vue'),
+        meta: { titleKey: 'menu.smsApprovals', icon: 'DocumentChecked' },
+      },
+      {
+        path: '/sms/recharge-records',
+        name: 'SmsRechargeRecords',
+        component: () => import('@/views/sms/RechargeRecords.vue'),
+        meta: { titleKey: 'menu.rechargeRecords', icon: 'List' },
+      },
+      {
+        path: '/sms/send-stats',
+        name: 'SmsSendStats',
+        component: () => import('@/views/sms/SendStats.vue'),
+        meta: { titleKey: 'menu.sendStats', icon: 'TrendCharts' },
+      },
+      {
         path: '/account/info',
         name: 'AccountInfo',
         component: () => import('@/views/account/Info.vue'),
@@ -192,6 +210,12 @@ const routes: RouteRecordRaw[] = [
         name: 'BotTemplates',
         component: () => import('@/views/bot/Templates.vue'),
         meta: { titleKey: 'menu.whitelist', icon: 'Check' },
+      },
+      {
+        path: '/admin/business-knowledge',
+        name: 'BusinessKnowledge',
+        component: () => import('@/views/admin/BusinessKnowledge.vue'),
+        meta: { titleKey: 'menu.businessKnowledge', icon: 'Document' },
       },
       {
         path: '/admin/system/config',

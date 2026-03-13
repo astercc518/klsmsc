@@ -104,6 +104,10 @@ def main():
     app.add_handler(CommandHandler('sales_help', sales_help))
     app.add_handler(CommandHandler('tech_help', tech_help))
     app.add_handler(register_conversation())
+    # 菜单处理器需在 send_conversation 之前，确保「短信审核」等菜单流程的文本输入优先处理
+    for handler in menu_handlers:
+        app.add_handler(handler)
+    
     app.add_handler(send_conversation())
     
     # 注册工单和便捷发送处理器
@@ -120,10 +124,6 @@ def main():
     
     # 注册数据操作处理器
     for handler in data_handlers:
-        app.add_handler(handler)
-    
-    # 注册菜单处理器
-    for handler in menu_handlers:
         app.add_handler(handler)
     
     logger.info("Bot is running...")

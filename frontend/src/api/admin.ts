@@ -40,11 +40,11 @@ export interface ChannelCreateRequest {
   max_tps?: number;
   concurrency?: number;
   rate_control_window?: number;
-  // 隐藏但必须
   priority?: number;
   weight?: number;
   default_sender_id?: string;
   description?: string;
+  supplier_id?: number;  // 关联供应商
 }
 
 export interface ChannelUpdateRequest {
@@ -63,6 +63,7 @@ export interface ChannelUpdateRequest {
   api_url?: string;
   api_key?: string;
   default_sender_id?: string;
+  supplier_id?: number;  // 关联供应商
 }
 
 export interface PricingCreateRequest {
@@ -311,6 +312,8 @@ export interface AdminAccountListResponse {
 export async function getAccountsAdmin(params?: {
   keyword?: string;
   status?: string;
+  business_type?: string;
+  sales_id?: number;
   limit?: number;
   offset?: number;
 }): Promise<AdminAccountListResponse> {
@@ -386,6 +389,33 @@ export async function getAccountBalanceLogs(
   params?: { limit?: number; offset?: number }
 ): Promise<any> {
   return request.get(`/admin/accounts/${accountId}/balance-logs`, { params });
+}
+
+// 充值记录查询（含退补充值）
+export async function getRechargeLogs(params?: {
+  account_id?: number
+  sales_id?: number
+  change_type?: string
+  start_date?: string
+  end_date?: string
+  page?: number
+  page_size?: number
+}): Promise<any> {
+  return request.get('/admin/recharge-logs', { params });
+}
+
+// 发送统计查询（按员工/通道/客户）
+export async function getSendStatistics(params?: {
+  account_id?: number
+  sales_id?: number
+  channel_id?: number
+  report_type?: string
+  start_date?: string
+  end_date?: string
+  page?: number
+  page_size?: number
+}): Promise<any> {
+  return request.get('/admin/send-statistics', { params });
 }
 
 // --- Suppliers (供应商管理) ---

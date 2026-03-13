@@ -9,7 +9,7 @@
       <div class="header-actions">
         <button class="action-btn export" @click="handleExport" :disabled="exporting">
           <el-icon><Download /></el-icon>
-          {{ exporting ? '导出中...' : '导出CSV' }}
+          {{ exporting ? $t('smsRecords.exporting') : $t('smsRecords.exportCsv') }}
         </button>
         <button class="action-btn refresh" @click="loadRecords">
           <el-icon><Refresh /></el-icon>
@@ -21,27 +21,27 @@
     <!-- 统计卡片 -->
     <div class="stats-row">
       <div class="stat-chip">
-        <span class="stat-chip-label">总记录</span>
+        <span class="stat-chip-label">{{ $t('smsRecords.totalRecords') }}</span>
         <span class="stat-chip-value">{{ pagination.total }}</span>
       </div>
       <div class="stat-chip sent">
         <span class="stat-chip-dot"></span>
-        <span class="stat-chip-label">已发送</span>
+        <span class="stat-chip-label">{{ $t('smsRecords.sent') }}</span>
         <span class="stat-chip-value">{{ statusCounts.sent }}</span>
       </div>
       <div class="stat-chip delivered">
         <span class="stat-chip-dot"></span>
-        <span class="stat-chip-label">已送达</span>
+        <span class="stat-chip-label">{{ $t('smsRecords.delivered') }}</span>
         <span class="stat-chip-value">{{ statusCounts.delivered }}</span>
       </div>
       <div class="stat-chip failed">
         <span class="stat-chip-dot"></span>
-        <span class="stat-chip-label">失败</span>
+        <span class="stat-chip-label">{{ $t('smsRecords.failed') }}</span>
         <span class="stat-chip-value">{{ statusCounts.failed }}</span>
       </div>
       <div class="stat-chip expired">
         <span class="stat-chip-dot"></span>
-        <span class="stat-chip-label">超时</span>
+        <span class="stat-chip-label">{{ $t('smsRecords.expired') }}</span>
         <span class="stat-chip-value">{{ statusCounts.expired }}</span>
       </div>
     </div>
@@ -294,21 +294,21 @@
               <div class="tl-dot"></div>
               <div class="tl-content">
                 <span class="tl-label">发送</span>
-                <span class="tl-time">{{ formatTime(currentRecord.sent_time) || '等待中' }}</span>
+                <span class="tl-time">{{ formatTime(currentRecord.sent_time) || $t('common.waiting') }}</span>
               </div>
             </div>
             <div class="timeline-item" :class="{ active: currentRecord.delivery_time }">
               <div class="tl-dot"></div>
               <div class="tl-content">
                 <span class="tl-label">送达</span>
-                <span class="tl-time">{{ formatTime(currentRecord.delivery_time) || '等待中' }}</span>
+                <span class="tl-time">{{ formatTime(currentRecord.delivery_time) || $t('common.waiting') }}</span>
               </div>
             </div>
           </div>
         </div>
 
         <div class="detail-section" v-if="currentRecord.error_message">
-          <h4 class="section-title error-title">错误信息</h4>
+          <h4 class="section-title error-title">{{ $t('smsRecords.errorMsg') }}</h4>
           <div class="error-box">{{ currentRecord.error_message }}</div>
         </div>
       </div>

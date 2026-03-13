@@ -26,7 +26,8 @@ router = APIRouter(prefix="/admin/suppliers", tags=["供应商管理"])
 class SupplierCreate(BaseModel):
     supplier_code: str = Field(..., max_length=50, description="供应商编码")
     supplier_name: str = Field(..., max_length=100, description="供应商名称")
-    supplier_group: Optional[str] = Field(None, max_length=100, description="供应商群组")
+    supplier_group: Optional[str] = Field(None, max_length=100, description="供应商群组名称")
+    telegram_group_id: Optional[str] = Field(None, max_length=50, description="Telegram群组ID，用于短信审核转发")
     supplier_type: str = Field(default="direct", description="供应商类型")
     business_type: str = Field(default="sms", description="业务类型")
     country: Optional[str] = Field(None, max_length=100, description="国家")
@@ -56,6 +57,7 @@ class SupplierCreate(BaseModel):
 class SupplierUpdate(BaseModel):
     supplier_name: Optional[str] = None
     supplier_group: Optional[str] = None
+    telegram_group_id: Optional[str] = None
     supplier_type: Optional[str] = None
     business_type: Optional[str] = None
     country: Optional[str] = None
@@ -130,7 +132,7 @@ class SellRateCreate(BaseModel):
 @router.get("")
 async def get_suppliers(
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=500),
     status: Optional[str] = None,
     business_type: Optional[str] = None,
     resource_type: Optional[str] = None,
@@ -202,6 +204,7 @@ async def get_suppliers(
                 "supplier_code": s.supplier_code,
                 "supplier_name": s.supplier_name,
                 "supplier_group": s.supplier_group,
+                "telegram_group_id": getattr(s, 'telegram_group_id', None),
                 "supplier_type": s.supplier_type,
                 "business_type": s.business_type,
                 "rate_count": rate_stats.get(s.id, {}).get('rate_count', 0),
@@ -223,6 +226,85 @@ async def get_suppliers(
             for s in suppliers
         ]
     }
+
+
+@router.get("/by-business-type")
+async def get_suppliers_by_business_type(
+    keyword: Optional[str] = None,
+    status: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin)
+):
+    """
+    按业务类型分组返回供应商及报价统计
+    供应商对应业务，业务对应资源报价
+    """
+    base_supplier = select(Supplier).where(Supplier.is_deleted == False)
+    if status:
+        base_supplier = base_supplier.where(Supplier.status == status)
+    if keyword:
+        base_supplier = base_supplier.where(
+            or_(
+                Supplier.supplier_code.ilike(f"%{keyword}%"),
+                Supplier.supplier_name.ilike(f"%{keyword}%"),
+                Supplier.supplier_group.ilike(f"%{keyword}%")
+            )
+        )
+
+    result = {}
+    for biz in ["sms", "voice", "data"]:
+        # 该业务类型下有报价的供应商
+        subq = (
+            select(SupplierRate.supplier_id)
+            .where(
+                SupplierRate.business_type == biz,
+                SupplierRate.status == 'active'
+            )
+            .distinct()
+        )
+        q = (
+            select(
+                Supplier,
+                func.count(SupplierRate.id).label('rate_count'),
+                func.count(func.distinct(SupplierRate.country_code)).label('country_count')
+            )
+            .join(SupplierRate, Supplier.id == SupplierRate.supplier_id)
+            .where(
+                Supplier.id.in_(subq),
+                SupplierRate.business_type == biz,
+                SupplierRate.status == 'active',
+                Supplier.is_deleted == False
+            )
+        )
+        if status:
+            q = q.where(Supplier.status == status)
+        if keyword:
+            q = q.where(
+                or_(
+                    Supplier.supplier_code.ilike(f"%{keyword}%"),
+                    Supplier.supplier_name.ilike(f"%{keyword}%"),
+                    Supplier.supplier_group.ilike(f"%{keyword}%")
+                )
+            )
+        q = q.group_by(Supplier.id).order_by(Supplier.priority.desc(), Supplier.created_at.desc())
+        rows = (await db.execute(q)).all()
+
+        suppliers_list = []
+        for s, rc, cc in rows:
+            suppliers_list.append({
+                "id": s.id,
+                "supplier_code": s.supplier_code,
+                "supplier_name": s.supplier_name,
+                "supplier_group": s.supplier_group,
+                "telegram_group_id": getattr(s, 'telegram_group_id', None),
+                "status": s.status,
+                "rate_count": rc,
+                "country_count": cc,
+                "notes": s.notes,
+            })
+        result[biz] = {"suppliers": suppliers_list, "total": len(suppliers_list)}
+
+    return {"success": True, "by_business": result}
 
 
 @router.post("/import-from-resource-pricing")
@@ -247,13 +329,15 @@ async def import_from_resource_pricing(
 
     created_suppliers = 0
     imported_rates = 0
+    skipped_rates = 0
 
     for supplier_name, info in by_supplier.items():
+        supplier_name = (supplier_name or "").strip()
         countries = info.get("countries", {})
         if not countries:
             continue
 
-        # 查找或创建供应商
+        # 查找或创建供应商（名称精确匹配，去除首尾空格）
         result = await db.execute(
             select(Supplier).where(
                 Supplier.supplier_name == supplier_name,
@@ -286,23 +370,26 @@ async def import_from_resource_pricing(
 
             typ = (item.get("type") or "SMS").lower()
             business_type = "data" if typ == "data" else "sms"
+            resource_type = (item.get("resource_type") or "card")[:50]
 
-            # 避免重复：若该供应商+国家+业务类型已存在则跳过
-            exist = await db.execute(
+            # 避免重复：若该供应商+国家+业务类型+资源类型已存在则跳过
+            exist_result = await db.execute(
                 select(SupplierRate.id).where(
                     SupplierRate.supplier_id == supplier_id,
                     SupplierRate.country_code == country_code,
                     SupplierRate.business_type == business_type,
+                    SupplierRate.resource_type == resource_type,
                 ).limit(1)
             )
-            if exist.scalar_one_or_none():
+            if exist_result.scalar_one_or_none():
+                skipped_rates += 1
                 continue
 
             rate = SupplierRate(
                 supplier_id=supplier_id,
                 business_type=business_type,
                 country_code=country_code,
-                resource_type="card",
+                resource_type=resource_type,
                 business_scope="otp",
                 cost_price=Decimal(str(cost)),
                 sell_price=Decimal(str(sale)) if sale else Decimal("0"),
@@ -314,11 +401,151 @@ async def import_from_resource_pricing(
 
     await db.commit()
 
+    msg = f"导入完成：新增 {created_suppliers} 个供应商，导入 {imported_rates} 条报价"
+    if skipped_rates > 0:
+        msg += f"，跳过已存在 {skipped_rates} 条"
     return {
         "success": True,
-        "message": f"导入完成：新增 {created_suppliers} 个供应商，导入 {imported_rates} 条报价",
-        "created_suppliers": created_suppliers,
-        "imported_rates": imported_rates,
+        "message": msg,
+    }
+
+
+@router.post("/import-from-voice-pricing")
+async def import_from_voice_pricing(
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin)
+):
+    """
+    从 data/resource_voice_pricing.json 导入语音供应商及报价
+    自动创建不存在的语音供应商，批量导入各供应商的语音网关报价
+    """
+    data_path = Path("/app/data/resource_voice_pricing.json")
+    if not data_path.exists():
+        raise HTTPException(status_code=404, detail="语音报价文件不存在，请先运行 scripts/parse_voice_pricing.py 生成")
+
+    with open(data_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    by_supplier = data.get("by_supplier", {})
+    if not by_supplier:
+        raise HTTPException(status_code=400, detail="语音报价文件为空或格式不正确")
+
+    created_suppliers = 0
+    imported_rates = 0
+    skipped_rates = 0
+
+    for supplier_name, info in by_supplier.items():
+        supplier_name = (supplier_name or "").strip()
+        items = info.get("items", [])
+        if not items:
+            continue
+
+        channel_code = info.get("channel_code", "")
+
+        # 查找或创建语音供应商
+        result = await db.execute(
+            select(Supplier).where(
+                Supplier.supplier_name == supplier_name,
+                Supplier.is_deleted == False
+            )
+        )
+        supplier = result.scalar_one_or_none()
+
+        if not supplier:
+            safe = supplier_name.replace(" ", "_").replace("语音", "")[:10] or "VOICE"
+            code = channel_code or f"VOICE_{safe}_{int(time.time() % 100000)}"
+            supplier = Supplier(
+                supplier_code=code,
+                supplier_name=supplier_name,
+                business_type="voice",
+                status="active",
+                cost_currency="USD",
+            )
+            db.add(supplier)
+            await db.flush()
+            created_suppliers += 1
+
+        supplier_id = supplier.id
+
+        for item in items:
+            country_code = item.get("country_code") or ""
+            cost = item.get("cost_usd") or item.get("price_usd")
+            sale = item.get("sale_usd") or item.get("price_usd")
+            gateway_name = (item.get("gateway_name") or "")[:255]
+            billing_model = (item.get("billing_model") or "60+60")[:50]
+            full_desc = (item.get("full_desc") or "")[:255]
+            description = (item.get("description") or "")
+
+            if not country_code or cost is None or float(cost) <= 0:
+                continue
+
+            # 语音报价用 resource_type 存计费模式，remark 存网关名
+            resource_type = billing_model
+            remark = gateway_name or full_desc
+
+            # 避免重复：供应商+国家+业务类型+计费模式 已存在则跳过
+            exist_result = await db.execute(
+                select(SupplierRate.id).where(
+                    SupplierRate.supplier_id == supplier_id,
+                    SupplierRate.country_code == country_code,
+                    SupplierRate.business_type == "voice",
+                    SupplierRate.resource_type == resource_type,
+                ).limit(1)
+            )
+            if exist_result.scalar_one_or_none():
+                skipped_rates += 1
+                continue
+
+            rate = SupplierRate(
+                supplier_id=supplier_id,
+                business_type="voice",
+                country_code=country_code,
+                resource_type=resource_type,
+                business_scope="otp",
+                cost_price=Decimal(str(cost)),
+                sell_price=Decimal(str(sale)) if sale else Decimal("0"),
+                remark=remark or description or None,
+                currency="USD",
+            )
+            db.add(rate)
+            imported_rates += 1
+
+    await db.commit()
+
+    msg = f"导入完成：新增 {created_suppliers} 个语音供应商，导入 {imported_rates} 条报价"
+    if skipped_rates > 0:
+        msg += f"，跳过已存在 {skipped_rates} 条"
+    return {
+        "success": True,
+        "message": msg,
+    }
+
+
+@router.get("/voice-pricing-reference")
+async def get_voice_pricing_reference(
+    admin: AdminUser = Depends(get_current_admin)
+):
+    """
+    获取语音业务报价参考数据（来自 data/resource_voice_pricing.json）
+    用于资源报价页面的语音 tab 展示
+    """
+    data_path = Path("/app/data/resource_voice_pricing.json")
+    if not data_path.exists():
+        return {
+            "success": True,
+            "flat_list": [],
+            "total_records": 0,
+            "supplier_count": 0,
+            "country_count": 0,
+        }
+    with open(data_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return {
+        "success": True,
+        "flat_list": data.get("flat_list", []),
+        "total_records": data.get("total_records", 0),
+        "supplier_count": data.get("supplier_count", 0),
+        "country_count": data.get("country_count", 0),
     }
 
 
@@ -367,6 +594,8 @@ async def get_supplier(
             "id": supplier.id,
             "supplier_code": supplier.supplier_code,
             "supplier_name": supplier.supplier_name,
+            "supplier_group": supplier.supplier_group,
+            "telegram_group_id": supplier.telegram_group_id,
             "supplier_type": supplier.supplier_type,
             "contact_person": supplier.contact_person,
             "contact_email": supplier.contact_email,

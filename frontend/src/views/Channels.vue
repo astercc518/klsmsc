@@ -205,6 +205,7 @@
       :close-on-click-modal="false"
       destroy-on-close
       class="channel-form-dialog"
+      @open="loadFormSuppliers"
     >
       <el-form :model="form" label-width="85px" :rules="rules" ref="formRef" class="channel-form">
         <el-row :gutter="24">
@@ -279,17 +280,35 @@
 
         <el-divider content-position="left">{{ $t('channels.channelParams') }}</el-divider>
         <el-row :gutter="24">
-          <el-col :span="12">
+          <el-col :span="8">
             <el-form-item :label="$t('channels.defaultSid')">
               <el-input v-model="form.default_sender_id" :placeholder="$t('channels.senderIdPlaceholder')" />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col :span="8">
             <el-form-item :label="$t('channels.channelStatus')" prop="status">
               <el-select v-model="form.status" style="width: 100%">
                 <el-option :label="$t('channels.active')" value="active" />
                 <el-option :label="$t('channels.inactive')" value="inactive" />
                 <el-option :label="$t('channels.maintenance')" value="maintenance" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item :label="$t('channels.supplier')">
+              <el-select
+                v-model="form.supplier_id"
+                :placeholder="$t('channels.selectSupplierPlaceholder')"
+                clearable
+                filterable
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="s in formSupplierList"
+                  :key="s.id"
+                  :label="`${s.supplier_name} (${s.supplier_code})`"
+                  :value="s.id"
+                />
               </el-select>
             </el-form-item>
           </el-col>
@@ -895,6 +914,7 @@ const handleCountrySelect = (item: { value: string, code: string }) => {
   pricingForm.country_code = item.code
 }
 
+const formSupplierList = ref<any[]>([])
 const form = reactive({
   id: 0,
   channel_code: '',
@@ -912,7 +932,8 @@ const form = reactive({
   weight: 100,
   max_tps: 100,
   concurrency: 1,
-  rate_control_window: 1000
+  rate_control_window: 1000,
+  supplier_id: null as number | null
 })
 
 const rules = computed(() => ({
@@ -966,6 +987,17 @@ const handleViewDetail = async (row: any) => {
   }
 }
 
+const loadFormSuppliers = async () => {
+  try {
+    // 短信通道仅展示短信业务供应商
+    const res = await getSuppliers({ status: 'active', business_type: 'sms', page_size: 500 })
+    formSupplierList.value = res?.suppliers || res?.items || []
+  } catch (e) {
+    console.warn('加载供应商列表失败:', e)
+    formSupplierList.value = []
+  }
+}
+
 const handleCreate = () => {
   isEdit.value = false
   pricingRows.value = [createEmptyPricingRow()]
@@ -983,7 +1015,8 @@ const handleCreate = () => {
     default_sender_id: '',
     status: 'active',
     priority: 0,
-    weight: 100
+    weight: 100,
+    supplier_id: null
   })
   formVisible.value = true
 }
@@ -1004,7 +1037,8 @@ const handleEdit = async (row: any) => {
     default_sender_id: row.default_sender_id || '',
     status: row.status,
     priority: row.priority ?? 0,
-    weight: row.weight ?? 100
+    weight: row.weight ?? 100,
+    supplier_id: row.supplier?.id ?? null
   })
   formVisible.value = true
 
@@ -1026,11 +1060,14 @@ const handleEdit = async (row: any) => {
         default_sender_id: ch.default_sender_id || '',
         status: ch.status,
         priority: ch.priority ?? 0,
-        weight: ch.weight ?? 100
+        weight: ch.weight ?? 100,
+        supplier_id: ch.supplier_id ?? row.supplier?.id ?? null
       })
+    } else {
+      form.supplier_id = row.supplier?.id ?? null
     }
   } catch (error: any) {
-    // ignore
+    form.supplier_id = row.supplier?.id ?? null
   }
 }
 
@@ -1227,7 +1264,7 @@ const submitForm = async () => {
       submitting.value = true
       try {
         if (isEdit.value) {
-          await updateChannel(form.id, {
+          const updatePayload: any = {
             channel_name: form.channel_name,
             max_tps: form.max_tps,
             concurrency: form.concurrency,
@@ -1240,7 +1277,10 @@ const submitForm = async () => {
             api_url: form.protocol === 'HTTP' ? form.api_url : undefined,
             api_key: form.protocol === 'HTTP' ? (form.api_key || undefined) : undefined,
             default_sender_id: form.default_sender_id || undefined
-          })
+          }
+          // 始终提交 supplier_id，传 null 表示清除关联
+          updatePayload.supplier_id = form.supplier_id ?? null
+          await updateChannel(form.id, updatePayload)
           ElMessage.success(t('common.updateSuccess'))
         } else {
           const nonEmptyRows = pricingRows.value.filter((r: any) => {
@@ -1256,7 +1296,7 @@ const submitForm = async () => {
             }
           }
 
-          const created = await createChannel({
+          const createPayload: any = {
             channel_code: form.channel_code,
             channel_name: form.channel_name,
             protocol: form.protocol,
@@ -1273,7 +1313,11 @@ const submitForm = async () => {
             rate_control_window: form.rate_control_window,
             priority: 0,
             weight: 100
-          })
+          }
+          if (form.supplier_id) {
+            createPayload.supplier_id = form.supplier_id
+          }
+          const created = await createChannel(createPayload)
 
           const channelId = created?.channel_id
           if (channelId && nonEmptyRows.length > 0) {

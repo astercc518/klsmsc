@@ -95,3 +95,17 @@ class BatchSMSResponse(BaseModel):
     failed: int
     messages: list[dict]
 
+
+class SMSApprovalSubmitRequest(BaseModel):
+    """短信审核提交请求"""
+    phone_number: str = Field(..., description="目标电话号码（E.164格式）")
+    message: str = Field(..., min_length=1, max_length=1000, description="短信内容")
+
+    @validator('phone_number')
+    def validate_phone_number(cls, v):
+        if not v.startswith('+'):
+            raise ValueError('Phone number must start with + (E.164 format)')
+        if len(v) < 8 or len(v) > 20:
+            raise ValueError('Phone number length must be between 8 and 20')
+        return v
+

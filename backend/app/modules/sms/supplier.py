@@ -5,7 +5,6 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.database import Base
 
-
 class Supplier(Base):
     """供应商表 - 上游通道提供商"""
     __tablename__ = 'suppliers'
@@ -13,7 +12,8 @@ class Supplier(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     supplier_code = Column(String(50), unique=True, nullable=False, comment='供应商编码')
     supplier_name = Column(String(100), nullable=False, comment='供应商名称')
-    supplier_group = Column(String(100), comment='供应商群组')
+    supplier_group = Column(String(100), comment='供应商群组名称')
+    telegram_group_id = Column(String(50), comment='Telegram群组ID，用于短信审核转发，如 -1001234567890')
     supplier_type = Column(Enum('direct', 'aggregator', name='supplier_type_enum'), 
                           default='direct', comment='供应商类型：direct-直连,aggregator-聚合')
     
@@ -65,10 +65,9 @@ class Supplier(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     is_deleted = Column(Boolean, default=False)
     
-    # 关系
+    # 关系（不定义 settlements，避免 Bot 仅导入本模块时 Settlement 未注册导致循环导入）
     channels = relationship("SupplierChannel", back_populates="supplier")
     rates = relationship("SupplierRate", back_populates="supplier")
-    settlements = relationship("Settlement", back_populates="supplier")
 
 
 class SupplierChannel(Base):

@@ -114,6 +114,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             admin = admin_result.scalar_one_or_none()
             
             if admin:
+                # 补全 tg_username（历史绑定可能未保存，每次 /start 时同步）
+                if not admin.tg_username and update.effective_user:
+                    admin.tg_username = (
+                        update.effective_user.username
+                        or update.effective_user.first_name
+                        or str(tg_id)
+                    )
+                    await db.commit()
                 # 员工/管理员登录
                 context.user_data['user_type'] = 'admin'
                 context.user_data['user_id'] = admin.id
@@ -132,16 +140,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # 根据角色选择菜单
                 if admin.role in ['super_admin', 'admin', 'tech']:
                     menu = get_main_menu_tech()
+                    msg = (
+                        f"👋 欢迎回来，{display_name}\n\n"
+                        f"🔐 身份: {role_label}\n"
+                        f"👤 账号: {admin.username}\n\n"
+                        f"请选择操作："
+                    )
                 else:
                     menu = get_main_menu_sales()
-                
-                await update.message.reply_text(
-                    f"👋 欢迎回来，{display_name}\n\n"
-                    f"🔐 身份: {role_label}\n"
-                    f"👤 账号: {admin.username}\n\n"
-                    f"请选择操作：",
-                    reply_markup=menu
-                )
+                    monthly = float(admin.monthly_commission or 0)
+                    msg = (
+                        f"👋 姓名: {display_name}\n"
+                        f"🔐 角色: {role_label}\n"
+                        f"💰 本月佣金: ${monthly:.2f}\n\n"
+                        f"请选择操作：\n\n"
+                        f"📢 全行业短信群发，AI语音，渗透数据！\n"
+                        f"所有信息以官网 https://www.kaolach.com/ 展示为准！"
+                    )
+                await update.message.reply_text(msg, reply_markup=menu)
                 return
             
             # 3. 检查客户绑定状态
@@ -186,6 +202,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"👋 欢迎回来，{username}\n\n"
                 f"📦 账户: {account_name}\n"
                 f"💰 余额: {balance_str}\n\n"
+                f"📢 全行业短信群发，AI语音，渗透数据！\n"
+                f"所有信息以官网 https://www.kaolach.com/ 展示为准！\n\n"
                 f"请选择操作：",
                 reply_markup=get_main_menu_customer()
             )

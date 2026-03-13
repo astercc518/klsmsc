@@ -97,6 +97,7 @@ services:
     volumes:
       - ./backend:/app
       - ./data:/app/data:ro
+      - ./data/knowledge:/app/data/knowledge
       - ./logs:/app/logs
       - import_uploads:/tmp/smsc_imports
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -202,9 +203,12 @@ services:
       REDIS_PORT: 6379
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-kaolachbot}
+      TELEGRAM_ADMIN_GROUP_ID: ${TELEGRAM_ADMIN_GROUP_ID:-}
+      API_BASE_URL: http://api:8000
     volumes:
       - ./telegram_bot:/app
       - ./backend:/backend # 挂载 backend 代码以供复用
+      - ./data/knowledge:/app/data/knowledge:ro # 业务知识附件供下载
       - ./logs:/app/logs
     depends_on:
       mysql:

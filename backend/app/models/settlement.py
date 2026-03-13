@@ -57,8 +57,8 @@ class Settlement(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     
-    # 关系
-    supplier = relationship("Supplier", back_populates="settlements")
+    # 关系（单向：Settlement->Supplier，避免 supplier.py 导入 settlement 时循环导入）
+    supplier = relationship("Supplier")
     details = relationship("SettlementDetail", back_populates="settlement")
     logs = relationship("SettlementLog", back_populates="settlement", order_by="SettlementLog.created_at.desc()")
 

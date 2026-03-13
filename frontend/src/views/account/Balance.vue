@@ -91,20 +91,20 @@
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                 <path d="M2 14V4C2 3.45 2.45 3 3 3H13C13.55 3 14 3.45 14 4V14L11 12L8 14L5 12L2 14Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
               </svg>
-              费率说明
+              {{ $t('balance.rateInfo') }}
             </h4>
             <ul class="info-list">
               <li>
                 <span class="list-dot"></span>
-                不同国家费率不同
+                {{ $t('balance.rateDesc1') }}
               </li>
               <li>
                 <span class="list-dot"></span>
-                按条计费，自动拆分长短信
+                {{ $t('balance.rateDesc2') }}
               </li>
               <li>
                 <span class="list-dot"></span>
-                批量发送享受优惠
+                {{ $t('balance.rateDesc3') }}
               </li>
             </ul>
           </div>

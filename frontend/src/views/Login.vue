@@ -35,7 +35,7 @@
         </transition>
       </button>
       <button class="topbar-pill lang-pill" @click="toggleLang">
-        {{ currentLang === 'zh-CN' ? 'EN' : '中文' }}
+        {{ currentLang === 'zh-CN' ? $t('language.shortEn') : $t('language.zh') }}
       </button>
       </div>
     </header>

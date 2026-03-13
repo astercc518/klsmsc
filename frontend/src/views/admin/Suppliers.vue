@@ -6,10 +6,14 @@
         <p class="page-desc">{{ $t('suppliers.pageDesc') }}</p>
       </div>
       <div class="header-right">
-        <el-button @click="loadSuppliers" :icon="Refresh">{{ $t('common.refresh') }}</el-button>
+        <el-button @click="loadByBusinessType" :icon="Refresh">{{ $t('common.refresh') }}</el-button>
         <el-button type="success" @click="handleImportFromCost" :loading="importing">
           <el-icon><Upload /></el-icon>
           {{ $t('suppliers.importFromCost') }}
+        </el-button>
+        <el-button type="success" plain @click="handleImportFromVoice" :loading="importingVoice">
+          <el-icon><Upload /></el-icon>
+          {{ $t('suppliers.importFromVoice') }}
         </el-button>
         <el-button type="primary" @click="showCreateDialog">
           <el-icon><Plus /></el-icon>
@@ -18,33 +22,15 @@
       </div>
     </div>
 
-    <!-- 统计卡片 -->
+    <!-- 统计卡片：按业务类型 -->
     <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-icon active">
-          <el-icon><CircleCheck /></el-icon>
-        </div>
-        <div class="stat-info">
-          <div class="stat-value">{{ stats.active_count }}</div>
-          <div class="stat-label">{{ $t('suppliers.active') }}</div>
-        </div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon total">
-          <el-icon><OfficeBuilding /></el-icon>
-        </div>
-        <div class="stat-info">
-          <div class="stat-value">{{ stats.total_count }}</div>
-          <div class="stat-label">{{ $t('suppliers.totalSuppliers') }}</div>
-        </div>
-      </div>
       <div class="stat-card">
         <div class="stat-icon sms">
           <el-icon><Message /></el-icon>
         </div>
         <div class="stat-info">
           <div class="stat-value">{{ stats.sms_count }}</div>
-          <div class="stat-label">{{ $t('suppliers.hasRates') }}</div>
+          <div class="stat-label">{{ $t('suppliers.smsBusiness') }}</div>
         </div>
       </div>
       <div class="stat-card">
@@ -53,37 +39,37 @@
         </div>
         <div class="stat-info">
           <div class="stat-value">{{ stats.voice_count }}</div>
-          <div class="stat-label">{{ $t('suppliers.hasCountries') }}</div>
+          <div class="stat-label">{{ $t('suppliers.voiceBusiness') }}</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon total">
+          <el-icon><Connection /></el-icon>
+        </div>
+        <div class="stat-info">
+          <div class="stat-value">{{ stats.data_count }}</div>
+          <div class="stat-label">{{ $t('suppliers.dataBusiness') }}</div>
         </div>
       </div>
     </div>
 
     <!-- 搜索筛选 -->
     <div class="filter-bar">
-      <el-input v-model="filters.keyword" :placeholder="$t('suppliers.searchPlaceholder')" clearable style="width: 200px" @keyup.enter="loadSuppliers">
+      <el-input v-model="filters.keyword" :placeholder="$t('suppliers.searchPlaceholder')" clearable style="width: 220px" @keyup.enter="loadByBusinessType">
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
-      <el-select v-model="filters.business_type" :placeholder="$t('suppliers.businessType')" clearable style="width: 120px" @change="loadSuppliers">
-        <el-option :label="$t('suppliers.sms')" value="sms" />
-        <el-option :label="$t('suppliers.voice')" value="voice" />
-        <el-option :label="$t('suppliers.data')" value="data" />
-      </el-select>
-      <el-select v-model="filters.resource_type" :placeholder="$t('suppliers.resourceType')" clearable style="width: 130px" @change="loadSuppliers">
-        <el-option :label="$t('suppliers.otp')" value="otp" />
-        <el-option :label="$t('suppliers.marketing')" value="marketing" />
-        <el-option :label="$t('suppliers.notification')" value="notification" />
-        <el-option :label="$t('suppliers.international')" value="international" />
-      </el-select>
-      <el-select v-model="filters.status" :placeholder="$t('common.status')" clearable style="width: 100px" @change="loadSuppliers">
+      <el-select v-model="filters.status" :placeholder="$t('common.status')" clearable style="width: 100px" @change="loadByBusinessType">
         <el-option :label="$t('suppliers.active')" value="active" />
         <el-option :label="$t('suppliers.inactive')" value="inactive" />
       </el-select>
       <el-button @click="resetFilters">{{ $t('common.reset') }}</el-button>
     </div>
 
-    <!-- 供应商列表 -->
-    <div class="table-card">
-      <el-table :data="suppliers" v-loading="loading" class="data-table">
+    <!-- 按业务类型展示供应商 -->
+    <el-tabs v-model="activeBizTab" class="biz-tabs">
+      <el-tab-pane :label="`${$t('suppliers.smsBusiness')} (${stats.sms_count})`" name="sms">
+        <div class="table-card">
+          <el-table :data="byBusiness.sms" v-loading="loading" class="data-table">
         <el-table-column prop="supplier_name" :label="$t('suppliers.supplierName')" min-width="150">
           <template #default="{ row }">
             <div class="supplier-cell">
@@ -127,20 +113,128 @@
           </template>
         </el-table-column>
       </el-table>
-
-      <div class="pager">
-        <el-pagination
-          background
-          layout="total, prev, pager, next, sizes"
-          :total="pagination.total"
-          :page-size="pagination.pageSize"
-          :current-page="pagination.page"
-          :page-sizes="[10, 20, 50, 100]"
-          @current-change="(p:number) => { pagination.page = p; loadSuppliers() }"
-          @size-change="(s:number) => { pagination.pageSize = s; pagination.page = 1; loadSuppliers() }"
-        />
-      </div>
-    </div>
+        </div>
+      </el-tab-pane>
+      <el-tab-pane :label="`${$t('suppliers.voiceBusiness')} (${stats.voice_count})`" name="voice">
+        <div class="table-card">
+          <el-table :data="byBusiness.voice" v-loading="loading" class="data-table">
+        <el-table-column prop="supplier_name" :label="$t('suppliers.supplierName')" min-width="150">
+          <template #default="{ row }">
+            <div class="supplier-cell">
+              <span class="supplier-name">{{ row.supplier_name }}</span>
+              <el-tag v-if="row.status === 'active'" type="success" size="small" effect="plain">{{ $t('suppliers.active') }}</el-tag>
+              <el-tag v-else type="info" size="small" effect="plain">{{ $t('suppliers.inactive') }}</el-tag>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="supplier_group" :label="$t('suppliers.supplierGroup')" width="130">
+          <template #default="{ row }"><span>{{ row.supplier_group || '-' }}</span></template>
+        </el-table-column>
+        <el-table-column prop="rate_count" :label="$t('suppliers.rateCount')" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.rate_count > 0" type="success" size="small">{{ row.rate_count }} {{ $t('suppliers.items') }}</el-tag>
+            <span v-else class="no-rate">{{ $t('suppliers.notConfigured') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="country_count" :label="$t('suppliers.coveredCountries')" width="100" align="center">
+          <template #default="{ row }">
+            <span v-if="row.country_count > 0">{{ row.country_count }} {{ $t('suppliers.units') }}</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="notes" :label="$t('suppliers.notes')" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }"><span class="notes-text">{{ row.notes || '-' }}</span></template>
+        </el-table-column>
+        <el-table-column :label="$t('common.action')" width="200" fixed="right" align="center">
+          <template #default="{ row }">
+            <el-button type="success" link size="small" @click="showRatesDialog(row)">{{ $t('suppliers.rateTable') }}</el-button>
+            <el-button type="primary" link size="small" @click="editSupplier(row)">{{ $t('common.edit') }}</el-button>
+            <el-popconfirm :title="$t('suppliers.confirmDelete')" @confirm="deleteSupplier(row)">
+              <template #reference>
+                <el-button type="danger" link size="small">{{ $t('common.delete') }}</el-button>
+              </template>
+            </el-popconfirm>
+          </template>
+        </el-table-column>
+      </el-table>
+        </div>
+        <!-- 语音报价参考 -->
+        <el-card class="voice-pricing-ref-card" shadow="never">
+          <template #header>
+            <div class="card-header-row">
+              <span>{{ $t('suppliers.voicePricingRef') }}</span>
+              <el-button link size="small" @click="loadVoicePricingRef" :loading="voicePricingLoading">
+                <el-icon><Refresh /></el-icon> {{ $t('common.refresh') }}
+              </el-button>
+            </div>
+          </template>
+          <el-table :data="voicePricingList" v-loading="voicePricingLoading" size="small" max-height="400" stripe>
+            <el-table-column prop="gateway_name" :label="$t('suppliers.gatewayName')" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="supplier" :label="$t('suppliers.supplierName')" width="100" />
+            <el-table-column prop="country" :label="$t('suppliers.country')" width="90" />
+            <el-table-column prop="country_code" label="ISO" width="70" />
+            <el-table-column prop="description" :label="$t('suppliers.remark')" width="90" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.description || '-' }}</template>
+            </el-table-column>
+            <el-table-column prop="billing_desc" :label="$t('suppliers.billingDesc')" width="140" />
+            <el-table-column prop="cost_usd" :label="$t('suppliers.costPrice')" width="120" align="right">
+              <template #default="{ row }">{{ formatVoicePrice(row.cost_usd, row.billing_model) }}</template>
+            </el-table-column>
+            <el-table-column prop="sale_usd" :label="$t('suppliers.sellPrice')" width="120" align="right">
+              <template #default="{ row }">{{ formatVoicePrice(row.sale_usd ?? row.price_usd, row.billing_model) }}</template>
+            </el-table-column>
+            <el-table-column prop="full_desc" :label="$t('suppliers.fullDesc')" min-width="220" show-overflow-tooltip />
+          </el-table>
+          <div v-if="voicePricingList.length" class="voice-pricing-summary">
+            {{ $t('suppliers.voicePricingSummary', { total: voicePricingList.length, suppliers: voicePricingSuppliers, countries: voicePricingCountries }) }}
+          </div>
+        </el-card>
+      </el-tab-pane>
+      <el-tab-pane :label="`${$t('suppliers.dataBusiness')} (${stats.data_count})`" name="data">
+        <div class="table-card">
+          <el-table :data="byBusiness.data" v-loading="loading" class="data-table">
+        <el-table-column prop="supplier_name" :label="$t('suppliers.supplierName')" min-width="150">
+          <template #default="{ row }">
+            <div class="supplier-cell">
+              <span class="supplier-name">{{ row.supplier_name }}</span>
+              <el-tag v-if="row.status === 'active'" type="success" size="small" effect="plain">{{ $t('suppliers.active') }}</el-tag>
+              <el-tag v-else type="info" size="small" effect="plain">{{ $t('suppliers.inactive') }}</el-tag>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="supplier_group" :label="$t('suppliers.supplierGroup')" width="130">
+          <template #default="{ row }"><span>{{ row.supplier_group || '-' }}</span></template>
+        </el-table-column>
+        <el-table-column prop="rate_count" :label="$t('suppliers.rateCount')" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.rate_count > 0" type="success" size="small">{{ row.rate_count }} {{ $t('suppliers.items') }}</el-tag>
+            <span v-else class="no-rate">{{ $t('suppliers.notConfigured') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="country_count" :label="$t('suppliers.coveredCountries')" width="100" align="center">
+          <template #default="{ row }">
+            <span v-if="row.country_count > 0">{{ row.country_count }} {{ $t('suppliers.units') }}</span>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="notes" :label="$t('suppliers.notes')" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }"><span class="notes-text">{{ row.notes || '-' }}</span></template>
+        </el-table-column>
+        <el-table-column :label="$t('common.action')" width="200" fixed="right" align="center">
+          <template #default="{ row }">
+            <el-button type="success" link size="small" @click="showRatesDialog(row)">{{ $t('suppliers.rateTable') }}</el-button>
+            <el-button type="primary" link size="small" @click="editSupplier(row)">{{ $t('common.edit') }}</el-button>
+            <el-popconfirm :title="$t('suppliers.confirmDelete')" @confirm="deleteSupplier(row)">
+              <template #reference>
+                <el-button type="danger" link size="small">{{ $t('common.delete') }}</el-button>
+              </template>
+            </el-popconfirm>
+          </template>
+        </el-table-column>
+      </el-table>
+        </div>
+      </el-tab-pane>
+    </el-tabs>
 
     <!-- 创建/编辑供应商对话框 -->
     <el-dialog
@@ -165,6 +259,24 @@
 
         <el-row :gutter="20">
           <el-col :span="12">
+            <el-form-item :label="$t('suppliers.telegramGroupId')">
+              <el-input v-model="form.telegram_group_id" :placeholder="$t('suppliers.telegramGroupIdPlaceholder')" />
+              <div class="form-tip">{{ $t('suppliers.telegramGroupIdTip') }}</div>
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item :label="$t('suppliers.businessType')" prop="business_type">
+              <el-select v-model="form.business_type" style="width: 100%" :placeholder="$t('suppliers.pleaseSelectBusinessType')">
+                <el-option :label="$t('suppliers.smsBusiness')" value="sms" />
+                <el-option :label="$t('suppliers.voiceBusiness')" value="voice" />
+                <el-option :label="$t('suppliers.dataBusiness')" value="data" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
             <el-form-item :label="$t('common.status')">
               <el-select v-model="form.status" style="width: 100%">
                 <el-option :label="$t('suppliers.active')" value="active" />
@@ -172,6 +284,9 @@
               </el-select>
             </el-form-item>
           </el-col>
+        </el-row>
+
+        <el-row :gutter="20">
           <el-col :span="12">
             <el-form-item :label="$t('suppliers.costCurrency')">
               <el-select v-model="form.cost_currency" style="width: 100%">
@@ -179,31 +294,6 @@
                 <el-option label="CNY" value="CNY" />
                 <el-option label="EUR" value="EUR" />
               </el-select>
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <el-alert type="info" :closable="false" style="margin-bottom: 16px">
-          <template #title>
-            <span>{{ $t('suppliers.multiBusinessTip') }}</span>
-          </template>
-        </el-alert>
-
-        <el-divider content-position="left">{{ $t('suppliers.contactInfoOptional') }}</el-divider>
-        <el-row :gutter="20">
-          <el-col :span="8">
-            <el-form-item :label="$t('suppliers.contactPerson')">
-              <el-input v-model="form.contact_person" :placeholder="$t('suppliers.contactPerson')" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item :label="$t('suppliers.contactPhone')">
-              <el-input v-model="form.contact_phone" :placeholder="$t('suppliers.contactPhone')" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item :label="$t('suppliers.contactEmail')">
-              <el-input v-model="form.contact_email" :placeholder="$t('suppliers.contactEmail')" />
             </el-form-item>
           </el-col>
         </el-row>
@@ -276,14 +366,16 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="cost_price" :label="$t('suppliers.cost')" width="100" align="right">
+        <el-table-column prop="cost_price" :label="$t('suppliers.cost')" width="120" align="right">
           <template #default="{ row }">
-            <span class="cost-text">${{ formatCost(row.cost_price) }}</span>
+            <span v-if="row.business_type === 'voice'" class="cost-text">{{ formatVoicePrice(row.cost_price, row.resource_type) }}</span>
+            <span v-else class="cost-text">${{ formatCost(row.cost_price) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="sell_price" :label="$t('suppliers.sellPrice')" width="100" align="right">
+        <el-table-column prop="sell_price" :label="$t('suppliers.sellPrice')" width="120" align="right">
           <template #default="{ row }">
-            <span class="sell-text">${{ formatCost(row.sell_price) }}</span>
+            <span v-if="row.business_type === 'voice'" class="sell-text">{{ formatVoicePrice(row.sell_price, row.resource_type) }}</span>
+            <span v-else class="sell-text">${{ formatCost(row.sell_price) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="remark" :label="$t('suppliers.notes')" min-width="120" show-overflow-tooltip>
@@ -506,13 +598,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, computed, type ComputedRef } from 'vue'
+import { ref, reactive, onMounted, watch, computed, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Plus, Refresh, Search, CircleCheck, OfficeBuilding, Message, Phone, DocumentAdd, Download, Upload, Connection, Grid } from '@element-plus/icons-vue'
 import {
-  getSuppliers, createSupplier, updateSupplier, deleteSupplier as deleteSupplierApi,
-  importFromResourcePricing,
+  getSuppliers, getSuppliersByBusinessType, createSupplier, updateSupplier, deleteSupplier as deleteSupplierApi,
+  importFromResourcePricing, importFromVoicePricing, getVoicePricingReference,
   type Supplier
 } from '@/api/supplier'
 
@@ -575,24 +667,42 @@ const formatCost = (value: number | undefined) => {
   return (value || 0).toFixed(4)
 }
 
+// 语音报价：根据计费模式返回带单位的格式化价格
+// 1+1=按秒，60+60=按分钟，6+1/6+6/30+6等=按计费块显示
+const formatVoicePrice = (value: number | undefined, billingModel: string | undefined) => {
+  const v = (value || 0).toFixed(4)
+  const model = (billingModel || '').trim()
+  let unit: string
+  if (model === '1+1') unit = t('suppliers.perSecond')
+  else if (model === '60+60') unit = t('suppliers.perMinute')
+  else if (/^\d+\+\d+$/.test(model)) unit = t('suppliers.perBlock', { model })
+  else unit = t('suppliers.perMinute')
+  return `$${v}${unit}`
+}
+
 // 数据
 const loading = ref(false)
 const importing = ref(false)
-const suppliers = ref<Supplier[]>([])
-const stats = reactive({
-  active_count: 0,
-  total_count: 0,
-  sms_count: 0,
-  voice_count: 0
+const importingVoice = ref(false)
+const activeBizTab = ref('sms')
+const byBusiness = reactive({
+  sms: [] as any[],
+  voice: [] as any[],
+  data: [] as any[]
 })
+const stats = reactive({
+  sms_count: 0,
+  voice_count: 0,
+  data_count: 0
+})
+// 语音报价参考
+const voicePricingList = ref<any[]>([])
+const voicePricingLoading = ref(false)
+const voicePricingSuppliers = ref(0)
+const voicePricingCountries = ref(0)
 const filters = reactive({
   keyword: '',
   status: ''
-})
-const pagination = reactive({
-  page: 1,
-  pageSize: 20,
-  total: 0
 })
 
 // 供应商表单
@@ -606,10 +716,9 @@ const form = reactive({
   supplier_code: '',
   supplier_name: '',
   supplier_group: '',
+  telegram_group_id: '',
+  business_type: 'sms' as 'sms' | 'voice' | 'data',
   cost_currency: 'USD',
-  contact_person: '',
-  contact_phone: '',
-  contact_email: '',
   status: 'active',
   notes: ''
 })
@@ -620,39 +729,48 @@ const rules = computed<FormRules>(() => ({
 }))
 
 // 方法
-const loadSuppliers = async () => {
+const loadByBusinessType = async () => {
   loading.value = true
   try {
-    const res: any = await getSuppliers({
-      page: pagination.page,
-      page_size: pagination.pageSize,
-      status: filters.status || undefined,
-      keyword: filters.keyword || undefined
+    const res: any = await getSuppliersByBusinessType({
+      keyword: filters.keyword || undefined,
+      status: filters.status || undefined
     })
-    if (res.success) {
-      suppliers.value = res.suppliers
-      pagination.total = res.total
-      // 计算统计
-      stats.total_count = res.total
-      stats.active_count = suppliers.value.filter(s => s.status === 'active').length
-      // 以下统计将基于报价数据，暂时显示有报价的供应商数
-      stats.sms_count = suppliers.value.filter(s => s.rate_count > 0).length
-      stats.voice_count = suppliers.value.filter(s => s.country_count > 0).length
+    if (res.success && res.by_business) {
+      byBusiness.sms = res.by_business.sms?.suppliers || []
+      byBusiness.voice = res.by_business.voice?.suppliers || []
+      byBusiness.data = res.by_business.data?.suppliers || []
+      stats.sms_count = res.by_business.sms?.total || 0
+      stats.voice_count = res.by_business.voice?.total || 0
+      stats.data_count = res.by_business.data?.total || 0
     }
   } catch (error) {
-    console.error('Failed to load suppliers:', error)
+    console.error('Failed to load suppliers by business:', error)
   } finally {
     loading.value = false
   }
 }
 
+const loadSuppliers = loadByBusinessType
+
+const loadVoicePricingRef = async () => {
+  voicePricingLoading.value = true
+  try {
+    const res = await getVoicePricingReference()
+    voicePricingList.value = res.flat_list || []
+    voicePricingSuppliers.value = res.supplier_count || 0
+    voicePricingCountries.value = res.country_count || 0
+  } catch {
+    voicePricingList.value = []
+  } finally {
+    voicePricingLoading.value = false
+  }
+}
+
 const resetFilters = () => {
   filters.keyword = ''
-  filters.business_type = ''
-  filters.resource_type = ''
   filters.status = ''
-  pagination.page = 1
-  loadSuppliers()
+  loadByBusinessType()
 }
 
 const generateCode = () => {
@@ -665,10 +783,9 @@ const showCreateDialog = () => {
     supplier_code: generateCode(),
     supplier_name: '',
     supplier_group: '',
+    telegram_group_id: '',
+    business_type: 'sms' as const,
     cost_currency: 'USD',
-    contact_person: '',
-    contact_phone: '',
-    contact_email: '',
     status: 'active',
     notes: ''
   })
@@ -682,10 +799,9 @@ const editSupplier = (row: Supplier) => {
     supplier_code: row.supplier_code,
     supplier_name: row.supplier_name,
     supplier_group: row.supplier_group || '',
+    telegram_group_id: row.telegram_group_id || '',
+    business_type: (row.business_type || 'sms') as 'sms' | 'voice' | 'data',
     cost_currency: row.cost_currency || 'USD',
-    contact_person: row.contact_person || '',
-    contact_phone: row.contact_phone || '',
-    contact_email: row.contact_email || '',
     status: row.status,
     notes: row.notes || ''
   })
@@ -1153,7 +1269,7 @@ const parseCSV = (content: string): BatchRateRow[] => {
   return rates
 }
 
-// 从成本表导入供应商报价
+// 从成本表导入供应商报价（短信/数据）
 const handleImportFromCost = async () => {
   try {
     await ElMessageBox.confirm(
@@ -1168,7 +1284,7 @@ const handleImportFromCost = async () => {
   try {
     const res: any = await importFromResourcePricing()
     ElMessage.success(res.message || t('suppliers.importFromCostSuccess'))
-    await loadSuppliers()
+    await loadByBusinessType()
   } catch (error: any) {
     const msg = error.response?.data?.detail || error.message || t('suppliers.importFromCostFailed')
     ElMessage.error(typeof msg === 'string' ? msg : JSON.stringify(msg))
@@ -1177,8 +1293,37 @@ const handleImportFromCost = async () => {
   }
 }
 
+// 从语音报价导入语音供应商及报价
+const handleImportFromVoice = async () => {
+  try {
+    await ElMessageBox.confirm(
+      t('suppliers.importFromVoiceConfirm'),
+      t('suppliers.importFromVoice'),
+      { type: 'info', confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel') }
+    )
+  } catch {
+    return
+  }
+  importingVoice.value = true
+  try {
+    const res: any = await importFromVoicePricing()
+    ElMessage.success(res.message || t('suppliers.importFromVoiceSuccess'))
+    await loadByBusinessType()
+    if (activeBizTab.value === 'voice') loadVoicePricingRef()
+  } catch (error: any) {
+    const msg = error.response?.data?.detail || error.message || t('suppliers.importFromVoiceFailed')
+    ElMessage.error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+  } finally {
+    importingVoice.value = false
+  }
+}
+
 onMounted(() => {
   loadSuppliers()
+})
+
+watch(activeBizTab, (tab) => {
+  if (tab === 'voice') loadVoicePricingRef()
 })
 </script>
 
@@ -1395,5 +1540,22 @@ onMounted(() => {
   justify-content: flex-end;
   margin-bottom: 16px;
   gap: 8px;
+}
+
+/* 语音报价参考 */
+.voice-pricing-ref-card {
+  margin-top: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+}
+.card-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.voice-pricing-summary {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: 12px;
 }
 </style>

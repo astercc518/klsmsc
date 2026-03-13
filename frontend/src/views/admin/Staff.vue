@@ -98,7 +98,7 @@
         <el-table-column prop="tg_username" :label="$t('staff.telegram')" min-width="150">
           <template #default="{ row }">
             <div class="tg-cell" v-if="row.tg_username || row.tg_id">
-              <span class="tg-name">{{ row.tg_username || '-' }}</span>
+              <span class="tg-name">{{ row.tg_username ? `@${row.tg_username}` : '-' }}</span>
               <el-tag v-if="row.tg_id" type="success" size="small" effect="plain">{{ $t('staff.bound') }}</el-tag>
               <el-tag v-else-if="row.tg_username" type="warning" size="small" effect="plain">{{ $t('staff.pending') }}</el-tag>
             </div>
@@ -160,13 +160,25 @@
       v-model="dialogVisible" 
       :title="isEdit ? $t('staff.editStaff') : $t('staff.addStaff')"
       width="500px"
+      destroy-on-close
     >
       <el-form :model="form" :rules="rules" ref="formRef" label-width="80px">
         <el-form-item :label="$t('staff.username')" prop="username" v-if="!isEdit">
           <el-input v-model="form.username" :placeholder="$t('staff.username')" />
         </el-form-item>
         <el-form-item :label="$t('login.password')" prop="password" v-if="!isEdit">
-          <el-input v-model="form.password" type="password" :placeholder="$t('staff.loginPassword')" show-password />
+          <el-input v-model="form.password" type="password" :placeholder="$t('staff.loginPassword')" show-password>
+            <template #append>
+              <el-button size="small" @click="form.password = generatePassword()">{{ $t('staff.autoGenerate') }}</el-button>
+            </template>
+          </el-input>
+        </el-form-item>
+        <el-form-item :label="$t('login.password')" prop="password" v-if="isEdit">
+          <el-input v-model="form.password" type="password" :placeholder="$t('staff.passwordLeaveEmpty')" show-password>
+            <template #append>
+              <el-button size="small" @click="form.password = generatePassword()">{{ $t('staff.autoGenerate') }}</el-button>
+            </template>
+          </el-input>
         </el-form-item>
         <el-form-item :label="$t('staff.realName')" prop="real_name">
           <el-input v-model="form.real_name" :placeholder="$t('staff.realName')" />
@@ -232,7 +244,11 @@
     <el-dialog v-model="resetDialogVisible" :title="$t('staff.resetPassword')" width="400px">
       <el-form :model="resetForm" ref="resetFormRef" label-width="80px">
         <el-form-item :label="$t('staff.newPassword')" prop="password" :rules="passwordRules">
-          <el-input v-model="resetForm.password" type="password" :placeholder="$t('staff.minSixChars')" show-password />
+          <el-input v-model="resetForm.password" type="password" :placeholder="$t('staff.minSixChars')" show-password>
+            <template #append>
+              <el-button size="small" @click="resetForm.password = generatePassword()">{{ $t('staff.autoGenerate') }}</el-button>
+            </template>
+          </el-input>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -244,7 +260,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -304,14 +320,26 @@ const form = ref({
 const formRef = ref()
 const resetFormRef = ref()
 
-const rules = {
+const rules = computed(() => ({
   username: [{ required: true, message: () => t('staff.pleaseEnterUsername'), trigger: 'blur' }],
-  password: [{ required: true, message: () => t('staff.pleaseEnterPassword'), trigger: 'blur', min: 6 }],
+  password: isEdit.value
+    ? [{ min: 6, message: () => t('staff.passwordMinSix'), trigger: 'blur' }]  // 编辑时可选，填了则至少6位
+    : [{ required: true, message: () => t('staff.pleaseEnterPassword'), trigger: 'blur', min: 6 }],
   real_name: [{ required: true, message: () => t('staff.pleaseEnterRealName'), trigger: 'blur' }],
   role: [{ required: true, message: () => t('staff.pleaseSelectRole'), trigger: 'change' }]
-}
+}))
 
 const passwordRules = [{ required: true, message: () => t('staff.pleaseEnterNewPassword'), min: 6 }]
+
+// 生成随机密码（12位，含大小写字母和数字）
+const generatePassword = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
+  let pwd = ''
+  for (let i = 0; i < 12; i++) {
+    pwd += chars.charAt(Math.floor(Math.random() * chars.length))
+  }
+  return pwd
+}
 
 const getRoleLabel = (role: string) => {
   const map: Record<string, string> = {
@@ -425,12 +453,16 @@ const submitForm = async () => {
   submitting.value = true
   try {
     if (isEdit.value && currentStaffId.value) {
-      await request.put(`/admin/users/${currentStaffId.value}`, {
+      const payload: Record<string, unknown> = {
         real_name: form.value.real_name,
         role: form.value.role,
         tg_username: form.value.tg_username || null,
         commission_rate: form.value.commission_rate || 0
-      })
+      }
+      if (form.value.password?.trim()) {
+        payload.password = form.value.password.trim()
+      }
+      await request.put(`/admin/users/${currentStaffId.value}`, payload)
       ElMessage.success(t('staff.updateSuccess'))
     } else {
       await request.post('/admin/users', form.value)

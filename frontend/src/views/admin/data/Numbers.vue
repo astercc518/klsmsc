@@ -59,19 +59,19 @@
             <div class="task-status-badge">
               <template v-if="isTaskRunning(task)">
                 <el-icon class="is-loading" color="#E6A23C"><Refresh /></el-icon>
-                <span class="status-text processing">处理中</span>
+                <span class="status-text processing">{{ t('common.processing') }}</span>
               </template>
               <template v-else-if="task.status === 'completed'">
                 <span class="status-dot completed"></span>
-                <span class="status-text completed">已完成</span>
+                <span class="status-text completed">{{ t('common.completed') }}</span>
               </template>
               <template v-else-if="task.status === 'failed'">
                 <span class="status-dot failed"></span>
-                <span class="status-text failed">失败</span>
+                <span class="status-text failed">{{ t('common.failed') }}</span>
               </template>
               <template v-else>
                 <span class="status-dot pending"></span>
-                <span class="status-text pending">等待中</span>
+                <span class="status-text pending">{{ t('common.waiting') }}</span>
               </template>
             </div>
           </div>
@@ -90,31 +90,31 @@
                 :duration="8"
               />
             </div>
-            <div class="progress-phase">{{ task._progress?.phase || '准备中...' }}</div>
+            <div class="progress-phase">{{ task._progress?.phase || t('dataPool.preparing') }}</div>
             <div class="progress-metrics">
               <div class="metric">
                 <span class="metric-value">{{ (task._progress?.total_count || 0).toLocaleString() }}</span>
-                <span class="metric-label">已扫描行</span>
+                <span class="metric-label">{{ t('dataPool.scannedRows') }}</span>
               </div>
               <div class="metric">
                 <span class="metric-value highlight-green">{{ (task._progress?.valid_count || 0).toLocaleString() }}</span>
-                <span class="metric-label">已写入</span>
+                <span class="metric-label">{{ t('dataPool.written') }}</span>
               </div>
               <div class="metric">
                 <span class="metric-value highlight-orange">{{ ((task._progress?.file_dedup_count || 0) + (task._progress?.duplicate_count || 0)).toLocaleString() }}</span>
-                <span class="metric-label">去重</span>
+                <span class="metric-label">{{ t('dataPool.dedupLabel') }}</span>
               </div>
               <div class="metric">
                 <span class="metric-value highlight-red">{{ ((task._progress?.invalid_count || 0) + (task._progress?.cleaned_count || 0)).toLocaleString() }}</span>
-                <span class="metric-label">无效/清洗</span>
+                <span class="metric-label">{{ t('dataPool.invalidCleaned') }}</span>
               </div>
               <div class="metric">
                 <span class="metric-value highlight-blue">{{ (task._progress?.speed || 0).toLocaleString() }}/s</span>
-                <span class="metric-label">处理速度</span>
+                <span class="metric-label">{{ t('dataPool.processSpeed') }}</span>
               </div>
               <div class="metric">
                 <span class="metric-value">{{ formatElapsed(task._progress?.elapsed_seconds) }}</span>
-                <span class="metric-label">已耗时</span>
+                <span class="metric-label">{{ t('dataPool.elapsed') }}</span>
               </div>
             </div>
           </div>
@@ -136,7 +136,7 @@
 
           <!-- 失败任务 -->
           <div v-else-if="task.status === 'failed'" class="task-result-row task-error">
-            {{ task._progress?.phase || task.error_message || '导入失败' }}
+            {{ task._progress?.phase || task.error_message || t('dataPool.importFailed') }}
           </div>
 
           <!-- 底部信息 -->
@@ -165,7 +165,7 @@
         <el-form-item label="② 选择定价模板">
           <el-select
             v-model="selectedTemplateId"
-            :placeholder="templateListLoading ? '加载模板中...' : `共 ${filteredTemplates.length} 个模板可选`"
+            :placeholder="templateListLoading ? t('dataPool.loadingTemplates') : t('dataPool.templatesCount', { n: filteredTemplates.length })"
             filterable
             clearable
             style="width: 100%"
@@ -341,7 +341,7 @@
       <template #footer>
         <el-button @click="importVisible = false">{{ importResults.length ? '关闭' : t('common.cancel') }}</el-button>
         <el-button v-if="!importResults.length" type="primary" :loading="importing" @click="submitImport">
-          {{ importing ? `提交中 (${importSubmitIdx}/${importFiles.length})` : (importFiles.length > 1 ? `批量导入 (${importFiles.length} 个文件)` : t('dataPool.startImport')) }}
+          {{ importing ? t('dataPool.submitting', { n: importSubmitIdx, total: importFiles.length }) : (importFiles.length > 1 ? t('dataPool.submitBatch', { n: importFiles.length }) : t('dataPool.startImport')) }}
         </el-button>
       </template>
     </el-dialog>

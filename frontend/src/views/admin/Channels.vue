@@ -126,6 +126,12 @@
             {{ row.default_sender_id || '-' }}
           </template>
         </el-table-column>
+        <el-table-column prop="supplier" :label="$t('channels.supplier')" width="140">
+          <template #default="{ row }">
+            <span v-if="row.supplier">{{ row.supplier.supplier_name }}</span>
+            <span v-else style="color: var(--text-tertiary)">-</span>
+          </template>
+        </el-table-column>
         <el-table-column :label="$t('common.action')" width="280" fixed="right" align="center">
           <template #default="{ row }">
             <el-button type="primary" link size="small" @click="handleEdit(row)">{{ $t('common.edit') }}</el-button>
@@ -155,6 +161,7 @@
       :title="editingChannel ? $t('channels.editChannel') : $t('channels.addChannel')"
       width="650px"
       destroy-on-close
+      @open="onChannelDialogOpen"
     >
       <el-form :model="channelForm" label-width="100px">
         <el-row :gutter="20">
@@ -256,6 +263,22 @@
         </el-row>
         <el-form-item :label="$t('channels.defaultSid')">
           <el-input v-model="channelForm.default_sender_id" :placeholder="$t('channels.defaultSidPlaceholder')" />
+        </el-form-item>
+        <el-form-item :label="$t('channels.supplier')">
+          <el-select
+            v-model="channelForm.supplier_id"
+            :placeholder="$t('channels.selectSupplierPlaceholder')"
+            clearable
+            filterable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="s in suppliers"
+              :key="s.id"
+              :label="`${s.supplier_name} (${s.supplier_code})`"
+              :value="s.id"
+            />
+          </el-select>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -436,7 +459,8 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search, Connection, CircleCheck, Promotion, Link } from '@element-plus/icons-vue'
-import { getChannelsAdmin, createChannel, updateChannel, deleteChannel } from '@/api/admin'
+import { getChannelsAdmin, createChannel, updateChannel, deleteChannel, getChannelAdmin } from '@/api/admin'
+import { getSuppliers } from '@/api/supplier'
 import request from '@/api/index'
 
 const { t } = useI18n()
@@ -545,6 +569,7 @@ const editingSid = ref<any>(null)
 const selectedCountryForSid = ref('')
 const sidForm = ref({ sender_id: '', sid_type: 'alpha', status: 'active', is_default: false, reject_reason: '' })
 
+const suppliers = ref<any[]>([])
 const channelForm = ref({
   channel_code: '',
   channel_name: '',
@@ -560,7 +585,8 @@ const channelForm = ref({
   cost_rate: 0,
   priority: 0,
   weight: 100,
-  default_sender_id: ''
+  default_sender_id: '',
+  supplier_id: null as number | null
 })
 
 const loadChannels = async () => {
@@ -577,26 +603,82 @@ const loadChannels = async () => {
   }
 }
 
-const handleEdit = (channel: any) => {
+const handleEdit = async (channel: any) => {
   editingChannel.value = channel
-  channelForm.value = {
-    channel_code: channel.channel_code,
-    channel_name: channel.channel_name,
-    protocol: channel.protocol,
-    host: channel.host || '',
-    port: channel.port || 2775,
-    username: channel.username || '',
-    password: channel.password || '',
-    smpp_bind_mode: channel.smpp_bind_mode || 'transceiver',
-    smpp_system_type: channel.smpp_system_type || '',
-    api_url: channel.api_url || '',
-    api_key: channel.api_key || '',
-    cost_rate: channel.cost_rate || 0,
-    priority: channel.priority || 0,
-    weight: channel.weight || 100,
-    default_sender_id: channel.default_sender_id || ''
+  try {
+    const res = await getChannelAdmin(channel.id)
+    if (res.success && res.channel) {
+      const ch = res.channel
+      channelForm.value = {
+        channel_code: ch.channel_code,
+        channel_name: ch.channel_name,
+        protocol: ch.protocol,
+        host: ch.host || '',
+        port: ch.port || 2775,
+        username: ch.username || '',
+        password: ch.password || '',
+        smpp_bind_mode: ch.smpp_bind_mode || 'transceiver',
+        smpp_system_type: ch.smpp_system_type || '',
+        api_url: ch.api_url || '',
+        api_key: ch.api_key || '',
+        cost_rate: channel.cost_rate || 0,
+        priority: ch.priority || 0,
+        weight: ch.weight || 100,
+        default_sender_id: ch.default_sender_id || '',
+        supplier_id: ch.supplier_id ?? null
+      }
+    } else {
+      channelForm.value = {
+        ...channelForm.value,
+        channel_code: channel.channel_code,
+        channel_name: channel.channel_name,
+        protocol: channel.protocol,
+        host: channel.host || '',
+        port: channel.port || 2775,
+        username: channel.username || '',
+        password: channel.password || '',
+        smpp_bind_mode: channel.smpp_bind_mode || 'transceiver',
+        smpp_system_type: channel.smpp_system_type || '',
+        api_url: channel.api_url || '',
+        api_key: channel.api_key || '',
+        cost_rate: channel.cost_rate || 0,
+        priority: channel.priority || 0,
+        weight: channel.weight || 100,
+        default_sender_id: channel.default_sender_id || '',
+        supplier_id: channel.supplier?.id ?? null
+      }
+    }
+  } catch {
+    channelForm.value = {
+      ...channelForm.value,
+      channel_code: channel.channel_code,
+      channel_name: channel.channel_name,
+      protocol: channel.protocol,
+      host: channel.host || '',
+      port: channel.port || 2775,
+      username: channel.username || '',
+      password: channel.password || '',
+      smpp_bind_mode: channel.smpp_bind_mode || 'transceiver',
+      smpp_system_type: channel.smpp_system_type || '',
+      api_url: channel.api_url || '',
+      api_key: channel.api_key || '',
+      cost_rate: channel.cost_rate || 0,
+      priority: channel.priority || 0,
+      weight: channel.weight || 100,
+      default_sender_id: channel.default_sender_id || '',
+      supplier_id: channel.supplier?.id ?? null
+    }
   }
   showCreateDialog.value = true
+}
+
+const onChannelDialogOpen = async () => {
+  try {
+    const res = await getSuppliers({ status: 'active', page_size: 500 })
+    suppliers.value = res.suppliers || res.items || []
+  } catch {
+    suppliers.value = []
+  }
 }
 
 const handleSave = async () => {
@@ -604,12 +686,14 @@ const handleSave = async () => {
     ElMessage.warning(t('channels.pleaseEnterRequired'))
     return
   }
+  const payload = { ...channelForm.value }
+  if (payload.supplier_id === null) payload.supplier_id = undefined
   try {
     if (editingChannel.value) {
-      await updateChannel(editingChannel.value.id, channelForm.value)
+      await updateChannel(editingChannel.value.id, payload)
       ElMessage.success(t('channels.updateSuccess'))
     } else {
-      await createChannel(channelForm.value)
+      await createChannel(payload)
       ElMessage.success(t('channels.createSuccess'))
     }
     showCreateDialog.value = false
@@ -658,7 +742,8 @@ const resetChannelForm = () => {
     cost_rate: 0,
     priority: 0,
     weight: 100,
-    default_sender_id: ''
+    default_sender_id: '',
+    supplier_id: null
   }
 }
 
