@@ -1,0 +1,5058 @@
+{
+  "generated_at": "2026-03-11",
+  "source": "成本 (2).xlsx",
+  "total_records": 165,
+  "supplier_count": 15,
+  "country_count": 55,
+  "currency": "USD",
+  "by_supplier": {
+    "一正通信": {
+      "channel_code": "SUP_YIZHENG",
+      "country_count": 25,
+      "countries": {
+        "AU": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "澳大利亚",
+          "country_code": "AU",
+          "cost_usd": 0.035,
+          "sale_usd": 0.0455,
+          "price_usd": 0.0455,
+          "description": null
+        },
+        "BD": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "孟加拉",
+          "country_code": "BD",
+          "cost_usd": 0.007,
+          "sale_usd": 0.0091,
+          "price_usd": 0.0091,
+          "description": "14，19号段"
+        },
+        "BR": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "巴西",
+          "country_code": "BR",
+          "cost_usd": 0.009,
+          "sale_usd": 0.0117,
+          "price_usd": 0.0117,
+          "description": null
+        },
+        "CL": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "智利",
+          "country_code": "CL",
+          "cost_usd": 0.0038,
+          "sale_usd": 0.0049,
+          "price_usd": 0.0049,
+          "description": null
+        },
+        "CO": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "哥伦比亚",
+          "country_code": "CO",
+          "cost_usd": 0.0018,
+          "sale_usd": 0.0023,
+          "price_usd": 0.0023,
+          "description": null
+        },
+        "FR": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "法国",
+          "country_code": "FR",
+          "cost_usd": 0.028,
+          "sale_usd": 0.0364,
+          "price_usd": 0.0364,
+          "description": null
+        },
+        "GB": {
+          "type": "DATA",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "英国",
+          "country_code": "GB",
+          "cost_usd": 0.1,
+          "sale_usd": 0.15,
+          "price_usd": 0.15,
+          "description": "高速数据流量"
+        },
+        "ID": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "印尼",
+          "country_code": "ID",
+          "cost_usd": 0.0059,
+          "sale_usd": 0.0077,
+          "price_usd": 0.0077,
+          "description": null
+        },
+        "IN": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "印度",
+          "country_code": "IN",
+          "cost_usd": 0.0027,
+          "sale_usd": 0.0035,
+          "price_usd": 0.0035,
+          "description": null
+        },
+        "JP": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "日本",
+          "country_code": "JP",
+          "cost_usd": 0.03,
+          "sale_usd": 0.039,
+          "price_usd": 0.039,
+          "description": "无线路"
+        },
+        "KR": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "韩国",
+          "country_code": "KR",
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143,
+          "price_usd": 0.0143,
+          "description": null
+        },
+        "LK": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "斯里兰卡",
+          "country_code": "LK",
+          "cost_usd": 0.007,
+          "sale_usd": 0.0091,
+          "price_usd": 0.0091,
+          "description": null
+        },
+        "MX": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "墨西哥",
+          "country_code": "MX",
+          "cost_usd": 0.0023,
+          "sale_usd": 0.003,
+          "price_usd": 0.003,
+          "description": "OTP"
+        },
+        "MY": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "马来西亚",
+          "country_code": "MY",
+          "cost_usd": 0.04,
+          "sale_usd": 0.047,
+          "price_usd": 0.047,
+          "description": null
+        },
+        "NG": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "尼日利亚",
+          "country_code": "NG",
+          "cost_usd": 0.0061,
+          "sale_usd": 0.0079,
+          "price_usd": 0.0079,
+          "description": null
+        },
+        "PE": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "秘鲁",
+          "country_code": "PE",
+          "cost_usd": 0.018,
+          "sale_usd": 0.0234,
+          "price_usd": 0.0234,
+          "description": null
+        },
+        "PH": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "菲律宾",
+          "country_code": "PH",
+          "cost_usd": 0.0059,
+          "sale_usd": 0.0077,
+          "price_usd": 0.0077,
+          "description": null
+        },
+        "PK": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "巴基斯坦",
+          "country_code": "PK",
+          "cost_usd": 0.0063,
+          "sale_usd": 0.0082,
+          "price_usd": 0.0082,
+          "description": null
+        },
+        "PT": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "葡萄牙",
+          "country_code": "PT",
+          "cost_usd": 0.022,
+          "sale_usd": 0.0286,
+          "price_usd": 0.0286,
+          "description": null
+        },
+        "TH": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "泰国",
+          "country_code": "TH",
+          "cost_usd": 0.0056,
+          "sale_usd": 0.0073,
+          "price_usd": 0.0073,
+          "description": "bc,xjd"
+        },
+        "TR": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "土耳其",
+          "country_code": "TR",
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143,
+          "price_usd": 0.0143,
+          "description": null
+        },
+        "TZ": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "坦桑尼亚",
+          "country_code": "TZ",
+          "cost_usd": 0.012,
+          "sale_usd": 0.0156,
+          "price_usd": 0.0156,
+          "description": null
+        },
+        "US": {
+          "type": "VOICE",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "美国",
+          "country_code": "US",
+          "cost_usd": 0.08,
+          "sale_usd": 0.12,
+          "price_usd": 0.12,
+          "description": "高质量语音通话"
+        },
+        "VN": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "越南",
+          "country_code": "VN",
+          "cost_usd": 0.028,
+          "sale_usd": 0.0364,
+          "price_usd": 0.0364,
+          "description": null
+        },
+        "ZA": {
+          "type": "SMS",
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "country": "南非",
+          "country_code": "ZA",
+          "cost_usd": 0.013,
+          "sale_usd": 0.0169,
+          "price_usd": 0.0169,
+          "description": null
+        }
+      }
+    },
+    "TS通信": {
+      "channel_code": "SUP_TS",
+      "country_count": 12,
+      "countries": {
+        "AU": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "澳大利亚",
+          "country_code": "AU",
+          "cost_usd": 0.035,
+          "sale_usd": 0.0455,
+          "price_usd": 0.0455,
+          "description": null
+        },
+        "BD": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "孟加拉",
+          "country_code": "BD",
+          "cost_usd": 0.0085,
+          "sale_usd": 0.0111,
+          "price_usd": 0.0111,
+          "description": null
+        },
+        "BR": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "巴西",
+          "country_code": "BR",
+          "cost_usd": 0.0087,
+          "sale_usd": 0.0113,
+          "price_usd": 0.0113,
+          "description": "OTP"
+        },
+        "IN": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "印度",
+          "country_code": "IN",
+          "cost_usd": 0.0038,
+          "sale_usd": 0.0049,
+          "price_usd": 0.0049,
+          "description": null
+        },
+        "JP": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "日本",
+          "country_code": "JP",
+          "cost_usd": 0.043,
+          "sale_usd": 0.0559,
+          "price_usd": 0.0559,
+          "description": null
+        },
+        "KR": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "韩国",
+          "country_code": "KR",
+          "cost_usd": 0.0078,
+          "sale_usd": 0.0101,
+          "price_usd": 0.0101,
+          "description": null
+        },
+        "MM": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "缅甸",
+          "country_code": "MM",
+          "cost_usd": 0.033,
+          "sale_usd": 0.0429,
+          "price_usd": 0.0429,
+          "description": null
+        },
+        "MX": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "墨西哥",
+          "country_code": "MX",
+          "cost_usd": 0.0035,
+          "sale_usd": 0.0046,
+          "price_usd": 0.0046,
+          "description": null
+        },
+        "PE": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "秘鲁",
+          "country_code": "PE",
+          "cost_usd": 0.0049,
+          "sale_usd": 0.0064,
+          "price_usd": 0.0064,
+          "description": null
+        },
+        "PH": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "菲律宾",
+          "country_code": "PH",
+          "cost_usd": 0.0044,
+          "sale_usd": 0.0057,
+          "price_usd": 0.0057,
+          "description": null
+        },
+        "TH": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "泰国",
+          "country_code": "TH",
+          "cost_usd": 0.0035,
+          "sale_usd": 0.0053,
+          "price_usd": 0.0053,
+          "description": null
+        },
+        "ZA": {
+          "type": "SMS",
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "country": "南非",
+          "country_code": "ZA",
+          "cost_usd": 0.0084,
+          "sale_usd": 0.0109,
+          "price_usd": 0.0109,
+          "description": null
+        }
+      }
+    },
+    "玄武通信": {
+      "channel_code": "SUP_XUANWU",
+      "country_count": 3,
+      "countries": {
+        "BD": {
+          "type": "SMS",
+          "supplier": "玄武通信",
+          "channel_code": "SUP_XUANWU",
+          "country": "孟加拉",
+          "country_code": "BD",
+          "cost_usd": 0.0065,
+          "sale_usd": 0.0084,
+          "price_usd": 0.0084,
+          "description": null
+        },
+        "TH": {
+          "type": "SMS",
+          "supplier": "玄武通信",
+          "channel_code": "SUP_XUANWU",
+          "country": "泰国",
+          "country_code": "TH",
+          "cost_usd": 0.0042,
+          "sale_usd": 0.0062,
+          "price_usd": 0.0062,
+          "description": null
+        },
+        "VN": {
+          "type": "SMS",
+          "supplier": "玄武通信",
+          "channel_code": "SUP_XUANWU",
+          "country": "越南",
+          "country_code": "VN",
+          "cost_usd": 0.0183,
+          "sale_usd": 0.0238,
+          "price_usd": 0.0238,
+          "description": "包料代发（0.13R，180U/W）"
+        }
+      }
+    },
+    "BO通信": {
+      "channel_code": "SUP_BO",
+      "country_count": 3,
+      "countries": {
+        "BR": {
+          "type": "SMS",
+          "supplier": "BO通信",
+          "channel_code": "SUP_BO",
+          "country": "巴西",
+          "country_code": "BR",
+          "cost_usd": 0.0092,
+          "sale_usd": 0.012,
+          "price_usd": 0.012,
+          "description": null
+        },
+        "MX": {
+          "type": "SMS",
+          "supplier": "BO通信",
+          "channel_code": "SUP_BO",
+          "country": "墨西哥",
+          "country_code": "MX",
+          "cost_usd": 0.0023,
+          "sale_usd": 0.003,
+          "price_usd": 0.003,
+          "description": null
+        },
+        "TH": {
+          "type": "SMS",
+          "supplier": "BO通信",
+          "channel_code": "SUP_BO",
+          "country": "泰国",
+          "country_code": "TH",
+          "cost_usd": 0.005,
+          "sale_usd": 0.0065,
+          "price_usd": 0.0065,
+          "description": null
+        }
+      }
+    },
+    "ueasy通信": {
+      "channel_code": "SUP_UEASY",
+      "country_count": 5,
+      "countries": {
+        "BE": {
+          "type": "SMS",
+          "supplier": "ueasy通信",
+          "channel_code": "SUP_UEASY",
+          "country": "比利时",
+          "country_code": "BE",
+          "cost_usd": 0.051,
+          "sale_usd": 0.0663,
+          "price_usd": 0.0663,
+          "description": null
+        },
+        "BR": {
+          "type": "SMS",
+          "supplier": "ueasy通信",
+          "channel_code": "SUP_UEASY",
+          "country": "巴西",
+          "country_code": "BR",
+          "cost_usd": 0.0093,
+          "sale_usd": 0.0121,
+          "price_usd": 0.0121,
+          "description": null
+        },
+        "MX": {
+          "type": "SMS",
+          "supplier": "ueasy通信",
+          "channel_code": "SUP_UEASY",
+          "country": "墨西哥",
+          "country_code": "MX",
+          "cost_usd": 0.002,
+          "sale_usd": 0.0026,
+          "price_usd": 0.0026,
+          "description": null
+        },
+        "TH": {
+          "type": "SMS",
+          "supplier": "ueasy通信",
+          "channel_code": "SUP_UEASY",
+          "country": "泰国",
+          "country_code": "TH",
+          "cost_usd": 0.0048,
+          "sale_usd": 0.0062,
+          "price_usd": 0.0062,
+          "description": null
+        },
+        "ZM": {
+          "type": "SMS",
+          "supplier": "ueasy通信",
+          "channel_code": "SUP_UEASY",
+          "country": "赞比亚",
+          "country_code": "ZM",
+          "cost_usd": 0.02,
+          "sale_usd": 0.026,
+          "price_usd": 0.026,
+          "description": null
+        }
+      }
+    },
+    "葵芳通信": {
+      "channel_code": "SUP_KUIFANG",
+      "country_count": 13,
+      "countries": {
+        "BD": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "孟加拉",
+          "country_code": "BD",
+          "cost_usd": 0.0066,
+          "sale_usd": 0.0086,
+          "price_usd": 0.0086,
+          "description": null
+        },
+        "BR": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "巴西",
+          "country_code": "BR",
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143,
+          "price_usd": 0.0143,
+          "description": null
+        },
+        "ES": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "西班牙",
+          "country_code": "ES",
+          "cost_usd": 0.0035,
+          "sale_usd": 0.0046,
+          "price_usd": 0.0046,
+          "description": null
+        },
+        "GB": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "英国",
+          "country_code": "GB",
+          "cost_usd": 0.031,
+          "sale_usd": 0.0403,
+          "price_usd": 0.0403,
+          "description": null
+        },
+        "ID": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "印尼",
+          "country_code": "ID",
+          "cost_usd": 0.007,
+          "sale_usd": 0.0091,
+          "price_usd": 0.0091,
+          "description": null
+        },
+        "JP": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "日本",
+          "country_code": "JP",
+          "cost_usd": 0.041,
+          "sale_usd": 0.0533,
+          "price_usd": 0.0533,
+          "description": null
+        },
+        "KR": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "韩国",
+          "country_code": "KR",
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143,
+          "price_usd": 0.0143,
+          "description": null
+        },
+        "MX": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "墨西哥",
+          "country_code": "MX",
+          "cost_usd": 0.0045,
+          "sale_usd": 0.0059,
+          "price_usd": 0.0059,
+          "description": null
+        },
+        "NG": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "尼日利亚",
+          "country_code": "NG",
+          "cost_usd": 0.0041,
+          "sale_usd": 0.0533,
+          "price_usd": 0.0533,
+          "description": null
+        },
+        "PE": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "秘鲁",
+          "country_code": "PE",
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143,
+          "price_usd": 0.0143,
+          "description": null
+        },
+        "PH": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "菲律宾",
+          "country_code": "PH",
+          "cost_usd": 0.0062,
+          "sale_usd": 0.0081,
+          "price_usd": 0.0081,
+          "description": null
+        },
+        "PK": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "巴基斯坦",
+          "country_code": "PK",
+          "cost_usd": 0.0047,
+          "sale_usd": 0.0061,
+          "price_usd": 0.0061,
+          "description": null
+        },
+        "TH": {
+          "type": "SMS",
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "country": "泰国",
+          "country_code": "TH",
+          "cost_usd": 0.0061,
+          "sale_usd": 0.0079,
+          "price_usd": 0.0079,
+          "description": null
+        }
+      }
+    },
+    "WOID通信": {
+      "channel_code": "SUP_WOID",
+      "country_count": 1,
+      "countries": {
+        "IN": {
+          "type": "SMS",
+          "supplier": "WOID通信",
+          "channel_code": "SUP_WOID",
+          "country": "印度",
+          "country_code": "IN",
+          "cost_usd": 0.0035,
+          "sale_usd": 0.0046,
+          "price_usd": 0.0046,
+          "description": null
+        }
+      }
+    },
+    "粤讯通信": {
+      "channel_code": "SUP_YUEXUN",
+      "country_count": 28,
+      "countries": {
+        "AR": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "阿根廷",
+          "country_code": "AR",
+          "cost_usd": 0.028,
+          "sale_usd": 0.0364,
+          "price_usd": 0.0364,
+          "description": null
+        },
+        "AU": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "澳大利亚",
+          "country_code": "AU",
+          "cost_usd": 0.026,
+          "sale_usd": 0.0338,
+          "price_usd": 0.0338,
+          "description": null
+        },
+        "BE": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "比利时",
+          "country_code": "BE",
+          "cost_usd": 0.0035,
+          "sale_usd": 0.0046,
+          "price_usd": 0.0046,
+          "description": null
+        },
+        "BO": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "玻利维亚",
+          "country_code": "BO",
+          "cost_usd": 0.016,
+          "sale_usd": 0.0208,
+          "price_usd": 0.0208,
+          "description": null
+        },
+        "BR": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "巴西",
+          "country_code": "BR",
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143,
+          "price_usd": 0.0143,
+          "description": null
+        },
+        "CL": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "智利",
+          "country_code": "CL",
+          "cost_usd": 0.0088,
+          "sale_usd": 0.0114,
+          "price_usd": 0.0114,
+          "description": null
+        },
+        "CM": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "喀麦隆",
+          "country_code": "CM",
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143,
+          "price_usd": 0.0143,
+          "description": null
+        },
+        "CO": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "哥伦比亚",
+          "country_code": "CO",
+          "cost_usd": 0.0021,
+          "sale_usd": 0.0027,
+          "price_usd": 0.0027,
+          "description": null
+        },
+        "DE": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "德国",
+          "country_code": "DE",
+          "cost_usd": 0.023,
+          "sale_usd": 0.0299,
+          "price_usd": 0.0299,
+          "description": null
+        },
+        "EG": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "埃及",
+          "country_code": "EG",
+          "cost_usd": 0.018,
+          "sale_usd": 0.0234,
+          "price_usd": 0.0234,
+          "description": null
+        },
+        "FI": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "芬兰",
+          "country_code": "FI",
+          "cost_usd": 0.029,
+          "sale_usd": 0.0377,
+          "price_usd": 0.0377,
+          "description": null
+        },
+        "IL": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "以色列",
+          "country_code": "IL",
+          "cost_usd": 0.0088,
+          "sale_usd": 0.0114,
+          "price_usd": 0.0114,
+          "description": null
+        },
+        "IN": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "印度",
+          "country_code": "IN",
+          "cost_usd": 0.0028,
+          "sale_usd": 0.0036,
+          "price_usd": 0.0036,
+          "description": null
+        },
+        "JO": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "约旦",
+          "country_code": "JO",
+          "cost_usd": 0.065,
+          "sale_usd": 0.0845,
+          "price_usd": 0.0845,
+          "description": null
+        },
+        "KH": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "柬埔寨",
+          "country_code": "KH",
+          "cost_usd": 0.018,
+          "sale_usd": 0.0234,
+          "price_usd": 0.0234,
+          "description": null
+        },
+        "KW": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "科威特",
+          "country_code": "KW",
+          "cost_usd": 0.029,
+          "sale_usd": 0.0377,
+          "price_usd": 0.0377,
+          "description": null
+        },
+        "LK": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "斯里兰卡",
+          "country_code": "LK",
+          "cost_usd": 0.014,
+          "sale_usd": 0.0182,
+          "price_usd": 0.0182,
+          "description": null
+        },
+        "MA": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "摩洛哥",
+          "country_code": "MA",
+          "cost_usd": 0.014,
+          "sale_usd": 0.0182,
+          "price_usd": 0.0182,
+          "description": null
+        },
+        "MY": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "马来西亚",
+          "country_code": "MY",
+          "cost_usd": 0.023,
+          "sale_usd": 0.0299,
+          "price_usd": 0.0299,
+          "description": null
+        },
+        "NL": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "荷兰",
+          "country_code": "NL",
+          "cost_usd": 0.0094,
+          "sale_usd": 0.0122,
+          "price_usd": 0.0122,
+          "description": null
+        },
+        "PH": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "菲律宾",
+          "country_code": "PH",
+          "cost_usd": 0.0059,
+          "sale_usd": 0.0077,
+          "price_usd": 0.0077,
+          "description": null
+        },
+        "PK": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "巴基斯坦",
+          "country_code": "PK",
+          "cost_usd": 0.023,
+          "sale_usd": 0.0299,
+          "price_usd": 0.0299,
+          "description": null
+        },
+        "QA": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "卡塔尔",
+          "country_code": "QA",
+          "cost_usd": 0.022,
+          "sale_usd": 0.0286,
+          "price_usd": 0.0286,
+          "description": null
+        },
+        "SN": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "塞内加尔",
+          "country_code": "SN",
+          "cost_usd": 0.023,
+          "sale_usd": 0.0299,
+          "price_usd": 0.0299,
+          "description": null
+        },
+        "TH": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "泰国",
+          "country_code": "TH",
+          "cost_usd": 0.0047,
+          "sale_usd": 0.0061,
+          "price_usd": 0.0061,
+          "description": null
+        },
+        "US": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "美国",
+          "country_code": "US",
+          "cost_usd": 0.023,
+          "sale_usd": 0.0299,
+          "price_usd": 0.0299,
+          "description": null
+        },
+        "VN": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "越南",
+          "country_code": "VN",
+          "cost_usd": 0.018,
+          "sale_usd": 0.0234,
+          "price_usd": 0.0234,
+          "description": null
+        },
+        "ZA": {
+          "type": "SMS",
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "country": "南非",
+          "country_code": "ZA",
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143,
+          "price_usd": 0.0143,
+          "description": null
+        }
+      }
+    },
+    "KMI通信": {
+      "channel_code": "SUP_KMI",
+      "country_count": 47,
+      "countries": {
+        "AE": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "阿拉伯联合酋长国",
+          "country_code": "AE",
+          "cost_usd": 0.0648,
+          "sale_usd": 0.0842,
+          "price_usd": 0.0842,
+          "description": null
+        },
+        "AR": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "阿根廷",
+          "country_code": "AR",
+          "cost_usd": 0.03,
+          "sale_usd": 0.039,
+          "price_usd": 0.039,
+          "description": null
+        },
+        "AU": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "澳大利亚",
+          "country_code": "AU",
+          "cost_usd": 0.0272,
+          "sale_usd": 0.0354,
+          "price_usd": 0.0354,
+          "description": null
+        },
+        "BD": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "孟加拉",
+          "country_code": "BD",
+          "cost_usd": 0.0067,
+          "sale_usd": 0.0087,
+          "price_usd": 0.0087,
+          "description": null
+        },
+        "BO": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "玻利维亚",
+          "country_code": "BO",
+          "cost_usd": 0.016,
+          "sale_usd": 0.0208,
+          "price_usd": 0.0208,
+          "description": null
+        },
+        "BR": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "巴西",
+          "country_code": "BR",
+          "cost_usd": 0.0083,
+          "sale_usd": 0.0108,
+          "price_usd": 0.0108,
+          "description": "OTP：短码senderid  CR 80%左右"
+        },
+        "CL": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "智利",
+          "country_code": "CL",
+          "cost_usd": 0.0054,
+          "sale_usd": 0.007,
+          "price_usd": 0.007,
+          "description": null
+        },
+        "CM": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "喀麦隆",
+          "country_code": "CM",
+          "cost_usd": 0.0185,
+          "sale_usd": 0.024,
+          "price_usd": 0.024,
+          "description": null
+        },
+        "CO": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "哥伦比亚",
+          "country_code": "CO",
+          "cost_usd": 0.0028,
+          "sale_usd": 0.0036,
+          "price_usd": 0.0036,
+          "description": null
+        },
+        "DE": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "德国",
+          "country_code": "DE",
+          "cost_usd": 0.0429,
+          "sale_usd": 0.0558,
+          "price_usd": 0.0558,
+          "description": null
+        },
+        "DK": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "丹麦",
+          "country_code": "DK",
+          "cost_usd": 0.0544,
+          "sale_usd": 0.0707,
+          "price_usd": 0.0707,
+          "description": null
+        },
+        "EC": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "厄瓜多尔",
+          "country_code": "EC",
+          "cost_usd": 0.0253,
+          "sale_usd": 0.0329,
+          "price_usd": 0.0329,
+          "description": null
+        },
+        "EG": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "埃及",
+          "country_code": "EG",
+          "cost_usd": 0.0219,
+          "sale_usd": 0.0285,
+          "price_usd": 0.0285,
+          "description": null
+        },
+        "ES": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "西班牙",
+          "country_code": "ES",
+          "cost_usd": 0.0305,
+          "sale_usd": 0.0396,
+          "price_usd": 0.0396,
+          "description": null
+        },
+        "ET": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "埃塞俄比亚",
+          "country_code": "ET",
+          "cost_usd": 0.0277,
+          "sale_usd": 0.036,
+          "price_usd": 0.036,
+          "description": null
+        },
+        "FI": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "芬兰",
+          "country_code": "FI",
+          "cost_usd": 0.0474,
+          "sale_usd": 0.0616,
+          "price_usd": 0.0616,
+          "description": null
+        },
+        "FR": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "法国",
+          "country_code": "FR",
+          "cost_usd": 0.0273,
+          "sale_usd": 0.0355,
+          "price_usd": 0.0355,
+          "description": null
+        },
+        "GB": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "英国",
+          "country_code": "GB",
+          "cost_usd": 0.0376,
+          "sale_usd": 0.0489,
+          "price_usd": 0.0489,
+          "description": null
+        },
+        "GH": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "加纳",
+          "country_code": "GH",
+          "cost_usd": 0.0085,
+          "sale_usd": 0.0111,
+          "price_usd": 0.0111,
+          "description": null
+        },
+        "ID": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "印度尼西亚",
+          "country_code": "ID",
+          "cost_usd": 0.012,
+          "sale_usd": 0.0156,
+          "price_usd": 0.0156,
+          "description": null
+        },
+        "IE": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "爱尔兰",
+          "country_code": "IE",
+          "cost_usd": 0.0325,
+          "sale_usd": 0.0423,
+          "price_usd": 0.0423,
+          "description": null
+        },
+        "IL": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "以色列",
+          "country_code": "IL",
+          "cost_usd": 0.0181,
+          "sale_usd": 0.0235,
+          "price_usd": 0.0235,
+          "description": null
+        },
+        "IN": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "印度",
+          "country_code": "IN",
+          "cost_usd": 0.0039,
+          "sale_usd": 0.0051,
+          "price_usd": 0.0051,
+          "description": null
+        },
+        "IT": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "意大利",
+          "country_code": "IT",
+          "cost_usd": 0.0415,
+          "sale_usd": 0.054,
+          "price_usd": 0.054,
+          "description": null
+        },
+        "JO": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "约旦",
+          "country_code": "JO",
+          "cost_usd": 0.0389,
+          "sale_usd": 0.0506,
+          "price_usd": 0.0506,
+          "description": null
+        },
+        "JP": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "日本",
+          "country_code": "JP",
+          "cost_usd": 0.0357,
+          "sale_usd": 0.0464,
+          "price_usd": 0.0464,
+          "description": null
+        },
+        "KH": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "柬埔寨",
+          "country_code": "KH",
+          "cost_usd": 0.0333,
+          "sale_usd": 0.0433,
+          "price_usd": 0.0433,
+          "description": null
+        },
+        "KR": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "韩国",
+          "country_code": "KR",
+          "cost_usd": 0.0109,
+          "sale_usd": 0.0142,
+          "price_usd": 0.0142,
+          "description": null
+        },
+        "KW": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "科威特",
+          "country_code": "KW",
+          "cost_usd": 0.0512,
+          "sale_usd": 0.0666,
+          "price_usd": 0.0666,
+          "description": null
+        },
+        "KZ": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "哈萨克斯坦",
+          "country_code": "KZ",
+          "cost_usd": 0.0781,
+          "sale_usd": 0.1015,
+          "price_usd": 0.1015,
+          "description": null
+        },
+        "MX": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "墨西哥",
+          "country_code": "MX",
+          "cost_usd": 0.0039,
+          "sale_usd": 0.0051,
+          "price_usd": 0.0051,
+          "description": "回填70+"
+        },
+        "MY": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "马来西亚",
+          "country_code": "MY",
+          "cost_usd": 0.0253,
+          "sale_usd": 0.0329,
+          "price_usd": 0.0329,
+          "description": null
+        },
+        "NG": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "尼日利亚",
+          "country_code": "NG",
+          "cost_usd": 0.0561,
+          "sale_usd": 0.0729,
+          "price_usd": 0.0729,
+          "description": null
+        },
+        "NL": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "荷兰",
+          "country_code": "NL",
+          "cost_usd": 0.0426,
+          "sale_usd": 0.0554,
+          "price_usd": 0.0554,
+          "description": null
+        },
+        "PE": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "秘鲁",
+          "country_code": "PE",
+          "cost_usd": 0.0052,
+          "sale_usd": 0.0068,
+          "price_usd": 0.0068,
+          "description": null
+        },
+        "PH": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "菲律宾",
+          "country_code": "PH",
+          "cost_usd": 0.006,
+          "sale_usd": 0.0078,
+          "price_usd": 0.0078,
+          "description": "OTP：HQ验证码"
+        },
+        "PK": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "巴基斯坦",
+          "country_code": "PK",
+          "cost_usd": 0.0057,
+          "sale_usd": null,
+          "price_usd": 0.0057,
+          "description": null
+        },
+        "PL": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "波兰",
+          "country_code": "PL",
+          "cost_usd": 0.0251,
+          "sale_usd": 0.0326,
+          "price_usd": 0.0326,
+          "description": null
+        },
+        "QA": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "卡塔尔",
+          "country_code": "QA",
+          "cost_usd": 0.0441,
+          "sale_usd": 0.0573,
+          "price_usd": 0.0573,
+          "description": null
+        },
+        "RO": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "罗马尼亚",
+          "country_code": "RO",
+          "cost_usd": 0.0325,
+          "sale_usd": 0.0423,
+          "price_usd": 0.0423,
+          "description": null
+        },
+        "TH": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "泰国",
+          "country_code": "TH",
+          "cost_usd": 0.0078,
+          "sale_usd": 0.0101,
+          "price_usd": 0.0101,
+          "description": null
+        },
+        "TR": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "土耳其",
+          "country_code": "TR",
+          "cost_usd": 0.0055,
+          "sale_usd": 0.0072,
+          "price_usd": 0.0072,
+          "description": null
+        },
+        "UG": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "乌干达",
+          "country_code": "UG",
+          "cost_usd": 0.0135,
+          "sale_usd": 0.0175,
+          "price_usd": 0.0175,
+          "description": null
+        },
+        "US": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "美国",
+          "country_code": "US",
+          "cost_usd": 0.0085,
+          "sale_usd": 0.0111,
+          "price_usd": 0.0111,
+          "description": "美国+52"
+        },
+        "VE": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "委内瑞拉",
+          "country_code": "VE",
+          "cost_usd": 0.0124,
+          "sale_usd": 0.0161,
+          "price_usd": 0.0161,
+          "description": null
+        },
+        "VN": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "越南",
+          "country_code": "VN",
+          "cost_usd": 0.029,
+          "sale_usd": 0.0377,
+          "price_usd": 0.0377,
+          "description": "卡发"
+        },
+        "ZA": {
+          "type": "SMS",
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "country": "南非",
+          "country_code": "ZA",
+          "cost_usd": 0.0127,
+          "sale_usd": 0.0165,
+          "price_usd": 0.0165,
+          "description": null
+        }
+      }
+    },
+    "黑豹通信": {
+      "channel_code": "SUP_HEIBAO",
+      "country_count": 1,
+      "countries": {
+        "IN": {
+          "type": "VOICE",
+          "supplier": "黑豹通信",
+          "channel_code": "SUP_HEIBAO",
+          "country": "印度",
+          "country_code": "IN",
+          "cost_usd": null,
+          "sale_usd": 0.0455,
+          "price_usd": 0.0455,
+          "description": null
+        }
+      }
+    },
+    "创优通信": {
+      "channel_code": "SUP_CHUANGYOU",
+      "country_count": 2,
+      "countries": {
+        "PH": {
+          "type": "SMS",
+          "supplier": "创优通信",
+          "channel_code": "SUP_CHUANGYOU",
+          "country": "菲律宾",
+          "country_code": "PH",
+          "cost_usd": 0.0052,
+          "sale_usd": 0.0068,
+          "price_usd": 0.0068,
+          "description": null
+        },
+        "TH": {
+          "type": "SMS",
+          "supplier": "创优通信",
+          "channel_code": "SUP_CHUANGYOU",
+          "country": "泰国",
+          "country_code": "TH",
+          "cost_usd": 0.0045,
+          "sale_usd": 0.0059,
+          "price_usd": 0.0059,
+          "description": null
+        }
+      }
+    },
+    "节点通信": {
+      "channel_code": "SUP_JIEDIAN",
+      "country_count": 2,
+      "countries": {
+        "BD": {
+          "type": "SMS",
+          "supplier": "节点通信",
+          "channel_code": "SUP_JIEDIAN",
+          "country": "孟加拉",
+          "country_code": "BD",
+          "cost_usd": 0.0065,
+          "sale_usd": 0.0085,
+          "price_usd": 0.0085,
+          "description": "孟加拉语"
+        },
+        "BR": {
+          "type": "SMS",
+          "supplier": "节点通信",
+          "channel_code": "SUP_JIEDIAN",
+          "country": "巴西",
+          "country_code": "BR",
+          "cost_usd": 0.0099,
+          "sale_usd": 0.0129,
+          "price_usd": 0.0129,
+          "description": null
+        }
+      }
+    },
+    "AIY通信": {
+      "channel_code": "SUP_AIY",
+      "country_count": 2,
+      "countries": {
+        "BD": {
+          "type": "SMS",
+          "supplier": "AIY通信",
+          "channel_code": "SUP_AIY",
+          "country": "孟加拉",
+          "country_code": "BD",
+          "cost_usd": 0.0058,
+          "sale_usd": 0.0075,
+          "price_usd": 0.0075,
+          "description": null
+        },
+        "IN": {
+          "type": "SMS",
+          "supplier": "AIY通信",
+          "channel_code": "SUP_AIY",
+          "country": "印度",
+          "country_code": "IN",
+          "cost_usd": 0.0017,
+          "sale_usd": 0.0022,
+          "price_usd": 0.0022,
+          "description": null
+        }
+      }
+    },
+    "左总通信": {
+      "channel_code": "SUP_ZUOZONG",
+      "country_count": 1,
+      "countries": {
+        "ID": {
+          "type": "SMS",
+          "supplier": "左总通信",
+          "channel_code": "SUP_ZUOZONG",
+          "country": "印尼",
+          "country_code": "ID",
+          "cost_usd": 0.0045,
+          "sale_usd": 0.0059,
+          "price_usd": 0.0059,
+          "description": null
+        }
+      }
+    },
+    "ANY通信": {
+      "channel_code": "SUP_ANY",
+      "country_count": 1,
+      "countries": {
+        "IN": {
+          "type": "SMS",
+          "supplier": "ANY通信",
+          "channel_code": "SUP_ANY",
+          "country": "印度",
+          "country_code": "IN",
+          "cost_usd": 0.0045,
+          "sale_usd": 0.0059,
+          "price_usd": 0.0059,
+          "description": null
+        }
+      }
+    }
+  },
+  "by_country": {
+    "US": {
+      "country_name": "美国",
+      "supplier_count": 3,
+      "lowest_price": 0.0111,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0111,
+          "cost_usd": 0.0085,
+          "sale_usd": 0.0111
+        },
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0299,
+          "cost_usd": 0.023,
+          "sale_usd": 0.0299
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0358,
+          "cost_usd": 0.0275,
+          "sale_usd": 0.0358
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.12,
+          "cost_usd": 0.08,
+          "sale_usd": 0.12
+        }
+      ]
+    },
+    "GB": {
+      "country_name": "英国",
+      "supplier_count": 3,
+      "lowest_price": 0.0403,
+      "offers": [
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0403,
+          "cost_usd": 0.031,
+          "sale_usd": 0.0403
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0489,
+          "cost_usd": 0.0376,
+          "sale_usd": 0.0489
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.15,
+          "cost_usd": 0.1,
+          "sale_usd": 0.15
+        }
+      ]
+    },
+    "JP": {
+      "country_name": "日本",
+      "supplier_count": 4,
+      "lowest_price": 0.039,
+      "offers": [
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.039,
+          "cost_usd": 0.03,
+          "sale_usd": 0.039
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0464,
+          "cost_usd": 0.0357,
+          "sale_usd": 0.0464
+        },
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0533,
+          "cost_usd": 0.041,
+          "sale_usd": 0.0533
+        },
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0559,
+          "cost_usd": 0.043,
+          "sale_usd": 0.0559
+        }
+      ]
+    },
+    "BR": {
+      "country_name": "巴西",
+      "supplier_count": 8,
+      "lowest_price": 0.0108,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0108,
+          "cost_usd": 0.0083,
+          "sale_usd": 0.0108
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0112,
+          "cost_usd": 0.0086,
+          "sale_usd": 0.0112
+        },
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0113,
+          "cost_usd": 0.0087,
+          "sale_usd": 0.0113
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0117,
+          "cost_usd": 0.009,
+          "sale_usd": 0.0117
+        },
+        {
+          "supplier": "BO通信",
+          "channel_code": "SUP_BO",
+          "price_usd": 0.012,
+          "cost_usd": 0.0092,
+          "sale_usd": 0.012
+        },
+        {
+          "supplier": "ueasy通信",
+          "channel_code": "SUP_UEASY",
+          "price_usd": 0.0121,
+          "cost_usd": 0.0093,
+          "sale_usd": 0.0121
+        },
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0127,
+          "cost_usd": 0.0098,
+          "sale_usd": 0.0127
+        },
+        {
+          "supplier": "节点通信",
+          "channel_code": "SUP_JIEDIAN",
+          "price_usd": 0.0129,
+          "cost_usd": 0.0099,
+          "sale_usd": 0.0129
+        },
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0143,
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143
+        },
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0143,
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143
+        }
+      ]
+    },
+    "ID": {
+      "country_name": "印尼",
+      "supplier_count": 4,
+      "lowest_price": 0.0059,
+      "offers": [
+        {
+          "supplier": "左总通信",
+          "channel_code": "SUP_ZUOZONG",
+          "price_usd": 0.0059,
+          "cost_usd": 0.0045,
+          "sale_usd": 0.0059
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0077,
+          "cost_usd": 0.0059,
+          "sale_usd": 0.0077
+        },
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0091,
+          "cost_usd": 0.007,
+          "sale_usd": 0.0091
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0156,
+          "cost_usd": 0.012,
+          "sale_usd": 0.0156
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0221,
+          "cost_usd": 0.017,
+          "sale_usd": 0.0221
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0339,
+          "cost_usd": 0.0261,
+          "sale_usd": 0.0339
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.065,
+          "cost_usd": 0.05,
+          "sale_usd": 0.065
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.4095,
+          "cost_usd": 0.315,
+          "sale_usd": 0.4095
+        }
+      ]
+    },
+    "NG": {
+      "country_name": "尼日利亚",
+      "supplier_count": 3,
+      "lowest_price": 0.0079,
+      "offers": [
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0079,
+          "cost_usd": 0.0061,
+          "sale_usd": 0.0079
+        },
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0533,
+          "cost_usd": 0.0041,
+          "sale_usd": 0.0533
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0729,
+          "cost_usd": 0.0561,
+          "sale_usd": 0.0729
+        }
+      ]
+    },
+    "PE": {
+      "country_name": "秘鲁",
+      "supplier_count": 4,
+      "lowest_price": 0.0064,
+      "offers": [
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0064,
+          "cost_usd": 0.0049,
+          "sale_usd": 0.0064
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0068,
+          "cost_usd": 0.0052,
+          "sale_usd": 0.0068
+        },
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0143,
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0234,
+          "cost_usd": 0.018,
+          "sale_usd": 0.0234
+        }
+      ]
+    },
+    "CO": {
+      "country_name": "哥伦比亚",
+      "supplier_count": 3,
+      "lowest_price": 0.0023,
+      "offers": [
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0023,
+          "cost_usd": 0.0018,
+          "sale_usd": 0.0023
+        },
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0027,
+          "cost_usd": 0.0021,
+          "sale_usd": 0.0027
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0036,
+          "cost_usd": 0.0028,
+          "sale_usd": 0.0036
+        }
+      ]
+    },
+    "PH": {
+      "country_name": "菲律宾",
+      "supplier_count": 6,
+      "lowest_price": 0.0057,
+      "offers": [
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0057,
+          "cost_usd": 0.0044,
+          "sale_usd": 0.0057
+        },
+        {
+          "supplier": "创优通信",
+          "channel_code": "SUP_CHUANGYOU",
+          "price_usd": 0.0068,
+          "cost_usd": 0.0052,
+          "sale_usd": 0.0068
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0077,
+          "cost_usd": 0.0059,
+          "sale_usd": 0.0077
+        },
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0077,
+          "cost_usd": 0.0059,
+          "sale_usd": 0.0077
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0078,
+          "cost_usd": 0.006,
+          "sale_usd": 0.0078
+        },
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0081,
+          "cost_usd": 0.0062,
+          "sale_usd": 0.0081
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0095,
+          "cost_usd": 0.0073,
+          "sale_usd": 0.0095
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0104,
+          "cost_usd": 0.008,
+          "sale_usd": 0.0104
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.026,
+          "cost_usd": 0.02,
+          "sale_usd": 0.026
+        }
+      ]
+    },
+    "TH": {
+      "country_name": "泰国",
+      "supplier_count": 9,
+      "lowest_price": 0.0053,
+      "offers": [
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0053,
+          "cost_usd": 0.0035,
+          "sale_usd": 0.0053
+        },
+        {
+          "supplier": "创优通信",
+          "channel_code": "SUP_CHUANGYOU",
+          "price_usd": 0.0059,
+          "cost_usd": 0.0045,
+          "sale_usd": 0.0059
+        },
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0061,
+          "cost_usd": 0.0047,
+          "sale_usd": 0.0061
+        },
+        {
+          "supplier": "玄武通信",
+          "channel_code": "SUP_XUANWU",
+          "price_usd": 0.0062,
+          "cost_usd": 0.0042,
+          "sale_usd": 0.0062
+        },
+        {
+          "supplier": "ueasy通信",
+          "channel_code": "SUP_UEASY",
+          "price_usd": 0.0062,
+          "cost_usd": 0.0048,
+          "sale_usd": 0.0062
+        },
+        {
+          "supplier": "BO通信",
+          "channel_code": "SUP_BO",
+          "price_usd": 0.0065,
+          "cost_usd": 0.005,
+          "sale_usd": 0.0065
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0073,
+          "cost_usd": 0.0056,
+          "sale_usd": 0.0073
+        },
+        {
+          "supplier": "玄武通信",
+          "channel_code": "SUP_XUANWU",
+          "price_usd": 0.0079,
+          "cost_usd": 0.0061,
+          "sale_usd": 0.0079
+        },
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0079,
+          "cost_usd": 0.0061,
+          "sale_usd": 0.0079
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0091,
+          "cost_usd": 0.007,
+          "sale_usd": 0.0091
+        }
+      ]
+    },
+    "VN": {
+      "country_name": "越南",
+      "supplier_count": 4,
+      "lowest_price": 0.0234,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0234,
+          "cost_usd": 0.018,
+          "sale_usd": 0.0234
+        },
+        {
+          "supplier": "玄武通信",
+          "channel_code": "SUP_XUANWU",
+          "price_usd": 0.0238,
+          "cost_usd": 0.0183,
+          "sale_usd": 0.0238
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0364,
+          "cost_usd": 0.028,
+          "sale_usd": 0.0364
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0377,
+          "cost_usd": 0.029,
+          "sale_usd": 0.0377
+        }
+      ]
+    },
+    "IN": {
+      "country_name": "印度",
+      "supplier_count": 8,
+      "lowest_price": 0.0022,
+      "offers": [
+        {
+          "supplier": "AIY通信",
+          "channel_code": "SUP_AIY",
+          "price_usd": 0.0022,
+          "cost_usd": 0.0017,
+          "sale_usd": 0.0022
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0035,
+          "cost_usd": 0.0027,
+          "sale_usd": 0.0035
+        },
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0036,
+          "cost_usd": 0.0028,
+          "sale_usd": 0.0036
+        },
+        {
+          "supplier": "WOID通信",
+          "channel_code": "SUP_WOID",
+          "price_usd": 0.0046,
+          "cost_usd": 0.0035,
+          "sale_usd": 0.0046
+        },
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0049,
+          "cost_usd": 0.0038,
+          "sale_usd": 0.0049
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0051,
+          "cost_usd": 0.0039,
+          "sale_usd": 0.0051
+        },
+        {
+          "supplier": "ANY通信",
+          "channel_code": "SUP_ANY",
+          "price_usd": 0.0059,
+          "cost_usd": 0.0045,
+          "sale_usd": 0.0059
+        },
+        {
+          "supplier": "ANY通信",
+          "channel_code": "SUP_ANY",
+          "price_usd": 0.0091,
+          "cost_usd": 0.007,
+          "sale_usd": 0.0091
+        },
+        {
+          "supplier": "黑豹通信",
+          "channel_code": "SUP_HEIBAO",
+          "price_usd": 0.0455,
+          "cost_usd": null,
+          "sale_usd": 0.0455
+        }
+      ]
+    },
+    "MY": {
+      "country_name": "马来西亚",
+      "supplier_count": 3,
+      "lowest_price": 0.0299,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0299,
+          "cost_usd": 0.023,
+          "sale_usd": 0.0299
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0329,
+          "cost_usd": 0.0253,
+          "sale_usd": 0.0329
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.047,
+          "cost_usd": 0.04,
+          "sale_usd": 0.047
+        }
+      ]
+    },
+    "TR": {
+      "country_name": "土耳其",
+      "supplier_count": 2,
+      "lowest_price": 0.0072,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0072,
+          "cost_usd": 0.0055,
+          "sale_usd": 0.0072
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0143,
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143
+        }
+      ]
+    },
+    "KR": {
+      "country_name": "韩国",
+      "supplier_count": 4,
+      "lowest_price": 0.0101,
+      "offers": [
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0101,
+          "cost_usd": 0.0078,
+          "sale_usd": 0.0101
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0142,
+          "cost_usd": 0.0109,
+          "sale_usd": 0.0142
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0143,
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143
+        },
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0143,
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143
+        }
+      ]
+    },
+    "FR": {
+      "country_name": "法国",
+      "supplier_count": 2,
+      "lowest_price": 0.0355,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0355,
+          "cost_usd": 0.0273,
+          "sale_usd": 0.0355
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0364,
+          "cost_usd": 0.028,
+          "sale_usd": 0.0364
+        }
+      ]
+    },
+    "MX": {
+      "country_name": "墨西哥",
+      "supplier_count": 6,
+      "lowest_price": 0.0026,
+      "offers": [
+        {
+          "supplier": "ueasy通信",
+          "channel_code": "SUP_UEASY",
+          "price_usd": 0.0026,
+          "cost_usd": 0.002,
+          "sale_usd": 0.0026
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.003,
+          "cost_usd": 0.0023,
+          "sale_usd": 0.003
+        },
+        {
+          "supplier": "BO通信",
+          "channel_code": "SUP_BO",
+          "price_usd": 0.003,
+          "cost_usd": 0.0023,
+          "sale_usd": 0.003
+        },
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0046,
+          "cost_usd": 0.0035,
+          "sale_usd": 0.0046
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0051,
+          "cost_usd": 0.0039,
+          "sale_usd": 0.0051
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0052,
+          "cost_usd": 0.004,
+          "sale_usd": 0.0052
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0059,
+          "cost_usd": 0.0045,
+          "sale_usd": 0.0059
+        },
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0059,
+          "cost_usd": 0.0045,
+          "sale_usd": 0.0059
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0073,
+          "cost_usd": 0.0056,
+          "sale_usd": 0.0073
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0096,
+          "cost_usd": 0.0064,
+          "sale_usd": 0.0096
+        }
+      ]
+    },
+    "AU": {
+      "country_name": "澳大利亚",
+      "supplier_count": 4,
+      "lowest_price": 0.0338,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0338,
+          "cost_usd": 0.026,
+          "sale_usd": 0.0338
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0354,
+          "cost_usd": 0.0272,
+          "sale_usd": 0.0354
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0455,
+          "cost_usd": 0.035,
+          "sale_usd": 0.0455
+        },
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0455,
+          "cost_usd": 0.035,
+          "sale_usd": 0.0455
+        }
+      ]
+    },
+    "LK": {
+      "country_name": "斯里兰卡",
+      "supplier_count": 2,
+      "lowest_price": 0.0091,
+      "offers": [
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0091,
+          "cost_usd": 0.007,
+          "sale_usd": 0.0091
+        },
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0182,
+          "cost_usd": 0.014,
+          "sale_usd": 0.0182
+        }
+      ]
+    },
+    "BD": {
+      "country_name": "孟加拉",
+      "supplier_count": 7,
+      "lowest_price": 0.0075,
+      "offers": [
+        {
+          "supplier": "AIY通信",
+          "channel_code": "SUP_AIY",
+          "price_usd": 0.0075,
+          "cost_usd": 0.0058,
+          "sale_usd": 0.0075
+        },
+        {
+          "supplier": "玄武通信",
+          "channel_code": "SUP_XUANWU",
+          "price_usd": 0.0084,
+          "cost_usd": 0.0065,
+          "sale_usd": 0.0084
+        },
+        {
+          "supplier": "节点通信",
+          "channel_code": "SUP_JIEDIAN",
+          "price_usd": 0.0085,
+          "cost_usd": 0.0065,
+          "sale_usd": 0.0085
+        },
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0086,
+          "cost_usd": 0.0066,
+          "sale_usd": 0.0086
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0087,
+          "cost_usd": 0.0067,
+          "sale_usd": 0.0087
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0091,
+          "cost_usd": 0.007,
+          "sale_usd": 0.0091
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0099,
+          "cost_usd": 0.0076,
+          "sale_usd": 0.0099
+        },
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0111,
+          "cost_usd": 0.0085,
+          "sale_usd": 0.0111
+        },
+        {
+          "supplier": "节点通信",
+          "channel_code": "SUP_JIEDIAN",
+          "price_usd": 0.0113,
+          "cost_usd": 0.0087,
+          "sale_usd": 0.0113
+        }
+      ]
+    },
+    "PK": {
+      "country_name": "巴基斯坦",
+      "supplier_count": 4,
+      "lowest_price": 0.0057,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0057,
+          "cost_usd": 0.0057,
+          "sale_usd": null
+        },
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0061,
+          "cost_usd": 0.0047,
+          "sale_usd": 0.0061
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0082,
+          "cost_usd": 0.0063,
+          "sale_usd": 0.0082
+        },
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0299,
+          "cost_usd": 0.023,
+          "sale_usd": 0.0299
+        }
+      ]
+    },
+    "PT": {
+      "country_name": "葡萄牙",
+      "supplier_count": 1,
+      "lowest_price": 0.0286,
+      "offers": [
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0286,
+          "cost_usd": 0.022,
+          "sale_usd": 0.0286
+        }
+      ]
+    },
+    "CL": {
+      "country_name": "智利",
+      "supplier_count": 3,
+      "lowest_price": 0.0049,
+      "offers": [
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0049,
+          "cost_usd": 0.0038,
+          "sale_usd": 0.0049
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.007,
+          "cost_usd": 0.0054,
+          "sale_usd": 0.007
+        },
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0114,
+          "cost_usd": 0.0088,
+          "sale_usd": 0.0114
+        }
+      ]
+    },
+    "ZA": {
+      "country_name": "南非",
+      "supplier_count": 4,
+      "lowest_price": 0.0109,
+      "offers": [
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0109,
+          "cost_usd": 0.0084,
+          "sale_usd": 0.0109
+        },
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0143,
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0165,
+          "cost_usd": 0.0127,
+          "sale_usd": 0.0165
+        },
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0169,
+          "cost_usd": 0.013,
+          "sale_usd": 0.0169
+        }
+      ]
+    },
+    "TZ": {
+      "country_name": "坦桑尼亚",
+      "supplier_count": 1,
+      "lowest_price": 0.0156,
+      "offers": [
+        {
+          "supplier": "一正通信",
+          "channel_code": "SUP_YIZHENG",
+          "price_usd": 0.0156,
+          "cost_usd": 0.012,
+          "sale_usd": 0.0156
+        }
+      ]
+    },
+    "MM": {
+      "country_name": "缅甸",
+      "supplier_count": 1,
+      "lowest_price": 0.0429,
+      "offers": [
+        {
+          "supplier": "TS通信",
+          "channel_code": "SUP_TS",
+          "price_usd": 0.0429,
+          "cost_usd": 0.033,
+          "sale_usd": 0.0429
+        }
+      ]
+    },
+    "BE": {
+      "country_name": "比利时",
+      "supplier_count": 2,
+      "lowest_price": 0.0046,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0046,
+          "cost_usd": 0.0035,
+          "sale_usd": 0.0046
+        },
+        {
+          "supplier": "ueasy通信",
+          "channel_code": "SUP_UEASY",
+          "price_usd": 0.0663,
+          "cost_usd": 0.051,
+          "sale_usd": 0.0663
+        }
+      ]
+    },
+    "ZM": {
+      "country_name": "赞比亚",
+      "supplier_count": 1,
+      "lowest_price": 0.026,
+      "offers": [
+        {
+          "supplier": "ueasy通信",
+          "channel_code": "SUP_UEASY",
+          "price_usd": 0.026,
+          "cost_usd": 0.02,
+          "sale_usd": 0.026
+        }
+      ]
+    },
+    "ES": {
+      "country_name": "西班牙",
+      "supplier_count": 2,
+      "lowest_price": 0.0046,
+      "offers": [
+        {
+          "supplier": "葵芳通信",
+          "channel_code": "SUP_KUIFANG",
+          "price_usd": 0.0046,
+          "cost_usd": 0.0035,
+          "sale_usd": 0.0046
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0396,
+          "cost_usd": 0.0305,
+          "sale_usd": 0.0396
+        }
+      ]
+    },
+    "KH": {
+      "country_name": "柬埔寨",
+      "supplier_count": 2,
+      "lowest_price": 0.0234,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0234,
+          "cost_usd": 0.018,
+          "sale_usd": 0.0234
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0433,
+          "cost_usd": 0.0333,
+          "sale_usd": 0.0433
+        }
+      ]
+    },
+    "MA": {
+      "country_name": "摩洛哥",
+      "supplier_count": 1,
+      "lowest_price": 0.0182,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0182,
+          "cost_usd": 0.014,
+          "sale_usd": 0.0182
+        }
+      ]
+    },
+    "DE": {
+      "country_name": "德国",
+      "supplier_count": 2,
+      "lowest_price": 0.0299,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0299,
+          "cost_usd": 0.023,
+          "sale_usd": 0.0299
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0558,
+          "cost_usd": 0.0429,
+          "sale_usd": 0.0558
+        }
+      ]
+    },
+    "SN": {
+      "country_name": "塞内加尔",
+      "supplier_count": 1,
+      "lowest_price": 0.0299,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0299,
+          "cost_usd": 0.023,
+          "sale_usd": 0.0299
+        }
+      ]
+    },
+    "CM": {
+      "country_name": "喀麦隆",
+      "supplier_count": 2,
+      "lowest_price": 0.0143,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0143,
+          "cost_usd": 0.011,
+          "sale_usd": 0.0143
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.024,
+          "cost_usd": 0.0185,
+          "sale_usd": 0.024
+        }
+      ]
+    },
+    "EG": {
+      "country_name": "埃及",
+      "supplier_count": 2,
+      "lowest_price": 0.0234,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0234,
+          "cost_usd": 0.018,
+          "sale_usd": 0.0234
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0285,
+          "cost_usd": 0.0219,
+          "sale_usd": 0.0285
+        }
+      ]
+    },
+    "IL": {
+      "country_name": "以色列",
+      "supplier_count": 2,
+      "lowest_price": 0.0114,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0114,
+          "cost_usd": 0.0088,
+          "sale_usd": 0.0114
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0235,
+          "cost_usd": 0.0181,
+          "sale_usd": 0.0235
+        }
+      ]
+    },
+    "FI": {
+      "country_name": "芬兰",
+      "supplier_count": 2,
+      "lowest_price": 0.0377,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0377,
+          "cost_usd": 0.029,
+          "sale_usd": 0.0377
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0616,
+          "cost_usd": 0.0474,
+          "sale_usd": 0.0616
+        }
+      ]
+    },
+    "QA": {
+      "country_name": "卡塔尔",
+      "supplier_count": 2,
+      "lowest_price": 0.0286,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0286,
+          "cost_usd": 0.022,
+          "sale_usd": 0.0286
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0573,
+          "cost_usd": 0.0441,
+          "sale_usd": 0.0573
+        }
+      ]
+    },
+    "KW": {
+      "country_name": "科威特",
+      "supplier_count": 2,
+      "lowest_price": 0.0377,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0377,
+          "cost_usd": 0.029,
+          "sale_usd": 0.0377
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0666,
+          "cost_usd": 0.0512,
+          "sale_usd": 0.0666
+        }
+      ]
+    },
+    "NL": {
+      "country_name": "荷兰",
+      "supplier_count": 2,
+      "lowest_price": 0.0122,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0122,
+          "cost_usd": 0.0094,
+          "sale_usd": 0.0122
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0554,
+          "cost_usd": 0.0426,
+          "sale_usd": 0.0554
+        }
+      ]
+    },
+    "JO": {
+      "country_name": "约旦",
+      "supplier_count": 2,
+      "lowest_price": 0.0506,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0506,
+          "cost_usd": 0.0389,
+          "sale_usd": 0.0506
+        },
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0845,
+          "cost_usd": 0.065,
+          "sale_usd": 0.0845
+        }
+      ]
+    },
+    "BO": {
+      "country_name": "玻利维亚",
+      "supplier_count": 2,
+      "lowest_price": 0.0208,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0208,
+          "cost_usd": 0.016,
+          "sale_usd": 0.0208
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0208,
+          "cost_usd": 0.016,
+          "sale_usd": 0.0208
+        }
+      ]
+    },
+    "AR": {
+      "country_name": "阿根廷",
+      "supplier_count": 2,
+      "lowest_price": 0.0364,
+      "offers": [
+        {
+          "supplier": "粤讯通信",
+          "channel_code": "SUP_YUEXUN",
+          "price_usd": 0.0364,
+          "cost_usd": 0.028,
+          "sale_usd": 0.0364
+        },
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.039,
+          "cost_usd": 0.03,
+          "sale_usd": 0.039
+        }
+      ]
+    },
+    "IT": {
+      "country_name": "意大利",
+      "supplier_count": 1,
+      "lowest_price": 0.054,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.054,
+          "cost_usd": 0.0415,
+          "sale_usd": 0.054
+        }
+      ]
+    },
+    "UG": {
+      "country_name": "乌干达",
+      "supplier_count": 1,
+      "lowest_price": 0.0175,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0175,
+          "cost_usd": 0.0135,
+          "sale_usd": 0.0175
+        }
+      ]
+    },
+    "GH": {
+      "country_name": "加纳",
+      "supplier_count": 1,
+      "lowest_price": 0.0111,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0111,
+          "cost_usd": 0.0085,
+          "sale_usd": 0.0111
+        }
+      ]
+    },
+    "AE": {
+      "country_name": "阿拉伯联合酋长国",
+      "supplier_count": 1,
+      "lowest_price": 0.0842,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0842,
+          "cost_usd": 0.0648,
+          "sale_usd": 0.0842
+        }
+      ]
+    },
+    "VE": {
+      "country_name": "委内瑞拉",
+      "supplier_count": 1,
+      "lowest_price": 0.0161,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0161,
+          "cost_usd": 0.0124,
+          "sale_usd": 0.0161
+        }
+      ]
+    },
+    "DK": {
+      "country_name": "丹麦",
+      "supplier_count": 1,
+      "lowest_price": 0.0707,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0707,
+          "cost_usd": 0.0544,
+          "sale_usd": 0.0707
+        }
+      ]
+    },
+    "RO": {
+      "country_name": "罗马尼亚",
+      "supplier_count": 1,
+      "lowest_price": 0.0423,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0423,
+          "cost_usd": 0.0325,
+          "sale_usd": 0.0423
+        }
+      ]
+    },
+    "PL": {
+      "country_name": "波兰",
+      "supplier_count": 1,
+      "lowest_price": 0.0326,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0326,
+          "cost_usd": 0.0251,
+          "sale_usd": 0.0326
+        }
+      ]
+    },
+    "IE": {
+      "country_name": "爱尔兰",
+      "supplier_count": 1,
+      "lowest_price": 0.0423,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0423,
+          "cost_usd": 0.0325,
+          "sale_usd": 0.0423
+        }
+      ]
+    },
+    "KZ": {
+      "country_name": "哈萨克斯坦",
+      "supplier_count": 1,
+      "lowest_price": 0.1015,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.1015,
+          "cost_usd": 0.0781,
+          "sale_usd": 0.1015
+        }
+      ]
+    },
+    "EC": {
+      "country_name": "厄瓜多尔",
+      "supplier_count": 1,
+      "lowest_price": 0.0329,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.0329,
+          "cost_usd": 0.0253,
+          "sale_usd": 0.0329
+        }
+      ]
+    },
+    "ET": {
+      "country_name": "埃塞俄比亚",
+      "supplier_count": 1,
+      "lowest_price": 0.036,
+      "offers": [
+        {
+          "supplier": "KMI通信",
+          "channel_code": "SUP_KMI",
+          "price_usd": 0.036,
+          "cost_usd": 0.0277,
+          "sale_usd": 0.036
+        }
+      ]
+    }
+  },
+  "flat_list": [
+    {
+      "type": "VOICE",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "美国",
+      "country_code": "US",
+      "cost_usd": 0.08,
+      "sale_usd": 0.12,
+      "price_usd": 0.12,
+      "description": "高质量语音通话"
+    },
+    {
+      "type": "DATA",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "英国",
+      "country_code": "GB",
+      "cost_usd": 0.1,
+      "sale_usd": 0.15,
+      "price_usd": 0.15,
+      "description": "高速数据流量"
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "日本",
+      "country_code": "JP",
+      "cost_usd": 0.03,
+      "sale_usd": 0.039,
+      "price_usd": 0.039,
+      "description": "无线路"
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "巴西",
+      "country_code": "BR",
+      "cost_usd": 0.009,
+      "sale_usd": 0.0117,
+      "price_usd": 0.0117,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "印尼",
+      "country_code": "ID",
+      "cost_usd": 0.0059,
+      "sale_usd": 0.0077,
+      "price_usd": 0.0077,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "尼日利亚",
+      "country_code": "NG",
+      "cost_usd": 0.0061,
+      "sale_usd": 0.0079,
+      "price_usd": 0.0079,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "秘鲁",
+      "country_code": "PE",
+      "cost_usd": 0.018,
+      "sale_usd": 0.0234,
+      "price_usd": 0.0234,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "哥伦比亚",
+      "country_code": "CO",
+      "cost_usd": 0.0018,
+      "sale_usd": 0.0023,
+      "price_usd": 0.0023,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "菲律宾",
+      "country_code": "PH",
+      "cost_usd": 0.0059,
+      "sale_usd": 0.0077,
+      "price_usd": 0.0077,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "菲律宾",
+      "country_code": "PH",
+      "cost_usd": 0.02,
+      "sale_usd": 0.026,
+      "price_usd": 0.026,
+      "description": "OTP"
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "泰国",
+      "country_code": "TH",
+      "cost_usd": 0.007,
+      "sale_usd": 0.0091,
+      "price_usd": 0.0091,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "越南",
+      "country_code": "VN",
+      "cost_usd": 0.028,
+      "sale_usd": 0.0364,
+      "price_usd": 0.0364,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "印度",
+      "country_code": "IN",
+      "cost_usd": 0.0027,
+      "sale_usd": 0.0035,
+      "price_usd": 0.0035,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "马来西亚",
+      "country_code": "MY",
+      "cost_usd": 0.04,
+      "sale_usd": 0.047,
+      "price_usd": 0.047,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "土耳其",
+      "country_code": "TR",
+      "cost_usd": 0.011,
+      "sale_usd": 0.0143,
+      "price_usd": 0.0143,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "韩国",
+      "country_code": "KR",
+      "cost_usd": 0.011,
+      "sale_usd": 0.0143,
+      "price_usd": 0.0143,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "法国",
+      "country_code": "FR",
+      "cost_usd": 0.028,
+      "sale_usd": 0.0364,
+      "price_usd": 0.0364,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "墨西哥",
+      "country_code": "MX",
+      "cost_usd": 0.0045,
+      "sale_usd": 0.0059,
+      "price_usd": 0.0059,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "墨西哥",
+      "country_code": "MX",
+      "cost_usd": 0.0023,
+      "sale_usd": 0.003,
+      "price_usd": 0.003,
+      "description": "OTP"
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "澳大利亚",
+      "country_code": "AU",
+      "cost_usd": 0.035,
+      "sale_usd": 0.0455,
+      "price_usd": 0.0455,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "斯里兰卡",
+      "country_code": "LK",
+      "cost_usd": 0.007,
+      "sale_usd": 0.0091,
+      "price_usd": 0.0091,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "孟加拉",
+      "country_code": "BD",
+      "cost_usd": 0.0076,
+      "sale_usd": 0.0099,
+      "price_usd": 0.0099,
+      "description": "13，17，16，15号段"
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "孟加拉",
+      "country_code": "BD",
+      "cost_usd": 0.007,
+      "sale_usd": 0.0091,
+      "price_usd": 0.0091,
+      "description": "14，19号段"
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "巴基斯坦",
+      "country_code": "PK",
+      "cost_usd": 0.0063,
+      "sale_usd": 0.0082,
+      "price_usd": 0.0082,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "葡萄牙",
+      "country_code": "PT",
+      "cost_usd": 0.022,
+      "sale_usd": 0.0286,
+      "price_usd": 0.0286,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "智利",
+      "country_code": "CL",
+      "cost_usd": 0.0038,
+      "sale_usd": 0.0049,
+      "price_usd": 0.0049,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "南非",
+      "country_code": "ZA",
+      "cost_usd": 0.013,
+      "sale_usd": 0.0169,
+      "price_usd": 0.0169,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "坦桑尼亚",
+      "country_code": "TZ",
+      "cost_usd": 0.012,
+      "sale_usd": 0.0156,
+      "price_usd": 0.0156,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "一正通信",
+      "channel_code": "SUP_YIZHENG",
+      "country": "泰国",
+      "country_code": "TH",
+      "cost_usd": 0.0056,
+      "sale_usd": 0.0073,
+      "price_usd": 0.0073,
+      "description": "bc,xjd"
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "巴西",
+      "country_code": "BR",
+      "cost_usd": 0.0098,
+      "sale_usd": 0.0127,
+      "price_usd": 0.0127,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "巴西",
+      "country_code": "BR",
+      "cost_usd": 0.0087,
+      "sale_usd": 0.0113,
+      "price_usd": 0.0113,
+      "description": "OTP"
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "日本",
+      "country_code": "JP",
+      "cost_usd": 0.043,
+      "sale_usd": 0.0559,
+      "price_usd": 0.0559,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "秘鲁",
+      "country_code": "PE",
+      "cost_usd": 0.0049,
+      "sale_usd": 0.0064,
+      "price_usd": 0.0064,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "菲律宾",
+      "country_code": "PH",
+      "cost_usd": 0.0044,
+      "sale_usd": 0.0057,
+      "price_usd": 0.0057,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "泰国",
+      "country_code": "TH",
+      "cost_usd": 0.0035,
+      "sale_usd": 0.0053,
+      "price_usd": 0.0053,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "印度",
+      "country_code": "IN",
+      "cost_usd": 0.0038,
+      "sale_usd": 0.0049,
+      "price_usd": 0.0049,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "韩国",
+      "country_code": "KR",
+      "cost_usd": 0.0078,
+      "sale_usd": 0.0101,
+      "price_usd": 0.0101,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "墨西哥",
+      "country_code": "MX",
+      "cost_usd": 0.0035,
+      "sale_usd": 0.0046,
+      "price_usd": 0.0046,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "孟加拉",
+      "country_code": "BD",
+      "cost_usd": 0.0085,
+      "sale_usd": 0.0111,
+      "price_usd": 0.0111,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "南非",
+      "country_code": "ZA",
+      "cost_usd": 0.0084,
+      "sale_usd": 0.0109,
+      "price_usd": 0.0109,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "澳大利亚",
+      "country_code": "AU",
+      "cost_usd": 0.035,
+      "sale_usd": 0.0455,
+      "price_usd": 0.0455,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "TS通信",
+      "channel_code": "SUP_TS",
+      "country": "缅甸",
+      "country_code": "MM",
+      "cost_usd": 0.033,
+      "sale_usd": 0.0429,
+      "price_usd": 0.0429,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "玄武通信",
+      "channel_code": "SUP_XUANWU",
+      "country": "泰国",
+      "country_code": "TH",
+      "cost_usd": 0.0042,
+      "sale_usd": 0.0062,
+      "price_usd": 0.0062,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "玄武通信",
+      "channel_code": "SUP_XUANWU",
+      "country": "泰国",
+      "country_code": "TH",
+      "cost_usd": 0.0061,
+      "sale_usd": 0.0079,
+      "price_usd": 0.0079,
+      "description": "包料"
+    },
+    {
+      "type": "SMS",
+      "supplier": "玄武通信",
+      "channel_code": "SUP_XUANWU",
+      "country": "孟加拉",
+      "country_code": "BD",
+      "cost_usd": 0.0065,
+      "sale_usd": 0.0084,
+      "price_usd": 0.0084,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "玄武通信",
+      "channel_code": "SUP_XUANWU",
+      "country": "越南",
+      "country_code": "VN",
+      "cost_usd": 0.0183,
+      "sale_usd": 0.0238,
+      "price_usd": 0.0238,
+      "description": "包料代发（0.13R，180U/W）"
+    },
+    {
+      "type": "SMS",
+      "supplier": "BO通信",
+      "channel_code": "SUP_BO",
+      "country": "巴西",
+      "country_code": "BR",
+      "cost_usd": 0.0092,
+      "sale_usd": 0.012,
+      "price_usd": 0.012,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "BO通信",
+      "channel_code": "SUP_BO",
+      "country": "墨西哥",
+      "country_code": "MX",
+      "cost_usd": 0.0023,
+      "sale_usd": 0.003,
+      "price_usd": 0.003,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "BO通信",
+      "channel_code": "SUP_BO",
+      "country": "泰国",
+      "country_code": "TH",
+      "cost_usd": 0.005,
+      "sale_usd": 0.0065,
+      "price_usd": 0.0065,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "ueasy通信",
+      "channel_code": "SUP_UEASY",
+      "country": "巴西",
+      "country_code": "BR",
+      "cost_usd": 0.0093,
+      "sale_usd": 0.0121,
+      "price_usd": 0.0121,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "ueasy通信",
+      "channel_code": "SUP_UEASY",
+      "country": "泰国",
+      "country_code": "TH",
+      "cost_usd": 0.0048,
+      "sale_usd": 0.0062,
+      "price_usd": 0.0062,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "ueasy通信",
+      "channel_code": "SUP_UEASY",
+      "country": "墨西哥",
+      "country_code": "MX",
+      "cost_usd": 0.002,
+      "sale_usd": 0.0026,
+      "price_usd": 0.0026,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "ueasy通信",
+      "channel_code": "SUP_UEASY",
+      "country": "比利时",
+      "country_code": "BE",
+      "cost_usd": 0.051,
+      "sale_usd": 0.0663,
+      "price_usd": 0.0663,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "ueasy通信",
+      "channel_code": "SUP_UEASY",
+      "country": "赞比亚",
+      "country_code": "ZM",
+      "cost_usd": 0.02,
+      "sale_usd": 0.026,
+      "price_usd": 0.026,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "巴西",
+      "country_code": "BR",
+      "cost_usd": 0.011,
+      "sale_usd": 0.0143,
+      "price_usd": 0.0143,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "日本",
+      "country_code": "JP",
+      "cost_usd": 0.041,
+      "sale_usd": 0.0533,
+      "price_usd": 0.0533,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "印尼",
+      "country_code": "ID",
+      "cost_usd": 0.007,
+      "sale_usd": 0.0091,
+      "price_usd": 0.0091,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "尼日利亚",
+      "country_code": "NG",
+      "cost_usd": 0.0041,
+      "sale_usd": 0.0533,
+      "price_usd": 0.0533,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "英国",
+      "country_code": "GB",
+      "cost_usd": 0.031,
+      "sale_usd": 0.0403,
+      "price_usd": 0.0403,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "西班牙",
+      "country_code": "ES",
+      "cost_usd": 0.0035,
+      "sale_usd": 0.0046,
+      "price_usd": 0.0046,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "秘鲁",
+      "country_code": "PE",
+      "cost_usd": 0.011,
+      "sale_usd": 0.0143,
+      "price_usd": 0.0143,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "菲律宾",
+      "country_code": "PH",
+      "cost_usd": 0.0062,
+      "sale_usd": 0.0081,
+      "price_usd": 0.0081,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "泰国",
+      "country_code": "TH",
+      "cost_usd": 0.0061,
+      "sale_usd": 0.0079,
+      "price_usd": 0.0079,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "巴基斯坦",
+      "country_code": "PK",
+      "cost_usd": 0.0047,
+      "sale_usd": 0.0061,
+      "price_usd": 0.0061,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "墨西哥",
+      "country_code": "MX",
+      "cost_usd": 0.0045,
+      "sale_usd": 0.0059,
+      "price_usd": 0.0059,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "孟加拉",
+      "country_code": "BD",
+      "cost_usd": 0.0066,
+      "sale_usd": 0.0086,
+      "price_usd": 0.0086,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "葵芳通信",
+      "channel_code": "SUP_KUIFANG",
+      "country": "韩国",
+      "country_code": "KR",
+      "cost_usd": 0.011,
+      "sale_usd": 0.0143,
+      "price_usd": 0.0143,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "WOID通信",
+      "channel_code": "SUP_WOID",
+      "country": "印度",
+      "country_code": "IN",
+      "cost_usd": 0.0035,
+      "sale_usd": 0.0046,
+      "price_usd": 0.0046,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "哥伦比亚",
+      "country_code": "CO",
+      "cost_usd": 0.0021,
+      "sale_usd": 0.0027,
+      "price_usd": 0.0027,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "印度",
+      "country_code": "IN",
+      "cost_usd": 0.0028,
+      "sale_usd": 0.0036,
+      "price_usd": 0.0036,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "菲律宾",
+      "country_code": "PH",
+      "cost_usd": 0.0059,
+      "sale_usd": 0.0077,
+      "price_usd": 0.0077,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "柬埔寨",
+      "country_code": "KH",
+      "cost_usd": 0.018,
+      "sale_usd": 0.0234,
+      "price_usd": 0.0234,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "摩洛哥",
+      "country_code": "MA",
+      "cost_usd": 0.014,
+      "sale_usd": 0.0182,
+      "price_usd": 0.0182,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "马来西亚",
+      "country_code": "MY",
+      "cost_usd": 0.023,
+      "sale_usd": 0.0299,
+      "price_usd": 0.0299,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "巴西",
+      "country_code": "BR",
+      "cost_usd": 0.011,
+      "sale_usd": 0.0143,
+      "price_usd": 0.0143,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "巴基斯坦",
+      "country_code": "PK",
+      "cost_usd": 0.023,
+      "sale_usd": 0.0299,
+      "price_usd": 0.0299,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "比利时",
+      "country_code": "BE",
+      "cost_usd": 0.0035,
+      "sale_usd": 0.0046,
+      "price_usd": 0.0046,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "越南",
+      "country_code": "VN",
+      "cost_usd": 0.018,
+      "sale_usd": 0.0234,
+      "price_usd": 0.0234,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "智利",
+      "country_code": "CL",
+      "cost_usd": 0.0088,
+      "sale_usd": 0.0114,
+      "price_usd": 0.0114,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "德国",
+      "country_code": "DE",
+      "cost_usd": 0.023,
+      "sale_usd": 0.0299,
+      "price_usd": 0.0299,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "泰国",
+      "country_code": "TH",
+      "cost_usd": 0.0047,
+      "sale_usd": 0.0061,
+      "price_usd": 0.0061,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "塞内加尔",
+      "country_code": "SN",
+      "cost_usd": 0.023,
+      "sale_usd": 0.0299,
+      "price_usd": 0.0299,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "斯里兰卡",
+      "country_code": "LK",
+      "cost_usd": 0.014,
+      "sale_usd": 0.0182,
+      "price_usd": 0.0182,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "喀麦隆",
+      "country_code": "CM",
+      "cost_usd": 0.011,
+      "sale_usd": 0.0143,
+      "price_usd": 0.0143,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "埃及",
+      "country_code": "EG",
+      "cost_usd": 0.018,
+      "sale_usd": 0.0234,
+      "price_usd": 0.0234,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "以色列",
+      "country_code": "IL",
+      "cost_usd": 0.0088,
+      "sale_usd": 0.0114,
+      "price_usd": 0.0114,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "芬兰",
+      "country_code": "FI",
+      "cost_usd": 0.029,
+      "sale_usd": 0.0377,
+      "price_usd": 0.0377,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "卡塔尔",
+      "country_code": "QA",
+      "cost_usd": 0.022,
+      "sale_usd": 0.0286,
+      "price_usd": 0.0286,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "科威特",
+      "country_code": "KW",
+      "cost_usd": 0.029,
+      "sale_usd": 0.0377,
+      "price_usd": 0.0377,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "荷兰",
+      "country_code": "NL",
+      "cost_usd": 0.0094,
+      "sale_usd": 0.0122,
+      "price_usd": 0.0122,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "南非",
+      "country_code": "ZA",
+      "cost_usd": 0.011,
+      "sale_usd": 0.0143,
+      "price_usd": 0.0143,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "美国",
+      "country_code": "US",
+      "cost_usd": 0.023,
+      "sale_usd": 0.0299,
+      "price_usd": 0.0299,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "约旦",
+      "country_code": "JO",
+      "cost_usd": 0.065,
+      "sale_usd": 0.0845,
+      "price_usd": 0.0845,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "澳大利亚",
+      "country_code": "AU",
+      "cost_usd": 0.026,
+      "sale_usd": 0.0338,
+      "price_usd": 0.0338,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "玻利维亚",
+      "country_code": "BO",
+      "cost_usd": 0.016,
+      "sale_usd": 0.0208,
+      "price_usd": 0.0208,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "粤讯通信",
+      "channel_code": "SUP_YUEXUN",
+      "country": "阿根廷",
+      "country_code": "AR",
+      "cost_usd": 0.028,
+      "sale_usd": 0.0364,
+      "price_usd": 0.0364,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "菲律宾",
+      "country_code": "PH",
+      "cost_usd": 0.008,
+      "sale_usd": 0.0104,
+      "price_usd": 0.0104,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "菲律宾",
+      "country_code": "PH",
+      "cost_usd": 0.006,
+      "sale_usd": 0.0078,
+      "price_usd": 0.0078,
+      "description": "OTP：HQ验证码"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "菲律宾",
+      "country_code": "PH",
+      "cost_usd": 0.0073,
+      "sale_usd": 0.0095,
+      "price_usd": 0.0095,
+      "description": "OTP：本地直连验证码"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "泰国",
+      "country_code": "TH",
+      "cost_usd": 0.0078,
+      "sale_usd": 0.0101,
+      "price_usd": 0.0101,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "巴西",
+      "country_code": "BR",
+      "cost_usd": 0.0086,
+      "sale_usd": 0.0112,
+      "price_usd": 0.0112,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "巴西",
+      "country_code": "BR",
+      "cost_usd": 0.0083,
+      "sale_usd": 0.0108,
+      "price_usd": 0.0108,
+      "description": "OTP：短码senderid  CR 80%左右"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "越南",
+      "country_code": "VN",
+      "cost_usd": 0.029,
+      "sale_usd": 0.0377,
+      "price_usd": 0.0377,
+      "description": "卡发"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "美国",
+      "country_code": "US",
+      "cost_usd": 0.0085,
+      "sale_usd": 0.0111,
+      "price_usd": 0.0111,
+      "description": "美国+52"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "美国",
+      "country_code": "US",
+      "cost_usd": 0.0275,
+      "sale_usd": 0.0358,
+      "price_usd": 0.0358,
+      "description": "美国+1"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "哥伦比亚",
+      "country_code": "CO",
+      "cost_usd": 0.0028,
+      "sale_usd": 0.0036,
+      "price_usd": 0.0036,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "秘鲁",
+      "country_code": "PE",
+      "cost_usd": 0.0052,
+      "sale_usd": 0.0068,
+      "price_usd": 0.0068,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "日本",
+      "country_code": "JP",
+      "cost_usd": 0.0357,
+      "sale_usd": 0.0464,
+      "price_usd": 0.0464,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "马来西亚",
+      "country_code": "MY",
+      "cost_usd": 0.0253,
+      "sale_usd": 0.0329,
+      "price_usd": 0.0329,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "埃及",
+      "country_code": "EG",
+      "cost_usd": 0.0219,
+      "sale_usd": 0.0285,
+      "price_usd": 0.0285,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "印度尼西亚",
+      "country_code": "ID",
+      "cost_usd": 0.012,
+      "sale_usd": 0.0156,
+      "price_usd": 0.0156,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "印度尼西亚",
+      "country_code": "ID",
+      "cost_usd": 0.05,
+      "sale_usd": 0.065,
+      "price_usd": 0.065,
+      "description": "OTP--HQ"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "印度尼西亚",
+      "country_code": "ID",
+      "cost_usd": 0.315,
+      "sale_usd": 0.4095,
+      "price_usd": 0.4095,
+      "description": "OTP--纯国际"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "印度尼西亚",
+      "country_code": "ID",
+      "cost_usd": 0.017,
+      "sale_usd": 0.0221,
+      "price_usd": 0.0221,
+      "description": "OTP--语音验证码"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "印度尼西亚",
+      "country_code": "ID",
+      "cost_usd": 0.0261,
+      "sale_usd": 0.0339,
+      "price_usd": 0.0339,
+      "description": "OTP--ws验证码"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "德国",
+      "country_code": "DE",
+      "cost_usd": 0.0429,
+      "sale_usd": 0.0558,
+      "price_usd": 0.0558,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "意大利",
+      "country_code": "IT",
+      "cost_usd": 0.0415,
+      "sale_usd": 0.054,
+      "price_usd": 0.054,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "阿根廷",
+      "country_code": "AR",
+      "cost_usd": 0.03,
+      "sale_usd": 0.039,
+      "price_usd": 0.039,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "土耳其",
+      "country_code": "TR",
+      "cost_usd": 0.0055,
+      "sale_usd": 0.0072,
+      "price_usd": 0.0072,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "乌干达",
+      "country_code": "UG",
+      "cost_usd": 0.0135,
+      "sale_usd": 0.0175,
+      "price_usd": 0.0175,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "加纳",
+      "country_code": "GH",
+      "cost_usd": 0.0085,
+      "sale_usd": 0.0111,
+      "price_usd": 0.0111,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "印度",
+      "country_code": "IN",
+      "cost_usd": 0.0039,
+      "sale_usd": 0.0051,
+      "price_usd": 0.0051,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "阿拉伯联合酋长国",
+      "country_code": "AE",
+      "cost_usd": 0.0648,
+      "sale_usd": 0.0842,
+      "price_usd": 0.0842,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "芬兰",
+      "country_code": "FI",
+      "cost_usd": 0.0474,
+      "sale_usd": 0.0616,
+      "price_usd": 0.0616,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "孟加拉",
+      "country_code": "BD",
+      "cost_usd": 0.0067,
+      "sale_usd": 0.0087,
+      "price_usd": 0.0087,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "约旦",
+      "country_code": "JO",
+      "cost_usd": 0.0389,
+      "sale_usd": 0.0506,
+      "price_usd": 0.0506,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "委内瑞拉",
+      "country_code": "VE",
+      "cost_usd": 0.0124,
+      "sale_usd": 0.0161,
+      "price_usd": 0.0161,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "英国",
+      "country_code": "GB",
+      "cost_usd": 0.0376,
+      "sale_usd": 0.0489,
+      "price_usd": 0.0489,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "以色列",
+      "country_code": "IL",
+      "cost_usd": 0.0181,
+      "sale_usd": 0.0235,
+      "price_usd": 0.0235,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "喀麦隆",
+      "country_code": "CM",
+      "cost_usd": 0.0185,
+      "sale_usd": 0.024,
+      "price_usd": 0.024,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "智利",
+      "country_code": "CL",
+      "cost_usd": 0.0054,
+      "sale_usd": 0.007,
+      "price_usd": 0.007,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "西班牙",
+      "country_code": "ES",
+      "cost_usd": 0.0305,
+      "sale_usd": 0.0396,
+      "price_usd": 0.0396,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "墨西哥",
+      "country_code": "MX",
+      "cost_usd": 0.004,
+      "sale_usd": 0.0052,
+      "price_usd": 0.0052,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "墨西哥",
+      "country_code": "MX",
+      "cost_usd": 0.0039,
+      "sale_usd": 0.0051,
+      "price_usd": 0.0051,
+      "description": "回填70+"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "墨西哥",
+      "country_code": "MX",
+      "cost_usd": 0.0056,
+      "sale_usd": 0.0073,
+      "price_usd": 0.0073,
+      "description": "回填80+"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "墨西哥",
+      "country_code": "MX",
+      "cost_usd": 0.0064,
+      "sale_usd": 0.0096,
+      "price_usd": 0.0096,
+      "description": "回填85+"
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "韩国",
+      "country_code": "KR",
+      "cost_usd": 0.0109,
+      "sale_usd": 0.0142,
+      "price_usd": 0.0142,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "丹麦",
+      "country_code": "DK",
+      "cost_usd": 0.0544,
+      "sale_usd": 0.0707,
+      "price_usd": 0.0707,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "柬埔寨",
+      "country_code": "KH",
+      "cost_usd": 0.0333,
+      "sale_usd": 0.0433,
+      "price_usd": 0.0433,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "罗马尼亚",
+      "country_code": "RO",
+      "cost_usd": 0.0325,
+      "sale_usd": 0.0423,
+      "price_usd": 0.0423,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "南非",
+      "country_code": "ZA",
+      "cost_usd": 0.0127,
+      "sale_usd": 0.0165,
+      "price_usd": 0.0165,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "荷兰",
+      "country_code": "NL",
+      "cost_usd": 0.0426,
+      "sale_usd": 0.0554,
+      "price_usd": 0.0554,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "波兰",
+      "country_code": "PL",
+      "cost_usd": 0.0251,
+      "sale_usd": 0.0326,
+      "price_usd": 0.0326,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "卡塔尔",
+      "country_code": "QA",
+      "cost_usd": 0.0441,
+      "sale_usd": 0.0573,
+      "price_usd": 0.0573,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "科威特",
+      "country_code": "KW",
+      "cost_usd": 0.0512,
+      "sale_usd": 0.0666,
+      "price_usd": 0.0666,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "澳大利亚",
+      "country_code": "AU",
+      "cost_usd": 0.0272,
+      "sale_usd": 0.0354,
+      "price_usd": 0.0354,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "尼日利亚",
+      "country_code": "NG",
+      "cost_usd": 0.0561,
+      "sale_usd": 0.0729,
+      "price_usd": 0.0729,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "爱尔兰",
+      "country_code": "IE",
+      "cost_usd": 0.0325,
+      "sale_usd": 0.0423,
+      "price_usd": 0.0423,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "法国",
+      "country_code": "FR",
+      "cost_usd": 0.0273,
+      "sale_usd": 0.0355,
+      "price_usd": 0.0355,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "玻利维亚",
+      "country_code": "BO",
+      "cost_usd": 0.016,
+      "sale_usd": 0.0208,
+      "price_usd": 0.0208,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "哈萨克斯坦",
+      "country_code": "KZ",
+      "cost_usd": 0.0781,
+      "sale_usd": 0.1015,
+      "price_usd": 0.1015,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "厄瓜多尔",
+      "country_code": "EC",
+      "cost_usd": 0.0253,
+      "sale_usd": 0.0329,
+      "price_usd": 0.0329,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "巴基斯坦",
+      "country_code": "PK",
+      "cost_usd": 0.0057,
+      "sale_usd": null,
+      "price_usd": 0.0057,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "KMI通信",
+      "channel_code": "SUP_KMI",
+      "country": "埃塞俄比亚",
+      "country_code": "ET",
+      "cost_usd": 0.0277,
+      "sale_usd": 0.036,
+      "price_usd": 0.036,
+      "description": null
+    },
+    {
+      "type": "VOICE",
+      "supplier": "黑豹通信",
+      "channel_code": "SUP_HEIBAO",
+      "country": "印度",
+      "country_code": "IN",
+      "cost_usd": null,
+      "sale_usd": 0.0455,
+      "price_usd": 0.0455,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "创优通信",
+      "channel_code": "SUP_CHUANGYOU",
+      "country": "泰国",
+      "country_code": "TH",
+      "cost_usd": 0.0045,
+      "sale_usd": 0.0059,
+      "price_usd": 0.0059,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "创优通信",
+      "channel_code": "SUP_CHUANGYOU",
+      "country": "菲律宾",
+      "country_code": "PH",
+      "cost_usd": 0.0052,
+      "sale_usd": 0.0068,
+      "price_usd": 0.0068,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "节点通信",
+      "channel_code": "SUP_JIEDIAN",
+      "country": "巴西",
+      "country_code": "BR",
+      "cost_usd": 0.0099,
+      "sale_usd": 0.0129,
+      "price_usd": 0.0129,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "节点通信",
+      "channel_code": "SUP_JIEDIAN",
+      "country": "孟加拉",
+      "country_code": "BD",
+      "cost_usd": 0.0065,
+      "sale_usd": 0.0085,
+      "price_usd": 0.0085,
+      "description": "孟加拉语"
+    },
+    {
+      "type": "SMS",
+      "supplier": "节点通信",
+      "channel_code": "SUP_JIEDIAN",
+      "country": "孟加拉",
+      "country_code": "BD",
+      "cost_usd": 0.0087,
+      "sale_usd": 0.0113,
+      "price_usd": 0.0113,
+      "description": "英语"
+    },
+    {
+      "type": "SMS",
+      "supplier": "AIY通信",
+      "channel_code": "SUP_AIY",
+      "country": "印度",
+      "country_code": "IN",
+      "cost_usd": 0.0017,
+      "sale_usd": 0.0022,
+      "price_usd": 0.0022,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "AIY通信",
+      "channel_code": "SUP_AIY",
+      "country": "孟加拉",
+      "country_code": "BD",
+      "cost_usd": 0.0058,
+      "sale_usd": 0.0075,
+      "price_usd": 0.0075,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "左总通信",
+      "channel_code": "SUP_ZUOZONG",
+      "country": "印尼",
+      "country_code": "ID",
+      "cost_usd": 0.0045,
+      "sale_usd": 0.0059,
+      "price_usd": 0.0059,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "ANY通信",
+      "channel_code": "SUP_ANY",
+      "country": "印度",
+      "country_code": "IN",
+      "cost_usd": 0.0045,
+      "sale_usd": 0.0059,
+      "price_usd": 0.0059,
+      "description": null
+    },
+    {
+      "type": "SMS",
+      "supplier": "ANY通信",
+      "channel_code": "SUP_ANY",
+      "country": "印度",
+      "country_code": "IN",
+      "cost_usd": 0.007,
+      "sale_usd": 0.0091,
+      "price_usd": 0.0091,
+      "description": "无限制"
+    }
+  ]
+}

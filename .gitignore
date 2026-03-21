@@ -1,0 +1,52 @@
+# 环境与密钥
+.env
+.env.*
+!.env.example
+*.pem
+certs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+*.local
+
+# 日志与备份
+logs/
+*.log
+*.tar.gz
+*.bak
+.backup_migrate/
+celerybeat-schedule
+bot_data.pickle
+
+# IDE / 编辑器
+.cursor/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 测试与覆盖率
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/

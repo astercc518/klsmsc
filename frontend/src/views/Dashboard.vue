@@ -1,0 +1,1601 @@
+<template>
+  <div class="dashboard">
+    <!-- 顶部状态栏 -->
+    <div class="dashboard-header">
+      <div class="header-left">
+        <h1 class="page-title">
+          {{ getDashboardTitle() }}
+        </h1>
+        <span class="role-badge" :class="roleClass">{{ getRoleLabel() }}</span>
+        <span class="last-update">{{ $t('dashboard.lastUpdate') }}: {{ lastUpdateTime }}</span>
+      </div>
+      <div class="header-right">
+        <button class="refresh-btn" @click="refreshData" :disabled="loading">
+          <svg :class="{ spinning: loading }" width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M14 8C14 11.3137 11.3137 14 8 14C4.68629 14 2 11.3137 2 8C2 4.68629 4.68629 2 8 2C10.5 2 12.5 3.5 13.5 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M11 5.5H14V2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          {{ $t('dashboard.refreshData') }}
+        </button>
+      </div>
+    </div>
+
+    <!-- ========== 管理员/员工视图 ========== -->
+    <template v-if="isStaff">
+      <!-- 核心指标卡片 - 管理员 -->
+      <div class="metrics-grid" :class="{ 'metrics-6': permissions.view_finance }">
+        <!-- 今日发送 -->
+        <div class="metric-card">
+          <div class="metric-header">
+            <div class="metric-icon sent">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path d="M18 2L9 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M18 2L12 18L9 11L2 8L18 2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="metric-label">{{ $t('dashboard.todaySent') }}</span>
+          </div>
+          <div class="metric-body">
+            <span class="metric-value">{{ formatNumber(todaySent) }}</span>
+            <span class="metric-unit">{{ $t('dashboard.items') }}</span>
+          </div>
+        </div>
+
+        <!-- 送达成功 -->
+        <div class="metric-card">
+          <div class="metric-header">
+            <div class="metric-icon success">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M7 10L9 12L13 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="metric-label">{{ $t('dashboard.delivered') }}</span>
+          </div>
+          <div class="metric-body">
+            <span class="metric-value">{{ formatNumber(todayDelivered) }}</span>
+            <span class="metric-unit">{{ $t('dashboard.items') }}</span>
+          </div>
+          <div class="metric-footer">
+            <span class="metric-rate success">{{ formatRate(successRate) }}%</span>
+          </div>
+        </div>
+
+        <!-- 发送失败 -->
+        <div class="metric-card">
+          <div class="metric-header">
+            <div class="metric-icon failed">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M8 8L12 12M12 8L8 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <span class="metric-label">{{ $t('dashboard.failed') }}</span>
+          </div>
+          <div class="metric-body">
+            <span class="metric-value">{{ formatNumber(todayFailed) }}</span>
+            <span class="metric-unit">{{ $t('dashboard.items') }}</span>
+          </div>
+          <div class="metric-footer">
+            <span class="metric-rate failed">{{ formatRate(failRate) }}%</span>
+          </div>
+        </div>
+
+        <!-- 活跃客户 (销售/管理员) -->
+        <div class="metric-card" v-if="permissions.view_customers">
+          <div class="metric-header">
+            <div class="metric-icon customers">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <circle cx="10" cy="6" r="3" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M4 17C4 14 6.5 12 10 12C13.5 12 16 14 16 17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <span class="metric-label">{{ isSales ? $t('dashboard.myCustomers') : $t('dashboard.activeCustomers') }}</span>
+          </div>
+          <div class="metric-body">
+            <span class="metric-value">{{ formatNumber(activeAccounts) }}</span>
+            <span class="metric-unit">{{ $t('dashboard.units') }}</span>
+          </div>
+        </div>
+
+        <!-- 今日收入 (财务可见) -->
+        <div class="metric-card" v-if="permissions.view_finance">
+          <div class="metric-header">
+            <div class="metric-icon revenue">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path d="M10 2V18M14 6H8C6.34 6 5 7.34 5 9C5 10.66 6.34 12 8 12H12C13.66 12 15 13.34 15 15C15 16.66 13.66 18 12 18H6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <span class="metric-label">{{ $t('dashboard.todayRevenue') }}</span>
+          </div>
+          <div class="metric-body">
+            <span class="metric-currency">$</span>
+            <span class="metric-value">{{ formatNumber(todayRevenue) }}</span>
+          </div>
+        </div>
+
+        <!-- 今日利润 (财务可见) -->
+        <div class="metric-card profit" v-if="permissions.view_finance">
+          <div class="metric-header">
+            <div class="metric-icon profit">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path d="M3 17L8 12L11 15L17 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M13 9H17V13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="metric-label">{{ $t('dashboard.todayProfit') }}</span>
+          </div>
+          <div class="metric-body">
+            <span class="metric-currency">$</span>
+            <span class="metric-value" :class="{ positive: todayProfit > 0 }">{{ formatNumber(todayProfit) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 主内容区 - 管理员 -->
+      <div class="content-grid admin-grid">
+        <!-- 左侧 -->
+        <div class="content-left">
+          <!-- 快速操作 -->
+          <div class="card actions-card">
+            <div class="card-header">
+              <h2 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <rect x="2" y="2" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                  <rect x="10" y="2" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                  <rect x="2" y="10" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                  <rect x="10" y="10" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                </svg>
+                {{ $t('dashboard.quickActions') }}
+              </h2>
+            </div>
+            <div class="actions-grid admin-actions">
+              <div class="action-btn primary" @click="$router.push('/admin/accounts')" v-if="permissions.view_customers">
+                <div class="action-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="2"/>
+                    <path d="M4 20C4 16.5 7.5 14 12 14C16.5 14 20 16.5 20 20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <span class="action-label">{{ $t('menu.customerManage') }}</span>
+              </div>
+              <div class="action-btn warning" @click="$router.push('/channels')" v-if="permissions.view_channels">
+                <div class="action-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <circle cx="6" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
+                    <circle cx="18" cy="6" r="3" stroke="currentColor" stroke-width="2"/>
+                    <circle cx="18" cy="18" r="3" stroke="currentColor" stroke-width="2"/>
+                    <path d="M9 12H15M15 6L9 12M15 18L9 12" stroke="currentColor" stroke-width="2"/>
+                  </svg>
+                </div>
+                <span class="action-label">{{ $t('menu.channelConfig') }}</span>
+              </div>
+              <div class="action-btn info" @click="$router.push('/reports')" v-if="permissions.view_finance">
+                <div class="action-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <path d="M3 20H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    <path d="M6 20V14M10 20V10M14 20V12M18 20V8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <span class="action-label">{{ $t('menu.dataReport') }}</span>
+              </div>
+              <div class="action-btn success" @click="$router.push('/admin/settlements')" v-if="permissions.view_finance">
+                <div class="action-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" stroke-width="2"/>
+                    <path d="M3 10H21" stroke="currentColor" stroke-width="2"/>
+                  </svg>
+                </div>
+                <span class="action-label">{{ $t('menu.settlementManage') }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 通道状态 (技术/管理员) -->
+          <div class="card channels-card" v-if="permissions.view_channels">
+            <div class="card-header">
+              <h2 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <circle cx="5" cy="9" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+                  <circle cx="13" cy="5" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+                  <circle cx="13" cy="13" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M7.5 9H10.5M10.5 5L7.5 9M10.5 13L7.5 9" stroke="currentColor" stroke-width="1.5"/>
+                </svg>
+                {{ $t('dashboard.channelStatus') }}
+              </h2>
+              <span class="channel-count">{{ availableChannels }} {{ $t('common.active') }}</span>
+            </div>
+            <div class="channels-list">
+              <div v-if="channels.length === 0" class="empty-state">
+                <span>{{ $t('common.noData') }}</span>
+              </div>
+              <div 
+                v-else
+                v-for="channel in channels.slice(0, 5)" 
+                :key="channel.id" 
+                class="channel-item"
+              >
+                <div class="channel-info">
+                  <span class="channel-name">{{ channel.channel_name || channel.channel_code }}</span>
+                  <span class="channel-protocol">{{ channel.protocol }}</span>
+                </div>
+                <div :class="['channel-status', channel.status]">
+                  <span class="status-dot"></span>
+                  {{ getChannelStatusText(channel.status) }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右侧 -->
+        <div class="content-right">
+          <!-- 我的客户 (销售专属) -->
+          <div class="card customers-card" v-if="isSales && recentCustomers.length > 0">
+            <div class="card-header">
+              <h2 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <circle cx="9" cy="5" r="3" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M3 16C3 13 5.5 11 9 11C12.5 11 15 13 15 16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                {{ $t('dashboard.myCustomers') }}
+              </h2>
+              <button class="view-all-btn" @click="$router.push('/admin/accounts')">
+                {{ $t('dashboard.viewAll') }}
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5 3L9 7L5 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            <div class="customers-list">
+              <div 
+                v-for="customer in recentCustomers" 
+                :key="customer.id" 
+                class="customer-item"
+              >
+                <div class="customer-info">
+                  <span class="customer-name">{{ customer.account_name }}</span>
+                  <span :class="['customer-status', customer.status]">
+                    {{ customer.status === 'active' ? $t('common.active') : $t('common.inactive') }}
+                  </span>
+                </div>
+                <div class="customer-meta">
+                  <span class="customer-balance">${{ formatNumber(customer.balance) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 系统概览 (管理员) -->
+          <div class="card overview-card" v-if="permissions.view_global">
+            <div class="card-header">
+              <h2 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M9 5V9L12 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                {{ $t('dashboard.systemOverview') }}
+              </h2>
+            </div>
+            <div class="overview-stats">
+              <div class="overview-item">
+                <span class="overview-label">{{ $t('dashboard.activeChannels') }}</span>
+                <span class="overview-value">{{ availableChannels }}</span>
+              </div>
+              <div class="overview-item">
+                <span class="overview-label">{{ $t('dashboard.activeCustomers') }}</span>
+                <span class="overview-value">{{ activeAccounts }}</span>
+              </div>
+              <div class="overview-item">
+                <span class="overview-label">{{ $t('dashboard.systemBalance') }}</span>
+                <span class="overview-value">${{ formatNumber(totalBalance) }}</span>
+              </div>
+              <div class="overview-item">
+                <span class="overview-label">{{ $t('dashboard.todayCost') }}</span>
+                <span class="overview-value">${{ formatNumber(todayCost) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 管理员信息 -->
+          <div class="card account-card">
+            <div class="card-header">
+              <h2 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <circle cx="9" cy="6" r="3" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M3 16C3 13.2386 5.68629 11 9 11C12.3137 11 15 13.2386 15 16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                {{ $t('dashboard.adminInfo') }}
+              </h2>
+            </div>
+            <div class="account-details">
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.accountName') }}</span>
+                <span class="account-value">{{ accountName }}</span>
+              </div>
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.role') }}</span>
+                <span :class="['role-tag', adminRole]">{{ getRoleLabel() }}</span>
+              </div>
+              <div class="account-row">
+                <span class="account-label">{{ $t('common.status') }}</span>
+                <span class="status-badge active">
+                  <span class="status-dot"></span>
+                  {{ $t('dashboard.online') }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- ========== 客户视图 ========== -->
+    <template v-else>
+      <!-- 核心指标卡片 - 客户 -->
+      <div class="metrics-grid metrics-4">
+        <!-- 今日发送 -->
+        <div class="metric-card">
+          <div class="metric-header">
+            <div class="metric-icon sent">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <path d="M18 2L9 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M18 2L12 18L9 11L2 8L18 2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="metric-label">{{ $t('dashboard.todaySent') }}</span>
+          </div>
+          <div class="metric-body">
+            <span class="metric-value">{{ formatNumber(todaySent) }}</span>
+            <span class="metric-unit">{{ $t('dashboard.items') }}</span>
+          </div>
+        </div>
+
+        <!-- 送达成功 -->
+        <div class="metric-card">
+          <div class="metric-header">
+            <div class="metric-icon success">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M7 10L9 12L13 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <span class="metric-label">{{ $t('dashboard.delivered') }}</span>
+          </div>
+          <div class="metric-body">
+            <span class="metric-value">{{ formatNumber(todayDelivered) }}</span>
+            <span class="metric-unit">{{ $t('dashboard.items') }}</span>
+          </div>
+          <div class="metric-footer">
+            <span class="metric-rate success">{{ formatRate(successRate) }}%</span>
+            <span class="metric-compare">{{ $t('dashboard.successRate') }}</span>
+          </div>
+        </div>
+
+        <!-- 发送失败 -->
+        <div class="metric-card">
+          <div class="metric-header">
+            <div class="metric-icon failed">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M8 8L12 12M12 8L8 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <span class="metric-label">{{ $t('dashboard.failed') }}</span>
+          </div>
+          <div class="metric-body">
+            <span class="metric-value">{{ formatNumber(todayFailed) }}</span>
+            <span class="metric-unit">{{ $t('dashboard.items') }}</span>
+          </div>
+          <div class="metric-footer">
+            <span class="metric-rate failed">{{ formatRate(failRate) }}%</span>
+            <span class="metric-compare">{{ $t('dashboard.failRate') }}</span>
+          </div>
+        </div>
+
+        <!-- 账户余额 -->
+        <div class="metric-card clickable" @click="$router.push('/account/balance')">
+          <div class="metric-header">
+            <div class="metric-icon balance">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <rect x="2" y="4" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M2 8H18" stroke="currentColor" stroke-width="1.5"/>
+              </svg>
+            </div>
+            <span class="metric-label">{{ $t('dashboard.accountBalance') }}</span>
+          </div>
+          <div class="metric-body">
+            <span class="metric-currency">$</span>
+            <span class="metric-value">{{ formatNumber(balance) }}</span>
+          </div>
+          <div class="metric-footer">
+            <span class="metric-link">{{ $t('common.view') }} →</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 主内容区 - 客户 -->
+      <div class="content-grid customer-grid">
+        <!-- 左侧 -->
+        <div class="content-left">
+          <!-- 快速操作 -->
+          <div class="card actions-card">
+            <div class="card-header">
+              <h2 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <rect x="2" y="2" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                  <rect x="10" y="2" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                  <rect x="2" y="10" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                  <rect x="10" y="10" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                </svg>
+                {{ $t('dashboard.quickActions') }}
+              </h2>
+            </div>
+            <div class="actions-grid">
+              <div class="action-btn primary" @click="$router.push('/sms/send')">
+                <div class="action-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <path d="M22 2L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                  </svg>
+                </div>
+                <span class="action-label">{{ $t('menu.sendSms') }}</span>
+              </div>
+              <div class="action-btn success" @click="$router.push('/sms/tasks')">
+                <div class="action-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <rect x="4" y="3" width="16" height="18" rx="2" stroke="currentColor" stroke-width="2"/>
+                    <path d="M9 7H15M9 11H15M9 15H12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <span class="action-label">{{ $t('menu.sendTasks') }}</span>
+              </div>
+              <div class="action-btn warning" @click="$router.push('/sms/records')">
+                <div class="action-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <path d="M14 2H6C5.44772 2 5 2.44772 5 3V21C5 21.5523 5.44772 22 6 22H18C18.5523 22 19 21.5523 19 21V7L14 2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                    <path d="M14 2V7H19" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                    <path d="M9 13H15M9 17H12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <span class="action-label">{{ $t('menu.sendRecords') }}</span>
+              </div>
+              <div class="action-btn info" @click="$router.push('/reports')">
+                <div class="action-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <path d="M3 20H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    <path d="M6 20V14M10 20V10M14 20V12M18 20V8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <span class="action-label">{{ $t('menu.dataReport') }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 最近发送记录 -->
+          <div class="card records-card">
+            <div class="card-header">
+              <h2 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <rect x="3" y="2" width="12" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M6 6H12M6 9H12M6 12H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                {{ $t('dashboard.recentSent') }}
+              </h2>
+              <button class="view-all-btn" @click="$router.push('/sms/records')">
+                {{ $t('dashboard.viewAll') }}
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5 3L9 7L5 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            <div class="records-list">
+              <div v-if="recentRecords.length === 0" class="empty-state">
+                <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+                  <rect x="8" y="6" width="24" height="28" rx="3" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M14 14H26M14 20H26M14 26H20" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                <span>{{ $t('smsRecords.noRecords') }}</span>
+              </div>
+              <div 
+                v-else
+                v-for="record in recentRecords" 
+                :key="record.id" 
+                class="record-item"
+              >
+                <div class="record-phone">
+                  <span class="phone-flag">{{ getCountryFlag(record.country_code) }}</span>
+                  <span class="phone-number">{{ record.phone_number }}</span>
+                </div>
+                <div class="record-message">{{ truncateMessage(record.message) }}</div>
+                <div class="record-meta">
+                  <span :class="['record-status', record.status]">
+                    {{ getStatusText(record.status) }}
+                  </span>
+                  <span class="record-time">{{ formatTime(record.submit_time) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右侧 -->
+        <div class="content-right">
+          <!-- 通道状态 -->
+          <div class="card channels-card">
+            <div class="card-header">
+              <h2 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <circle cx="5" cy="9" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+                  <circle cx="13" cy="5" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+                  <circle cx="13" cy="13" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M7.5 9H10.5M10.5 5L7.5 9M10.5 13L7.5 9" stroke="currentColor" stroke-width="1.5"/>
+                </svg>
+                {{ $t('dashboard.channelStatus') }}
+              </h2>
+              <span class="channel-count">{{ availableChannels }} {{ $t('dashboard.units') }}</span>
+            </div>
+            <div class="channels-list">
+              <div v-if="channels.length === 0" class="empty-state">
+                <span>{{ $t('common.noData') }}</span>
+              </div>
+              <div 
+                v-else
+                v-for="channel in channels.slice(0, 4)" 
+                :key="channel.id" 
+                class="channel-item"
+              >
+                <div class="channel-info">
+                  <span class="channel-name">{{ channel.channel_name || channel.channel_code }}</span>
+                  <span class="channel-protocol">{{ channel.protocol }}</span>
+                </div>
+                <div :class="['channel-status', channel.status]">
+                  <span class="status-dot"></span>
+                  {{ getChannelStatusText(channel.status) }}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 账户信息 -->
+          <div class="card account-card">
+            <div class="card-header">
+              <h2 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <circle cx="9" cy="6" r="3" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M3 16C3 13.2386 5.68629 11 9 11C12.3137 11 15 13.2386 15 16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                {{ $t('dashboard.accountInfo') }}
+              </h2>
+            </div>
+            <div class="account-details">
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.accountName') }}</span>
+                <span class="account-value">{{ accountName }}</span>
+              </div>
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.accountStatus') }}</span>
+                <span class="status-badge active">
+                  <span class="status-dot"></span>
+                  {{ $t('common.active') }}
+                </span>
+              </div>
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.apiKey') }}</span>
+                <div class="api-key-wrapper">
+                  <code class="api-key">{{ maskedApiKey }}</code>
+                  <button class="copy-btn" @click="copyApiKey">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                      <rect x="4" y="4" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M10 4V2.5C10 2 9.5 1.5 9 1.5H2.5C2 1.5 1.5 2 1.5 2.5V9C1.5 9.5 2 10 2.5 10H4" stroke="currentColor" stroke-width="1.5"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted, computed, onUnmounted } from 'vue'
+import { ElMessage } from 'element-plus'
+import { getBalance } from '@/api/account'
+import { getChannels } from '@/api/channel'
+import { getStatistics } from '@/api/reports'
+import { getAdminDashboard } from '@/api/admin'
+import { getSMSRecords } from '@/api/sms'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
+const loading = ref(false)
+const balance = ref<number>(0)
+const todaySent = ref<number>(0)
+const todayDelivered = ref<number>(0)
+const todayFailed = ref<number>(0)
+const successRate = ref<number>(0)
+const failRate = ref<number>(0)
+const todayCost = ref<number>(0)
+const todayRevenue = ref<number>(0)
+const todayProfit = ref<number>(0)
+const availableChannels = ref<number>(0)
+const totalChannels = ref<number>(0)
+const activeAccounts = ref<number>(0)
+const totalBalance = ref<number>(0)
+const accountId = ref('')
+const isStaff = ref(false)
+const isSales = ref(false)
+const adminRole = ref('')
+const lastUpdateTime = ref('')
+const channels = ref<any[]>([])
+const recentRecords = ref<any[]>([])
+const recentCustomers = ref<any[]>([])
+const permissions = ref({
+  view_global: false,
+  view_finance: false,
+  view_channels: false,
+  view_customers: false
+})
+
+const accountName = ref(localStorage.getItem('account_name') || 'User')
+const apiKey = ref(localStorage.getItem('api_key') || '')
+
+const maskedApiKey = computed(() => {
+  if (!apiKey.value) return '-'
+  return apiKey.value.substring(0, 8) + '••••' + apiKey.value.substring(apiKey.value.length - 4)
+})
+
+const roleClass = computed(() => {
+  if (adminRole.value === 'super_admin' || adminRole.value === 'admin') return 'admin'
+  if (adminRole.value === 'sales') return 'sales'
+  if (adminRole.value === 'finance') return 'finance'
+  if (adminRole.value === 'tech') return 'tech'
+  return 'customer'
+})
+
+const getDashboardTitle = () => {
+  if (adminRole.value === 'super_admin' || adminRole.value === 'admin') return t('dashboard.adminConsole')
+  if (adminRole.value === 'sales') return t('dashboard.salesWorkbench')
+  if (adminRole.value === 'finance') return t('dashboard.financeCenter')
+  if (adminRole.value === 'tech') return t('dashboard.techMonitor')
+  return t('dashboard.myConsole')
+}
+
+const getRoleLabel = () => {
+  const roles: Record<string, string> = {
+    'super_admin': t('roles.superAdmin'),
+    'admin': t('roles.admin'),
+    'sales': t('roles.sales'),
+    'finance': t('roles.finance'),
+    'tech': t('roles.tech'),
+  }
+  return roles[adminRole.value] || t('roles.customer')
+}
+
+const formatNumber = (num: number) => {
+  const n = Number(num) || 0
+  return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+}
+
+const formatRate = (rate: number) => {
+  const r = Number(rate) || 0
+  return r.toFixed(1)
+}
+
+const getCountryFlag = (code: string) => {
+  const flags: Record<string, string> = {
+    '86': '🇨🇳', '1': '🇺🇸', '44': '🇬🇧', '81': '🇯🇵', '82': '🇰🇷',
+    '63': '🇵🇭', '84': '🇻🇳', '66': '🇹🇭', '62': '🇮🇩', '60': '🇲🇾',
+    '52': '🇲🇽', '55': '🇧🇷', '91': '🇮🇳', '49': '🇩🇪', '33': '🇫🇷',
+  }
+  return flags[code] || '🌍'
+}
+
+const getStatusText = (status: string) => {
+  const statusMap: Record<string, string> = {
+    'pending': 'pending', 'sent': 'sent', 'delivered': 'delivered', 'failed': 'failed',
+  }
+  const key = statusMap[status] || status
+  return t(`smsStatus.${key}`)
+}
+
+const getChannelStatusText = (status: string) => {
+  const statusMap: Record<string, string> = {
+    'active': t('channelStatus.active'),
+    'inactive': t('channelStatus.inactive'),
+    'maintenance': t('channelStatus.maintenance'),
+  }
+  return statusMap[status] || status
+}
+
+const truncateMessage = (msg: string) => {
+  if (!msg) return '-'
+  return msg.length > 25 ? msg.substring(0, 25) + '...' : msg
+}
+
+const formatTime = (time: string) => {
+  if (!time) return '-'
+  const date = new Date(time)
+  const now = new Date()
+  const diff = now.getTime() - date.getTime()
+  if (diff < 60000) return t('time.justNow')
+  if (diff < 3600000) return t('time.minutesAgo', { n: Math.floor(diff / 60000) })
+  if (diff < 86400000) return t('time.hoursAgo', { n: Math.floor(diff / 3600000) })
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+const updateLastTime = () => {
+  lastUpdateTime.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+const loadStaffData = async () => {
+  try {
+    const res = await getAdminDashboard()
+    if (res.success) {
+      accountName.value = res.admin_name
+      adminRole.value = res.admin_role
+      isSales.value = res.admin_role === 'sales'
+      
+      todaySent.value = Number(res.statistics.today_sent) || 0
+      todayDelivered.value = Number(res.statistics.today_delivered) || 0
+      todayFailed.value = Number(res.statistics.today_failed) || 0
+      successRate.value = Number(res.statistics.today_success_rate) || 0
+      failRate.value = todaySent.value > 0 ? (todayFailed.value / todaySent.value * 100) : 0
+      todayCost.value = Number(res.statistics.today_cost) || 0
+      todayRevenue.value = Number(res.statistics.today_revenue) || 0
+      todayProfit.value = Number(res.statistics.today_profit) || 0
+      availableChannels.value = Number(res.statistics.active_channels) || 0
+      activeAccounts.value = Number(res.statistics.active_accounts) || 0
+      totalBalance.value = Number(res.statistics.total_balance) || 0
+      
+      permissions.value = res.permissions || {}
+      recentCustomers.value = res.recent_customers || []
+      
+      // 加载通道
+      if (permissions.value.view_channels) {
+        try {
+          const channelsRes = await getChannels()
+          channels.value = channelsRes.channels || []
+        } catch {
+          channels.value = []
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Failed to load staff data:', error)
+  }
+}
+
+const loadCustomerData = async () => {
+  try {
+    const balanceRes = await getBalance()
+    balance.value = Number(balanceRes.balance) || 0
+    accountId.value = balanceRes.account_id
+    
+    const channelsRes = await getChannels()
+    channels.value = channelsRes.channels || []
+    availableChannels.value = channels.value.filter((c: any) => c.status === 'active').length
+    
+    try {
+      const today = new Date().toISOString().split('T')[0]
+      const statsRes = await getStatistics(today, today)
+      todaySent.value = Number(statsRes.total_sent) || 0
+      todayDelivered.value = Number(statsRes.total_delivered) || 0
+      todayFailed.value = Number(statsRes.total_failed) || 0
+      successRate.value = Number(statsRes.success_rate) || 0
+      failRate.value = todaySent.value > 0 ? (todayFailed.value / todaySent.value * 100) : 0
+    } catch {
+      todaySent.value = 0
+      todayDelivered.value = 0
+      todayFailed.value = 0
+      successRate.value = 0
+      failRate.value = 0
+    }
+    
+    try {
+      const recordsRes = await getSMSRecords({ page: 1, page_size: 5 })
+      recentRecords.value = recordsRes.records || []
+    } catch {
+      recentRecords.value = []
+    }
+  } catch (error) {
+    console.error('Failed to load customer data:', error)
+  }
+}
+
+const loadData = async () => {
+  loading.value = true
+  try {
+    const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1'
+    const adminToken = localStorage.getItem('admin_token')
+    
+    if (!isImpersonateMode && adminToken) {
+      isStaff.value = true
+      await loadStaffData()
+    } else {
+      isStaff.value = false
+      adminRole.value = ''
+      await loadCustomerData()
+    }
+    updateLastTime()
+  } finally {
+    loading.value = false
+  }
+}
+
+const refreshData = () => {
+  loadData()
+  ElMessage.success(t('dashboard.dataRefreshed'))
+}
+
+const copyApiKey = async () => {
+  if (!apiKey.value) return
+  try {
+    await navigator.clipboard.writeText(apiKey.value)
+    ElMessage.success(t('common.copied'))
+  } catch {
+    ElMessage.error(t('common.error'))
+  }
+}
+
+let refreshInterval: number
+
+onMounted(() => {
+  loadData()
+  refreshInterval = window.setInterval(() => loadData(), 60000)
+})
+
+onUnmounted(() => {
+  if (refreshInterval) clearInterval(refreshInterval)
+})
+</script>
+
+<style scoped>
+.dashboard {
+  width: 100%;
+  min-height: 100%;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* 头部 */
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.page-title {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.role-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.role-badge.admin {
+  background: linear-gradient(135deg, rgba(255, 77, 79, 0.15), rgba(255, 120, 117, 0.1));
+  color: #ff4d4f;
+}
+
+.role-badge.sales {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.15), rgba(118, 75, 162, 0.1));
+  color: var(--primary);
+}
+
+.role-badge.finance {
+  background: linear-gradient(135deg, rgba(255, 210, 0, 0.15), rgba(247, 151, 30, 0.1));
+  color: var(--warning);
+}
+
+.role-badge.tech {
+  background: linear-gradient(135deg, rgba(79, 172, 254, 0.15), rgba(0, 242, 254, 0.1));
+  color: var(--info);
+}
+
+.role-badge.customer {
+  background: linear-gradient(135deg, rgba(56, 239, 125, 0.15), rgba(17, 153, 142, 0.1));
+  color: var(--success);
+}
+
+.last-update {
+  font-size: 12px;
+  color: var(--text-quaternary);
+  margin-left: 8px;
+}
+
+.refresh-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  background: rgba(102, 126, 234, 0.1);
+  border: 1px solid rgba(102, 126, 234, 0.2);
+  border-radius: 10px;
+  color: var(--primary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.refresh-btn:hover:not(:disabled) {
+  background: rgba(102, 126, 234, 0.15);
+}
+
+.refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.refresh-btn svg.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 核心指标 */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.metrics-grid.metrics-4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.metrics-grid.metrics-6 {
+  grid-template-columns: repeat(6, 1fr);
+}
+
+.metric-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  padding: 18px;
+  transition: all 0.2s;
+}
+
+.metric-card.clickable {
+  cursor: pointer;
+}
+
+.metric-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+}
+
+.metric-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.metric-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.metric-icon.sent { background: linear-gradient(135deg, rgba(102, 126, 234, 0.2), rgba(118, 75, 162, 0.15)); color: var(--primary); }
+.metric-icon.success { background: linear-gradient(135deg, rgba(56, 239, 125, 0.2), rgba(17, 153, 142, 0.15)); color: var(--success); }
+.metric-icon.failed { background: linear-gradient(135deg, rgba(255, 77, 79, 0.2), rgba(255, 120, 117, 0.15)); color: var(--error); }
+.metric-icon.balance { background: linear-gradient(135deg, rgba(255, 210, 0, 0.2), rgba(247, 151, 30, 0.15)); color: var(--warning); }
+.metric-icon.customers { background: linear-gradient(135deg, rgba(79, 172, 254, 0.2), rgba(0, 242, 254, 0.15)); color: var(--info); }
+.metric-icon.revenue { background: linear-gradient(135deg, rgba(56, 239, 125, 0.2), rgba(17, 153, 142, 0.15)); color: var(--success); }
+.metric-icon.profit { background: linear-gradient(135deg, rgba(240, 147, 251, 0.2), rgba(245, 87, 108, 0.15)); color: #F093FB; }
+
+.metric-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.metric-body {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.metric-currency {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.metric-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.metric-value.positive {
+  color: var(--success);
+}
+
+.metric-unit {
+  font-size: 13px;
+  color: var(--text-quaternary);
+  margin-left: 2px;
+}
+
+.metric-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.metric-rate {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.metric-rate.success { background: rgba(56, 239, 125, 0.1); color: var(--success); }
+.metric-rate.failed { background: rgba(255, 77, 79, 0.1); color: var(--error); }
+
+.metric-compare {
+  font-size: 11px;
+  color: var(--text-quaternary);
+}
+
+.metric-link {
+  font-size: 12px;
+  color: var(--primary);
+  font-weight: 500;
+}
+
+/* 内容网格 */
+.content-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.content-grid.admin-grid {
+  grid-template-columns: 1.2fr 1fr;
+}
+
+.content-grid.customer-grid {
+  grid-template-columns: 1.5fr 1fr;
+}
+
+.content-left, .content-right {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* 卡片通用 */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.card-title svg {
+  color: var(--text-tertiary);
+}
+
+/* 快速操作 */
+.actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding: 16px;
+}
+
+.actions-grid.admin-actions {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.action-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.action-btn:hover {
+  transform: translateY(-2px);
+}
+
+.action-btn.primary { background: linear-gradient(135deg, rgba(102, 126, 234, 0.15), rgba(118, 75, 162, 0.1)); }
+.action-btn.primary .action-icon { color: var(--primary); }
+.action-btn.success { background: linear-gradient(135deg, rgba(56, 239, 125, 0.15), rgba(17, 153, 142, 0.1)); }
+.action-btn.success .action-icon { color: var(--success); }
+.action-btn.warning { background: linear-gradient(135deg, rgba(255, 210, 0, 0.15), rgba(247, 151, 30, 0.1)); }
+.action-btn.warning .action-icon { color: var(--warning); }
+.action-btn.info { background: linear-gradient(135deg, rgba(79, 172, 254, 0.15), rgba(0, 242, 254, 0.1)); }
+.action-btn.info .action-icon { color: var(--info); }
+
+.action-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* 列表通用样式 */
+.view-all-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.view-all-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 30px 20px;
+  color: var(--text-quaternary);
+  font-size: 13px;
+}
+
+/* 通道状态 */
+.channel-count {
+  font-size: 12px;
+  color: var(--success);
+  font-weight: 500;
+}
+
+.channels-list {
+  padding: 8px 16px 16px;
+}
+
+.channel-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.channel-item:last-child {
+  border-bottom: none;
+}
+
+.channel-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.channel-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.channel-protocol {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  color: var(--text-quaternary);
+}
+
+.channel-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.channel-status .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.channel-status.active { color: var(--success); }
+.channel-status.active .status-dot { background: var(--success); box-shadow: 0 0 8px var(--success); }
+.channel-status.inactive { color: var(--text-quaternary); }
+.channel-status.inactive .status-dot { background: var(--text-quaternary); }
+.channel-status.maintenance { color: var(--warning); }
+.channel-status.maintenance .status-dot { background: var(--warning); }
+
+/* 客户列表 (销售专属) */
+.customers-list {
+  padding: 8px 16px 16px;
+}
+
+.customer-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.customer-item:last-child {
+  border-bottom: none;
+}
+
+.customer-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.customer-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.customer-status {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.customer-status.active {
+  background: rgba(56, 239, 125, 0.1);
+  color: var(--success);
+}
+
+.customer-balance {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* 系统概览 */
+.overview-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding: 16px;
+}
+
+.overview-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 10px;
+}
+
+.overview-label {
+  font-size: 11px;
+  color: var(--text-quaternary);
+}
+
+.overview-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 发送记录 */
+.records-list {
+  padding: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.record-item {
+  display: grid;
+  grid-template-columns: 130px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border-radius: 10px;
+  transition: background 0.15s;
+}
+
+.record-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.record-phone {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.phone-flag {
+  font-size: 14px;
+}
+
+.phone-number {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  font-family: 'SF Mono', Monaco, monospace;
+}
+
+.record-message {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.record-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.record-status {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.record-status.delivered { background: rgba(56, 239, 125, 0.1); color: var(--success); }
+.record-status.sent { background: rgba(102, 126, 234, 0.1); color: var(--primary); }
+.record-status.pending { background: rgba(255, 210, 0, 0.1); color: var(--warning); }
+.record-status.failed { background: rgba(255, 77, 79, 0.1); color: var(--error); }
+
+.record-time {
+  font-size: 10px;
+  color: var(--text-quaternary);
+  white-space: nowrap;
+}
+
+/* 账户信息 */
+.account-details {
+  padding: 12px 16px 16px;
+}
+
+.account-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.account-row:last-child {
+  border-bottom: none;
+}
+
+.account-label {
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+
+.account-value {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.role-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.role-tag.super_admin, .role-tag.admin {
+  background: rgba(255, 77, 79, 0.1);
+  color: #ff4d4f;
+}
+
+.role-tag.sales {
+  background: rgba(102, 126, 234, 0.1);
+  color: var(--primary);
+}
+
+.role-tag.finance {
+  background: rgba(255, 210, 0, 0.1);
+  color: var(--warning);
+}
+
+.role-tag.tech {
+  background: rgba(79, 172, 254, 0.1);
+  color: var(--info);
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.status-badge.active {
+  background: rgba(56, 239, 125, 0.1);
+  color: var(--success);
+}
+
+.status-badge .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.api-key-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.api-key {
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.copy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: var(--text-quaternary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.copy-btn:hover {
+  background: rgba(102, 126, 234, 0.1);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* 响应式 */
+@media (max-width: 1400px) {
+  .metrics-grid.metrics-6 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  
+  .actions-grid.admin-actions {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
+  .metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .dashboard-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  
+  .header-left {
+    flex-wrap: wrap;
+  }
+  
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .record-item {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
+
+/* 亮色主题 */
+[data-theme="light"] .metric-card,
+[data-theme="light"] .card {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(20px);
+  border: 0.5px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .card-header {
+  border-bottom-color: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .channel-item,
+[data-theme="light"] .customer-item,
+[data-theme="light"] .account-row {
+  border-bottom-color: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .channel-protocol {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .overview-item {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+[data-theme="light"] .api-key {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .record-item:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+</style>
