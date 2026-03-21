@@ -241,14 +241,48 @@
     </el-dialog>
 
     <!-- 重置密码对话框 -->
-    <el-dialog v-model="resetDialogVisible" :title="$t('staff.resetPassword')" width="400px">
-      <el-form :model="resetForm" ref="resetFormRef" label-width="80px">
+    <el-dialog
+      v-model="resetDialogVisible"
+      :title="resetTargetStaff ? `${$t('staff.resetPassword')} - ${resetTargetStaff.real_name || resetTargetStaff.username}` : $t('staff.resetPassword')"
+      width="460px"
+      @opened="focusResetPasswordInput"
+      @closed="resetTargetStaff = null"
+    >
+      <el-form :model="resetForm" ref="resetFormRef" label-width="100px">
         <el-form-item :label="$t('staff.newPassword')" prop="password" :rules="passwordRules">
-          <el-input v-model="resetForm.password" type="password" :placeholder="$t('staff.minSixChars')" show-password>
-            <template #append>
-              <el-button size="small" @click="resetForm.password = generatePassword()">{{ $t('staff.autoGenerate') }}</el-button>
-            </template>
-          </el-input>
+          <div class="reset-pwd-block">
+            <!-- 密码预览区：有内容时完整展示，便于查看和复制 -->
+            <div v-if="resetForm.password" class="reset-pwd-preview">
+              <code class="pwd-display">{{ resetForm.password }}</code>
+              <el-button size="small" type="primary" text @click="copyResetPassword" class="pwd-copy-inline">
+                <el-icon><DocumentCopy /></el-icon>
+                {{ $t('common.copy') }}
+              </el-button>
+            </div>
+            <el-input
+              ref="resetPasswordInputRef"
+              v-model="resetForm.password"
+              type="password"
+              :placeholder="$t('staff.minSixChars')"
+              show-password
+              autocomplete="new-password"
+              class="reset-pwd-input"
+            />
+            <div class="reset-pwd-actions">
+              <el-button size="small" class="pwd-action-btn" @click="handleAutoGenerate">
+                {{ $t('staff.autoGenerate') }}
+              </el-button>
+              <el-button
+                v-if="resetForm.password"
+                size="small"
+                class="pwd-action-btn"
+                @click="copyResetPassword"
+                :title="$t('common.copy')"
+              >
+                <el-icon><DocumentCopy /></el-icon>
+              </el-button>
+            </div>
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -260,11 +294,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, User, Connection } from '@element-plus/icons-vue'
+import { Plus, Refresh, User, Connection, DocumentCopy } from '@element-plus/icons-vue'
 import request from '@/api/index'
 import { formatDate } from '@/utils/date'
 
@@ -329,7 +363,10 @@ const rules = computed(() => ({
   role: [{ required: true, message: () => t('staff.pleaseSelectRole'), trigger: 'change' }]
 }))
 
-const passwordRules = [{ required: true, message: () => t('staff.pleaseEnterNewPassword'), min: 6 }]
+const passwordRules = [
+  { required: true, message: () => t('staff.pleaseEnterNewPassword'), trigger: 'blur' },
+  { min: 6, message: () => t('staff.passwordMinSix'), trigger: 'blur' }
+]
 
 // 生成随机密码（12位，含大小写字母和数字）
 const generatePassword = () => {
@@ -477,10 +514,33 @@ const submitForm = async () => {
   }
 }
 
+const resetTargetStaff = ref<Staff | null>(null)
+const resetPasswordInputRef = ref<{ focus: () => void } | null>(null)
+
 const resetPassword = (row: Staff) => {
   currentStaffId.value = row.id
+  resetTargetStaff.value = row
   resetForm.value = { password: '' }
   resetDialogVisible.value = true
+}
+
+const focusResetPasswordInput = () => {
+  nextTick(() => resetPasswordInputRef.value?.focus?.())
+}
+
+const copyResetPassword = () => {
+  if (!resetForm.value.password) return
+  navigator.clipboard.writeText(resetForm.value.password).then(() => {
+    ElMessage.success(t('common.copied'))
+  })
+}
+
+const handleAutoGenerate = () => {
+  const pwd = generatePassword()
+  resetForm.value.password = pwd
+  navigator.clipboard.writeText(pwd).then(() => {
+    ElMessage.success(t('staff.autoGenAndCopied'))
+  })
 }
 
 const submitResetPassword = async () => {
@@ -497,6 +557,7 @@ const submitResetPassword = async () => {
     })
     ElMessage.success(t('staff.passwordResetSuccess'))
     resetDialogVisible.value = false
+    resetTargetStaff.value = null
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail || t('staff.resetFailed'))
   } finally {
@@ -881,5 +942,62 @@ onMounted(() => {
   .add-btn {
     width: 100%;
   }
+}
+
+/* 重置密码对话框 */
+.reset-pwd-block {
+  width: 100%;
+}
+/* 密码预览：自动生成/输入后完整显示 */
+.reset-pwd-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  flex-wrap: wrap;
+}
+.reset-pwd-preview .pwd-display {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, 'SF Mono', Monaco, monospace;
+  font-size: 15px;
+  letter-spacing: 1px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+.reset-pwd-preview .pwd-copy-inline {
+  flex-shrink: 0;
+}
+.reset-pwd-block .reset-pwd-input {
+  width: 100%;
+  display: block;
+  margin-bottom: 10px;
+}
+.reset-pwd-block .reset-pwd-input :deep(.el-input__wrapper) {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+}
+.reset-pwd-block :deep(.el-input) {
+  width: 100%;
+}
+.reset-pwd-block .reset-pwd-actions {
+  display: flex;
+  gap: 10px;
+}
+.reset-pwd-block .pwd-action-btn {
+  flex-shrink: 0;
+  background: var(--bg-input) !important;
+  border: 1px solid var(--border-default) !important;
+  color: var(--text-secondary) !important;
+}
+.reset-pwd-block .pwd-action-btn:hover {
+  background: var(--bg-hover) !important;
+  border-color: var(--border-hover) !important;
+  color: var(--primary) !important;
 }
 </style>

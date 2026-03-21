@@ -85,6 +85,40 @@ export async function adminLogin(data: AdminLoginRequest): Promise<AdminLoginRes
   return response;
 }
 
+/** 管理员个人资料 */
+export interface AdminProfile {
+  id: number
+  username: string
+  real_name?: string
+  email?: string
+  phone?: string
+  role: string
+  tg_id?: number
+  tg_username?: string
+  last_login_at?: string
+  created_at?: string
+}
+
+/** 获取管理员个人资料 */
+export async function getAdminProfile(): Promise<{ success: boolean; profile: AdminProfile }> {
+  return request.get('/admin/profile')
+}
+
+/** 修改管理员密码 */
+export async function changeAdminPassword(data: { old_password: string; new_password: string }): Promise<{ success: boolean; error?: string }> {
+  return request.post('/admin/profile/change-password', data)
+}
+
+/** 生成 Telegram 绑定码 */
+export async function generateTgBindCode(): Promise<{ success: boolean; code?: string; expires_in?: number }> {
+  return request.post('/admin/profile/telegram-bind-code')
+}
+
+/** 解绑 Telegram */
+export async function unbindTelegram(): Promise<{ success: boolean; error?: string }> {
+  return request.post('/admin/profile/telegram-unbind')
+}
+
 /**
  * 获取通道列表（管理员）
  */

@@ -58,6 +58,12 @@ export const adminRoutes: RouteRecordRaw[] = [
     meta: { titleKey: 'menu.businessKnowledge', icon: 'Document' },
   },
   {
+    path: '/admin/profile',
+    name: 'AdminProfile',
+    component: () => import('@/views/admin/Profile.vue'),
+    meta: { titleKey: 'menu.accountManage', icon: 'User' },
+  },
+  {
     path: '/admin/system/config',
     name: 'SystemConfig',
     component: () => import('@/views/system/Index.vue'),

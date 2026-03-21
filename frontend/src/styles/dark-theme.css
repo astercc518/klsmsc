@@ -28,6 +28,10 @@
 /* ========== 暗色主题（默认） ========== */
 :root,
 [data-theme="dark"] {
+  --el-bg-color-overlay: var(--bg-elevated) !important;
+  --el-bg-color: var(--bg-primary) !important;
+  --el-bg-color-page: var(--bg-primary) !important;
+  --el-bg-color-blank: var(--bg-elevated) !important;
   --bg-primary: #0D0F14;
   --bg-secondary: #12151C;
   --bg-tertiary: #171B24;
@@ -639,15 +643,39 @@ body {
   padding: 6px !important;
 }
 
+/* 暗色主题下 popper/下拉：避免白底白边，与深色背景协调 */
+html:not([data-theme="light"]) .el-popper.el-dropdown__popper,
+html:not([data-theme="light"]) .el-popper {
+  border: 1px solid var(--border-default) !important;
+  background: var(--bg-elevated) !important;
+}
+html:not([data-theme="light"]) .el-popper__arrow::before {
+  background: var(--bg-elevated) !important;
+  border: 1px solid var(--border-default) !important;
+}
+
 .el-dropdown-menu__item {
+  background: transparent !important;
   color: var(--text-secondary) !important;
   border-radius: var(--radius-sm) !important;
   padding: 10px 12px !important;
 }
 
-.el-dropdown-menu__item:hover {
+.el-dropdown-menu__item:hover,
+.el-dropdown-menu__item:focus {
   background: var(--bg-hover) !important;
   color: var(--text-primary) !important;
+}
+
+/* 确保非 hover 时下拉项无白底，divided 分隔线也适配深色 */
+.el-dropdown-menu .el-dropdown-menu__item {
+  background: transparent !important;
+}
+.el-dropdown-menu .el-dropdown-menu__item:hover {
+  background: var(--bg-hover) !important;
+}
+.el-dropdown-menu .el-dropdown-menu__item.el-dropdown-menu__item--divided::before {
+  background-color: var(--border-default) !important;
 }
 
 /* ========== 分页 ========== */

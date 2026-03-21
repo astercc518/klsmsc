@@ -7,7 +7,7 @@ from sqlalchemy import select
 sys.path.append(os.path.join(os.getcwd(), 'backend'))
 
 from app.database import AsyncSessionLocal
-from app.models.admin_user import AdminUser
+from app.models import AdminUser
 from app.core.auth import AuthService
 
 async def reset_admin_password():
@@ -17,16 +17,20 @@ async def reset_admin_password():
         admin = result.scalar_one_or_none()
         
         if not admin:
-            print("❌ Admin user not found!")
-            # 创建一个
+            print("❌ Admin user not found! Creating...")
+            # 创建新管理员
+            hashed = AuthService.hash_password('admin123')
             admin = AdminUser(
                 username='admin',
                 role='super_admin',
                 real_name='Super Admin',
-                status='active'
+                status='active',
+                password_hash=hashed
             )
             db.add(admin)
-            print("Created new admin user.")
+            await db.commit()
+            print(f"✅ Created admin user, password: admin123")
+            return
         
         # 重置密码
         new_password = 'admin123'

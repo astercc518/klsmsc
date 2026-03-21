@@ -480,7 +480,7 @@ const flowSteps = computed(() => [
 }
 /* 浅色模式（默认 B2B SaaS 风格） */
 .landing-site.is-light {
-  --bg: #fafbfc;
+  --bg: #f8fafc;
   --bg-alt: #f1f5f9;
   --card: #ffffff;
   --border: rgba(15,23,42,.08);
@@ -490,6 +490,7 @@ const flowSteps = computed(() => [
   background: var(--bg);
   color: var(--t1);
 }
+.landing-site.is-light .hero { background: linear-gradient(180deg, #f0f7ff 0%, #f8fafc 50%); }
 /* 深色模式覆盖 */
 .landing-site.is-dark {
   --bg: #0b0d17;
@@ -534,8 +535,12 @@ const flowSteps = computed(() => [
 .landing-site.is-light .btn-outline:hover { border-color: rgba(0,0,0,.25); color: var(--t1); background: rgba(0,0,0,.04); }
 
 
-.landing-site.is-light .phone-frame { background: linear-gradient(160deg,#e8e8ed,#d8d8e0); border-color: rgba(0,0,0,.12); }
-.landing-site.is-light .phone-notch { background: #e8e8ed; }
+.landing-site.is-light .phone-frame { 
+  background: linear-gradient(160deg,#ffffff,#e8eaf0); 
+  border: 2px solid rgba(0,0,0,.08); 
+  box-shadow: 0 25px 50px -12px rgba(37,99,235,.2), 0 0 0 1px rgba(0,0,0,.04);
+}
+.landing-site.is-light .phone-notch { background: #e8eaf0; }
 .landing-site.is-light .phone-msg-in { background: rgba(52,120,246,.12); border-color: rgba(52,120,246,.2); color: var(--t1); }
 .landing-site.is-light .phone-msg-out { background: rgba(0,0,0,.06); border-color: rgba(0,0,0,.1); color: var(--t2); }
 
@@ -607,8 +612,8 @@ const flowSteps = computed(() => [
 .landing-site .hd-burger span { display: block; height: 2px; background: var(--t2); border-radius: 2px; }
 
 /* ===== Buttons ===== */
-.landing-site .btn-main { display: inline-flex; align-items: center; justify-content: center; padding: 14px 28px; background: var(--primary); color: #fff; font-weight: 600; font-size: .95rem; border-radius: 8px; border: none; cursor: pointer; transition: background .2s, transform .15s; }
-.landing-site .btn-main:hover { background: var(--primary-hover); transform: translateY(-1px); }
+.landing-site .btn-main { display: inline-flex; align-items: center; justify-content: center; padding: 14px 28px; background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%); color: #fff; font-weight: 600; font-size: .95rem; border-radius: 10px; border: none; cursor: pointer; transition: opacity .2s, transform .15s, box-shadow .2s; box-shadow: 0 4px 14px rgba(37,99,235,.4); }
+.landing-site .btn-main:hover { opacity: .95; transform: translateY(-2px); box-shadow: 0 6px 20px rgba(37,99,235,.45); }
 .landing-site .btn-main:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .landing-site .btn-main.btn-sm { padding: 9px 20px; font-size: .85rem; }
 .landing-site .btn-main.btn-lg { padding: 16px 36px; font-size: 1rem; }
@@ -622,9 +627,10 @@ const flowSteps = computed(() => [
 .landing-site .hero-bg { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .landing-site .hero-mesh {
   position: absolute; inset: 0;
-  background: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(37,99,235,.08) 0%, transparent 50%),
-    radial-gradient(ellipse 60% 40% at 100% 50%, rgba(37,99,235,.04) 0%, transparent 50%),
-    radial-gradient(ellipse 50% 30% at 0% 80%, rgba(34,197,94,.03) 0%, transparent 50%);
+  background: 
+    radial-gradient(ellipse 100% 80% at 50% -30%, rgba(37,99,235,.22) 0%, rgba(99,102,241,.1) 40%, transparent 65%),
+    radial-gradient(ellipse 70% 50% at 110% 60%, rgba(59,130,246,.14) 0%, transparent 50%),
+    radial-gradient(ellipse 60% 40% at -10% 80%, rgba(34,197,94,.1) 0%, transparent 50%);
 }
 .landing-site .hero-glow { position: absolute; border-radius: 50%; filter: blur(100px); opacity: 0.85; }
 .landing-site .g1 { width:  min(80vw, 720px); height: min(80vw, 720px); background: radial-gradient(circle, rgba(52,120,246,.28) 0%, rgba(52,120,246,.08) 50%, transparent 70%); top: -25%; left: -15%; }
@@ -633,17 +639,20 @@ const flowSteps = computed(() => [
 
 .landing-site .hero-inner { position: relative; display: grid; grid-template-columns: 1fr 340px; gap: 64px; align-items: center; }
 .landing-site .hero-badge {
-  display: inline-block; padding: 6px 14px; margin-bottom: 20px;
-  background: var(--primary-muted); color: var(--primary); font-size: .8rem; font-weight: 600;
-  border-radius: 999px; letter-spacing: .03em;
+  display: inline-block; padding: 8px 16px; margin-bottom: 20px;
+  background: linear-gradient(135deg, rgba(37,99,235,.12) 0%, rgba(79,70,229,.08) 100%);
+  color: var(--primary); font-size: .8rem; font-weight: 600;
+  border-radius: 999px; letter-spacing: .04em;
+  border: 1px solid rgba(37,99,235,.15);
 }
 .landing-site .hero-title {
   font-family: 'Inter', 'Plus Jakarta Sans', sans-serif;
-  font-size: clamp(2rem, 4.5vw, 3rem); font-weight: 700; line-height: 1.2;
-  margin-bottom: 20px; letter-spacing: -0.03em;
+  font-size: clamp(2.25rem, 5vw, 3.25rem); font-weight: 800; line-height: 1.15;
+  margin-bottom: 20px; letter-spacing: -0.04em;
   color: var(--t1);
 }
-.landing-site .hero-title em { font-style: normal; color: var(--primary); }
+.landing-site .hero-title em { font-style: normal; background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.landing-site.is-dark .hero-title em { background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
 .landing-site .hero-desc { font-size: 1.1rem; color: var(--t2); line-height: 1.75; margin-bottom: 32px; max-width: 540px; }
 .landing-site .hero-btns { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
 .landing-site .hero-badges { font-size: .82rem; color: var(--t3); margin-bottom: 20px; display: flex; align-items: center; gap: 8px; }
@@ -665,7 +674,11 @@ const flowSteps = computed(() => [
 
 /* 手机模型 */
 .landing-site .hero-phone { display: flex; justify-content: center; }
-.landing-site .phone-frame { width: 280px; background: linear-gradient(160deg,#1a1d35,#0f1125); border: 2px solid rgba(255,255,255,.1); border-radius: 32px; padding: 12px; position: relative; box-shadow: 0 20px 60px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.05); }
+.landing-site .phone-frame { 
+  width: 280px; background: linear-gradient(160deg,#1a1d35,#0f1125); 
+  border: 2px solid rgba(255,255,255,.12); border-radius: 32px; padding: 12px; position: relative; 
+  box-shadow: 0 25px 50px -12px rgba(0,0,0,.35), 0 0 0 1px rgba(0,0,0,.1), inset 0 1px 0 rgba(255,255,255,.08);
+}
 .landing-site .phone-notch { width: 100px; height: 24px; background: #0b0d1a; border-radius: 0 0 14px 14px; margin: 0 auto 12px; }
 .landing-site .phone-screen { display: flex; flex-direction: column; gap: 10px; padding: 8px; min-height: 340px; }
 .landing-site .phone-msg { padding: 10px 14px; border-radius: 14px; font-size: .82rem; line-height: 1.5; max-width: 88%; animation: landingMsgIn .6s ease both; }

@@ -513,6 +513,15 @@
               <div class="nav-section">
                 <span class="nav-section-title" v-if="!sidebarCollapsed">{{ $t('menu.systemSettings') }}</span>
                 
+                <div class="nav-item" :class="{ active: isActive('/admin/profile') }" @click="navigate('/admin/profile')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <circle cx="10" cy="6" r="3" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M4 17C4 14 6.5 12 10 12C13.5 12 16 14 16 17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.accountManage') }}</span>
+                </div>
                 <div class="nav-item" :class="{ active: isActive('/admin/system/config') }" @click="navigate('/admin/system/config')">
                   <div class="nav-icon">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -578,7 +587,36 @@
           </button>
           
           <!-- 用户信息 -->
-          <div class="user-card" @click="toggleUserMenu">
+          <el-dropdown v-if="isStaff" trigger="click" @command="handleUserMenuCommand" placement="top-start">
+            <div class="user-card user-card-clickable">
+              <div class="user-avatar">
+                {{ accountName.charAt(0).toUpperCase() }}
+              </div>
+              <div class="user-info" v-if="!sidebarCollapsed">
+                <span class="user-name">{{ accountName }}</span>
+                <span class="user-role">{{ roleDisplayName }}</span>
+              </div>
+            </div>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="profile">
+                  <svg width="14" height="14" viewBox="0 0 20 20" fill="none" style="vertical-align: -2px; margin-right: 6px">
+                    <circle cx="10" cy="6" r="3" stroke="currentColor" stroke-width="1.5"/>
+                    <path d="M4 17C4 14 6.5 12 10 12C13.5 12 16 14 16 17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                  {{ $t('menu.accountManage') }}
+                </el-dropdown-item>
+                <el-dropdown-item command="logout" divided>
+                  <svg width="14" height="14" viewBox="0 0 18 18" fill="none" style="vertical-align: -2px; margin-right: 6px">
+                    <path d="M6 15H3.5C3 15 2.5 14.5 2.5 14V4C2.5 3.5 3 3 3.5 3H6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    <path d="M12 12L15 9L12 6M6.5 9H15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  {{ $t('header.logout') }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <div v-else class="user-card" @click="toggleUserMenu">
             <div class="user-avatar">
               {{ accountName.charAt(0).toUpperCase() }}
             </div>
@@ -778,8 +816,13 @@ const toggleSidebar = () => {
 }
 
 const toggleUserMenu = () => {
-  if (isAdmin.value) return
+  if (isStaff.value) return
   router.push('/account/info')
+}
+
+const handleUserMenuCommand = (command: string) => {
+  if (command === 'profile') router.push('/admin/profile')
+  else if (command === 'logout') handleLogout()
 }
 
 const toggleTheme = () => {

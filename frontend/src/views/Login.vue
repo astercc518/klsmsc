@@ -106,12 +106,12 @@
         <!-- 密码登录 -->
         <el-form v-else :model="form" :rules="rules" ref="formRef" @submit.prevent="handleLogin" class="form-area">
           <div class="field">
-            <label>{{ loginType === 'customer' ? $t('login.email') : $t('login.username') }}</label>
+            <label>{{ $t('login.email') }}</label>
             <div class="input-wrap">
               <input
                 type="text"
                 v-model="form.username"
-                :placeholder="loginType === 'customer' ? $t('login.enterEmail') : $t('login.enterStaffUsername')"
+                :placeholder="$t('login.enterEmail')"
                 autocomplete="username"
               />
             </div>
@@ -138,16 +138,13 @@
 
           <button type="submit" class="btn-primary" :disabled="loading" @click.prevent="handleLogin">
             <span v-if="!loading">
-              {{ loginType === 'customer' ? $t('login.customerLoginBtn') : $t('login.staffLoginBtn') }}
+              {{ $t('login.customerLoginBtn') }}
             </span>
             <span v-else class="btn-loading"><i class="dot-spinner"></i>{{ $t('login.loggingIn') }}</span>
           </button>
         </el-form>
 
         <!-- 底部信息 -->
-        <p v-if="loginType === 'staff'" class="card-hint">
-          {{ $t('login.roleHint') }}
-        </p>
         <div class="card-footer">
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1L2 3.2v2.8c0 2.8 1.9 5.3 4.5 6 2.6-.7 4.5-3.2 4.5-6V3.2L6.5 1Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M4.5 6.5l1.3 1.3L8.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <span>{{ $t('login.securityNote') }}</span>
@@ -177,7 +174,7 @@ const formRef = ref<FormInstance>()
 const loading = ref(false)
 const captchaVerified = ref(false)
 const captchaRef = ref<InstanceType<typeof SliderCaptcha>>()
-const loginType = ref<'customer' | 'staff' | 'telegram'>('customer')
+const loginType = ref<'customer' | 'telegram'>('customer')
 const showPwd = ref(false)
 const mounted = ref(false)
 
@@ -186,7 +183,6 @@ const currentLang = ref(locale.value)
 
 const tabs = computed(() => [
   { key: 'customer' as const, label: t('login.customerLogin') },
-  { key: 'staff' as const, label: t('login.staffLogin') },
   { key: 'telegram' as const, label: t('login.tgLogin') },
 ])
 
@@ -328,7 +324,6 @@ onMounted(async () => {
   document.documentElement.classList.toggle('dark', isDark.value)
   const savedLang = localStorage.getItem('locale')
   if (savedLang) { currentLang.value = savedLang; locale.value = savedLang }
-  if (route.query.type === 'staff') loginType.value = 'staff'
 
   const impersonate = route.query.impersonate
   const apiKey = route.query.api_key as string
@@ -360,17 +355,81 @@ const rules: FormRules = {
   ],
 }
 
+// 管理员登录成功后的处理
+const doAdminSuccess = (adminResp: { token?: string; admin_id?: number; role?: string; username?: string }) => {
+  localStorage.removeItem('api_key'); localStorage.removeItem('account_id'); localStorage.removeItem('account_name')
+  sessionStorage.removeItem('impersonate_mode')
+  localStorage.setItem('admin_token', adminResp.token!)
+  localStorage.setItem('admin_id', String(adminResp.admin_id || ''))
+  localStorage.setItem('admin_role', adminResp.role || '')
+  localStorage.setItem('account_name', adminResp.username || form.username)
+  const roleNames: Record<string, string> = { super_admin: t('roles.superAdmin'), admin: t('roles.admin'), sales: t('roles.sales'), finance: t('roles.finance'), tech: t('roles.tech') }
+  const roleName = roleNames[adminResp.role || ''] || t('roles.staff')
+  ElMessage.success(`${t('login.welcomeBack')}, ${roleName} ${adminResp.username || form.username}`)
+  router.push('/dashboard')
+}
+// 客户登录成功后的处理
+const doCustomerSuccess = async (accountResp: { token?: string; account_id?: number }) => {
+  localStorage.removeItem('admin_token'); localStorage.removeItem('admin_id'); localStorage.removeItem('admin_role')
+  sessionStorage.removeItem('impersonate_mode')
+  localStorage.setItem('api_key', accountResp.token!)
+  localStorage.setItem('account_id', String(accountResp.account_id || ''))
+  try { const info: any = await getAccountInfo(); if (info?.account_name) localStorage.setItem('account_name', info.account_name) } catch {}
+  ElMessage.success(t('login.loginSuccess'))
+  router.push('/dashboard')
+}
+
 const handleLogin = async () => {
   if (!formRef.value) return
   await formRef.value.validate(async (valid) => {
     if (!valid) return
     if (!captchaVerified.value) { ElMessage.warning(t('login.sliderVerify')); return }
     loading.value = true
+    let lastError = ''
+    const isEmailLike = form.username.includes('@')
     try {
-      if (loginType.value === 'staff') await handleStaffLogin()
-      else await handleCustomerLogin()
-    } catch (error: any) { ElMessage.error(error.message || t('common.error')); resetCaptcha() }
-    finally { loading.value = false }
+      // 输入不含 @ 时优先管理员登录
+      if (!isEmailLike) {
+        try {
+          const adminResp = await adminLogin({ username: form.username, password: form.password })
+          if (adminResp?.success && adminResp?.token) {
+            doAdminSuccess(adminResp)
+            return
+          }
+          lastError = adminResp?.error || 'invalid_credentials'
+        } catch (e: any) {
+          lastError = e?.response?.data?.error || e?.message || 'invalid_credentials'
+        }
+      }
+      // 尝试客户登录
+      try {
+        const accountResp: any = await accountLogin({ email: form.username, password: form.password })
+        if (accountResp?.success && accountResp?.token) {
+          await doCustomerSuccess(accountResp)
+          return
+        }
+        lastError = accountResp?.error || lastError
+      } catch (e: any) {
+        lastError = e?.response?.data?.error || e?.message || lastError
+      }
+      // 若先试了管理员，此处不再重试；否则再试管理员
+      if (isEmailLike) {
+        try {
+          const adminResp = await adminLogin({ username: form.username, password: form.password })
+          if (adminResp?.success && adminResp?.token) {
+            doAdminSuccess(adminResp)
+            return
+          }
+          lastError = adminResp?.error || lastError
+        } catch (e: any) {
+          lastError = e?.response?.data?.error || e?.message || lastError
+        }
+      }
+      ElMessage.error(mapLoginError(lastError))
+      resetCaptcha()
+    } finally {
+      loading.value = false
+    }
   })
 }
 
@@ -388,35 +447,6 @@ const mapLoginError = (error: string): string => {
     too_many_attempts: t('login.tgTooManyAttempts'), invalid_username: t('login.enterUsername'),
   }
   return m[error] || error
-}
-
-const handleStaffLogin = async () => {
-  const response = await adminLogin({ username: form.username, password: form.password })
-  if (response.success && response.token) {
-    localStorage.removeItem('api_key'); localStorage.removeItem('account_id'); localStorage.removeItem('account_name')
-    sessionStorage.removeItem('impersonate_mode')
-    localStorage.setItem('admin_token', response.token)
-    localStorage.setItem('admin_id', String(response.admin_id || ''))
-    localStorage.setItem('admin_role', response.role || '')
-    localStorage.setItem('account_name', response.username || form.username)
-    const roleNames: Record<string, string> = { super_admin: t('roles.superAdmin'), admin: t('roles.admin'), sales: t('roles.sales'), finance: t('roles.finance'), tech: t('roles.tech') }
-    const roleName = roleNames[response.role || ''] || t('roles.staff')
-    ElMessage.success(`${t('login.welcomeBack')}, ${roleName} ${response.username || form.username}`)
-    router.push('/dashboard')
-  } else { ElMessage.error(mapLoginError(response.error)); resetCaptcha() }
-}
-
-const handleCustomerLogin = async () => {
-  const accountResp: any = await accountLogin({ email: form.username, password: form.password })
-  if (accountResp?.success && accountResp?.token) {
-    localStorage.removeItem('admin_token'); localStorage.removeItem('admin_id'); localStorage.removeItem('admin_role')
-    sessionStorage.removeItem('impersonate_mode')
-    localStorage.setItem('api_key', accountResp.token)
-    localStorage.setItem('account_id', String(accountResp.account_id || ''))
-    try { const info: any = await getAccountInfo(); if (info?.account_name) localStorage.setItem('account_name', info.account_name) } catch {}
-    ElMessage.success(t('login.loginSuccess'))
-    router.push('/dashboard')
-  } else { ElMessage.error(mapLoginError(accountResp?.error)); resetCaptcha() }
 }
 
 const resetCaptcha = () => { captchaRef.value?.reset(); captchaVerified.value = false }
