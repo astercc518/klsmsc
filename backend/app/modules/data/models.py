@@ -245,6 +245,11 @@ class DataImportBatch(Base):
     # 导入信息
     file_name = Column(String(255), comment='原始文件名')
     source = Column(String(100), comment='数据来源')
+    purpose = Column(String(100), comment='用途（重试时需）')
+    data_date_str = Column(String(20), comment='采集日期 YYYY-MM-DD')
+    pricing_template_id = Column(Integer, nullable=True, comment='定价模板ID')
+    default_tags_json = Column(Text, comment='默认标签 JSON 数组')
+    country_code = Column(String(10), comment='国家代码，用于解析本地号')
     
     # 统计
     total_count = Column(Integer, default=0, comment='总记录数')

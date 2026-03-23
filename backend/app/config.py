@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     RABBITMQ_HOST: str = "localhost"
     RABBITMQ_PORT: int = 5672
     RABBITMQ_USER: str = "smsc_mq"
-    RABBITMQ_PASSWORD: str = ""
+    RABBITMQ_PASSWORD: str = "smsc_mq_pass"
     RABBITMQ_VHOST: str = "/"
     
     @property

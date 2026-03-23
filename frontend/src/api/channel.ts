@@ -35,6 +35,8 @@ export const getChannels = async () => {
         name: ch.channel_name ?? ch.name,
         protocol: ch.protocol,
         status: ch.status,
+        connection_status: ch.connection_status ?? 'unknown',
+        connection_checked_at: ch.connection_checked_at ?? null,
         priority: ch.priority ?? 0,
         weight: ch.weight ?? 0,
         max_tps: ch.max_tps ?? 100,

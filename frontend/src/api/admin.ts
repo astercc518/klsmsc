@@ -168,10 +168,17 @@ export async function channelTestSend(
 }
 
 /**
- * 通道状态检查
+ * 通道状态检查（单个）
  */
 export async function channelCheckStatus(channelId: number): Promise<any> {
   return request.post(`/admin/channels/${channelId}/check-status`);
+}
+
+/**
+ * 一键检测所有通道连接状态
+ */
+export async function channelCheckAllStatus(): Promise<any> {
+  return request.post('/admin/channels/check-all-status');
 }
 
 /**

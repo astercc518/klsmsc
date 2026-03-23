@@ -75,6 +75,9 @@
         <el-option :label="$t('channels.maintenance')" value="maintenance" />
       </el-select>
       <el-button @click="resetFilters">{{ $t('common.reset') }}</el-button>
+      <el-button type="warning" :loading="checkingAll" :icon="CircleCheck" @click="handleCheckAllStatus">
+        {{ $t('channels.checkAllStatus') }}
+      </el-button>
     </div>
     
     <!-- 通道列表 -->
@@ -109,10 +112,10 @@
             <span class="account-text">{{ row.username || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="status" :label="$t('channels.channelStatus')" min-width="90" align="center">
+        <el-table-column prop="connection_status" :label="$t('channels.channelStatus')" min-width="90" align="center">
           <template #default="{ row }">
-            <el-tag :type="getStatusType(row.status)" size="small" effect="light" round>
-              {{ getStatusText(row.status) }}
+            <el-tag :type="getConnectionStatusType(row.connection_status)" size="small" effect="light" round>
+              {{ getConnectionStatusText(row.connection_status) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -169,9 +172,9 @@
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item :label="$t('channels.channelName')" :span="2">{{ currentChannel.name }}</el-descriptions-item>
-        <el-descriptions-item :label="$t('common.status')">
-          <el-tag :type="getStatusType(currentChannel.status)">
-            {{ getStatusText(currentChannel.status) }}
+        <el-descriptions-item :label="$t('channels.channelStatus')">
+          <el-tag :type="getConnectionStatusType(currentChannel.connection_status)">
+            {{ getConnectionStatusText(currentChannel.connection_status) }}
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item :label="$t('channels.defaultSid')">
@@ -698,6 +701,7 @@ import {
   deleteRoutingRule,
   channelTestSend,
   channelCheckStatus,
+  channelCheckAllStatus,
   getSuppliers,
   linkSupplierChannel
 } from '@/api/admin'
@@ -727,6 +731,7 @@ const testForm = reactive({
 // 状态检测相关
 const statusCheckVisible = ref(false)
 const statusChecking = ref(false)
+const checkingAll = ref(false)
 const statusChannel = ref<any>(null)
 const statusResult = ref<any>(null)
 
@@ -748,7 +753,7 @@ const resetFilters = () => {
 // 统计
 const stats = computed(() => {
   const total = channels.value.length
-  const active = channels.value.filter(c => c.status === 'active').length
+  const active = channels.value.filter(c => c.connection_status === 'online').length
   const smpp = channels.value.filter(c => c.protocol === 'SMPP').length
   const http = channels.value.filter(c => c.protocol === 'HTTP').length
   return { total, active, smpp, http }
@@ -948,6 +953,8 @@ const mapAdminChannel = (ch: any) => ({
   name: ch.channel_name,
   protocol: ch.protocol,
   status: ch.status,
+  connection_status: ch.connection_status ?? 'unknown',
+  connection_checked_at: ch.connection_checked_at ?? null,
   priority: ch.priority,
   weight: ch.weight,
   host: ch.host,
@@ -1373,6 +1380,26 @@ const getStatusText = (status: string) => {
   return key ? t(key) : status
 }
 
+// 连接状态（通道状态列展示实际连通性）
+const getConnectionStatusType = (connStatus: string) => {
+  const types: Record<string, any> = {
+    online: 'success',
+    offline: 'danger',
+    unknown: 'info',
+  }
+  return types[connStatus || 'unknown'] || 'info'
+}
+
+const getConnectionStatusText = (connStatus: string) => {
+  const keys: Record<string, string> = {
+    online: 'channels.statusOnline',
+    offline: 'channels.statusOffline',
+    unknown: 'channels.statusUnknown',
+  }
+  const key = keys[connStatus || 'unknown']
+  return key ? t(key) : (connStatus || t('channels.statusUnknown'))
+}
+
 // 测试发送
 const openTestSend = (row: any) => {
   testChannel.value = row
@@ -1416,7 +1443,29 @@ const handleTestSend = async () => {
   }
 }
 
-// 状态检测
+// 一键检测所有通道
+const handleCheckAllStatus = async () => {
+  if (channels.value.length === 0) {
+    ElMessage.warning(t('channels.noChannelsToCheck'))
+    return
+  }
+  checkingAll.value = true
+  try {
+    const res = await channelCheckAllStatus()
+    if (res?.success) {
+      ElMessage.success(res.message || t('channels.checkAllSuccess'))
+      await loadChannels()
+    } else {
+      ElMessage.error(res?.message || t('channels.checkAllFailed'))
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || t('channels.checkAllFailed'))
+  } finally {
+    checkingAll.value = false
+  }
+}
+
+// 状态检测（单个）
 const handleCheckStatus = async (row: any) => {
   statusChannel.value = row
   statusResult.value = null
@@ -1431,6 +1480,8 @@ const handleCheckStatus = async (row: any) => {
     } else {
       ElMessage.warning(res.message || t('channels.channelStatusAbnormal'))
     }
+    // 检测后刷新列表，使通道状态列立即更新
+    await loadChannels()
   } catch (error: any) {
     statusResult.value = {
       success: false,

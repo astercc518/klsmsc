@@ -11,6 +11,12 @@
           <el-button type="primary" size="large" @click="showImportDialog" :icon="UploadFilled">
             上传数据
           </el-button>
+          <el-button type="danger" size="large" plain @click="showDeleteByCountryDialog">
+            删除国家数据
+          </el-button>
+          <el-button type="danger" size="large" @click="showClearAllDialog">
+            清空全部
+          </el-button>
         </el-col>
       </el-row>
     </el-card>
@@ -143,6 +149,44 @@
           <div class="task-footer">
             <span class="task-batch-id">{{ task.batch_id }}</span>
             <span class="task-time">{{ formatDate(task.created_at) }}</span>
+            <el-button
+              v-if="canRetryTask(task)"
+              type="primary"
+              size="small"
+              link
+              :loading="retryingBatchId === task.batch_id"
+              @click="retryImportTask(task)"
+            >
+              重新提交
+            </el-button>
+            <el-button
+              v-else-if="canSupplementProduct(task)"
+              type="warning"
+              size="small"
+              link
+              :loading="supplementingBatchId === task.batch_id"
+              @click="supplementProductTask(task)"
+            >
+              补充商品
+            </el-button>
+            <el-button
+              type="danger"
+              size="small"
+              link
+              :loading="deletingBatchId === task.batch_id"
+              @click="deleteByBatchTask(task)"
+            >
+              删除该批数据
+            </el-button>
+            <el-button
+              type="danger"
+              size="small"
+              link
+              :loading="deletingTaskId === task.batch_id"
+              @click="deleteImportTask(task)"
+            >
+              删除任务
+            </el-button>
           </div>
         </div>
       </div>
@@ -346,19 +390,70 @@
       </template>
     </el-dialog>
 
+    <!-- 清空全部 -->
+    <el-dialog v-model="clearAllVisible" title="清空全部数据" width="460px" :close-on-click-modal="false">
+      <el-alert type="error" :closable="false" show-icon style="margin-bottom:16px">
+        <template #title>危险操作</template>
+        将删除所有导入任务、号码数据、数据商品，且不可恢复。请谨慎操作。
+      </el-alert>
+      <el-form label-width="100px">
+        <el-form-item label="确认输入" required>
+          <el-input
+            v-model="clearAllConfirmInput"
+            placeholder="请输入 RESET_ALL 以确认"
+            clearable
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="clearAllVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="danger" :loading="clearingAll" :disabled="clearAllConfirmInput !== 'RESET_ALL'" @click="handleClearAll">
+          确认清空全部
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 删除国家数据 -->
+    <el-dialog v-model="deleteByCountryVisible" title="删除国家数据" width="420px">
+      <el-form label-width="100px">
+        <el-form-item label="选择国家" required>
+          <el-select v-model="deleteCountryCode" placeholder="选择要删除的国家" filterable style="width:100%">
+            <el-option
+              v-for="(count, code) in (stats.by_country || {})"
+              :key="code"
+              :label="`${formatCountry(code)} (${(count || 0).toLocaleString()} 条)`"
+              :value="code"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="deleteByCountryVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="danger" :loading="deletingByCountry" @click="handleDeleteByCountry">
+          确认删除
+        </el-button>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { UploadFilled, Refresh } from '@element-plus/icons-vue'
 import {
   getNumberStats,
   importNumbers,
   getImportBatches,
   getImportProgress,
+  retryImport,
+  supplementProductForBatch,
+  deleteNumbersByCountry,
+  deleteNumbersByBatch,
+  deleteImportBatch,
+  clearAllData,
   getPricingTemplates,
   type PricingTemplate,
 } from '@/api/data-admin'
@@ -437,6 +532,16 @@ const importResults = ref<any[]>([])
 
 // 导入任务列表
 const importTasks = ref<any[]>([])
+const retryingBatchId = ref<string | null>(null)
+const supplementingBatchId = ref<string | null>(null)
+const deletingBatchId = ref<string | null>(null)
+const deletingTaskId = ref<string | null>(null)
+const clearAllVisible = ref(false)
+const clearAllConfirmInput = ref('')
+const clearingAll = ref(false)
+const deleteByCountryVisible = ref(false)
+const deleteCountryCode = ref('')
+const deletingByCountry = ref(false)
 let _pollTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
@@ -697,8 +802,154 @@ function formatDate(val: string | null) {
 }
 
 function isTaskRunning(task: any): boolean {
+  // 仅 Worker 已接管并真正处理时显示「处理中」；pending 显示「等待中」
   const s = task._progress?.status || task.status
-  return s === 'pending' || s === 'processing'
+  return s === 'processing'
+}
+
+function canRetryTask(task: any): boolean {
+  return task.status === 'pending' || task.status === 'failed'
+}
+
+function canSupplementProduct(task: any): boolean {
+  if (task.status !== 'completed') return false
+  const valid = task._progress?.valid_count ?? task.valid_count ?? 0
+  const dup = (task._progress?.duplicate_count ?? task.duplicate_count ?? 0) + (task._progress?.file_dedup_count ?? task.file_dedup_count ?? 0)
+  return valid === 0 && dup > 0
+}
+
+function showDeleteByCountryDialog() {
+  deleteCountryCode.value = ''
+  deleteByCountryVisible.value = true
+}
+
+function showClearAllDialog() {
+  clearAllConfirmInput.value = ''
+  clearAllVisible.value = true
+}
+
+async function handleClearAll() {
+  if (clearAllConfirmInput.value !== 'RESET_ALL') return
+  clearingAll.value = true
+  try {
+    const res: any = await clearAllData()
+    if (res?.success) {
+      ElMessage.success(res.message || '已清空全部')
+      clearAllVisible.value = false
+      loadStats()
+      loadImportTasks()
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '清空失败')
+  } finally {
+    clearingAll.value = false
+  }
+}
+
+async function handleDeleteByCountry() {
+  if (!deleteCountryCode.value) {
+    ElMessage.warning('请选择国家')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定删除「${formatCountry(deleteCountryCode.value)}」的全部号码数据？此操作不可恢复。`,
+      '确认删除',
+      { type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  deletingByCountry.value = true
+  try {
+    const res = await deleteNumbersByCountry(deleteCountryCode.value)
+    if (res?.success) {
+      ElMessage.success(res.message || `已删除 ${res.deleted ?? 0} 条`)
+      deleteByCountryVisible.value = false
+      loadStats()
+      loadImportTasks()
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
+  } finally {
+    deletingByCountry.value = false
+  }
+}
+
+async function supplementProductTask(task: any) {
+  if (!task.batch_id) return
+  supplementingBatchId.value = task.batch_id
+  try {
+    const res = await supplementProductForBatch(task.batch_id)
+    if (res?.success) {
+      ElMessage.success(res.message || '商品已补充')
+      loadImportTasks()
+      loadStats()
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '补充失败')
+  } finally {
+    supplementingBatchId.value = null
+  }
+}
+
+async function retryImportTask(task: any) {
+  if (!task.batch_id) return
+  retryingBatchId.value = task.batch_id
+  try {
+    const res = await retryImport(task.batch_id)
+    if (res?.success) {
+      ElMessage.success(res.message || '已重新提交')
+      task.status = 'pending'
+      delete task._progress
+      loadImportTasks()
+      startPolling()
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '重新提交失败')
+  } finally {
+    retryingBatchId.value = null
+  }
+}
+
+async function deleteByBatchTask(task: any) {
+  if (!task.batch_id) return
+  try {
+    await ElMessageBox.confirm(`确定删除批次 ${task.batch_id} 下的所有号码数据？此操作不可恢复。`, '确认删除', { type: 'warning' })
+    deletingBatchId.value = task.batch_id
+    const res = await deleteNumbersByBatch(task.batch_id)
+    if (res?.success) {
+      ElMessage.success(res.message || `已删除 ${res.deleted ?? 0} 条号码`)
+      loadImportTasks()
+      loadStats()
+    }
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
+  } finally {
+    deletingBatchId.value = null
+  }
+}
+
+async function deleteImportTask(task: any) {
+  if (!task.batch_id) return
+  try {
+    await ElMessageBox.confirm(
+      `确定删除导入任务「${task.file_name || task.batch_id}」？将同时删除该批次的号码数据，此操作不可恢复。`,
+      '确认删除任务',
+      { type: 'warning' }
+    )
+    deletingTaskId.value = task.batch_id
+    const res = await deleteImportBatch(task.batch_id)
+    if (res?.success) {
+      ElMessage.success(res.message || '任务已删除')
+      loadImportTasks()
+      loadStats()
+    }
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error(e?.response?.data?.detail || e?.message || '删除失败')
+  } finally {
+    deletingTaskId.value = null
+  }
 }
 
 function formatElapsed(sec?: number): string {

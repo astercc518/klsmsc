@@ -106,8 +106,24 @@ export function getImportProgress(batchId: string) {
   return request({ url: `/admin/data/numbers/import-progress/${batchId}`, method: 'get' })
 }
 
+export function retryImport(batchId: string) {
+  return request({ url: `/admin/data/numbers/import-retry/${batchId}`, method: 'post' })
+}
+
+export function supplementProductForBatch(batchId: string) {
+  return request({ url: `/admin/data/numbers/import-supplement-product/${batchId}`, method: 'post' })
+}
+
 export function getImportBatches(params?: { page?: number; page_size?: number }) {
   return request({ url: '/admin/data/import-batches', method: 'get', params })
+}
+
+export function deleteImportBatch(batchId: string) {
+  return request({ url: `/admin/data/import-batches/${batchId}`, method: 'delete' })
+}
+
+export function clearAllData() {
+  return request({ url: '/admin/data/clear-all', method: 'post', params: { confirm: 'RESET_ALL' } })
 }
 
 export function batchTag(data: { number_ids: number[]; tags: string[]; mode?: string }) {
@@ -125,6 +141,14 @@ export function exportNumbers(params?: { country?: string; status?: string; tag?
     params,
     responseType: 'blob',
   })
+}
+
+export function deleteNumbersByCountry(countryCode: string, params?: { source?: string; purpose?: string }) {
+  return request({ url: `/admin/data/numbers/by-country/${countryCode}`, method: 'delete', params })
+}
+
+export function deleteNumbersByBatch(batchId: string) {
+  return request({ url: `/admin/data/numbers/by-batch/${batchId}`, method: 'delete' })
 }
 
 export function dedupNumbers() {
@@ -164,6 +188,14 @@ export function deleteProduct(id: number) {
 
 export function refreshProductStock(id: number) {
   return request({ url: `/admin/data/products/${id}/refresh-stock`, method: 'post' })
+}
+
+export function assignPoolNumbersToProduct(id: number) {
+  return request({ url: `/admin/data/products/${id}/assign-pool-numbers`, method: 'post' })
+}
+
+export function syncProductsFromPool(countryCode?: string) {
+  return request({ url: '/admin/data/products/sync-from-pool', method: 'post', params: countryCode ? { country_code: countryCode } : {} })
 }
 
 // ============ 评分管理 ============

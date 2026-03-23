@@ -45,6 +45,10 @@ celery_app.conf.task_queues = {
         'exchange': 'sms_dlr',
         'routing_key': 'sms_dlr',
     },
+    'data_tasks': {
+        'exchange': 'data_tasks',
+        'routing_key': 'data_tasks',
+    },
     'settlement_tasks': {
         'exchange': 'settlement_tasks',
         'routing_key': 'settlement_tasks',

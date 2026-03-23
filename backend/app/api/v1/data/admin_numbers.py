@@ -2,9 +2,10 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, update, or_
+from sqlalchemy import select, func, update, delete, or_, and_
 from typing import Optional
 from datetime import datetime, timedelta, date
+import json
 import uuid
 import csv
 import io
@@ -12,7 +13,7 @@ import re
 import phonenumbers
 
 from app.database import get_db
-from app.modules.data.models import DataNumber, DataImportBatch, DataPricingTemplate, DATA_SOURCES, DATA_PURPOSES, SOURCE_LABELS, PURPOSE_LABELS
+from app.modules.data.models import DataNumber, DataImportBatch, DataOrderNumber, DataProduct, DataPricingTemplate, DATA_SOURCES, DATA_PURPOSES, SOURCE_LABELS, PURPOSE_LABELS
 from app.core.auth import get_current_admin
 from app.utils.logger import get_logger
 from app.schemas.data import NumberBatchTagRequest, NumberBatchStatusRequest
@@ -181,15 +182,20 @@ async def import_numbers(
                 raise HTTPException(status_code=413, detail="文件大小超过限制(最大500MB)")
             f.write(chunk)
 
+    tags_list = [t.strip() for t in default_tags.split(",")] if default_tags else None
+
     import_batch = DataImportBatch(
         batch_id=batch_id, file_name=filename, source=source,
         status="pending", created_by=admin.id,
+        purpose=purpose,
+        data_date_str=data_date or date.today().isoformat(),
+        pricing_template_id=pricing_template_id,
+        default_tags_json=json.dumps(tags_list, ensure_ascii=False) if tags_list else None,
+        country_code=country_code,
     )
     db.add(import_batch)
     await db.flush()
     await db.commit()
-
-    tags_list = [t.strip() for t in default_tags.split(",")] if default_tags else None
 
     from app.workers.celery_app import celery_app as _celery
     _celery.send_task('data_import_numbers', args=[
@@ -248,6 +254,176 @@ async def get_import_progress(
     }
 
 
+@router.post("/numbers/import-retry/{batch_id}")
+async def retry_import(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """重新提交卡住的导入任务（pending/failed 可重试），无需重新上传文件"""
+    import os
+    upload_dir = "/tmp/smsc_imports"
+
+    result = await db.execute(
+        select(DataImportBatch).where(DataImportBatch.batch_id == batch_id)
+    )
+    batch = result.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    if batch.status not in ("pending", "failed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"仅支持对「等待中」或「失败」任务重试，当前状态: {batch.status}",
+        )
+
+    filename = batch.file_name or ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
+    if ext not in ("csv", "txt"):
+        ext = "txt"
+
+    file_path = os.path.join(upload_dir, f"{batch_id}.{ext}")
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="导入文件已不存在，请重新上传")
+
+    purpose = batch.purpose or DATA_PURPOSES[0]
+    data_date_str = batch.data_date_str or date.today().isoformat()
+    tags_list = json.loads(batch.default_tags_json) if batch.default_tags_json else None
+
+    if batch.status == "failed":
+        batch.error_message = None
+        batch.status = "pending"
+
+    await db.commit()
+
+    from app.workers.celery_app import celery_app as _celery
+    _celery.send_task(
+        "data_import_numbers",
+        args=[
+            batch_id,
+            file_path,
+            ext,
+            batch.source,
+            purpose,
+            data_date_str,
+            batch.pricing_template_id,
+            tags_list,
+            batch.country_code,
+        ],
+        queue="data_tasks",
+    )
+
+    logger.info(f"[{batch_id}] 导入任务已重新提交（重试）")
+
+    return {
+        "success": True,
+        "batch_id": batch_id,
+        "message": "已重新提交到处理队列，请刷新查看进度",
+    }
+
+
+@router.post("/numbers/import-supplement-product/{batch_id}")
+async def supplement_product_for_batch(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """为已完成但未创建商品的导入批次补充创建商品（0 写入 + 有重复时）"""
+    from app.api.v1.data.helpers import calculate_stock
+    from app.modules.data.models import DataPricingTemplate, DataProduct
+    from app.workers.data_worker import _auto_create_product, _to_iso
+
+    result = await db.execute(
+        select(DataImportBatch).where(DataImportBatch.batch_id == batch_id)
+    )
+    batch = result.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if batch.status != "completed":
+        raise HTTPException(status_code=400, detail="仅支持已完成的任务")
+    if batch.valid_count > 0:
+        raise HTTPException(status_code=400, detail="该任务已有写入，应已有商品")
+
+    if not batch.duplicate_count or batch.duplicate_count <= 0:
+        raise HTTPException(status_code=400, detail="无重复数据，无法补充商品")
+
+    source, purpose = batch.source, batch.purpose or "stock"
+    data_date_str = batch.data_date_str or date.today().isoformat()
+    parsed_date = date.fromisoformat(data_date_str) if data_date_str else date.today()
+    freshness = compute_freshness(parsed_date)
+    effective_country = (batch.country_code or "").upper() if batch.country_code else None
+    matched_tpl_id = batch.pricing_template_id
+
+    if not matched_tpl_id:
+        tpl_result = await db.execute(
+            select(DataPricingTemplate.id).where(
+                DataPricingTemplate.source == source,
+                DataPricingTemplate.purpose == purpose,
+                DataPricingTemplate.freshness == freshness,
+                DataPricingTemplate.status == "active",
+            ).limit(1)
+        )
+        matched_tpl_id = tpl_result.scalar_one_or_none()
+    if not matched_tpl_id:
+        tpl_result = await db.execute(
+            select(DataPricingTemplate.id).where(
+                DataPricingTemplate.source == source,
+                DataPricingTemplate.purpose == purpose,
+                DataPricingTemplate.status == "active",
+            ).limit(1)
+        )
+        matched_tpl_id = tpl_result.scalar_one_or_none()
+
+    if not matched_tpl_id:
+        raise HTTPException(status_code=400, detail="未找到匹配的定价模板")
+
+    tpl_row = await db.execute(
+        select(DataPricingTemplate).where(DataPricingTemplate.id == matched_tpl_id)
+    )
+    tpl = tpl_row.scalar_one_or_none()
+    if tpl and not effective_country:
+        if tpl.country_code and tpl.country_code != "*":
+            effective_country = _to_iso(tpl.country_code)
+        elif batch.country_code:
+            effective_country = (batch.country_code or "").upper()
+
+    if not effective_country:
+        raise HTTPException(status_code=400, detail="无法确定国家，请检查批次或模板")
+
+    fc = {"source": source, "purpose": purpose, "freshness": freshness, "country": effective_country}
+    stock = await calculate_stock(db, fc, public_only=True)
+
+    # 若已有同条件商品则不再创建
+    exist_q = select(DataProduct).where(
+        DataProduct.is_deleted == False,
+        DataProduct.filter_criteria.isnot(None),
+        func.json_unquote(func.json_extract(DataProduct.filter_criteria, "$.country")) == effective_country,
+        func.json_unquote(func.json_extract(DataProduct.filter_criteria, "$.source")) == source,
+        func.json_unquote(func.json_extract(DataProduct.filter_criteria, "$.purpose")) == purpose,
+        func.json_unquote(func.json_extract(DataProduct.filter_criteria, "$.freshness")) == freshness,
+    )
+    existing = (await db.execute(exist_q)).scalars().first()
+    if existing:
+        # 刷新库存
+        existing.stock_count = stock
+        if stock > 0 and existing.status == "sold_out":
+            existing.status = "active"
+        elif stock == 0 and existing.status == "active":
+            existing.status = "sold_out"
+        existing.max_purchase = max(stock, 100000)
+        await db.commit()
+        return {"success": True, "product_code": existing.product_code, "stock_count": stock, "message": "已刷新现有商品库存"}
+
+    product_code = await _auto_create_product(
+        db, source, purpose, freshness,
+        country_code=effective_country, matched_tpl_id=matched_tpl_id,
+        batch_id=batch_id, valid_count=stock,
+        file_name=batch.file_name,
+    )
+
+    return {"success": True, "product_code": product_code, "stock_count": stock, "message": "商品已补充"}
+
+
 @router.get("/import-batches")
 async def list_import_batches(
     page: int = Query(1, ge=1),
@@ -291,6 +467,66 @@ async def list_import_batches(
     }
 
 
+@router.delete("/import-batches/{batch_id}")
+async def delete_import_batch(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """删除导入任务记录（同时删除该批次的号码数据，已售出号码保留）"""
+    # 先删未被订单引用的号码
+    used_subq = select(DataOrderNumber.number_id).distinct()
+    stmt = delete(DataNumber).where(
+        DataNumber.batch_id == batch_id,
+        DataNumber.id.not_in(used_subq),
+    )
+    result = await db.execute(stmt)
+    deleted_numbers = result.rowcount
+    # 再删任务记录
+    del_stmt = delete(DataImportBatch).where(DataImportBatch.batch_id == batch_id)
+    r = await db.execute(del_stmt)
+    await db.commit()
+    if r.rowcount == 0:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    logger.info(f"删除导入任务: {batch_id}, 同时删除{deleted_numbers}条号码")
+    return {"success": True, "deleted_numbers": deleted_numbers, "message": f"任务已删除，同时删除 {deleted_numbers} 条号码"}
+
+
+@router.post("/clear-all")
+async def clear_all_data(
+    confirm: str = Query(..., description="必须传入 confirm=RESET_ALL 才会执行"),
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """清空所有导入任务、号码数据、数据商品（危险操作，慎用）"""
+    if confirm != "RESET_ALL":
+        raise HTTPException(status_code=400, detail="必须传入 confirm=RESET_ALL 确认执行")
+
+    # 1. 删除订单-号码关联（解除外键）
+    r1 = await db.execute(delete(DataOrderNumber))
+    deleted_order_numbers = r1.rowcount
+    # 2. 删除所有号码
+    r2 = await db.execute(delete(DataNumber))
+    deleted_numbers = r2.rowcount
+    # 3. 删除所有导入任务
+    r3 = await db.execute(delete(DataImportBatch))
+    deleted_batches = r3.rowcount
+    # 4. 软删除所有数据商品
+    r4 = await db.execute(update(DataProduct).where(or_(DataProduct.is_deleted == False, DataProduct.is_deleted.is_(None))).values(is_deleted=True))
+    deleted_products = r4.rowcount
+    await db.commit()
+
+    logger.warning(f"清空全部: 订单关联{deleted_order_numbers}条, 号码{deleted_numbers}条, 任务{deleted_batches}个, 商品{deleted_products}个")
+    return {
+        "success": True,
+        "deleted_order_numbers": deleted_order_numbers,
+        "deleted_numbers": deleted_numbers,
+        "deleted_batches": deleted_batches,
+        "deleted_products": deleted_products,
+        "message": f"已清空: {deleted_numbers} 条号码, {deleted_batches} 个任务, {deleted_products} 个商品",
+    }
+
+
 # ============ 批量操作 ============
 
 @router.post("/numbers/batch-tag")
@@ -319,6 +555,98 @@ async def batch_tag_numbers(
 
     await db.commit()
     return {"success": True, "updated": updated}
+
+
+@router.delete("/numbers/by-batch/{batch_id}")
+async def delete_numbers_by_batch(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """按导入任务（批次）删除号码数据。已售出号码保留。"""
+    used_subq = select(DataOrderNumber.number_id).distinct()
+    stmt = delete(DataNumber).where(
+        DataNumber.batch_id == batch_id,
+        DataNumber.id.not_in(used_subq),
+    )
+    result = await db.execute(stmt)
+    await db.commit()
+    deleted = result.rowcount
+    logger.info(f"按批次删除: {batch_id}, 删除{deleted}条")
+    return {"success": True, "deleted": deleted, "message": f"已删除批次 {batch_id} 的 {deleted} 条号码"}
+
+
+@router.delete("/numbers/by-country/{country_code}")
+async def delete_numbers_by_country(
+    country_code: str,
+    source: Optional[str] = Query(None, description="仅删除指定来源，不传则删除该国全部"),
+    purpose: Optional[str] = Query(None, description="仅删除指定用途，不传则全部"),
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """按国家删除号码数据（可指定来源/用途）。已售出号码保留不删，避免订单关联断裂。"""
+    cc = country_code.upper()
+    conditions = [DataNumber.country_code == cc]
+    if source:
+        conditions.append(DataNumber.source == source)
+    if purpose:
+        conditions.append(DataNumber.purpose == purpose)
+
+    # 仅删除未被订单引用的号码（避免 DataOrderNumber.number_id 外键约束报错）
+    used_subq = select(DataOrderNumber.number_id).distinct()
+    conditions.append(DataNumber.id.not_in(used_subq))
+
+    # 先查可删除数量
+    count_q = select(func.count()).select_from(DataNumber).where(and_(*conditions))
+    cnt = (await db.execute(count_q)).scalar() or 0
+    if cnt == 0:
+        # 检查是否有匹配但已售出的
+        total_conditions = [DataNumber.country_code == cc]
+        if source:
+            total_conditions.append(DataNumber.source == source)
+        if purpose:
+            total_conditions.append(DataNumber.purpose == purpose)
+        total_q = select(func.count()).select_from(DataNumber).where(and_(*total_conditions))
+        total = (await db.execute(total_q)).scalar() or 0
+        if total > 0:
+            return {"success": True, "deleted": 0, "message": f"该国 {total} 条号码均已售出，无法删除"}
+        return {"success": True, "deleted": 0, "message": "无匹配数据"}
+
+    stmt = delete(DataNumber).where(and_(*conditions))
+    result = await db.execute(stmt)
+    await db.commit()
+    deleted = result.rowcount
+
+    logger.info(f"按国家删除: {cc}" + (f" source={source}" if source else "") + (f" purpose={purpose}" if purpose else "") + f", 删除{deleted}条")
+    return {"success": True, "deleted": deleted, "message": f"已删除 {deleted} 条{cc}号码"}
+
+
+@router.post("/numbers/batch-update-source")
+async def batch_update_source(
+    country_code: str = Query(..., description="国家代码如 US"),
+    old_source: str = Query(..., description="当前来源"),
+    new_source: str = Query(..., description="新来源"),
+    purpose: Optional[str] = Query(None, description="用途，不传则全部"),
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """批量将指定条件的号码来源更新为新来源（用于将社工库等划入电销等商品）"""
+    if new_source not in DATA_SOURCES:
+        raise HTTPException(status_code=400, detail=f"无效来源: {new_source}")
+
+    conditions = [
+        DataNumber.country_code == country_code.upper(),
+        DataNumber.source == old_source,
+    ]
+    if purpose:
+        conditions.append(DataNumber.purpose == purpose)
+    stmt = update(DataNumber).where(and_(*conditions)).values(source=new_source)
+    result = await db.execute(stmt)
+    await db.commit()
+    updated = result.rowcount
+
+    logger.info(f"批量更新来源: {country_code} {old_source}->{new_source}, 更新{updated}条")
+    return {"success": True, "updated": updated, "message": f"已更新 {updated} 条号码来源"}
 
 
 @router.post("/numbers/batch-status")

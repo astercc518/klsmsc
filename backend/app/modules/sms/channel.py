@@ -43,8 +43,17 @@ class Channel(Base):
         Enum("active", "inactive", "maintenance", name="channel_status"),
         nullable=False,
         default="active",
-        comment="通道状态"
+        comment="配置状态：是否启用通道"
     )
+    
+    # 连接状态：由状态检测接口更新，用于展示实际连通性
+    connection_status = Column(
+        String(20),
+        nullable=True,
+        default="unknown",
+        comment="连接状态：online=正常 offline=异常 unknown=未检测"
+    )
+    connection_checked_at = Column(TIMESTAMP, nullable=True, comment="最后检测时间")
     
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), comment="创建时间")
     updated_at = Column(

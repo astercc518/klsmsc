@@ -1245,6 +1245,8 @@ async def list_channels_admin(
                 "channel_name": ch.channel_name,
                 "protocol": ch.protocol,
                 "status": ch.status,
+                "connection_status": ch.connection_status or "unknown",
+                "connection_checked_at": ch.connection_checked_at.isoformat() if ch.connection_checked_at else None,
                 "priority": ch.priority,
                 "weight": ch.weight,
                 "max_tps": ch.max_tps,
@@ -1303,6 +1305,8 @@ async def get_channel_admin(
             "channel_name": ch.channel_name,
             "protocol": ch.protocol,
             "status": ch.status,
+            "connection_status": ch.connection_status or "unknown",
+            "connection_checked_at": ch.connection_checked_at.isoformat() if ch.connection_checked_at else None,
             "priority": ch.priority,
             "weight": ch.weight,
             "max_tps": ch.max_tps,
@@ -1656,24 +1660,69 @@ async def channel_test_send(
         }
 
 
-@router.post("/channels/{channel_id}/check-status", response_model=dict)
-async def channel_check_status(
-    channel_id: int,
+@router.post("/channels/check-all-status", response_model=dict)
+async def channel_check_all_status(
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """通道状态检查"""
+    """一键检测所有通道连接状态，结果持久化到 connection_status 字段"""
     from app.modules.sms.channel import Channel
-    import httpx
-    import time
     
     result = await db.execute(
-        select(Channel).where(Channel.id == channel_id)
+        select(Channel).where(Channel.is_deleted == False).order_by(Channel.id)
     )
-    channel = result.scalar_one_or_none()
+    channels = result.scalars().all()
     
-    if not channel:
-        raise HTTPException(status_code=404, detail="Channel not found")
+    if not channels:
+        return {
+            "success": True,
+            "total": 0,
+            "online": 0,
+            "offline": 0,
+            "results": [],
+            "message": "暂无通道需要检测",
+        }
+    
+    # 复用单通道检测逻辑
+    results = []
+    online_count = 0
+    offline_count = 0
+    
+    for channel in channels:
+        check_result = await _run_channel_check(channel)
+        conn_status = "online" if check_result.get("status") == "online" else "offline"
+        channel.connection_status = conn_status
+        channel.connection_checked_at = datetime.utcnow()
+        
+        if conn_status == "online":
+            online_count += 1
+        else:
+            offline_count += 1
+        
+        results.append({
+            "channel_id": channel.id,
+            "channel_code": channel.channel_code,
+            "channel_name": channel.channel_name,
+            "status": conn_status,
+            "success": check_result.get("success", False),
+            "message": check_result.get("message", ""),
+        })
+    
+    await db.commit()
+    
+    return {
+        "success": True,
+        "total": len(channels),
+        "online": online_count,
+        "offline": offline_count,
+        "results": results,
+        "message": f"已检测 {len(channels)} 个通道，正常 {online_count} 个，异常 {offline_count} 个",
+    }
+
+
+async def _run_channel_check(channel) -> dict:
+    """执行单通道连接检测，返回结果字典（不持久化）"""
+    import time
     
     start_time = time.time()
     
@@ -1713,11 +1762,10 @@ async def channel_check_status(
                 }
                 
         elif channel.protocol == "HTTP":
-            # HTTP通道检测 - 检测API地址是否可达
             if not channel.api_url:
                 return {
                     "success": False,
-                    "status": "error",
+                    "status": "offline",
                     "message": "HTTP通道未配置API地址",
                     "details": {
                         "channel": channel.channel_code,
@@ -1726,7 +1774,6 @@ async def channel_check_status(
                     }
                 }
             try:
-                # 从api_url提取主机和端口进行TCP连接测试
                 from urllib.parse import urlparse
                 import socket
                 
@@ -1734,7 +1781,6 @@ async def channel_check_status(
                 host = parsed.hostname
                 port = parsed.port or (443 if parsed.scheme == 'https' else 80)
                 
-                # 使用socket进行快速连接测试（5秒超时）
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(5)
                 try:
@@ -1758,7 +1804,7 @@ async def channel_check_status(
                     latency_ms = int((time.time() - start_time) * 1000)
                     return {
                         "success": False,
-                        "status": "timeout",
+                        "status": "offline",
                         "message": f"HTTP接口连接超时 ({host}:{port})",
                         "details": {
                             "channel": channel.channel_code,
@@ -1788,7 +1834,7 @@ async def channel_check_status(
                 latency_ms = int((time.time() - start_time) * 1000)
                 return {
                     "success": False,
-                    "status": "error",
+                    "status": "offline",
                     "message": f"API地址解析失败: {str(parse_err)}",
                     "details": {
                         "channel": channel.channel_code,
@@ -1800,22 +1846,49 @@ async def channel_check_status(
         else:
             return {
                 "success": False,
-                "status": "unknown",
+                "status": "offline",
                 "message": f"不支持的协议类型: {channel.protocol}"
             }
             
     except Exception as e:
         latency_ms = int((time.time() - start_time) * 1000)
-        logger.error(f"状态检查异常: {str(e)}", exc_info=e)
+        logger.error(f"通道 {channel.channel_code} 状态检查异常: {str(e)}", exc_info=e)
         return {
             "success": False,
-            "status": "error",
+            "status": "offline",
             "message": f"状态检查异常: {str(e)}",
             "details": {
                 "channel": channel.channel_code,
                 "latency_ms": latency_ms
             }
         }
+
+
+@router.post("/channels/{channel_id}/check-status", response_model=dict)
+async def channel_check_status(
+    channel_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """通道状态检查，检测结果会持久化到 connection_status 字段"""
+    from app.modules.sms.channel import Channel
+    
+    result = await db.execute(
+        select(Channel).where(Channel.id == channel_id)
+    )
+    channel = result.scalar_one_or_none()
+    
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    
+    check_result = await _run_channel_check(channel)
+    
+    conn_status = "online" if check_result.get("status") == "online" else "offline"
+    channel.connection_status = conn_status
+    channel.connection_checked_at = datetime.utcnow()
+    await db.commit()
+    
+    return check_result
 
 
 # --- DLR 手动拉取（调试用）---

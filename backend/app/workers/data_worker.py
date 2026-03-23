@@ -530,12 +530,33 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
             await db.commit()
 
             product_code = None
-            if valid_count > 0:
+            stock_for_product = valid_count
+            effective_country = None  # 用于商品创建的国家（模板指定或上传时选择）
+            if valid_count == 0 and matched_tpl_id and duplicate_count > 0:
+                # 全部为重复时，基于池中现有数量创建商品（避免有号码无商品）
+                from app.api.v1.data.helpers import calculate_stock
+                tpl = await db.execute(
+                    select(DataPricingTemplate).where(DataPricingTemplate.id == matched_tpl_id)
+                )
+                tpl_obj = tpl.scalar_one_or_none()
+                if tpl_obj:
+                    if tpl_obj.country_code and tpl_obj.country_code != '*':
+                        effective_country = _to_iso(tpl_obj.country_code)
+                    elif default_region:
+                        effective_country = default_region.upper() if isinstance(default_region, str) else None
+                    if effective_country:
+                        fc = {"source": source, "purpose": purpose, "freshness": freshness, "country": effective_country}
+                        stock_for_product = await calculate_stock(db, fc, public_only=True)
+            # 有模板+国家时，即使库存为 0 也创建商品（售罄状态），避免「有导入无商品」
+            should_create = stock_for_product > 0 or (
+                valid_count == 0 and duplicate_count > 0 and matched_tpl_id and effective_country
+            )
+            if should_create:
                 try:
                     product_code = await _auto_create_product(
                         db, source, purpose, freshness,
-                        country_code=None, matched_tpl_id=matched_tpl_id,
-                        batch_id=batch_id, valid_count=valid_count,
+                        country_code=effective_country, matched_tpl_id=matched_tpl_id,
+                        batch_id=batch_id, valid_count=stock_for_product,
                         file_name=os.path.basename(file_path),
                     )
                 except Exception as e:
@@ -628,9 +649,18 @@ async def _auto_create_product(
             price = str(tpl_obj.price_per_number)
             if tpl_obj.country_code and tpl_obj.country_code != '*':
                 iso_code = _to_iso(tpl_obj.country_code)
+            elif country_code:
+                iso_code = _to_iso(country_code)
+            if iso_code:
                 filter_criteria["country"] = iso_code
 
-    batch_suffix = batch_id.split("-", 1)[1] if batch_id and "-" in batch_id else (batch_id or datetime.now().strftime('%Y%m%d%H%M%S'))
+    # product_code 限 50 字符，用批次末尾短码
+    if batch_id and "-" in batch_id:
+        batch_suffix = batch_id.split("-")[-1][:8]  # 如 A00BF9
+    elif batch_id:
+        batch_suffix = batch_id[-8:] if len(batch_id) > 8 else batch_id
+    else:
+        batch_suffix = datetime.now().strftime("%H%M%S")
     if iso_code:
         code = f"AUTO-{iso_code}-{source}-{purpose}-{freshness}-{batch_suffix}"
     else:
@@ -641,7 +671,7 @@ async def _auto_create_product(
         'CO': '哥伦比亚', 'MX': '墨西哥', 'ID': '印尼', 'TH': '泰国',
         'IN': '印度', 'MY': '马来西亚', 'SG': '新加坡', 'JP': '日本',
         'KR': '韩国', 'US': '美国', 'GB': '英国', 'DE': '德国',
-        'FR': '法国', 'AU': '澳大利亚', 'CA': '加拿大', 'RU': '俄罗斯',
+        'FR': '法国', 'IT': '意大利', 'AU': '澳大利亚', 'CA': '加拿大', 'RU': '俄罗斯',
         'SA': '沙特', 'AE': '阿联酋', 'TR': '土耳其', 'NG': '尼日利亚',
         'EG': '埃及', 'ZA': '南非', 'PE': '秘鲁', 'CL': '智利',
         'AR': '阿根廷', 'PK': '巴基斯坦', 'BD': '孟加拉',

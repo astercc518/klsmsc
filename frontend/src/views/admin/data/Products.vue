@@ -20,9 +20,10 @@
         <el-col :span="3">
           <el-input v-model="searchText" placeholder="搜索名称/编码" clearable @clear="loadData" @keyup.enter="loadData" />
         </el-col>
-        <el-col :span="9">
+        <el-col :span="11">
           <el-button type="primary" @click="loadData">查询</el-button>
           <el-button type="success" :icon="Plus" @click="openCreateDialog">{{ t('dataPool.createProduct') }}</el-button>
+          <el-button type="warning" :loading="syncing" @click="handleSyncFromPool">从号码池补充</el-button>
         </el-col>
       </el-row>
     </el-card>
@@ -59,10 +60,21 @@
             <span style="color:#E6A23C;font-weight:600">{{ (row.total_sold ?? 0).toLocaleString() }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="未售" width="120" sortable sort-by="unsold_count">
+        <el-table-column label="未售" width="160" sortable sort-by="unsold_count">
           <template #default="{ row }">
             <span style="font-weight:600;margin-right:6px">{{ (row.unsold_count ?? 0).toLocaleString() }}</span>
             <el-button size="small" :icon="Refresh" circle @click="handleRefreshStock(row)" title="刷新库存" />
+            <el-button
+              v-if="row.status === 'sold_out' && (row.unsold_count ?? 0) === 0"
+              size="small"
+              type="warning"
+              link
+              :loading="assigningId === row.id"
+              @click="handleAssignPoolNumbers(row)"
+              title="将池中同国家+用途的号码划入本商品"
+            >
+              划入号码
+            </el-button>
           </template>
         </el-table-column>
         <el-table-column label="评分" width="140" sortable :sort-by="(row: any) => row.rating?.avg || 0">
@@ -87,7 +99,7 @@
         <el-table-column :label="t('common.actions')" width="120" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" link @click="openEditDialog(row)">{{ t('common.edit') }}</el-button>
-            <el-button size="small" type="danger" link @click="handleDelete(row)">{{ t('common.delete') }}</el-button>
+            <el-button size="small" type="danger" link :loading="deletingId === row.id" @click="handleDelete(row)">{{ t('common.delete') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -341,6 +353,8 @@ import {
   updateProduct,
   deleteProduct,
   refreshProductStock,
+  assignPoolNumbersToProduct,
+  syncProductsFromPool,
   getPricingTemplates,
   importNumbers,
   getProductRatings,
@@ -361,6 +375,8 @@ function countryName(iso: string): string {
 
 // ====== 列表 ======
 const loading = ref(false)
+const syncing = ref(false)
+const assigningId = ref<number | null>(null)
 const products = ref<any[]>([])
 const filters = reactive({ status: '', product_type: '' })
 const searchText = ref('')
@@ -390,6 +406,21 @@ async function loadData() {
     }
   } catch (e) { console.error(e) }
   finally { loading.value = false }
+}
+
+async function handleSyncFromPool() {
+  syncing.value = true
+  try {
+    const res = await syncProductsFromPool()
+    if (res?.success) {
+      ElMessage.success(res.message || `已创建 ${res.created?.length || 0} 个商品`)
+      loadData()
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '补充失败')
+  } finally {
+    syncing.value = false
+  }
 }
 
 // ====== 弹窗 ======
@@ -604,14 +635,48 @@ async function handleRefreshStock(row: any) {
   } catch { ElMessage.error('刷新库存失败') }
 }
 
+async function handleAssignPoolNumbers(row: any) {
+  try {
+    await ElMessageBox.confirm(
+      `将池中与「${row.product_name}」同国家、同用途但不同来源的号码划入本商品（会更新其来源），确认？`,
+      '划入号码',
+      { type: 'warning' }
+    )
+    assigningId.value = row.id
+    const res = await assignPoolNumbersToProduct(row.id)
+    if (res?.success) {
+      ElMessage.success(res.message || `已划入 ${res.updated ?? 0} 条`)
+      row.stock_count = res.stock_count
+      row.unsold_count = res.stock_count
+      row.total_quantity = res.stock_count + (row.total_sold || 0)
+      row.status = res.stock_count > 0 ? 'active' : 'sold_out'
+      if (!res.updated && res.stock_count === 0) {
+        ElMessage.warning('池中暂无符合条件的号码可划入')
+      }
+    }
+  } catch (e: any) {
+    if (e !== 'cancel') ElMessage.error(e?.response?.data?.detail || e?.message || '划入失败')
+  } finally {
+    assigningId.value = null
+  }
+}
+
+const deletingId = ref<number | null>(null)
 async function handleDelete(row: any) {
   try {
-    await ElMessageBox.confirm(`确定删除商品「${row.product_name}」？`, '确认', { type: 'warning' })
-    await deleteProduct(row.id)
-    ElMessage.success('删除成功')
-    loadData()
+    await ElMessageBox.confirm(`确定删除商品「${row.product_name}」？删除后，关联的号码数据也会一并删除。`, '确认', { type: 'warning' })
+    deletingId.value = row.id
+    const res: any = await deleteProduct(row.id)
+    const msg = res?.deleted_numbers > 0 ? `删除成功，同时删除了 ${res.deleted_numbers} 条关联号码` : '删除成功'
+    ElMessage.success(msg)
+    await loadData()
   } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error(e.message || '删除失败')
+    if (e !== 'cancel') {
+      const errMsg = e?.response?.data?.detail || e?.message || '删除失败'
+      ElMessage.error(typeof errMsg === 'string' ? errMsg : '删除失败')
+    }
+  } finally {
+    deletingId.value = null
   }
 }
 

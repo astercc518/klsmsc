@@ -44,13 +44,13 @@ services:
     networks:
       - smsc-network
 
-  # RabbitMQ消息队列
+  # RabbitMQ消息队列（使用非 guest 用户，避免远程连接被拒绝）
   rabbitmq:
     image: rabbitmq:3.12-management-alpine
     container_name: smsc-rabbitmq
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-smsc_mq}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
     ports:
       - "5672:5672"   # AMQP端口
       - "15672:15672" # 管理界面
@@ -83,8 +83,8 @@ services:
       REDIS_PORT: 6379
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
-      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+      RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
@@ -132,8 +132,8 @@ services:
       REDIS_PORT: 6379
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
-      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+      RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
@@ -168,8 +168,8 @@ services:
       REDIS_PORT: 6379
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
-      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+      RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
