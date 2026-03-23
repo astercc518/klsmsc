@@ -1,6 +1,10 @@
 """管理员 - 号码管理 API"""
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+import fcntl
+import os
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update, delete, or_, and_
 from typing import Optional
@@ -133,25 +137,315 @@ async def get_number_stats(
     }
 
 
-@router.post("/numbers/import")
-async def import_numbers(
-    file: UploadFile = File(...),
+@router.post("/numbers/import-raw")
+async def import_numbers_raw(
+    request: Request,
     source: str = Query(..., description="来源"),
     purpose: str = Query(..., description="用途"),
-    country_code: Optional[str] = Query(None, description="国家ISO代码(如VN,BR)，用于解析本地号码格式"),
+    filename: str = Query(..., description="文件名，如 data.txt"),
+    country_code: Optional[str] = Query(None),
+    force_country: bool = Query(False),
+    data_date: Optional[str] = Query(None),
+    pricing_template_id: Optional[int] = Query(None),
+    default_tags: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """原始二进制上传，绕过 multipart 解析限制，适用于大文件(>50MB)。请求体直接为文件字节流。"""
+    if source not in DATA_SOURCES:
+        raise HTTPException(status_code=400, detail=f"无效来源: {source}")
+    if purpose not in DATA_PURPOSES:
+        raise HTTPException(status_code=400, detail=f"无效用途: {purpose}")
+
+    fn = (filename or "").strip() or "data.txt"
+    ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else "txt"
+    if ext not in ("csv", "txt"):
+        raise HTTPException(status_code=400, detail="仅支持 CSV 和 TXT 格式")
+    if data_date:
+        try:
+            date.fromisoformat(data_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="日期格式错误")
+
+    MAX_SIZE = 500 * 1024 * 1024
+    upload_dir = "/tmp/smsc_imports"
+    os.makedirs(upload_dir, exist_ok=True)
+    batch_id = f"IMP-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+    file_path = os.path.join(upload_dir, f"{batch_id}.{ext}")
+
+    file_size = 0
+    try:
+        with open(file_path, "wb") as f:
+            async for chunk in request.stream():
+                file_size += len(chunk)
+                if file_size > MAX_SIZE:
+                    os.remove(file_path)
+                    raise HTTPException(status_code=413, detail="文件大小超过限制(最大500MB)")
+                f.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        logger.exception(f"原始上传写入失败: {e}")
+        raise HTTPException(status_code=500, detail="文件写入失败")
+
+    tags_list = [t.strip() for t in (default_tags or "").split(",")] if default_tags else None
+    import_batch = DataImportBatch(
+        batch_id=batch_id, file_name=fn, source=source, status="pending", created_by=admin.id,
+        purpose=purpose, data_date_str=data_date or date.today().isoformat(),
+        pricing_template_id=pricing_template_id,
+        default_tags_json=json.dumps(tags_list, ensure_ascii=False) if tags_list else None,
+        country_code=country_code,
+    )
+    db.add(import_batch)
+    await db.flush()
+    await db.commit()
+
+    from app.workers.celery_app import celery_app as _celery
+    _celery.send_task('data_import_numbers', args=[
+        batch_id, file_path, ext, source, purpose,
+        data_date or date.today().isoformat(),
+        pricing_template_id, tags_list, country_code, force_country,
+    ], queue='data_tasks')
+    logger.info(f"[{batch_id}] 原始上传已提交: {fn} ({file_size/1024/1024:.1f}MB)")
+    return {
+        "success": True, "batch_id": batch_id, "file_name": fn,
+        "file_size_mb": round(file_size / 1024 / 1024, 2), "status": "pending",
+        "message": "导入任务已提交，可在任务列表查看进度",
+    }
+
+
+# 分块上传：每块短连接，避免浏览器经 CDN 的 HTTP/2 长传时出现 net::ERR_HTTP2_PING_FAILED
+IMPORT_CHUNK_MAX = 4 * 1024 * 1024  # 单块最大 4MB
+IMPORT_TOTAL_MAX = 500 * 1024 * 1024
+
+
+class ImportRawSessionBody(BaseModel):
+    """创建分块上传会话的请求体"""
+    source: str
+    purpose: str
+    filename: str
+    country_code: Optional[str] = None
+    force_country: bool = False
+    data_date: Optional[str] = None
+    pricing_template_id: Optional[int] = None
+    default_tags: Optional[str] = None
+
+
+def _import_raw_session_paths(session_id: str) -> tuple[str, str]:
+    upload_dir = "/tmp/smsc_imports"
+    os.makedirs(upload_dir, exist_ok=True)
+    base = os.path.join(upload_dir, f"SES-{session_id}")
+    return base + ".meta.json", base + ".data"
+
+
+def _validate_import_raw_meta(source: str, purpose: str, fn: str, data_date: Optional[str]) -> tuple[str, str]:
+    if source not in DATA_SOURCES:
+        raise HTTPException(status_code=400, detail=f"无效来源: {source}")
+    if purpose not in DATA_PURPOSES:
+        raise HTTPException(status_code=400, detail=f"无效用途: {purpose}")
+    name = (fn or "").strip() or "data.txt"
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else "txt"
+    if ext not in ("csv", "txt"):
+        raise HTTPException(status_code=400, detail="仅支持 CSV 和 TXT 格式")
+    if data_date:
+        try:
+            date.fromisoformat(data_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="日期格式错误")
+    return name, ext
+
+
+@router.post("/numbers/import-raw/session")
+async def import_raw_session_create(
+    body: ImportRawSessionBody,
+    admin=Depends(get_current_admin),
+):
+    """创建分块上传会话，前端按 chunk_size 分片 PUT 上传，最后 POST complete。"""
+    fn, ext = _validate_import_raw_meta(body.source, body.purpose, body.filename, body.data_date)
+    session_id = uuid.uuid4().hex
+    meta_path, data_path = _import_raw_session_paths(session_id)
+    meta = {
+        "source": body.source,
+        "purpose": body.purpose,
+        "filename": fn,
+        "country_code": body.country_code,
+        "force_country": body.force_country,
+        "data_date": body.data_date,
+        "pricing_template_id": body.pricing_template_id,
+        "default_tags": body.default_tags,
+        "ext": ext,
+        "admin_id": admin.id,
+        "next_index": 0,
+        "total_bytes": 0,
+    }
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False)
+    open(data_path, "wb").close()
+    return {
+        "success": True,
+        "session_id": session_id,
+        "chunk_size": IMPORT_CHUNK_MAX,
+        "message": "请按序号上传分块后调用 complete",
+    }
+
+
+@router.put("/numbers/import-raw/session/{session_id}/chunk")
+async def import_raw_session_chunk(
+    session_id: str,
+    request: Request,
+    index: int = Query(..., ge=0, description="分块序号，从 0 递增"),
+    admin=Depends(get_current_admin),
+):
+    """上传一个分块（请求体为原始字节，单块不超过 chunk_size）。"""
+    if not session_id or len(session_id) != 32 or not all(c in "0123456789abcdef" for c in session_id):
+        raise HTTPException(status_code=400, detail="无效的 session_id")
+    meta_path, data_path = _import_raw_session_paths(session_id)
+    if not os.path.isfile(meta_path):
+        raise HTTPException(status_code=404, detail="会话不存在或已结束")
+
+    body = await request.body()
+    if len(body) > IMPORT_CHUNK_MAX:
+        raise HTTPException(status_code=413, detail=f"单块超过限制（最大 {IMPORT_CHUNK_MAX // (1024 * 1024)}MB）")
+    if len(body) == 0:
+        raise HTTPException(status_code=400, detail="空分块无效")
+
+    with open(meta_path, "r+", encoding="utf-8") as mf:
+        fcntl.flock(mf, fcntl.LOCK_EX)
+        try:
+            mf.seek(0)
+            raw = mf.read()
+            meta = json.loads(raw) if raw else {}
+            if meta.get("admin_id") != admin.id:
+                raise HTTPException(status_code=403, detail="无权操作此会话")
+            if index != meta.get("next_index", 0):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"分块序号错误：期望 {meta.get('next_index', 0)}，收到 {index}",
+                )
+            new_total = meta.get("total_bytes", 0) + len(body)
+            if new_total > IMPORT_TOTAL_MAX:
+                raise HTTPException(status_code=413, detail="文件大小超过限制(最大500MB)")
+            with open(data_path, "ab") as df:
+                df.write(body)
+            meta["next_index"] = meta.get("next_index", 0) + 1
+            meta["total_bytes"] = new_total
+            mf.seek(0)
+            mf.truncate()
+            json.dump(meta, mf, ensure_ascii=False)
+            mf.flush()
+        finally:
+            fcntl.flock(mf, fcntl.LOCK_UN)
+
+    return {"success": True, "index": index, "total_bytes": meta["total_bytes"]}
+
+
+@router.post("/numbers/import-raw/session/{session_id}/complete")
+async def import_raw_session_complete(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """完成分块上传，创建导入任务（与单次 import-raw 相同）。"""
+    if not session_id or len(session_id) != 32 or not all(c in "0123456789abcdef" for c in session_id):
+        raise HTTPException(status_code=400, detail="无效的 session_id")
+    meta_path, data_path = _import_raw_session_paths(session_id)
+    if not os.path.isfile(meta_path) or not os.path.isfile(data_path):
+        raise HTTPException(status_code=404, detail="会话不存在或已结束")
+
+    batch_id = f"IMP-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+    upload_dir = "/tmp/smsc_imports"
+    total_bytes = 0
+
+    with open(meta_path, "r+", encoding="utf-8") as mf:
+        fcntl.flock(mf, fcntl.LOCK_EX)
+        try:
+            mf.seek(0)
+            meta = json.load(mf)
+            if meta.get("admin_id") != admin.id:
+                raise HTTPException(status_code=403, detail="无权操作此会话")
+            total_bytes = meta.get("total_bytes", 0)
+            if total_bytes <= 0:
+                raise HTTPException(status_code=400, detail="未上传任何数据")
+
+            fn = meta["filename"]
+            ext = meta["ext"]
+            source = meta["source"]
+            purpose = meta["purpose"]
+            country_code = meta.get("country_code")
+            force_country = bool(meta.get("force_country"))
+            data_date = meta.get("data_date")
+            pricing_template_id = meta.get("pricing_template_id")
+            default_tags = meta.get("default_tags")
+
+            final_path = os.path.join(upload_dir, f"{batch_id}.{ext}")
+            try:
+                os.replace(data_path, final_path)
+            except OSError as e:
+                logger.exception(f"分块上传收尾移动文件失败: {e}")
+                raise HTTPException(status_code=500, detail="文件处理失败")
+            try:
+                os.remove(meta_path)
+            except OSError:
+                pass
+        finally:
+            fcntl.flock(mf, fcntl.LOCK_UN)
+
+    tags_list = [t.strip() for t in (default_tags or "").split(",")] if default_tags else None
+    import_batch = DataImportBatch(
+        batch_id=batch_id, file_name=fn, source=source, status="pending", created_by=admin.id,
+        purpose=purpose, data_date_str=data_date or date.today().isoformat(),
+        pricing_template_id=pricing_template_id,
+        default_tags_json=json.dumps(tags_list, ensure_ascii=False) if tags_list else None,
+        country_code=country_code,
+    )
+    db.add(import_batch)
+    await db.flush()
+    await db.commit()
+
+    from app.workers.celery_app import celery_app as _celery
+    _celery.send_task('data_import_numbers', args=[
+        batch_id, final_path, ext, source, purpose,
+        data_date or date.today().isoformat(),
+        pricing_template_id, tags_list, country_code, force_country,
+    ], queue='data_tasks')
+    logger.info(f"[{batch_id}] 分块上传已提交: {fn} ({total_bytes/1024/1024:.1f}MB)")
+    return {
+        "success": True, "batch_id": batch_id, "file_name": fn,
+        "file_size_mb": round(total_bytes / 1024 / 1024, 2), "status": "pending",
+        "message": "导入任务已提交，可在任务列表查看进度",
+    }
+
+
+@router.post("/numbers/import")
+async def import_numbers(
+    request: Request,
+    source: str = Query(..., description="来源"),
+    purpose: str = Query(..., description="用途"),
+    country_code: Optional[str] = Query(None, description="国家ISO代码(如US,VN)，用于解析本地号码格式及商品创建"),
+    force_country: bool = Query(False, description="强制使用选定国家：所有号码统一标为该国，不再按区号细分(如+1下的美/加/波多黎各)"),
     data_date: Optional[str] = Query(None, description="数据采集日期(YYYY-MM-DD)"),
     pricing_template_id: Optional[int] = Query(None, description="关联定价模板ID"),
     default_tags: Optional[str] = Query(None, description="默认标签，逗号分隔"),
     db: AsyncSession = Depends(get_db),
     admin=Depends(get_current_admin),
 ):
-    """提交导入任务（异步），立即返回 batch_id，后台 Worker 处理"""
+    """提交导入任务（异步），multipart 上传。大文件(>50MB)建议用 /numbers/import-raw。"""
     if source not in DATA_SOURCES:
         raise HTTPException(status_code=400, detail=f"无效来源: {source}")
     if purpose not in DATA_PURPOSES:
         raise HTTPException(status_code=400, detail=f"无效用途: {purpose}")
 
-    filename = file.filename or ""
+    try:
+        form = await request.form(max_part_size=500 * 1024 * 1024)
+    except TypeError:
+        form = await request.form()
+    file = form.get("file")
+    if not file or not hasattr(file, "read"):
+        raise HTTPException(status_code=400, detail="请上传文件，表单字段名为 file")
+
+    filename = getattr(file, "filename", "") or ""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in ("csv", "txt"):
         raise HTTPException(status_code=400, detail="仅支持 CSV 和 TXT 格式文件")
@@ -202,7 +496,7 @@ async def import_numbers(
         batch_id, file_path, ext, source, purpose,
         data_date or date.today().isoformat(),
         pricing_template_id, tags_list,
-        country_code,
+        country_code, force_country,
     ], queue='data_tasks')
 
     logger.info(f"[{batch_id}] 导入任务已提交: {filename} ({file_size/1024/1024:.1f}MB)")
@@ -309,6 +603,7 @@ async def retry_import(
             batch.pricing_template_id,
             tags_list,
             batch.country_code,
+            False,  # force_country（重试不强制）
         ],
         queue="data_tasks",
     )
@@ -473,23 +768,50 @@ async def delete_import_batch(
     db: AsyncSession = Depends(get_db),
     admin=Depends(get_current_admin),
 ):
-    """删除导入任务记录（同时删除该批次的号码数据，已售出号码保留）"""
-    # 先删未被订单引用的号码
-    used_subq = select(DataOrderNumber.number_id).distinct()
-    stmt = delete(DataNumber).where(
-        DataNumber.batch_id == batch_id,
-        DataNumber.id.not_in(used_subq),
-    )
-    result = await db.execute(stmt)
-    deleted_numbers = result.rowcount
-    # 再删任务记录
-    del_stmt = delete(DataImportBatch).where(DataImportBatch.batch_id == batch_id)
-    r = await db.execute(del_stmt)
-    await db.commit()
-    if r.rowcount == 0:
-        raise HTTPException(status_code=404, detail="导入任务不存在")
-    logger.info(f"删除导入任务: {batch_id}, 同时删除{deleted_numbers}条号码")
-    return {"success": True, "deleted_numbers": deleted_numbers, "message": f"任务已删除，同时删除 {deleted_numbers} 条号码"}
+    """删除导入任务记录（同时删除该批次的号码数据，已售出号码保留）。支持任意状态（含等待中、处理中）"""
+    import os
+    upload_dir = "/tmp/smsc_imports"
+    try:
+        # 先查批次状态，用于后续清理导入文件
+        batch_result = await db.execute(
+            select(DataImportBatch).where(DataImportBatch.batch_id == batch_id)
+        )
+        batch = batch_result.scalar_one_or_none()
+        if not batch:
+            raise HTTPException(status_code=404, detail="导入任务不存在")
+
+        # 先删未被订单引用的号码
+        used_subq = select(DataOrderNumber.number_id).distinct()
+        stmt = delete(DataNumber).where(
+            DataNumber.batch_id == batch_id,
+            DataNumber.id.not_in(used_subq),
+        )
+        result = await db.execute(stmt)
+        deleted_numbers = result.rowcount
+        # 再删任务记录
+        del_stmt = delete(DataImportBatch).where(DataImportBatch.batch_id == batch_id)
+        r = await db.execute(del_stmt)
+        await db.commit()
+        if r.rowcount == 0:
+            raise HTTPException(status_code=404, detail="导入任务不存在")
+
+        # 等待中/处理中任务：删除上传文件，避免 Worker 后续处理时使用
+        if batch.status in ("pending", "processing"):
+            for ext in ("csv", "txt"):
+                fp = os.path.join(upload_dir, f"{batch_id}.{ext}")
+                if os.path.isfile(fp):
+                    try:
+                        os.remove(fp)
+                    except OSError:
+                        pass
+
+        logger.info(f"删除导入任务: {batch_id}, 同时删除{deleted_numbers}条号码")
+        return {"success": True, "deleted_numbers": deleted_numbers, "message": f"任务已删除，同时删除 {deleted_numbers} 条号码"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"删除导入任务失败: {batch_id}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/clear-all")

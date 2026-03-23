@@ -356,7 +356,7 @@ import {
   assignPoolNumbersToProduct,
   syncProductsFromPool,
   getPricingTemplates,
-  importNumbers,
+  importNumbersRaw,
   getProductRatings,
   updateRating,
   deleteRating,
@@ -514,16 +514,14 @@ async function submitCreateWithImport() {
   createImportResult.value = null
   try {
     const tpl = createSelectedTpl.value
-    const formData = new FormData()
-    formData.append('file', createFile.value)
+    const file = createFile.value
     const params: any = {
       source: tpl.source,
       purpose: tpl.purpose,
-      freshness: tpl.freshness,
       pricing_template_id: tpl.id,
     }
     if (createCountry.value) params.country_code = createCountry.value
-    const res = await importNumbers(formData, params)
+    const res = await importNumbersRaw(file, params)
     if (res.success) {
       createImportResult.value = res
       ElMessage.success('导入任务已提交，商品将在导入完成后自动创建')
@@ -794,12 +792,12 @@ function fmtDate(d: string) {
   border-radius: 4px;
   transition: background 0.15s;
 }
-.rating-cell:hover { background: #fdf6ec; }
+.rating-cell:hover { background: var(--el-fill-color-light); }
 .rating-stars { display: inline-flex; gap: 1px; }
-.mini-star { font-size: 13px; color: #dcdfe6; }
-.mini-star.filled { color: #f7ba2a; }
-.rating-num { font-size: 13px; font-weight: 700; color: #e6a23c; }
-.rating-cnt { font-size: 11px; color: #909399; }
+.mini-star { font-size: 13px; color: var(--el-text-color-placeholder); }
+.mini-star.filled { color: var(--el-color-warning); }
+.rating-num { font-size: 13px; font-weight: 700; color: var(--el-color-warning); }
+.rating-cnt { font-size: 11px; color: var(--el-text-color-secondary); }
 
 /* 评分管理弹窗 */
 .rating-overview {
@@ -808,7 +806,7 @@ function fmtDate(d: string) {
 }
 .ro-card {
   flex: 1;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   border-radius: 8px;
   padding: 12px 16px;
   display: flex;
@@ -816,23 +814,23 @@ function fmtDate(d: string) {
   align-items: center;
   gap: 4px;
 }
-.ro-label { font-size: 12px; color: #909399; }
-.ro-value { font-size: 22px; font-weight: 700; color: #303133; }
-.ro-value.avg { color: #e6a23c; }
-.ro-value.best { color: #f56c6c; }
-.ro-value.recent { color: #409eff; }
+.ro-label { font-size: 12px; color: var(--el-text-color-secondary); }
+.ro-value { font-size: 22px; font-weight: 700; color: var(--el-text-color-primary); }
+.ro-value.avg { color: var(--el-color-warning); }
+.ro-value.best { color: var(--el-color-danger); }
+.ro-value.recent { color: var(--el-color-primary); }
 
 /* 修改评分弹窗 */
 .edit-rating-body { display: flex; flex-direction: column; gap: 14px; }
 .er-row { display: flex; align-items: center; gap: 8px; }
-.er-label { min-width: 50px; color: #606266; font-weight: 500; }
+.er-label { min-width: 50px; color: var(--el-text-color-regular); font-weight: 500; }
 .er-stars { display: inline-flex; gap: 4px; }
 .edit-star {
   font-size: 26px;
-  color: #dcdfe6;
+  color: var(--el-text-color-placeholder);
   cursor: pointer;
   transition: color 0.15s, transform 0.15s;
 }
-.edit-star.active { color: #f7ba2a; }
-.edit-star.hover { color: #f7ba2a; transform: scale(1.12); }
+.edit-star.active { color: var(--el-color-warning); }
+.edit-star.hover { color: var(--el-color-warning); transform: scale(1.12); }
 </style>

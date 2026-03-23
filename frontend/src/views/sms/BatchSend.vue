@@ -153,7 +153,7 @@
                 <div>• {{ $t('batchSend.csvTip1') }}</div>
                 <div>• {{ $t('batchSend.csvTip2') }}</div>
                 <div>• {{ $t('batchSend.csvTip3') }}</div>
-                <code style="display: block; background: #f5f7fa; padding: 8px; margin-top: 5px; border-radius: 4px;">
+                <code style="display: block; background: var(--el-fill-color-light); padding: 8px; margin-top: 5px; border-radius: 4px;">
 phone,name,code<br>
 +8613800138000,John,123456<br>
 +8613800138001,Jane,654321

@@ -293,11 +293,12 @@ def data_import_numbers(self, batch_id: str, file_path: str, ext: str,
                         source: str, purpose: str, data_date_str: str,
                         pricing_template_id: Optional[int],
                         tags_json: Optional[list],
-                        default_region: Optional[str] = None):
+                        default_region: Optional[str] = None,
+                        force_country: bool = False):
     """异步导入号码 Celery 任务（大文件最多允许 4 小时）"""
     return _run_async(_do_import(
         batch_id, file_path, ext, source, purpose,
-        data_date_str, pricing_template_id, tags_json, default_region,
+        data_date_str, pricing_template_id, tags_json, default_region, force_country,
     ))
 
 
@@ -305,7 +306,8 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
                      source: str, purpose: str, data_date_str: str,
                      pricing_template_id: Optional[int],
                      tags_json: Optional[list],
-                     default_region: Optional[str] = None):
+                     default_region: Optional[str] = None,
+                     force_country: bool = False):
     """流式导入：边解析边入库，恒定内存占用，丰富进度上报"""
     import os
     from sqlalchemy import text as sa_text
@@ -370,6 +372,9 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
             PROGRESS_INTERVAL = 2.0
 
             region = default_region.upper() if default_region else None
+            forced_cc = (default_region or "").upper() or None
+            if forced_cc == "*":
+                forced_cc = None
             seen: set = set()
             batch_buf: list = []
 
@@ -447,6 +452,8 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
                     invalid_count += 1
                     return
                 e164, cc, carrier_name = result
+                if force_country and forced_cc:
+                    cc = forced_cc
                 if e164 in seen:
                     file_dedup_count += 1
                     return
@@ -469,6 +476,8 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
                     invalid_count += 1
                     return
                 e164, cc, carrier_name = result
+                if force_country and forced_cc:
+                    cc = forced_cc
                 if e164 in seen:
                     file_dedup_count += 1
                     return
@@ -479,7 +488,10 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
                     row_tags.extend([t.strip() for t in row[2].split("|")])
                 row_carrier = row[3].strip() if len(row) > 3 and row[3].strip() else None
                 t_str = json.dumps(row_tags, ensure_ascii=False) if row_tags else None
-                batch_buf.append((e164, row_country or cc, t_str, row_carrier or carrier_name))
+                final_cc = row_country or cc
+                if force_country and forced_cc:
+                    final_cc = forced_cc
+                batch_buf.append((e164, final_cc, t_str, row_carrier or carrier_name))
 
             # 流式读取文件并边解析边入库（用 readline 替代 for 迭代以支持 tell()）
             bytes_read = 0
@@ -531,7 +543,17 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
 
             product_code = None
             stock_for_product = valid_count
-            effective_country = None  # 用于商品创建的国家（模板指定或上传时选择）
+            # 有效导入时：优先用上传时选择的国家，否则从模板获取
+            effective_country = (import_batch.country_code or "").upper() or None
+            if effective_country and effective_country == "*":
+                effective_country = None
+            if not effective_country and matched_tpl_id:
+                tpl_for_country = await db.execute(
+                    select(DataPricingTemplate).where(DataPricingTemplate.id == matched_tpl_id)
+                )
+                tpl_obj = tpl_for_country.scalar_one_or_none()
+                if tpl_obj and tpl_obj.country_code and tpl_obj.country_code != "*":
+                    effective_country = _to_iso(tpl_obj.country_code)
             if valid_count == 0 and matched_tpl_id and duplicate_count > 0:
                 # 全部为重复时，基于池中现有数量创建商品（避免有号码无商品）
                 from app.api.v1.data.helpers import calculate_stock
@@ -540,9 +562,9 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
                 )
                 tpl_obj = tpl.scalar_one_or_none()
                 if tpl_obj:
-                    if tpl_obj.country_code and tpl_obj.country_code != '*':
+                    if not effective_country and tpl_obj.country_code and tpl_obj.country_code != '*':
                         effective_country = _to_iso(tpl_obj.country_code)
-                    elif default_region:
+                    elif not effective_country and default_region:
                         effective_country = default_region.upper() if isinstance(default_region, str) else None
                     if effective_country:
                         fc = {"source": source, "purpose": purpose, "freshness": freshness, "country": effective_country}
@@ -654,17 +676,21 @@ async def _auto_create_product(
             if iso_code:
                 filter_criteria["country"] = iso_code
 
-    # product_code 限 50 字符，用批次末尾短码
+    # product_code 限 50 字符，用批次末尾短码，超出则截断
     if batch_id and "-" in batch_id:
         batch_suffix = batch_id.split("-")[-1][:8]  # 如 A00BF9
     elif batch_id:
         batch_suffix = batch_id[-8:] if len(batch_id) > 8 else batch_id
     else:
         batch_suffix = datetime.now().strftime("%H%M%S")
+    # source/purpose 可能来自用户输入，限制长度避免超 50 字符
+    _src = (source or "")[:16]
+    _pur = (purpose or "")[:16]
+    _fr = (freshness or "")[:8]
     if iso_code:
-        code = f"AUTO-{iso_code}-{source}-{purpose}-{freshness}-{batch_suffix}"
+        code = f"AUTO-{iso_code}-{_src}-{_pur}-{_fr}-{batch_suffix}"[:50]
     else:
-        code = f"AUTO-{source}-{purpose}-{freshness}-{batch_suffix}"
+        code = f"AUTO-{_src}-{_pur}-{_fr}-{batch_suffix}"[:50]
 
     REGIONS_MAP = {
         'CN': '中国', 'VN': '越南', 'PH': '菲律宾', 'BR': '巴西',

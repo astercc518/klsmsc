@@ -182,7 +182,7 @@
         </el-form-item>
 
         <el-form-item :label="t('dataPool.estimatedCost')">
-          <span style="color: red; font-size: 18px; font-weight: bold;">
+          <span style="color: var(--el-color-danger); font-size: 18px; font-weight: bold;">
             ${{ estimatedCost }}
           </span>
         </el-form-item>
@@ -448,19 +448,19 @@ onMounted(() => { refreshList() })
 .card-header-tags { display: flex; gap: 6px; align-items: center; }
 .criteria-tags { margin: 10px 0; display: flex; gap: 5px; flex-wrap: wrap; }
 .actions { margin-top: 15px; display: flex; gap: 10px; justify-content: flex-end; }
-.stock-result { margin-top: 20px; padding: 20px; background: #f0f9eb; border-radius: 8px; }
-.stock-result h3 { margin: 0; color: #67c23a; }
+.stock-result { margin-top: 20px; padding: 20px; background: var(--el-color-success-light-9); border-radius: 8px; }
+.stock-result h3 { margin: 0; color: var(--el-color-success); }
 .highlight { font-size: 24px; font-weight: bold; }
 .sample-list { margin-top: 20px; }
-.combo-info { background: #f0f9eb; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+.combo-info { background: var(--el-color-success-light-9); border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
 .price-compare { display: flex; align-items: center; gap: 8px; }
-.original-price { text-decoration: line-through; color: #999; font-size: 14px; }
-.bundle-price { color: #e6a23c; font-size: 18px; font-weight: bold; }
+.original-price { text-decoration: line-through; color: var(--el-text-color-placeholder); font-size: 14px; }
+.bundle-price { color: var(--el-color-warning); font-size: 18px; font-weight: bold; }
 
-/* ---- 商品卡片评分区域 ---- */
+/* ---- 商品卡片评分区域（使用主题变量适配亮暗模式）---- */
 .product-rating {
-  background: linear-gradient(135deg, #fdf6ec 0%, #fef9f0 100%);
-  border: 1px solid #f5deb3;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   padding: 8px 12px;
   margin: 10px 0;
@@ -477,18 +477,18 @@ onMounted(() => { refreshList() })
 }
 .mini-star {
   font-size: 14px;
-  color: #dcdfe6;
+  color: var(--el-text-color-placeholder);
 }
-.mini-star.filled { color: #f7ba2a; }
+.mini-star.filled { color: var(--el-color-warning); }
 .rating-avg {
   font-size: 15px;
   font-weight: 700;
-  color: #e6a23c;
+  color: var(--el-color-warning);
   margin-left: 4px;
 }
 .rating-count {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 .rating-meta {
   display: flex;
@@ -502,22 +502,22 @@ onMounted(() => { refreshList() })
   font-weight: 500;
 }
 .rating-badge.recent {
-  background: #ecf5ff;
-  color: #409eff;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
 }
 .rating-badge.best {
-  background: #fef0f0;
-  color: #f56c6c;
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
 }
 
-/* ---- 评分详情弹窗 ---- */
+/* ---- 评分详情弹窗（使用主题变量）---- */
 .rating-detail { min-height: 120px; }
 .rating-overview {
   display: flex;
   gap: 24px;
   align-items: flex-start;
   padding-bottom: 16px;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 .rating-big-score {
   display: flex;
@@ -528,13 +528,13 @@ onMounted(() => { refreshList() })
 .big-num {
   font-size: 36px;
   font-weight: 700;
-  color: #e6a23c;
+  color: var(--el-color-warning);
   line-height: 1;
 }
 .big-stars { margin: 4px 0; }
-.star-lg { font-size: 18px; color: #dcdfe6; }
-.star-lg.filled { color: #f7ba2a; }
-.rating-total-text { font-size: 12px; color: #909399; }
+.star-lg { font-size: 18px; color: var(--el-text-color-placeholder); }
+.star-lg.filled { color: var(--el-color-warning); }
+.rating-total-text { font-size: 12px; color: var(--el-text-color-secondary); }
 .rating-summary-cards {
   display: flex;
   flex-wrap: wrap;
@@ -542,7 +542,7 @@ onMounted(() => { refreshList() })
   flex: 1;
 }
 .summary-card {
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   border-radius: 8px;
   padding: 10px 16px;
   display: flex;
@@ -550,38 +550,38 @@ onMounted(() => { refreshList() })
   gap: 4px;
   min-width: 90px;
 }
-.sc-label { font-size: 12px; color: #909399; }
-.sc-value { font-size: 18px; font-weight: 700; color: #303133; }
-.sc-value.recent { color: #409eff; }
-.sc-value.best { color: #f56c6c; }
+.sc-label { font-size: 12px; color: var(--el-text-color-secondary); }
+.sc-value { font-size: 18px; font-weight: 700; color: var(--el-text-color-primary); }
+.sc-value.recent { color: var(--el-color-primary); }
+.sc-value.best { color: var(--el-color-danger); }
 
 .rating-my {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 10px 0;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 .my-tag {
-  background: #ecf5ff;
-  color: #409eff;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 4px;
   font-weight: 500;
 }
-.star-sm { font-size: 16px; color: #dcdfe6; }
-.star-sm.filled { color: #f7ba2a; }
-.my-comment { font-size: 13px; color: #606266; margin-left: 8px; }
+.star-sm { font-size: 16px; color: var(--el-text-color-placeholder); }
+.star-sm.filled { color: var(--el-color-warning); }
+.my-comment { font-size: 13px; color: var(--el-text-color-regular); margin-left: 8px; }
 
 .rating-recent-list h4 {
   font-size: 14px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   margin: 12px 0 8px;
 }
 .recent-item {
   padding: 8px 0;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
 .recent-item:last-child { border-bottom: none; }
 .recent-header {

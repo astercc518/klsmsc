@@ -91,15 +91,85 @@ export function getNumberStats() {
   return request({ url: '/admin/data/numbers/stats', method: 'get' })
 }
 
-export function importNumbers(formData: FormData, params: { source: string; purpose: string; data_date?: string; default_tags?: string; pricing_template_id?: number }) {
+export function importNumbers(formData: FormData, params: { source: string; purpose: string; data_date?: string; default_tags?: string; freshness?: string; country_code?: string; force_country?: boolean; pricing_template_id?: number }) {
   return request({
     url: '/admin/data/numbers/import',
     method: 'post',
     data: formData,
     params,
-    headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: 120000,
+    timeout: 600000,
   })
+}
+
+/** 分块原始上传：多段短请求，避免经 CDN 的 HTTP/2 长传出现 net::ERR_HTTP2_PING_FAILED */
+export async function importNumbersRaw(file: File, params: { source: string; purpose: string; data_date?: string; default_tags?: string; country_code?: string; force_country?: boolean; pricing_template_id?: number }) {
+  const baseURL = import.meta.env.VITE_API_BASE_URL ? `${import.meta.env.VITE_API_BASE_URL}/api/v1` : '/api/v1'
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const isImpersonate = sessionStorage.getItem('impersonate_mode') === '1'
+  if (isImpersonate) {
+    const apiKey = sessionStorage.getItem('impersonate_api_key')
+    if (apiKey) headers['X-API-Key'] = apiKey
+  } else {
+    const adminToken = localStorage.getItem('admin_token')
+    if (adminToken) headers['Authorization'] = `Bearer ${adminToken}`
+  }
+
+  const sessionBody = {
+    source: params.source,
+    purpose: params.purpose,
+    filename: file.name,
+    country_code: params.country_code,
+    force_country: !!params.force_country,
+    data_date: params.data_date,
+    pricing_template_id: params.pricing_template_id,
+    default_tags: params.default_tags,
+  }
+
+  const r0 = await fetch(`${baseURL}/admin/data/numbers/import-raw/session`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(sessionBody),
+  })
+  const sessionJson = await r0.json().catch(() => ({}))
+  if (!r0.ok) throw new Error(sessionJson.detail || r0.statusText || '创建上传会话失败')
+
+  const sessionId = sessionJson.session_id as string
+  const chunkSize = (sessionJson.chunk_size as number) || 4 * 1024 * 1024
+
+  const plainHeaders: Record<string, string> = {}
+  if (isImpersonate) {
+    const apiKey = sessionStorage.getItem('impersonate_api_key')
+    if (apiKey) plainHeaders['X-API-Key'] = apiKey
+  } else {
+    const adminToken = localStorage.getItem('admin_token')
+    if (adminToken) plainHeaders['Authorization'] = `Bearer ${adminToken}`
+  }
+
+  let index = 0
+  for (let offset = 0; offset < file.size; offset += chunkSize) {
+    const slice = file.slice(offset, Math.min(offset + chunkSize, file.size))
+    const rChunk = await fetch(
+      `${baseURL}/admin/data/numbers/import-raw/session/${sessionId}/chunk?index=${index}`,
+      {
+        method: 'PUT',
+        body: slice,
+        headers: plainHeaders,
+      },
+    )
+    if (!rChunk.ok) {
+      const errJson = await rChunk.json().catch(() => ({}))
+      throw new Error(errJson.detail || rChunk.statusText || `分块 ${index} 上传失败`)
+    }
+    index++
+  }
+
+  const rDone = await fetch(`${baseURL}/admin/data/numbers/import-raw/session/${sessionId}/complete`, {
+    method: 'POST',
+    headers: plainHeaders,
+  })
+  const data = await rDone.json().catch(() => ({}))
+  if (!rDone.ok) throw new Error(data.detail || rDone.statusText || '完成上传失败')
+  return data
 }
 
 export function getImportProgress(batchId: string) {

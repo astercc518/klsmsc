@@ -4,18 +4,18 @@
     <el-card shadow="never" class="action-card">
       <el-row align="middle" justify="space-between">
         <el-col :span="12">
-          <h3 style="margin:0;font-size:18px">数据上传</h3>
-          <p style="margin:4px 0 0;font-size:13px;color:var(--el-text-color-secondary)">上传号码数据文件，系统自动清洗、去重、入库，并生成数据商品</p>
+          <h3 style="margin:0;font-size:18px">{{ t('dataPool.uploadData') }}</h3>
+          <p style="margin:4px 0 0;font-size:13px;color:var(--el-text-color-secondary)">{{ t('dataPool.uploadDataDesc') }}</p>
         </el-col>
         <el-col :span="12" style="text-align:right">
           <el-button type="primary" size="large" @click="showImportDialog" :icon="UploadFilled">
-            上传数据
+            {{ t('dataPool.uploadDataBtn') }}
           </el-button>
           <el-button type="danger" size="large" plain @click="showDeleteByCountryDialog">
-            删除国家数据
+            {{ t('dataPool.deleteCountryData') }}
           </el-button>
           <el-button type="danger" size="large" @click="showClearAllDialog">
-            清空全部
+            {{ t('dataPool.clearAll') }}
           </el-button>
         </el-col>
       </el-row>
@@ -25,7 +25,7 @@
     <el-row :gutter="16" class="stats-row">
       <el-col :span="4">
         <el-card shadow="never" class="stat-card">
-          <el-statistic title="总数据量" :value="stats.total" />
+          <el-statistic :title="t('dataPool.totalDataCount')" :value="stats.total" />
         </el-card>
       </el-col>
       <el-col :span="4" v-for="(count, code) in topCountries" :key="code">
@@ -44,13 +44,13 @@
     <el-card shadow="never" class="tasks-card">
       <template #header>
         <el-row align="middle" justify="space-between">
-          <span style="font-weight:600;font-size:15px">导入任务</span>
+          <span style="font-weight:600;font-size:15px">{{ t('dataPool.importTasks') }}</span>
           <el-button size="small" text @click="loadImportTasks">
-            <el-icon><Refresh /></el-icon> 刷新
+            <el-icon><Refresh /></el-icon> {{ t('common.refresh') }}
           </el-button>
         </el-row>
       </template>
-      <el-empty v-if="!importTasks.length" description="暂无导入任务，点击上方「上传数据」开始" />
+      <el-empty v-if="!importTasks.length" :description="t('dataPool.noImportTasks')" />
       <div v-else class="task-list">
         <div v-for="task in importTasks" :key="task.batch_id" class="task-item" :class="'task-' + (task._progress?.status || task.status)">
           <!-- 任务头部 -->
@@ -64,7 +64,7 @@
             </div>
             <div class="task-status-badge">
               <template v-if="isTaskRunning(task)">
-                <el-icon class="is-loading" color="#E6A23C"><Refresh /></el-icon>
+                <el-icon class="is-loading" style="color: var(--el-color-warning)"><Refresh /></el-icon>
                 <span class="status-text processing">{{ t('common.processing') }}</span>
               </template>
               <template v-else-if="task.status === 'completed'">
@@ -127,7 +127,7 @@
 
           <!-- 已完成任务：结果摘要 -->
           <div v-else-if="task.status === 'completed'" class="task-result-row">
-            <span class="result-item"><b class="highlight-green">{{ (task._progress?.valid_count ?? task.valid_count ?? 0).toLocaleString() }}</b> 条写入</span>
+            <span class="result-item"><b class="highlight-green">{{ t('dataPool.itemsWritten', { n: (task._progress?.valid_count ?? task.valid_count ?? 0).toLocaleString() }) }}</b></span>
             <span class="result-sep">|</span>
             <span class="result-item">共 {{ (task._progress?.total_count ?? task.total_count ?? 0).toLocaleString() }} 行</span>
             <span class="result-sep">|</span>
@@ -157,7 +157,7 @@
               :loading="retryingBatchId === task.batch_id"
               @click="retryImportTask(task)"
             >
-              重新提交
+              {{ t('dataPool.retrySubmit') }}
             </el-button>
             <el-button
               v-else-if="canSupplementProduct(task)"
@@ -167,7 +167,7 @@
               :loading="supplementingBatchId === task.batch_id"
               @click="supplementProductTask(task)"
             >
-              补充商品
+              {{ t('dataPool.supplementProduct') }}
             </el-button>
             <el-button
               type="danger"
@@ -176,7 +176,7 @@
               :loading="deletingBatchId === task.batch_id"
               @click="deleteByBatchTask(task)"
             >
-              删除该批数据
+              {{ t('dataPool.deleteBatchData') }}
             </el-button>
             <el-button
               type="danger"
@@ -185,7 +185,7 @@
               :loading="deletingTaskId === task.batch_id"
               @click="deleteImportTask(task)"
             >
-              删除任务
+              {{ t('dataPool.deleteTask') }}
             </el-button>
           </div>
         </div>
@@ -354,6 +354,15 @@
             </el-form-item>
           </el-col>
         </el-row>
+        <el-row v-if="importCountryCode" :gutter="12">
+          <el-col :span="24">
+            <el-form-item>
+              <el-checkbox v-model="importForceCountry">
+                强制使用选定国家：所有号码统一标为「{{ formatCountry(importCountryCode) }}」，不再按区号细分（如 +1 下的美国/加拿大/波多黎各）
+              </el-checkbox>
+            </el-form-item>
+          </el-col>
+        </el-row>
 
         <!-- 任务已提交（支持多文件结果） -->
         <el-card v-if="importResults.length" shadow="never" class="import-result-card">
@@ -445,7 +454,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { UploadFilled, Refresh } from '@element-plus/icons-vue'
 import {
   getNumberStats,
-  importNumbers,
+  importNumbersRaw,
   getImportBatches,
   getImportProgress,
   retryImport,
@@ -519,6 +528,7 @@ const importSourceType = ref('')
 const importPurpose = ref('')
 const importFreshness = ref('')
 const importDataDate = ref('')
+const importForceCountry = ref(false)
 const importCountryCode = ref('')
 const uploadRef = ref()
 const importSubmitIdx = ref(0)
@@ -684,37 +694,50 @@ async function submitImport() {
   }
   if (importFreshness.value) params.freshness = importFreshness.value
   if (importCountryCode.value) params.country_code = importCountryCode.value
+  if (importForceCountry.value) params.force_country = true
   if (importDataDate.value) params.data_date = importDataDate.value
   if (importTags.value) params.default_tags = importTags.value
   if (selectedTemplateId.value) params.pricing_template_id = selectedTemplateId.value
 
+  // 全部使用 raw 流式上传，规避 multipart 解析导致的 Network Error
   let successCount = 0
   for (let i = 0; i < importFiles.value.length; i++) {
     importSubmitIdx.value = i + 1
     const file = importFiles.value[i]
-    const formData = new FormData()
-    formData.append('file', file)
     try {
-      const res = await importNumbers(formData, params)
-      if (res.success) {
+      const res = await importNumbersRaw(file, params)
+      if (res?.success) {
         importResults.value.push({
           file_name: res.file_name || file.name,
           batch_id: res.batch_id,
           file_size_mb: res.file_size_mb,
         })
         successCount++
+      } else {
+        importResults.value.push({
+          file_name: file.name,
+          error: (res as any)?.detail || '提交失败',
+        })
       }
     } catch (e: any) {
+      let errMsg = e?.response?.data?.detail || e?.message
+      if (e?.code === 'ECONNABORTED' || errMsg?.includes?.('timeout') || errMsg?.includes?.('Timeout')) {
+        errMsg = '上传超时，大文件请使用稳定网络或分批上传'
+      } else if (errMsg === 'Network Error' || !errMsg) {
+        errMsg = '网络异常，请检查连接或稍后重试'
+      }
       importResults.value.push({
         file_name: file.name,
-        error: e.message || '提交失败',
+        error: typeof errMsg === 'string' ? errMsg : (errMsg?.[0]?.msg || '提交失败'),
       })
     }
   }
 
   if (successCount > 0) {
     ElMessage.success(`${successCount} 个导入任务已提交，后台处理中`)
-    loadImportTasks()
+    // 立即刷新任务列表并轮询，确保新提交的任务显示
+    importTasks.value = []
+    await loadImportTasks()
     startPolling()
   }
   importing.value = false
@@ -725,26 +748,28 @@ async function submitImport() {
 async function loadImportTasks() {
   try {
     const res = await getImportBatches({ page: 1, page_size: 10 })
-    if (res.success) {
-      const items = res.items || []
+    if (res?.success && Array.isArray(res.items)) {
+      const items = res.items
       if (!importTasks.value.length) {
         importTasks.value = items
       } else {
         for (const item of items) {
-          const existing = importTasks.value.find(t => t.batch_id === item.batch_id)
+          const existing = importTasks.value.find((t: any) => t.batch_id === item.batch_id)
           if (existing) {
             Object.assign(existing, item)
           } else {
             importTasks.value.unshift(item)
           }
         }
-        importTasks.value = importTasks.value.filter(t =>
+        importTasks.value = importTasks.value.filter((t: any) =>
           items.some((i: any) => i.batch_id === t.batch_id)
         )
       }
       checkPolling()
     }
-  } catch { /* ignore */ }
+  } catch (e) {
+    console.error('加载导入任务失败', e)
+  }
 }
 
 async function pollRunningTasks() {
@@ -942,6 +967,8 @@ async function deleteImportTask(task: any) {
     const res = await deleteImportBatch(task.batch_id)
     if (res?.success) {
       ElMessage.success(res.message || '任务已删除')
+      // 直接移除本地任务并刷新，确保等待中/处理中任务也能立即消失
+      importTasks.value = importTasks.value.filter((t: any) => t.batch_id !== task.batch_id)
       loadImportTasks()
       loadStats()
     }
@@ -995,6 +1022,7 @@ const progressColors = [
 
 /* ====== 任务列表卡片式设计 ====== */
 
+
 .task-list {
   display: flex;
   flex-direction: column;
@@ -1006,22 +1034,22 @@ const progressColors = [
   border-radius: 8px;
   padding: 16px;
   transition: box-shadow 0.2s;
-  background: #fff;
+  background: var(--el-bg-color);
 }
 .task-item:hover {
   box-shadow: 0 2px 12px rgba(0,0,0,0.06);
 }
 .task-item.task-processing,
 .task-item.task-pending {
-  border-left: 3px solid #E6A23C;
-  background: linear-gradient(135deg, #FFFBF0 0%, #FFF 40%);
+  border-left: 3px solid var(--el-color-warning);
+  background: var(--el-fill-color-light);
 }
 .task-item.task-completed {
-  border-left: 3px solid #67C23A;
+  border-left: 3px solid var(--el-color-success);
 }
 .task-item.task-failed {
-  border-left: 3px solid #F56C6C;
-  background: #FFF5F5;
+  border-left: 3px solid var(--el-color-danger);
+  background: var(--el-color-danger-light-9);
 }
 
 .task-header {
@@ -1062,13 +1090,13 @@ const progressColors = [
   border-radius: 50%;
   display: inline-block;
 }
-.status-dot.completed { background: #67C23A; }
-.status-dot.failed { background: #F56C6C; }
-.status-dot.pending { background: #909399; }
-.status-text.processing { color: #E6A23C; }
-.status-text.completed { color: #67C23A; }
-.status-text.failed { color: #F56C6C; }
-.status-text.pending { color: #909399; }
+.status-dot.completed { background: var(--el-color-success); }
+.status-dot.failed { background: var(--el-color-danger); }
+.status-dot.pending { background: var(--el-text-color-placeholder); }
+.status-text.processing { color: var(--el-color-warning); }
+.status-text.completed { color: var(--el-color-success); }
+.status-text.failed { color: var(--el-color-danger); }
+.status-text.pending { color: var(--el-text-color-placeholder); }
 
 /* 进度区域 */
 .task-progress-area {
@@ -1111,10 +1139,10 @@ const progressColors = [
   color: var(--el-text-color-secondary);
   margin-top: 2px;
 }
-.highlight-green { color: #67C23A !important; }
-.highlight-orange { color: #E6A23C !important; }
-.highlight-red { color: #F56C6C !important; }
-.highlight-blue { color: #409EFF !important; }
+.highlight-green { color: var(--el-color-success) !important; }
+.highlight-orange { color: var(--el-color-warning) !important; }
+.highlight-red { color: var(--el-color-danger) !important; }
+.highlight-blue { color: var(--el-color-primary) !important; }
 
 /* 完成结果行 */
 .task-result-row {
@@ -1134,7 +1162,7 @@ const progressColors = [
   margin: 0 2px;
 }
 .task-error {
-  color: #F56C6C;
+  color: var(--el-color-danger);
   font-size: 12px;
 }
 
@@ -1152,14 +1180,24 @@ const progressColors = [
 
 /* ====== 以下保留原有样式 ====== */
 
+/* 定价信息卡：使用主题变量确保夜间模式适配 */
 .pricing-match-card {
   margin-bottom: 8px;
-  background: var(--el-fill-color-light);
+  background: var(--bg-input) !important;
+  border: 1px solid var(--border-default);
 }
 
 .pricing-match-card :deep(.el-card__header),
 .pricing-match-card :deep(.el-card__body) {
   padding: 8px 12px;
+  background: var(--bg-input) !important;
+}
+
+.pricing-match-card :deep(.el-descriptions__label),
+.pricing-match-card :deep(.el-descriptions__content) {
+  background: var(--bg-input) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-subtle) !important;
 }
 
 .import-result-card {

@@ -1071,6 +1071,21 @@ html:not([data-theme="light"]) .el-popper__arrow::before {
   color: var(--primary) !important;
 }
 
+/* ========== Upload 上传组件（拖拽区域）夜间模式适配 ========== */
+html:not([data-theme="light"]) .el-upload-dragger {
+  background: var(--bg-input) !important;
+  border-color: var(--border-default) !important;
+}
+
+html:not([data-theme="light"]) .el-upload-dragger:hover {
+  border-color: var(--primary) !important;
+  background: var(--bg-hover) !important;
+}
+
+html:not([data-theme="light"]) .el-upload-dragger .el-upload__text {
+  color: var(--text-primary) !important;
+}
+
 /* ========== Popconfirm ========== */
 .el-popconfirm__main {
   color: var(--text-primary) !important;

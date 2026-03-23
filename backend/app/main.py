@@ -22,6 +22,14 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    # 放宽 multipart 单文件大小限制（Starlette 默认 1MB，大文件导入需 500MB）
+    try:
+        from starlette.formparsers import MultiPartParser
+        if hasattr(MultiPartParser, 'max_part_size'):
+            MultiPartParser.max_part_size = 500 * 1024 * 1024
+            logger.info("已设置 MultiPartParser.max_part_size=500MB")
+    except Exception as e:
+        logger.debug(f"MultiPartParser 配置: {e}")
     # 启动
     logger.info(f"🚀 {settings.APP_NAME} 启动中...")
     logger.info(f"环境: {settings.APP_ENV}")

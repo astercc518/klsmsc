@@ -101,10 +101,19 @@
             <span class="notes-text">{{ row.notes || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('common.action')" width="200" fixed="right" align="center">
+        <el-table-column :label="$t('common.action')" width="260" fixed="right" align="center">
           <template #default="{ row }">
             <el-button type="success" link size="small" @click="showRatesDialog(row)">{{ $t('suppliers.rateTable') }}</el-button>
             <el-button type="primary" link size="small" @click="editSupplier(row)">{{ $t('common.edit') }}</el-button>
+            <el-popconfirm
+              v-if="row.rate_count > 0"
+              :title="$t('suppliers.confirmRemoveFromBusiness')"
+              @confirm="removeFromBusiness(row, 'sms')"
+            >
+              <template #reference>
+                <el-button type="warning" link size="small">{{ $t('suppliers.removeFromBusiness') }}</el-button>
+              </template>
+            </el-popconfirm>
             <el-popconfirm :title="$t('suppliers.confirmDelete')" @confirm="deleteSupplier(row)">
               <template #reference>
                 <el-button type="danger" link size="small">{{ $t('common.delete') }}</el-button>
@@ -145,10 +154,19 @@
         <el-table-column prop="notes" :label="$t('suppliers.notes')" min-width="150" show-overflow-tooltip>
           <template #default="{ row }"><span class="notes-text">{{ row.notes || '-' }}</span></template>
         </el-table-column>
-        <el-table-column :label="$t('common.action')" width="200" fixed="right" align="center">
+        <el-table-column :label="$t('common.action')" width="260" fixed="right" align="center">
           <template #default="{ row }">
             <el-button type="success" link size="small" @click="showRatesDialog(row)">{{ $t('suppliers.rateTable') }}</el-button>
             <el-button type="primary" link size="small" @click="editSupplier(row)">{{ $t('common.edit') }}</el-button>
+            <el-popconfirm
+              v-if="row.rate_count > 0"
+              :title="$t('suppliers.confirmRemoveFromBusiness')"
+              @confirm="removeFromBusiness(row, 'voice')"
+            >
+              <template #reference>
+                <el-button type="warning" link size="small">{{ $t('suppliers.removeFromBusiness') }}</el-button>
+              </template>
+            </el-popconfirm>
             <el-popconfirm :title="$t('suppliers.confirmDelete')" @confirm="deleteSupplier(row)">
               <template #reference>
                 <el-button type="danger" link size="small">{{ $t('common.delete') }}</el-button>
@@ -220,10 +238,19 @@
         <el-table-column prop="notes" :label="$t('suppliers.notes')" min-width="150" show-overflow-tooltip>
           <template #default="{ row }"><span class="notes-text">{{ row.notes || '-' }}</span></template>
         </el-table-column>
-        <el-table-column :label="$t('common.action')" width="200" fixed="right" align="center">
+        <el-table-column :label="$t('common.action')" width="260" fixed="right" align="center">
           <template #default="{ row }">
             <el-button type="success" link size="small" @click="showRatesDialog(row)">{{ $t('suppliers.rateTable') }}</el-button>
             <el-button type="primary" link size="small" @click="editSupplier(row)">{{ $t('common.edit') }}</el-button>
+            <el-popconfirm
+              v-if="row.rate_count > 0"
+              :title="$t('suppliers.confirmRemoveFromBusiness')"
+              @confirm="removeFromBusiness(row, 'data')"
+            >
+              <template #reference>
+                <el-button type="warning" link size="small">{{ $t('suppliers.removeFromBusiness') }}</el-button>
+              </template>
+            </el-popconfirm>
             <el-popconfirm :title="$t('suppliers.confirmDelete')" @confirm="deleteSupplier(row)">
               <template #reference>
                 <el-button type="danger" link size="small">{{ $t('common.delete') }}</el-button>
@@ -319,6 +346,16 @@
       destroy-on-close
     >
       <div class="rates-header">
+        <el-button
+          v-if="currentSupplier?.business_type === 'data'"
+          type="warning"
+          size="small"
+          :loading="syncFromPricingLoading"
+          @click="syncFromDataPricing"
+        >
+          <el-icon><Refresh /></el-icon>
+          {{ $t('suppliers.syncFromDataPricing') }}
+        </el-button>
         <el-button type="primary" size="small" @click="showAddRateDialog">
           <el-icon><Plus /></el-icon>
           {{ $t('suppliers.addRate') }}
@@ -604,6 +641,7 @@ import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'elem
 import { Plus, Refresh, Search, CircleCheck, OfficeBuilding, Message, Phone, DocumentAdd, Download, Upload, Connection, Grid } from '@element-plus/icons-vue'
 import {
   getSuppliers, getSuppliersByBusinessType, createSupplier, updateSupplier, deleteSupplier as deleteSupplierApi,
+  removeSupplierFromBusiness, syncSupplierFromDataPricing,
   importFromResourcePricing, importFromVoicePricing, getVoicePricingReference,
   type Supplier
 } from '@/api/supplier'
@@ -841,6 +879,32 @@ const deleteSupplier = async (row: Supplier) => {
   }
 }
 
+const removeFromBusiness = async (row: Supplier, biz: 'sms' | 'voice' | 'data') => {
+  try {
+    const res = await removeSupplierFromBusiness(row.id, biz)
+    ElMessage.success(res?.message || t('suppliers.removeFromBusinessSuccess'))
+    loadSuppliers()
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.detail || t('common.failed'))
+  }
+}
+
+const syncFromDataPricing = async () => {
+  const id = currentSupplier.value?.id
+  if (!id) return
+  syncFromPricingLoading.value = true
+  try {
+    const res: any = await syncSupplierFromDataPricing(id)
+    ElMessage.success(res?.message || t('suppliers.syncFromDataPricingSuccess'))
+    loadSupplierRates()
+    loadSuppliers()
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.detail || t('common.failed'))
+  } finally {
+    syncFromPricingLoading.value = false
+  }
+}
+
 // ========== 报价表相关 ==========
 import request from '@/api/index'
 
@@ -859,6 +923,7 @@ interface SupplierRate {
 
 const ratesDialogVisible = ref(false)
 const ratesLoading = ref(false)
+const syncFromPricingLoading = ref(false)
 const supplierRates = ref<SupplierRate[]>([])
 const ratesBusinessType = ref('all')  // 业务类型筛选
 const rateFormDialogVisible = ref(false)

@@ -273,16 +273,16 @@ onMounted(() => {
 
 .notification-item {
   padding: 16px;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--el-border-color-lighter);
   transition: background-color 0.2s;
 }
 
 .notification-item:hover {
-  background-color: #f5f7fa;
+  background-color: var(--el-fill-color-light);
 }
 
 .notification-item.unread {
-  background-color: #f0f9ff;
+  background-color: var(--el-color-primary-light-9);
 }
 
 .notification-item:last-child {
@@ -306,23 +306,23 @@ onMounted(() => {
   display: inline-block;
   width: 8px;
   height: 8px;
-  background-color: #f56c6c;
+  background-color: var(--el-color-danger);
   border-radius: 50%;
 }
 
 .title {
   font-size: 16px;
   font-weight: bold;
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 
 .time {
   font-size: 13px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 
 .notification-content {
-  color: #606266;
+  color: var(--el-text-color-regular);
   line-height: 1.6;
   margin-bottom: 10px;
 }

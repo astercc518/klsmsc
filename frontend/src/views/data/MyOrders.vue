@@ -1,30 +1,30 @@
 <template>
   <div class="my-orders-page">
-    <h2 class="page-title">我的数据订单</h2>
+    <h2 class="page-title">{{ t('dataPool.myDataOrders') }}</h2>
 
     <el-table :data="orders" v-loading="loading" stripe border style="width: 100%">
-      <el-table-column prop="order_no" label="订单号" width="220" />
-      <el-table-column prop="product_name" label="商品名称" min-width="160" />
-      <el-table-column label="类型" width="100">
+      <el-table-column prop="order_no" :label="t('dataPool.orderNo')" width="220" />
+      <el-table-column prop="product_name" :label="t('dataPool.productName')" min-width="160" />
+      <el-table-column :label="t('dataPool.orderType')" width="100">
         <template #default="{ row }">
           <el-tag :type="orderTypeTag(row.order_type)" size="small">{{ orderTypeLabel(row.order_type) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="quantity" label="数量" width="80" align="right" />
-      <el-table-column label="单价" width="100" align="right">
+      <el-table-column prop="quantity" :label="t('dataPool.quantity')" width="80" align="right" />
+      <el-table-column :label="t('dataPool.unitPrice')" width="100" align="right">
         <template #default="{ row }">${{ row.unit_price }}</template>
       </el-table-column>
-      <el-table-column label="总价" width="100" align="right">
+      <el-table-column :label="t('dataPool.totalPrice')" width="100" align="right">
         <template #default="{ row }">
-          <span style="color:#e6a23c;font-weight:600">${{ row.total_price }}</span>
+          <span style="color: var(--el-color-warning); font-weight: 600">${{ row.total_price }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column :label="t('common.status')" width="100">
         <template #default="{ row }">
           <el-tag :type="statusTag(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="评分" width="150" align="center">
+      <el-table-column :label="t('dataPool.rating')" width="150" align="center">
         <template #default="{ row }">
           <template v-if="row._my_rating">
             <div class="star-display">
@@ -37,16 +37,16 @@
             type="primary"
             link
             @click="openRateDialog(row)"
-          >评分</el-button>
-          <span v-else style="color:#c0c4cc">-</span>
+          >{{ t('dataPool.rating') }}</el-button>
+          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="创建时间" width="170">
+      <el-table-column :label="t('dataPool.createTime')" width="170">
         <template #default="{ row }">{{ fmtDate(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="100" fixed="right">
+      <el-table-column :label="t('common.action')" width="100" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="row.status === 'pending'" size="small" type="danger" link @click="handleCancel(row)">取消</el-button>
+          <el-button v-if="row.status === 'pending'" size="small" type="danger" link @click="handleCancel(row)">{{ t('dataPool.cancelOrder') }}</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -64,18 +64,18 @@
     </div>
 
     <!-- 评分弹窗 -->
-    <el-dialog v-model="rateDialogVisible" title="数据商品评分" width="420px" :close-on-click-modal="false">
+    <el-dialog v-model="rateDialogVisible" :title="t('dataPool.productRating')" width="420px" :close-on-click-modal="false">
       <div class="rate-dialog-body">
         <div class="rate-product-info">
-          <span class="rate-label">商品：</span>
+          <span class="rate-label">{{ t('dataPool.productLabel') }}：</span>
           <span class="rate-value">{{ rateTarget.product_name }}</span>
         </div>
         <div class="rate-product-info">
-          <span class="rate-label">订单：</span>
+          <span class="rate-label">{{ t('dataPool.orderLabel') }}：</span>
           <span class="rate-value">{{ rateTarget.order_no }}</span>
         </div>
         <div class="rate-stars-section">
-          <span class="rate-label">评分：</span>
+          <span class="rate-label">{{ t('dataPool.rating') }}：</span>
           <div class="rate-stars">
             <span
               v-for="s in 5"
@@ -90,21 +90,21 @@
           <span class="rate-score-text">{{ rateScoreText }}</span>
         </div>
         <div class="rate-comment-section">
-          <span class="rate-label">评价：</span>
+          <span class="rate-label">{{ t('dataPool.commentLabel') }}：</span>
           <el-input
             v-model="rateForm.comment"
             type="textarea"
             :rows="3"
             maxlength="500"
             show-word-limit
-            placeholder="对数据质量的评价（选填）"
+            :placeholder="t('dataPool.ratingCommentPlaceholder')"
           />
         </div>
       </div>
       <template #footer>
-        <el-button @click="rateDialogVisible = false">取消</el-button>
+        <el-button @click="rateDialogVisible = false">{{ t('dataPool.cancelOrder') }}</el-button>
         <el-button type="primary" :loading="rateLoading" :disabled="!rateForm.rating" @click="submitRate">
-          提交评分
+          {{ t('dataPool.submitRating') }}
         </el-button>
       </template>
     </el-dialog>
@@ -113,9 +113,11 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { getMyOrders, cancelOrder, rateProduct } from '@/api/data'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+const { t } = useI18n()
 const orders = ref<any[]>([])
 const loading = ref(false)
 const page = ref(1)
@@ -131,8 +133,8 @@ const rateForm = ref({ rating: 0, comment: '' })
 
 const rateScoreText = computed(() => {
   const r = rateHover.value || rateForm.value.rating
-  const texts = ['', '很差', '较差', '一般', '良好', '优秀']
-  return texts[r] || ''
+  const keys = ['', 'dataPool.ratingPoor', 'dataPool.ratingFair', 'dataPool.ratingAverage', 'dataPool.ratingGood', 'dataPool.ratingExcellent']
+  return keys[r] ? t(keys[r]) : ''
 })
 
 async function loadOrders() {
@@ -142,7 +144,7 @@ async function loadOrders() {
     orders.value = (res.items || []).map((o: any) => ({ ...o, _my_rating: o._my_rating || 0 }))
     total.value = res.total || 0
   } catch (e: any) {
-    ElMessage.error(e.message || '加载失败')
+    ElMessage.error(e.message || t('common.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -164,28 +166,38 @@ async function submitRate() {
       order_id: rateTarget.value.id,
       comment: rateForm.value.comment || undefined,
     })
-    ElMessage.success('评分成功！')
+    ElMessage.success(t('dataPool.rateSuccess'))
     rateDialogVisible.value = false
     // 更新本地数据
     const idx = orders.value.findIndex(o => o.id === rateTarget.value.id)
     if (idx >= 0) orders.value[idx]._my_rating = rateForm.value.rating
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e.message || '评分失败')
+    ElMessage.error(e?.response?.data?.detail || e.message || t('dataPool.rateFailed'))
   } finally {
     rateLoading.value = false
   }
 }
 
-function orderTypeLabel(t: string) {
-  const m: Record<string, string> = { data_only: '纯数据', combo: '组合套餐', data_and_send: '买即发' }
-  return m[t] || t
+function orderTypeLabel(type: string) {
+  const m: Record<string, string> = {
+    data_only: t('dataPool.typeDataOnly'),
+    combo: t('dataPool.typeCombo'),
+    data_and_send: t('dataPool.typeDataAndSend')
+  }
+  return m[type] || type
 }
 function orderTypeTag(t: string) {
   const m: Record<string, '' | 'success' | 'warning'> = { data_only: '', combo: 'success', data_and_send: 'warning' }
   return m[t] ?? ''
 }
 function statusLabel(s: string) {
-  const m: Record<string, string> = { pending: '待处理', processing: '处理中', completed: '已完成', cancelled: '已取消', refunded: '已退款' }
+  const m: Record<string, string> = {
+    pending: t('dataPool.pending'),
+    processing: t('dataPool.processing'),
+    completed: t('dataPool.completed'),
+    cancelled: t('dataPool.cancelled'),
+    refunded: t('dataPool.refund')
+  }
   return m[s] || s
 }
 function statusTag(s: string) {
@@ -199,9 +211,9 @@ function fmtDate(d: string) {
 
 async function handleCancel(row: any) {
   try {
-    await ElMessageBox.confirm('确定要取消此订单吗？', '取消订单', { type: 'warning' })
-    await cancelOrder(row.id, { reason: '客户主动取消' })
-    ElMessage.success('订单已取消')
+    await ElMessageBox.confirm(t('dataPool.confirmCancelOrderMsg'), t('dataPool.cancelOrder'), { type: 'warning' })
+    await cancelOrder(row.id, { reason: t('dataPool.customerCancelled') })
+    ElMessage.success(t('dataPool.orderCancelled'))
     loadOrders()
   } catch { /* 用户取消操作 */ }
 }
@@ -226,10 +238,10 @@ onMounted(loadOrders)
 }
 .star-icon {
   font-size: 14px;
-  color: #dcdfe6;
+  color: var(--el-text-color-placeholder);
 }
 .star-icon.filled {
-  color: #f7ba2a;
+  color: var(--el-color-warning);
 }
 
 /* 评分弹窗 */
@@ -244,11 +256,11 @@ onMounted(loadOrders)
 }
 .rate-label {
   min-width: 50px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   font-weight: 500;
 }
 .rate-value {
-  color: #303133;
+  color: var(--el-text-color-primary);
 }
 .rate-stars-section {
   display: flex;
@@ -261,20 +273,20 @@ onMounted(loadOrders)
 }
 .rate-star {
   font-size: 28px;
-  color: #dcdfe6;
+  color: var(--el-text-color-placeholder);
   cursor: pointer;
   transition: color 0.15s, transform 0.15s;
 }
 .rate-star.active {
-  color: #f7ba2a;
+  color: var(--el-color-warning);
 }
 .rate-star.hover {
-  color: #f7ba2a;
+  color: var(--el-color-warning);
   transform: scale(1.15);
 }
 .rate-score-text {
   font-size: 14px;
-  color: #e6a23c;
+  color: var(--el-color-warning);
   font-weight: 500;
   min-width: 32px;
 }

@@ -119,6 +119,18 @@ export function deleteSupplier(supplierId: number) {
   return request.delete(`/admin/suppliers/${supplierId}`)
 }
 
+// 从指定业务中移除供应商（停用该业务下的所有报价，用于纠正误归类）
+export function removeSupplierFromBusiness(supplierId: number, businessType: 'sms' | 'voice' | 'data') {
+  return request.post(`/admin/suppliers/${supplierId}/remove-from-business`, null, {
+    params: { business_type: businessType }
+  })
+}
+
+// 数据业务供应商：从定价模板同步报价到报价表
+export function syncSupplierFromDataPricing(supplierId: number) {
+  return request.post(`/admin/suppliers/${supplierId}/sync-from-data-pricing`)
+}
+
 // 从资源报价文件导入供应商报价（data/resource_pricing.json）
 export function importFromResourcePricing() {
   return request.post('/admin/suppliers/import-from-resource-pricing')

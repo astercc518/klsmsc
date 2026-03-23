@@ -293,7 +293,7 @@ onMounted(() => {
 }
 
 code {
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   padding: 2px 6px;
   border-radius: 3px;
   font-family: 'Courier New', monospace;

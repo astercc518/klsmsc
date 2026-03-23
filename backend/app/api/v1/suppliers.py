@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, and_, or_, update
 from sqlalchemy.orm import selectinload
 from typing import Optional, List
 from pydantic import BaseModel, Field
@@ -253,7 +253,7 @@ async def get_suppliers_by_business_type(
 
     result = {}
     for biz in ["sms", "voice", "data"]:
-        # 该业务类型下有报价的供应商
+        # 1. 该业务类型下有报价的供应商
         subq = (
             select(SupplierRate.supplier_id)
             .where(
@@ -288,6 +288,7 @@ async def get_suppliers_by_business_type(
             )
         q = q.group_by(Supplier.id).order_by(Supplier.priority.desc(), Supplier.created_at.desc())
         rows = (await db.execute(q)).all()
+        seen_ids = {s.id for s, _, _ in rows}
 
         suppliers_list = []
         for s, rc, cc in rows:
@@ -298,13 +299,154 @@ async def get_suppliers_by_business_type(
                 "supplier_group": s.supplier_group,
                 "telegram_group_id": getattr(s, 'telegram_group_id', None),
                 "status": s.status,
-                "rate_count": rc,
-                "country_count": cc,
+                "business_type": getattr(s, 'business_type', 'sms'),
+                "rate_count": int(rc or 0),
+                "country_count": int(cc or 0),
                 "notes": s.notes,
             })
+
+        # 2. 主业务类型为该类型、但尚无报价的供应商（新建后未添加报价的，如 KL数据）
+        q2 = (
+            select(Supplier)
+            .where(
+                Supplier.business_type == biz,
+                Supplier.is_deleted == False
+            )
+        )
+        if seen_ids:
+            q2 = q2.where(Supplier.id.not_in(seen_ids))
+        if status:
+            q2 = q2.where(Supplier.status == status)
+        if keyword:
+            q2 = q2.where(
+                or_(
+                    Supplier.supplier_code.ilike(f"%{keyword}%"),
+                    Supplier.supplier_name.ilike(f"%{keyword}%"),
+                    Supplier.supplier_group.ilike(f"%{keyword}%")
+                )
+            )
+        q2 = q2.order_by(Supplier.priority.desc(), Supplier.created_at.desc())
+        rows2 = (await db.execute(q2)).scalars().all()
+        for s in rows2:
+            suppliers_list.append({
+                "id": s.id,
+                "supplier_code": s.supplier_code,
+                "supplier_name": s.supplier_name,
+                "supplier_group": s.supplier_group,
+                "telegram_group_id": getattr(s, 'telegram_group_id', None),
+                "status": s.status,
+                "business_type": getattr(s, 'business_type', 'sms'),
+                "rate_count": 0,
+                "country_count": 0,
+                "notes": s.notes,
+            })
+
         result[biz] = {"suppliers": suppliers_list, "total": len(suppliers_list)}
 
     return {"success": True, "by_business": result}
+
+
+@router.post("/{supplier_id}/remove-from-business")
+async def remove_supplier_from_business(
+    supplier_id: int,
+    business_type: str = Query(..., description="业务类型：sms/voice/data"),
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin)
+):
+    """
+    将供应商从指定业务中移除（停用该供应商在此业务下的所有报价）。
+    用于纠正误归类的供应商，如一正通信本属短信业务但误有数据业务报价。
+    """
+    if business_type not in ("sms", "voice", "data"):
+        raise HTTPException(status_code=400, detail="business_type 必须为 sms/voice/data 之一")
+    # 校验供应商存在
+    r = await db.execute(select(Supplier).where(Supplier.id == supplier_id, Supplier.is_deleted == False))
+    if not r.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="供应商不存在")
+    stmt = (
+        update(SupplierRate)
+        .where(
+            SupplierRate.supplier_id == supplier_id,
+            SupplierRate.business_type == business_type,
+            SupplierRate.status == 'active'
+        )
+        .values(status='inactive')
+    )
+    result = await db.execute(stmt)
+    await db.commit()
+    n = result.rowcount
+    return {"success": True, "message": f"已从{['短信','语音','数据'][['sms','voice','data'].index(business_type)]}业务移除，停用 {n} 条报价", "deactivated": n}
+
+
+@router.post("/{supplier_id}/sync-from-data-pricing")
+async def sync_supplier_rates_from_data_pricing(
+    supplier_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin)
+):
+    """
+    将指定供应商（数据业务）的报价表同步自「数据业务定价模板」。
+    仅支持 business_type='data' 的供应商（如 KL数据）。
+    按模板的 country_code、source、purpose、freshness 生成 supplier_rates，成本/售价取自模板。
+    """
+    from app.modules.data.models import DataPricingTemplate
+    r = await db.execute(select(Supplier).where(Supplier.id == supplier_id, Supplier.is_deleted == False))
+    supplier = r.scalar_one_or_none()
+    if not supplier:
+        raise HTTPException(status_code=404, detail="供应商不存在")
+    biz = getattr(supplier, 'business_type', None) or 'sms'
+    if biz != 'data':
+        raise HTTPException(status_code=400, detail="仅支持数据业务供应商，当前供应商业务类型为 " + biz)
+
+    tpls = (await db.execute(
+        select(DataPricingTemplate).where(
+            DataPricingTemplate.status == 'active',
+            DataPricingTemplate.country_code != '*'
+        )
+    )).scalars().all()
+    created, updated = 0, 0
+    for t in tpls:
+        resource_type = f"{t.source}_{t.purpose}_{t.freshness}"[:50]
+        remark = f"同步自定价模板 {t.name or t.id}"
+        exist = (await db.execute(
+            select(SupplierRate).where(
+                SupplierRate.supplier_id == supplier_id,
+                SupplierRate.business_type == 'data',
+                SupplierRate.country_code == t.country_code,
+                SupplierRate.resource_type == resource_type
+            ).limit(1)
+        )).scalar_one_or_none()
+        cost = Decimal(str(t.cost_per_number or 0))
+        price = Decimal(str(t.price_per_number or 0))
+        if exist:
+            exist.cost_price = cost
+            exist.sell_price = price
+            exist.currency = t.currency or 'USD'
+            exist.remark = remark
+            exist.status = 'active'
+            updated += 1
+        else:
+            rate = SupplierRate(
+                supplier_id=supplier_id,
+                business_type='data',
+                country_code=t.country_code,
+                resource_type=resource_type,
+                business_scope='otp',
+                cost_price=cost,
+                sell_price=price,
+                currency=t.currency or 'USD',
+                remark=remark,
+                status='active',
+            )
+            db.add(rate)
+            created += 1
+    await db.commit()
+    return {
+        "success": True,
+        "message": f"同步完成：新增 {created} 条，更新 {updated} 条报价",
+        "created": created,
+        "updated": updated,
+    }
 
 
 @router.post("/import-from-resource-pricing")
