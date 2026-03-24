@@ -4,9 +4,12 @@ SMPP通道适配器 - 支持 transceiver / transmitter / receiver 绑定模式
 """
 import asyncio
 import re
+import socket
 import threading
+import time
 from typing import List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
+from app.config import settings
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
 from app.utils.logger import get_logger
@@ -82,7 +85,8 @@ class SMPPAdapter:
         self.channel = channel
         self.client = None
         self.connected = False
-        self._lock = threading.Lock()
+        # 与心跳线程串行化同一连接上的读 socket，避免与 submit 应答争抢 PDU
+        self._lock = threading.RLock()
         configured = getattr(channel, "smpp_bind_mode", None) or "transceiver"
         self._bind_mode = configured
         # Kaola SMPP (7099) 需 transceiver 才能接收 deliver_sm；若配置为 transmitter 则优先尝试 transceiver
@@ -236,12 +240,17 @@ class SMPPAdapter:
                 time.sleep(poll_interval)
                 elapsed += poll_interval
 
-                # 轮询入站 PDU（处理 deliver_sm 等）
+                # 轮询入站 PDU（处理 deliver_sm 等）；发送线程持锁时跳过，避免抢读 submit_sm_resp
                 if can_receive and self.client:
-                    try:
-                        self.client.read_once(ignore_error_codes=[], auto_send_enquire_link=True)
-                    except Exception:
-                        pass
+                    if self._lock.acquire(blocking=False):
+                        try:
+                            self.client.read_once(
+                                ignore_error_codes=[], auto_send_enquire_link=True
+                            )
+                        except Exception:
+                            pass
+                        finally:
+                            self._lock.release()
 
                 # 心跳（smpplib 2.x 无 enquire_link 方法，需通过 PDU 发送）
                 if elapsed >= heartbeat_interval:
@@ -472,6 +481,84 @@ class SMPPAdapter:
     #  发送
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _pdu_message_id(pdu) -> Optional[str]:
+        """从 submit_sm_resp 等 PDU 解析上游 message_id"""
+        mid = getattr(pdu, "message_id", None)
+        if not mid:
+            return None
+        if isinstance(mid, bytes):
+            mid = mid.decode("utf-8", errors="replace")
+        mid = str(mid).strip().strip("\x00")
+        return mid if mid else None
+
+    def _await_submit_sm_resp(self, expected_sequence: int, deadline: float):
+        """
+        submit_sm 发出后 drain 入站 PDU，直到收到同 sequence 的 submit_sm_resp。
+        中间的 deliver_sm / enquire_link 等与 smpplib.read_once 一致分派，避免单次 read 被 DLR 占满而丢失 message_id。
+        """
+        import smpplib.exceptions as smpp_exc
+
+        sock = self.client._socket
+        if sock is None:
+            return None
+
+        old_timeout = sock.gettimeout()
+        try:
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                sock.settimeout(min(max(remaining, 0.05), 1.0))
+                try:
+                    pdu = self.client.read_pdu()
+                except socket.timeout:
+                    continue
+                except smpp_exc.ConnectionError:
+                    raise
+
+                # 优先匹配当前 submit 的应答（含上游返回错误态）
+                if pdu.command == "submit_sm_resp" and getattr(
+                    pdu, "sequence", None
+                ) == expected_sequence:
+                    return pdu
+
+                if pdu.is_error():
+                    self.client.error_pdu_handler(pdu)
+
+                if pdu.command == "unbind":
+                    logger.info(
+                        f"[{self.channel.channel_code}] SMPP 收到 unbind，中止等待 submit_sm_resp"
+                    )
+                    return None
+                if pdu.command == "submit_sm_resp":
+                    logger.warning(
+                        f"[{self.channel.channel_code}] SMPP 收到非当前请求的 submit_sm_resp "
+                        f"sequence={getattr(pdu, 'sequence', None)} 期望={expected_sequence}，"
+                        f"已转交 message_sent_handler"
+                    )
+                    self.client.message_sent_handler(pdu=pdu)
+                elif pdu.command == "deliver_sm":
+                    self.client._message_received(pdu)
+                elif pdu.command == "query_sm_resp":
+                    self.client.query_resp_handler(pdu=pdu)
+                elif pdu.command == "enquire_link":
+                    self.client._enquire_link_received(pdu)
+                elif pdu.command == "enquire_link_resp":
+                    pass
+                elif pdu.command == "alert_notification":
+                    self.client._alert_notification(pdu)
+                else:
+                    logger.warning(
+                        f"[{self.channel.channel_code}] 未处理的 SMPP 命令: {pdu.command!r}"
+                    )
+            return None
+        finally:
+            try:
+                sock.settimeout(old_timeout)
+            except Exception:
+                pass
+
     async def send(self, sms_log: SMSLog) -> Tuple[bool, Optional[str], Optional[str]]:
         """发送短信（异步包装）"""
         loop = asyncio.get_event_loop()
@@ -488,6 +575,7 @@ class SMPPAdapter:
             try:
                 import smpplib.gsm
                 import smpplib.consts
+                import smpplib.exceptions as smpp_exc
             except ImportError:
                 message_id = f"smpp_{sms_log.message_id[:16]}"
                 logger.info(f"SMPP发送成功（模拟）: {message_id}")
@@ -498,72 +586,80 @@ class SMPPAdapter:
             message_ids = []
             sender_id = self.channel.default_sender_id or ""
 
-            # 注册消息响应处理器以捕获 submit_sm_resp 中的 message_id
-            resp_message_ids = []
+            # 使用 getattr：避免 Worker 仅更新了本文件、未同步含 SMPP_SUBMIT_RESP_WAIT_SECONDS 的 config 时整批发送失败
+            _submit_resp_wait = float(
+                getattr(settings, "SMPP_SUBMIT_RESP_WAIT_SECONDS", 8.0)
+            )
 
-            def _msg_sent_handler(pdu):
-                """捕获 submit_sm_resp 中的 message_id"""
-                if hasattr(pdu, "message_id") and pdu.message_id:
-                    mid = pdu.message_id
-                    if isinstance(mid, bytes):
-                        mid = mid.decode("utf-8", errors="replace")
-                    resp_message_ids.append(mid)
+            # 乱序 submit_sm_resp 会走 _await 内 message_sent_handler；避免 smpplib 默认 “Override me” 告警
+            self.client.set_message_sent_handler(lambda pdu, **kwargs: None)
 
-            self.client.set_message_sent_handler(_msg_sent_handler)
-
-            for i, part in enumerate(parts):
-                # 每段提交前清空，避免 smpplib 将多段 submit_sm_resp 记混到同一段
-                resp_message_ids.clear()
-                try:
-                    pdu = self.client.send_message(
-                        source_addr_ton=(
-                            smpplib.consts.SMPP_TON_ALNUM
-                            if sender_id
-                            else smpplib.consts.SMPP_TON_INTL
-                        ),
-                        source_addr_npi=smpplib.consts.SMPP_NPI_UNK,
-                        source_addr=sender_id,
-                        dest_addr_ton=smpplib.consts.SMPP_TON_INTL,
-                        dest_addr_npi=smpplib.consts.SMPP_NPI_ISDN,
-                        destination_addr=sms_log.phone_number.lstrip("+"),
-                        short_message=part,
-                        data_coding=encoding_flag,
-                        esm_class=msg_type_flag,
-                        registered_delivery=1,
-                    )
-
-                    # 同步读取 submit_sm_resp 以获取真实 message_id（否则会误用 sequence 导致 DLR 无法匹配）
+            # 与心跳线程互斥读 socket；并在 submit 后 drain 至对应 sequence 的 submit_sm_resp，避免被 deliver_sm 插队
+            with self._lock:
+                for i, part in enumerate(parts):
                     try:
-                        self.client.read_once(ignore_error_codes=[], auto_send_enquire_link=False)
-                    except Exception:
-                        pass
+                        submit_pdu = self.client.send_message(
+                            source_addr_ton=(
+                                smpplib.consts.SMPP_TON_ALNUM
+                                if sender_id
+                                else smpplib.consts.SMPP_TON_INTL
+                            ),
+                            source_addr_npi=smpplib.consts.SMPP_NPI_UNK,
+                            source_addr=sender_id,
+                            dest_addr_ton=smpplib.consts.SMPP_TON_INTL,
+                            dest_addr_npi=smpplib.consts.SMPP_NPI_ISDN,
+                            destination_addr=sms_log.phone_number.lstrip("+"),
+                            short_message=part,
+                            data_coding=encoding_flag,
+                            esm_class=msg_type_flag,
+                            registered_delivery=1,
+                        )
+                        submit_seq = getattr(submit_pdu, "sequence", None)
+                        resp_pdu = self._await_submit_sm_resp(
+                            submit_seq, time.monotonic() + _submit_resp_wait
+                        )
+                    except smpp_exc.PDUError as e:
+                        error_msg = f"发送部分 {i + 1} 失败: {str(e)}"
+                        logger.error(error_msg, exc_info=e)
+                        return False, None, error_msg
+                    except Exception as e:
+                        error_msg = f"发送部分 {i + 1} 失败: {str(e)}"
+                        logger.error(error_msg, exc_info=e)
+                        return False, None, error_msg
 
-                    # 优先从 resp handler 获取 message_id
-                    if resp_message_ids:
-                        mid = resp_message_ids[-1]
-                    elif hasattr(pdu, "message_id") and pdu.message_id:
-                        mid = pdu.message_id
-                        if isinstance(mid, bytes):
-                            mid = mid.decode("utf-8", errors="replace")
-                    else:
+                    if resp_pdu is None:
+                        logger.warning(
+                            f"SMPP 等待 submit_sm_resp 超时（第 {i + 1}/{len(parts)} 段，"
+                            f"已等待 {_submit_resp_wait}s），sequence={submit_seq}"
+                        )
                         mid = None
+                    else:
+                        st = getattr(resp_pdu, "status", None)
+                        try:
+                            st_i = int(st) if st is not None else 0
+                        except (TypeError, ValueError):
+                            st_i = 0
+                        if st_i != 0:
+                            desc = smpplib.consts.DESCRIPTIONS.get(
+                                st_i, str(st)
+                            )
+                            return False, None, (
+                                f"SMPP 提交被拒（第 {i + 1}/{len(parts)} 段）: {desc} ({st_i})"
+                            )
+                        mid = self._pdu_message_id(resp_pdu)
+                        if isinstance(mid, str):
+                            mid = mid.strip() or None
 
-                    # 禁止将 pdu.sequence 当作上游 message_id：与 deliver_sm 中 id: 完全对不上，会导致 DLR 永久无法匹配
-                    if not mid or (isinstance(mid, str) and not mid.strip()):
-                        seq = getattr(pdu, "sequence", None)
+                    # 禁止将 submit_pdu.sequence 当作上游 message_id：与 deliver_sm 中 id: 对不上会导致 DLR 无法匹配
+                    if not mid:
                         logger.warning(
                             f"SMPP submit_sm 未获得上游 message_id（第 {i + 1}/{len(parts)} 段），"
-                            f"sequence={seq}；已放弃写入占位 ID，送达依赖 DLR 手机号兜底或上游修复 resp"
+                            f"sequence={submit_seq}；已放弃写入占位 ID，送达依赖 DLR 手机号兜底或上游修复 resp"
                         )
                         mid = None
 
                     message_ids.append(mid)
                     logger.info(f"SMPP发送 {i+1}/{len(parts)}: message_id={mid!r}")
-
-                except Exception as e:
-                    error_msg = f"发送部分 {i+1} 失败: {str(e)}"
-                    logger.error(error_msg, exc_info=e)
-                    return False, None, error_msg
 
             final_message_id = next((m for m in message_ids if m), None)
             logger.info(f"SMPP发送成功: {sms_log.message_id} -> {final_message_id!r}")

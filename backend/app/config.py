@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     # 高并发且仅 HTTP 回执时，可设 True 并在 compose 中提高 worker-sms concurrency。
     SMPP_REDIS_CLUSTER_LOCK: bool = False
 
+    # submit_sm 发出后等待 submit_sm_resp 的最长秒数（入站可被 deliver_sm 插队，需 drain 至同 sequence 应答）
+    SMPP_SUBMIT_RESP_WAIT_SECONDS: float = Field(default=8.0, ge=1.0, le=120.0)
+
     class Config:
         env_file = ".env"
         case_sensitive = True
