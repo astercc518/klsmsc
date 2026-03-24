@@ -5,6 +5,7 @@
       <div class="header-content">
         <h1 class="page-title">{{ $t('smsRecords.title') }}</h1>
         <p class="page-desc">{{ $t('smsRecords.pageDesc') }}</p>
+        <p class="status-explain">{{ $t('smsRecords.statusExplain') }}</p>
       </div>
       <div class="header-actions">
         <button class="action-btn export" @click="handleExport" :disabled="exporting">
@@ -59,6 +60,18 @@
         <div class="filter-item">
           <label class="filter-label">手机号码</label>
           <el-input v-model="searchForm.phone_number" placeholder="搜索号码" clearable size="large" class="filter-input" @keyup.enter="handleSearch" />
+        </div>
+
+        <div class="filter-item">
+          <label class="filter-label">{{ $t('smsRecords.messageId') }}</label>
+          <el-input
+            v-model="searchForm.message_id"
+            :placeholder="$t('smsRecords.messageIdPlaceholder')"
+            clearable
+            size="large"
+            class="filter-input"
+            @keyup.enter="handleSearch"
+          />
         </div>
 
         <div class="filter-item">
@@ -120,7 +133,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="message_id" label="消息ID" width="140">
+          <el-table-column prop="message_id" :label="$t('smsRecords.messageId')" width="140">
             <template #default="{ row }">
               <el-tooltip :content="row.message_id" placement="top">
                 <span class="mono-text clickable">{{ row.message_id?.substring(0, 12) }}...</span>
@@ -134,9 +147,9 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="country_code" label="国家" width="90" align="center">
+          <el-table-column prop="country_code" :label="$t('smsRecords.country')" width="90" align="center">
             <template #default="{ row }">
-              <span>{{ countryNameByDial(row.country_code) }}</span>
+              <span>{{ countryDisplay(row.country_code) }}</span>
             </template>
           </el-table-column>
 
@@ -160,6 +173,18 @@
           <el-table-column prop="status" label="状态" width="100" align="center">
             <template #default="{ row }">
               <span class="status-badge" :class="row.status">{{ getStatusText(row.status) }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column
+            prop="error_message"
+            :label="$t('smsRecords.errorMsg')"
+            min-width="140"
+            show-overflow-tooltip
+          >
+            <template #default="{ row }">
+              <span v-if="row.error_message" class="error-preview">{{ row.error_message }}</span>
+              <span v-else class="text-muted">-</span>
             </template>
           </el-table-column>
 
@@ -223,7 +248,7 @@
 
         <div class="detail-grid-3">
           <div class="detail-card">
-            <span class="dc-label">消息ID</span>
+            <span class="dc-label">{{ $t('smsRecords.messageId') }}</span>
             <span class="dc-value mono">{{ currentRecord.message_id }}</span>
           </div>
           <div class="detail-card" v-if="currentRecord.upstream_message_id">
@@ -235,18 +260,28 @@
             <span class="dc-value">{{ currentRecord.phone_number }}</span>
           </div>
           <div class="detail-card">
-            <span class="dc-label">国家</span>
-            <span class="dc-value">{{ countryNameByDial(currentRecord.country_code) }}</span>
+            <span class="dc-label">{{ $t('smsRecords.country') }}</span>
+            <span class="dc-value">{{ countryDisplay(currentRecord.country_code) }}</span>
           </div>
           <div class="detail-card" v-if="currentRecord.channel_code">
             <span class="dc-label">发送通道</span>
             <el-tag size="small" effect="plain">{{ currentRecord.channel_code }}</el-tag>
           </div>
           <div class="detail-card">
-            <span class="dc-label">上游状态</span>
-            <el-tag v-if="currentRecord.status === 'delivered'" size="small" type="success" effect="plain">已送达</el-tag>
-            <el-tag v-else-if="currentRecord.status === 'failed'" size="small" type="danger" effect="plain">失败</el-tag>
-            <el-tag v-else-if="currentRecord.upstream_message_id" size="small" type="success" effect="plain">发送成功</el-tag>
+            <span class="dc-label">{{ $t('smsRecords.upstreamHandoffLabel') }}</span>
+            <el-tooltip v-if="currentRecord.status === 'delivered'" placement="top" :content="$t('smsRecords.upstreamHandoffTipDelivered')">
+              <el-tag size="small" type="success" effect="plain">{{ $t('smsStatus.delivered') }}</el-tag>
+            </el-tooltip>
+            <el-tooltip v-else-if="currentRecord.status === 'failed'" placement="top" :content="$t('smsRecords.upstreamHandoffTipFailed')">
+              <el-tag size="small" type="danger" effect="plain">{{ $t('smsStatus.failed') }}</el-tag>
+            </el-tooltip>
+            <el-tooltip
+              v-else-if="currentRecord.upstream_message_id"
+              placement="top"
+              :content="$t('smsRecords.upstreamHandoffTipAccepted')"
+            >
+              <el-tag size="small" type="info" effect="plain">{{ $t('smsRecords.upstreamAcceptedShort') }}</el-tag>
+            </el-tooltip>
             <span v-else class="text-muted">-</span>
           </div>
           <div class="detail-card">
@@ -305,6 +340,7 @@
               </div>
             </div>
           </div>
+          <p v-if="showDlrExplainHint" class="dlr-explain-hint">{{ $t('smsRecords.dlrTerminalHint') }}</p>
         </div>
 
         <div class="detail-section" v-if="currentRecord.error_message">
@@ -323,15 +359,20 @@ import { ElMessage } from 'element-plus'
 import { Download, Refresh, Search, View } from '@element-plus/icons-vue'
 import { getSMSRecords, exportSMSRecords } from '@/api/sms'
 import { getAccountsAdmin, getChannelsAdmin } from '@/api/admin'
-import { COUNTRY_LIST, findCountryByDial } from '@/constants/countries'
+import { COUNTRY_LIST, findCountryByDial, findCountryByIso } from '@/constants/countries'
 
 const { t } = useI18n()
 
-// 按国码显示中文国家名
-function countryNameByDial(dial: string | null): string {
-  if (!dial) return '-'
-  const c = findCountryByDial(dial)
-  return c ? c.name : dial
+/** 国家列/详情：支持电话国码(如 880)或 ISO(如 BD)，与后台 country_code 存储一致 */
+function countryDisplay(code: string | null | undefined): string {
+  if (!code) return '-'
+  const raw = String(code).trim()
+  const byDial = findCountryByDial(raw)
+  if (byDial) return byDial.name
+  const iso = raw.length <= 3 ? raw.toUpperCase() : raw
+  const byIso = findCountryByIso(iso)
+  if (byIso) return byIso.name
+  return raw
 }
 
 // 国家筛选选项（按中文名排序）
@@ -387,6 +428,17 @@ const truncate = (s: string | null, n: number) => {
   if (!s) return '-'
   return s.length > n ? s.substring(0, n) + '...' : s
 }
+
+/** 已提交上游但尚无终端送达时间时，提示 DLR 与界面含义 */
+const showDlrExplainHint = computed(() => {
+  const r = currentRecord.value
+  if (!r) return false
+  return (
+    (r.status === 'sent' || r.status === 'pending' || r.status === 'queued') &&
+    !!r.sent_time &&
+    !r.delivery_time
+  )
+})
 
 const formatTime = (iso: string | null) => {
   if (!iso) return ''
@@ -517,8 +569,13 @@ onMounted(() => {
 .page-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 16px;
   margin-bottom: 20px;
+}
+.header-content {
+  flex: 1;
+  min-width: 0;
 }
 .page-title {
   font-size: 26px;
@@ -530,6 +587,14 @@ onMounted(() => {
   font-size: 14px;
   color: var(--text-tertiary);
   margin: 0;
+}
+.status-explain {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  line-height: 1.55;
+  margin: 10px 0 0;
+  max-width: 920px;
+  opacity: 0.92;
 }
 .header-actions {
   display: flex;
@@ -718,6 +783,10 @@ onMounted(() => {
 .clickable { cursor: pointer; }
 .phone-text { font-weight: 500; color: var(--text-primary); }
 .text-muted { color: var(--text-quaternary); font-size: 12px; }
+.error-preview {
+  color: var(--el-color-danger);
+  font-size: 12px;
+}
 .message-preview {
   display: block;
   white-space: nowrap;
@@ -868,6 +937,13 @@ onMounted(() => {
 .tl-time { font-size: 13px; color: var(--text-tertiary); }
 .timeline-item:not(.active) .tl-label { color: var(--text-quaternary); }
 .timeline-item:not(.active) .tl-time { color: var(--text-quaternary); font-style: italic; }
+
+.dlr-explain-hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-tertiary);
+}
 
 @media (max-width: 1024px) {
   .filter-content { flex-direction: column; align-items: stretch; }

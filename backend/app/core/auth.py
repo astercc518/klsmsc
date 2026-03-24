@@ -25,8 +25,10 @@ logger = get_logger(__name__)
 # API Key Header
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-# JWT Bearer Token
+# JWT Bearer Token（管理员登录，缺失时报错）
 security = HTTPBearer()
+# 可选 Bearer：用于识别 Authorization: Bearer ak_xxx（与 X-API-Key 等价）
+optional_bearer = HTTPBearer(auto_error=False)
 
 # 模块级 CryptContext 实例（避免每次调用重复创建）
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -42,11 +44,17 @@ def _utcnow() -> datetime:
 # ====================================
 
 async def get_current_account(
-    api_key: str = Security(api_key_header),
-    db: AsyncSession = Depends(get_db)
+    api_key: Optional[str] = Security(api_key_header),
+    bearer: Optional[HTTPAuthorizationCredentials] = Security(optional_bearer),
+    db: AsyncSession = Depends(get_db),
 ) -> Account:
-    """获取当前认证账户（FastAPI Dependency）"""
-    return await AuthService.verify_api_key(api_key, db)
+    """获取当前认证账户：优先 X-API-Key；否则若 Bearer 以 ak_ 开头则视为 API Key（兼容只带 Authorization 的客户端）"""
+    effective = api_key
+    if not effective and bearer and bearer.credentials:
+        token = bearer.credentials.strip()
+        if token.startswith("ak_"):
+            effective = token
+    return await AuthService.verify_api_key(effective, db)
 
 
 async def get_current_admin(

@@ -36,6 +36,14 @@
   --el-fill-color-light: var(--bg-hover) !important;
   --el-fill-color-lighter: var(--bg-input) !important;
   --el-fill-color-extra-light: var(--bg-input) !important;
+  /* 使用 data-theme 时 html 无 .dark，须在此对齐 EP 文本色，否则 bordered Descriptions 等仍为浅色变量 */
+  --el-text-color-primary: var(--text-primary) !important;
+  --el-text-color-regular: var(--text-secondary) !important;
+  --el-text-color-secondary: var(--text-tertiary) !important;
+  --el-text-color-placeholder: var(--text-quaternary) !important;
+  --el-text-color-disabled: var(--text-quaternary) !important;
+  /* bordered 描述列表标签底来自该变量，缺省时易呈浅紫块+对比度崩坏 */
+  --el-descriptions-item-bordered-label-background: var(--bg-input) !important;
   --bg-primary: #0D0F14;
   --bg-secondary: #12151C;
   --bg-tertiary: #171B24;
@@ -935,6 +943,25 @@ html:not([data-theme="light"]) .el-popper__arrow::before {
   background: transparent !important;
   color: var(--text-primary) !important;
   border-color: var(--border-subtle) !important;
+}
+
+/* data-theme=暗色 且无 html.dark 时，强化 bordered 格与容器底（弹窗 teleport 到 body 亦生效） */
+html:not([data-theme="light"]) .el-descriptions__body {
+  background-color: var(--bg-elevated) !important;
+}
+
+html:not([data-theme="light"]) .el-descriptions__table.is-bordered .el-descriptions__cell {
+  border-color: var(--border-default) !important;
+}
+
+html:not([data-theme="light"]) .el-descriptions__label.el-descriptions__cell.is-bordered-label {
+  background: var(--bg-input) !important;
+  color: var(--text-tertiary) !important;
+}
+
+html:not([data-theme="light"]) .el-descriptions__content.el-descriptions__cell.is-bordered-content {
+  background-color: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
 }
 
 [data-theme="light"] .el-descriptions__label {

@@ -475,7 +475,7 @@ export default {
   // SMS Status
   smsStatus: {
     pending: 'Pending',
-    queued: 'Queued',
+    queued: 'In send queue',
     sent: 'Sent',
     delivered: 'Delivered',
     failed: 'Failed',
@@ -486,6 +486,7 @@ export default {
   smsRecords: {
     title: 'Send Records',
     pageDesc: 'View SMS sending history and status',
+    statusExplain: 'Note: When a send task is “Processing”, rows still “In send queue” are normal—those messages are waiting in the worker queue to be sent in order, matching task progress.',
     totalRecords: 'Total',
     sent: 'Sent',
     delivered: 'Delivered',
@@ -505,7 +506,8 @@ export default {
     viewDetail: 'View Detail',
     noRecords: 'No records yet',
     noRecordsDesc: 'Send records will appear here after sending SMS',
-    messageId: 'Message ID',
+    messageId: 'Send ID',
+    messageIdPlaceholder: 'Partial match on message / send ID',
     parts: 'Parts',
     channel: 'Channel',
     cost: 'Cost',
@@ -523,6 +525,14 @@ export default {
     timeInfo: 'Time Information',
     sentTime: 'Sent Time',
     deliveryTime: 'Delivery Time',
+    upstreamHandoffLabel: 'Carrier handoff',
+    upstreamAcceptedShort: 'Accepted upstream',
+    upstreamHandoffTipAccepted:
+      'Upstream accepted the message and returned an ID; this is not handset delivery. The Delivered step updates only after a terminal DLR (push or pull).',
+    upstreamHandoffTipDelivered: 'Handset delivery confirmed.',
+    upstreamHandoffTipFailed: 'Send or delivery failed; see error details.',
+    dlrTerminalHint:
+      'Note: “Delivered” depends on upstream terminal DLR. If it stays pending, check callback URL, IP/token allowlists, and whether pull/report covers this route; some routes never send terminal receipts.',
   },
   
   // Time
@@ -614,6 +624,7 @@ export default {
     insufficientBalance: 'Insufficient balance, please recharge',
     sendResult: 'Complete: {success} success, {fail} failed',
     sendCompleteResult: 'Complete: {success} success, {fail} failed',
+    viewSendTask: 'View send task',
     sendAllFailed: 'Failed ({count}), please check balance',
     sendFailedCheckBalance: 'Failed ({count}), please check balance',
     applySelectedText: 'Use Selected',
@@ -1338,7 +1349,18 @@ export default {
     uploadSuccess: 'Upload successful',
     uploadFailed: 'Upload failed',
     batchDetail: 'Batch Details',
+    taskSendRecords: 'Task send records',
+    messageIdFilterPlaceholder: 'Filter by send ID (partial match)',
+    recordsLoadFailed: 'Failed to load send records',
     confirmCancel: 'Confirm cancel?',
+    taskSourceHint: 'Bulk sends from the SMS Send page appear here (names often start with the send-page prefix). CSV uploads are processed in the background.',
+    emptyList: 'No tasks yet. Create one above or send from the SMS Send page.',
+    batchIdCol: 'ID',
+    createdAtLocal: 'Created',
+    detailLoadFailed: 'Failed to load details',
+    invalidBatchId: 'Invalid task ID. Refresh the list and try again.',
+    pendingAndFailedStrip: 'Pending batches {pending} · Failed batches {failed}',
+    processingTooltip: 'Messages in the batch are sent sequentially by the worker. Rows still “In send queue” in records are waiting their turn—not a conflict with “Processing”.',
   },
   
   // Profit Report

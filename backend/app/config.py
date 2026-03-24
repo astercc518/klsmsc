@@ -119,7 +119,13 @@ class Settings(BaseSettings):
     # Telegram Bot配置
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     TELEGRAM_ADMIN_GROUP_ID: Optional[str] = None
-    
+
+    # SMPP：多 Celery 子进程会并发 bind，上游单会话时易 ESME 13。为 True 时用 Redis 全局锁串行化，
+    # 且提交成功后立即断开 TCP 以释放 bind——会导致无法在同连接上收到 deliver_sm，送达多依赖 HTTP 拉取/回调。
+    # 默认 False：配合 worker-sms --concurrency=1 可兼顾「单会话 bind」与 SMPP 长连收 DLR（延迟断开）。
+    # 高并发且仅 HTTP 回执时，可设 True 并在 compose 中提高 worker-sms concurrency。
+    SMPP_REDIS_CLUSTER_LOCK: bool = False
+
     class Config:
         env_file = ".env"
         case_sensitive = True

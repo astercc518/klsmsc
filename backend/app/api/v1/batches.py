@@ -170,7 +170,7 @@ async def list_batches(
         result = await db.execute(query)
         batches = result.scalars().all()
         
-        items = [SmsBatchResponse.from_orm(b) for b in batches]
+        items = [SmsBatchResponse.model_validate(b, from_attributes=True) for b in batches]
         
         return SmsBatchListResponse(
             total=total,
@@ -286,8 +286,12 @@ async def get_batch(
     
     if not batch:
         raise HTTPException(status_code=404, detail="批次不存在")
-    
-    return SmsBatchResponse.from_orm(batch)
+
+    try:
+        return SmsBatchResponse.model_validate(batch, from_attributes=True)
+    except Exception as e:
+        logger.exception(f"批次详情序列化失败 batch_id={batch_id}: {e}")
+        raise HTTPException(status_code=500, detail="批次数据格式异常，请联系管理员查看日志")
 
 
 @router.delete("/batches/{batch_id}", summary="取消批次")

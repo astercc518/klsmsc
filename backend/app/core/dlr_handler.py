@@ -34,12 +34,12 @@ class DLRStatus(Enum):
 
 # 常见的送达成功状态码/关键词（含 Kaola 等上游的 DELIVRD、DELIVRD 000 等）
 DELIVERED_CODES = {
-    # 数字状态码
+    # 数字状态码（2/11/20 等仅在下文 isdigit 分支处理，便于在含失败关键词的 error 字段时先判失败）
     '0', '1', '10', '100', '200',
     # 字符串状态
     'delivrd', 'delivered', 'success', 'ok', 'sent', 'accepted',
     'deliveredtonetwork', 'deliveredtoterminal', 'sm_deliveredtomob',
-    'dlvrd', 'submitted',
+    'dlvrd', 'submitted', 'receive', 'received',
 }
 
 # 常见的失败状态码/关键词
@@ -65,29 +65,54 @@ def normalize_status(status_code: Any, error_code: str = '') -> DLRStatus:
     # 转为小写字符串
     status_str = str(status_code).lower().strip() if status_code is not None else ''
     error_str = str(error_code).lower().strip() if error_code else ''
-    
-    # 检查是否是送达成功（含 "delivrd 000"、"DELIVRD" 等变体）
-    if status_str in DELIVERED_CODES or error_str in DELIVERED_CODES:
-        return DLRStatus.DELIVERED
-    if 'delivrd' in status_str or 'delivrd' in error_str:
-        return DLRStatus.DELIVERED
-    
-    # 检查是否是失败
+
+    # 失败关键词优先，避免与「数字成功码」或模糊文案冲突
     for failed_code in FAILED_CODES:
         if failed_code in status_str or failed_code in error_str:
             return DLRStatus.FAILED
-    
-    # 特殊处理某些数字状态码
+
+    # 明确送达（SMPP 风格）
+    if 'delivrd' in status_str or 'delivrd' in error_str:
+        return DLRStatus.DELIVERED
+
+    if status_str in DELIVERED_CODES or error_str in DELIVERED_CODES:
+        return DLRStatus.DELIVERED
+
+    # 纯数字状态码
     if status_str.isdigit():
         code = int(status_str)
-        # 0, 1, 10 通常表示成功
-        if code in [0, 1, 10, 100, 200]:
+        # 多家 HTTP report 用 2/11/20 等表示已送达或流程成功
+        if code in [0, 1, 2, 10, 11, 20, 100, 200]:
             return DLRStatus.DELIVERED
-        # 负数或大于1000的错误码通常表示失败
         if code < 0 or code > 1000:
             return DLRStatus.FAILED
-    
+
     return DLRStatus.UNKNOWN
+
+
+def _dlr_upstream_id_candidates(raw: Any) -> List[str]:
+    """
+    生成可与 SMSLog.upstream_message_id 匹配的候选 ID（与 SMPP deliver_sm 侧逻辑对齐）。
+    解决 DLR 回传大小写、十六进制/十进制变体等与入库值不完全一致时「找不到记录」的问题。
+    """
+    s = str(raw).strip() if raw is not None else ""
+    if not s:
+        return []
+    candidates = [s]
+    if any(c in s.upper() for c in "ABCDEF"):
+        candidates.append(s.upper())
+        candidates.append(s.lower())
+    try:
+        if s.startswith("0x") or s.startswith("0X"):
+            candidates.append(str(int(s, 16)))
+        elif s.isdigit():
+            candidates.append(hex(int(s)))
+        elif len(s) >= 2 and all(c in "0123456789abcdefABCDEF" for c in s):
+            candidates.append(str(int(s, 16)))
+    except (ValueError, TypeError):
+        pass
+    # 去重保序
+    return list(dict.fromkeys(candidates))
 
 
 def parse_json_dlr(data: Dict) -> List[Dict]:
@@ -106,7 +131,11 @@ def parse_json_dlr(data: Dict) -> List[Dict]:
         if 'list' in data:
             for item in data.get('list', []):
                 report = {
-                    'message_id': item.get('mid') or item.get('message_id') or item.get('msgid') or item.get('taskid'),
+                    'message_id': (
+                        item.get('mid') or item.get('message_id') or item.get('msgid')
+                        or item.get('taskid') or item.get('smsid') or item.get('sms_id')
+                        or item.get('sm_id')
+                    ),
                     'mobile': item.get('mobile') or item.get('phone') or item.get('to'),
                     'status_code': item.get('result') or item.get('status') or item.get('state'),
                     'error_code': item.get('errorcode') or item.get('error') or item.get('desc'),
@@ -119,7 +148,10 @@ def parse_json_dlr(data: Dict) -> List[Dict]:
         elif isinstance(data, list):
             for item in data:
                 report = {
-                    'message_id': item.get('mid') or item.get('message_id') or item.get('msgid'),
+                    'message_id': (
+                        item.get('mid') or item.get('message_id') or item.get('msgid')
+                        or item.get('taskid') or item.get('smsid') or item.get('sms_id')
+                    ),
                     'mobile': item.get('mobile') or item.get('phone'),
                     'status_code': item.get('result') or item.get('status'),
                     'error_code': item.get('errorcode') or item.get('error'),
@@ -130,8 +162,11 @@ def parse_json_dlr(data: Dict) -> List[Dict]:
         
         # 格式3: 单个报告
         else:
-            message_id = (data.get('mid') or data.get('message_id') or 
-                         data.get('msgid') or data.get('taskid') or data.get('id'))
+            message_id = (
+                data.get('mid') or data.get('message_id') or data.get('msgid')
+                or data.get('taskid') or data.get('id') or data.get('smsid')
+                or data.get('sms_id') or data.get('sm_id')
+            )
             if message_id:
                 reports.append({
                     'message_id': message_id,
@@ -255,20 +290,29 @@ def parse_form_dlr(form_data: Dict) -> List[Dict]:
     reports = []
     
     try:
-        # 尝试多种字段名
-        message_id = (form_data.get('mid') or form_data.get('message_id') or 
-                     form_data.get('msgid') or form_data.get('taskid') or
-                     form_data.get('id') or form_data.get('smsid'))
+        # 尝试多种字段名（含 GET 回调常见变体）
+        message_id = (
+            form_data.get('mid') or form_data.get('message_id') or form_data.get('msgid')
+            or form_data.get('messageid') or form_data.get('taskid') or form_data.get('task_id')
+            or form_data.get('id') or form_data.get('smsid') or form_data.get('sms_id')
+            or form_data.get('sm_id') or form_data.get('msg_id') or form_data.get('sn')
+            or form_data.get('seq') or form_data.get('upstream_id') or form_data.get('upstreamid')
+        )
         
         if message_id:
             reports.append({
                 'message_id': message_id,
                 'mobile': (form_data.get('mobile') or form_data.get('phone') or 
                           form_data.get('to') or form_data.get('msisdn')),
-                'status_code': (form_data.get('result') or form_data.get('status') or 
-                               form_data.get('state') or form_data.get('dlr_status')),
-                'error_code': (form_data.get('errorcode') or form_data.get('error') or 
-                              form_data.get('err_desc') or form_data.get('reason')),
+                'status_code': (
+                    form_data.get('result') or form_data.get('status') or form_data.get('state')
+                    or form_data.get('dlr_status') or form_data.get('stat') or form_data.get('dr')
+                    or form_data.get('delivery_status') or form_data.get('code')
+                ),
+                'error_code': (
+                    form_data.get('errorcode') or form_data.get('error') or form_data.get('err_desc')
+                    or form_data.get('reason') or form_data.get('err') or form_data.get('fail_reason')
+                ),
                 'delivery_time': (form_data.get('recvTime') or form_data.get('deliverytime') or 
                                  form_data.get('time') or form_data.get('done_date')),
             })
@@ -303,28 +347,41 @@ async def process_dlr_reports(
             message_id = report.get('message_id')
             if not message_id:
                 continue
-            msg_id_str = str(message_id)  # 统一转字符串，避免上游返回 int 导致匹配失败
-            
-            # 查找对应的短信记录：优先用上游消息ID匹配
-            query = select(SMSLog).where(SMSLog.upstream_message_id == msg_id_str)
-            result = await db.execute(query)
-            sms_log = result.scalar_one_or_none()
-            
+            msg_id_str = str(message_id).strip()  # 统一转字符串，避免上游返回 int 导致匹配失败
+            id_candidates = _dlr_upstream_id_candidates(msg_id_str)
+
+            # 查找对应的短信记录：优先用上游消息ID匹配（多候选避免大小写/进制差异）
+            sms_log = None
+            if id_candidates:
+                query = (
+                    select(SMSLog)
+                    .where(SMSLog.upstream_message_id.in_(id_candidates))
+                    .order_by(SMSLog.submit_time.desc())
+                    .limit(1)
+                )
+                result = await db.execute(query)
+                sms_log = result.scalars().first()
+
             # 兜底：部分上游会回传我们的 message_id，尝试用我们的 ID 匹配
             if not sms_log:
-                query = select(SMSLog).where(SMSLog.message_id == msg_id_str)
+                query = (
+                    select(SMSLog)
+                    .where(SMSLog.message_id == msg_id_str)
+                    .order_by(SMSLog.submit_time.desc())
+                    .limit(1)
+                )
                 result = await db.execute(query)
-                sms_log = result.scalar_one_or_none()
+                sms_log = result.scalars().first()
             
             # 如果没找到，尝试用手机号匹配
             if not sms_log and report.get('mobile'):
-                clean_mobile = str(report['mobile']).lstrip('+')
+                clean_mobile = str(report['mobile']).lstrip('+').strip()
                 query = select(SMSLog).where(
                     SMSLog.phone_number.like(f"%{clean_mobile}"),
                     SMSLog.status == 'sent'
                 ).order_by(SMSLog.submit_time.desc()).limit(1)
                 result = await db.execute(query)
-                sms_log = result.scalar_one_or_none()
+                sms_log = result.scalars().first()
             
             if not sms_log:
                 logger.debug(f"[{source}] DLR 找不到对应记录: {message_id}")
@@ -353,7 +410,11 @@ async def process_dlr_reports(
                 logger.info(f"[{source}] DLR 送达失败: {sms_log.message_id}, error={error_msg}")
                 fail_count += 1
             else:
-                logger.debug(f"[{source}] DLR 未知状态: {sms_log.message_id}, status={report.get('status_code')}, error={report.get('error_code')}")
+                logger.warning(
+                    f"[{source}] DLR 状态未识别，未更新送达: message_id={sms_log.message_id}, "
+                    f"upstream_mid={msg_id_str}, status_code={report.get('status_code')!r}, "
+                    f"error_code={report.get('error_code')!r}, report_keys={list(report.keys())}"
+                )
             
             # 触发 Webhook 回调
             try:

@@ -478,7 +478,7 @@ export default {
   // 发送状态
   smsStatus: {
     pending: '待发送',
-    queued: '已排队',
+    queued: '发送队列中',
     sent: '已发送',
     delivered: '已送达',
     failed: '失败',
@@ -489,6 +489,7 @@ export default {
   smsRecords: {
     title: '发送记录',
     pageDesc: '查看短信发送历史和状态',
+    statusExplain: '说明：发送任务为「处理中」时，记录里部分号码显示「发送队列中」属正常现象，表示已进入后台发送队列、正按顺序依次下发，与任务进度一致。',
     totalRecords: '总记录',
     sent: '已发送',
     delivered: '已送达',
@@ -508,7 +509,8 @@ export default {
     viewDetail: '查看详情',
     noRecords: '暂无发送记录',
     noRecordsDesc: '发送短信后，记录将显示在这里',
-    messageId: '消息ID',
+    messageId: '发送ID',
+    messageIdPlaceholder: '支持模糊查询',
     parts: '分段数',
     channel: '发送通道',
     cost: '费用',
@@ -526,6 +528,13 @@ export default {
     timeInfo: '时间信息',
     sentTime: '发送时间',
     deliveryTime: '送达时间',
+    upstreamHandoffLabel: '通道回执',
+    upstreamAcceptedShort: '已提交上游',
+    upstreamHandoffTipAccepted: '表示上游已接收并返回消息 ID，不等于用户手机已收到。下方「送达」需收到终端 DLR（推送或拉取）后才会更新。',
+    upstreamHandoffTipDelivered: '终端送达回执已确认。',
+    upstreamHandoffTipFailed: '发送或送达失败，详见错误信息。',
+    dlrTerminalHint:
+      '说明：「送达」依赖上游返回的终端状态（DLR）。若长期显示等待中，请核对回调地址、白名单/Token、report 拉取是否覆盖该通道；部分线路本身不提供终端回执。',
   },
   
   // 时间
@@ -617,6 +626,7 @@ export default {
     sendResult: '发送完成：成功 {success}，失败 {fail}',
     sendAllFailed: '发送失败 ({count}条)，请检查账户余额',
     sendCompleteResult: '发送完成：成功 {success}，失败 {fail}',
+    viewSendTask: '查看发送任务',
     sendFailedCheckBalance: '发送失败 ({count}条)，请检查账户余额',
     smsPreview: '短信预览',
     applySelectedText: '使用选中文案',
@@ -1396,7 +1406,18 @@ export default {
     uploadSuccess: '上传成功，正在处理中',
     uploadFailed: '上传失败',
     batchDetail: '批次详情',
+    taskSendRecords: '任务发送记录',
+    messageIdFilterPlaceholder: '按发送ID筛选（可模糊）',
+    recordsLoadFailed: '加载发送记录失败',
     confirmCancel: '确定取消批次"{name}"吗？',
+    taskSourceHint: '从「短信发送」页提交的群发会出现在此列表，任务名称通常以「发送页-」开头；CSV 上传的任务需等待后台处理。',
+    emptyList: '暂无发送任务，请从上方创建或前往「短信发送」页群发',
+    batchIdCol: 'ID',
+    createdAtLocal: '创建时间',
+    detailLoadFailed: '加载详情失败',
+    invalidBatchId: '无效的任务 ID，请刷新列表后重试',
+    pendingAndFailedStrip: '待处理批次 {pending} · 失败批次 {failed}',
+    processingTooltip: '批次内短信由后台依次发送；发送记录中未下发的号码会显示「发送队列中」，与「处理中」不矛盾。',
   },
   
   // 利润报表

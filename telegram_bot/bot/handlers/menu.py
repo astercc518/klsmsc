@@ -2233,15 +2233,25 @@ async def show_customer_tickets(query, context):
             )
             return
         
+        # 与工单详情 show_ticket_detail 一致，展示可读的处理状态（仅 emoji 用户难以理解）
         status_map = {
-            'open': '⏳', 'assigned': '👤', 'in_progress': '🔄',
-            'pending_user': '⏸️', 'resolved': '✅', 'closed': '🔒'
+            'open': '⏳待处理',
+            'assigned': '👤已分配',
+            'in_progress': '🔄处理中',
+            'pending_user': '⏸️等待回复',
+            'resolved': '✅已解决',
+            'closed': '🔒已关闭',
+            'cancelled': '❌已取消',
         }
         
         lines = [f"📋 客户工单 ({len(results)}条)\n"]
         for ticket, account in results:
-            emoji = status_map.get(ticket.status, '❓')
-            lines.append(f"{emoji} {ticket.ticket_no} - {account.account_name[:10]}")
+            status_label = status_map.get(ticket.status, ticket.status or '未知')
+            acct_name = (account.account_name or '')[:12]
+            lines.append(
+                f"• {status_label}\n"
+                f"  {ticket.ticket_no} · {acct_name}"
+            )
         
         await query.edit_message_text(
             "\n".join(lines),

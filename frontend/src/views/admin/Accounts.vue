@@ -96,9 +96,9 @@
             <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('customers.country')" min-width="60" align="center">
+        <el-table-column :label="$t('customers.country')" min-width="100" align="center" show-overflow-tooltip>
           <template #default="{ row }">
-            <span>{{ row.country_code || '-' }}</span>
+            <span>{{ formatAccountCountry(row.country_code) }}</span>
           </template>
         </el-table-column>
         <el-table-column :label="$t('customers.protocol')" min-width="70" align="center">
@@ -192,7 +192,7 @@
 
     <!-- 创建/编辑 -->
     <el-dialog v-model="formVisible" :title="isEdit ? $t('customers.editCustomer') : $t('customers.createAccount')" width="520px" :close-on-click-modal="false">
-      <el-form :model="form" label-width="80px" class="account-form" label-position="left">
+      <el-form :model="form" label-width="100px" class="account-form" label-position="left">
         
         <!-- 基本信息 -->
         <el-divider content-position="left">{{ $t('customers.basicInfo') }}</el-divider>
@@ -256,12 +256,12 @@
         
         <!-- 绑定配置 -->
         <el-divider content-position="left">{{ $t('customers.bindConfig') }}</el-divider>
-        <el-form-item :label="$t('customers.assignedEmployee')">
-          <el-select v-model="form.sales_id" :placeholder="$t('customers.selectEmployee')" clearable filterable style="width: 100%" :loading="salesLoading">
+        <el-form-item :label="$t('customers.assignStaff')">
+          <el-select v-model="form.sales_id" :placeholder="$t('customers.selectStaff')" clearable filterable style="width: 100%" :loading="salesLoading">
             <el-option v-for="s in salesList" :key="s.id" :label="`${s.real_name || s.username}`" :value="s.id" />
           </el-select>
         </el-form-item>
-        <el-form-item :label="$t('customers.assignedChannel')">
+        <el-form-item :label="$t('customers.assignChannel')">
           <el-select v-model="form.channel_ids" :placeholder="$t('customers.selectChannel')" multiple clearable filterable style="width: 100%" :loading="channelLoading">
             <el-option v-for="ch in channelList" :key="ch.id" :label="`${ch.channel_name} (${ch.channel_code})`" :value="ch.id">
               <span>{{ ch.channel_name }}</span>
@@ -439,7 +439,7 @@ import {
   type AdminAccount,
 } from '@/api/admin'
 import request from '@/api/index'
-import { COUNTRY_LIST, findCountryByIso } from '@/constants/countries'
+import { findCountryByIso } from '@/constants/countries'
 
 const { t, locale } = useI18n()
 
@@ -581,6 +581,16 @@ const countryList = computed(() => {
     return { code, name }
   })
 })
+
+/** 列表中国家列：按当前语言显示国家名称，未知代码保留原 ISO */
+function formatAccountCountry(code: string | null | undefined): string {
+  if (!code) return '-'
+  const iso = String(code).trim().toUpperCase()
+  const c = findCountryByIso(iso)
+  if (!c) return String(code)
+  const isZh = locale.value.startsWith('zh')
+  return isZh ? c.name : c.en
+}
 
 const form = reactive<any>({
   id: 0,

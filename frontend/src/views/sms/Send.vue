@@ -356,10 +356,17 @@
                   </svg>
                 </div>
                 <div class="result-text">
-                  <strong>{{ result.success ? $t('smsSend.sendComplete') : $t('smsSend.sendFailed') }}</strong>
-                  <span v-if="result.success && result.successCount != null">{{ $t('common.success') }}: {{ result.successCount }}, {{ $t('common.failed') }}: {{ result.failCount }}</span>
-                  <span v-else-if="result.success && result.message">{{ result.message }}</span>
-                  <span v-else-if="!result.success">{{ result.error?.message || result.message }}</span>
+                  <strong class="result-title">{{ result.success ? $t('smsSend.sendComplete') : $t('smsSend.sendFailed') }}</strong>
+                  <div class="result-meta">
+                    <template v-if="result.success && result.successCount != null">
+                      <span>{{ $t('common.success') }}: {{ result.successCount }}, {{ $t('common.failed') }}: {{ result.failCount }}</span>
+                      <span v-if="result.batchId != null" class="result-task-wrap">
+                        · <router-link class="result-task-link" to="/sms/tasks">{{ $t('smsSend.viewSendTask') }} #{{ result.batchId }}</router-link>
+                      </span>
+                    </template>
+                    <span v-else-if="result.success && result.message">{{ result.message }}</span>
+                    <span v-else-if="!result.success">{{ result.error?.message || result.message }}</span>
+                  </div>
                 </div>
               </div>
             </transition>
@@ -521,11 +528,37 @@
             <el-input :model-value="form.message" type="textarea" :rows="2" disabled />
           </el-form-item>
         </template>
+        <el-form-item label="目标国家（可选）">
+          <el-select
+            v-model="tplGenCountryIso"
+            filterable
+            clearable
+            placeholder="选择后显示该国主要语言，并同步模板语言"
+            style="width: 100%"
+            @change="onTplGenCountryChange"
+          >
+            <el-option
+              v-for="c in countrySelectOptions"
+              :key="c.iso"
+              :label="`${c.name} (+${c.dial})`"
+              :value="c.iso"
+            />
+          </el-select>
+          <p v-if="tplCountryHint" class="lang-smart-hint">{{ tplCountryHint }}</p>
+        </el-form-item>
         <div style="display: flex; gap: 12px">
           <el-form-item label="语言" style="flex: 1">
             <el-select v-model="tplForm.language" style="width: 100%">
               <el-option v-for="lang in LANG_OPTIONS" :key="lang.value" :label="lang.label" :value="lang.value" />
             </el-select>
+            <div class="lang-smart-row">
+              <el-checkbox v-model="tplAutoDetectOnOpen" size="small">打开时自动识别短信框内文案语言</el-checkbox>
+              <div class="lang-smart-actions">
+                <el-button type="primary" link size="small" @click="applyTplLangFromText">识别文案语言</el-button>
+                <el-button type="primary" link size="small" @click="applyTplLangFromCountry">按首个收件号码国家</el-button>
+              </div>
+              <p v-if="tplLangHint" class="lang-smart-hint">{{ tplLangHint }}</p>
+            </div>
           </el-form-item>
           <el-form-item label="生成条数" style="flex: 1">
             <el-input-number v-model="tplForm.count" :min="1" :max="20" style="width: 100%" />
@@ -535,8 +568,8 @@
           <el-input v-model="tplForm.keywords" placeholder="如：优惠、限时、注册奖励" />
         </el-form-item>
         <el-form-item label="单条最大字符数">
-          <el-input-number v-model="tplForm.maxLen" :min="30" :max="500" :step="10" style="width: 160px" />
-          <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">超出将自动截断</span>
+          <el-input-number v-model="tplForm.maxLen" :min="30" :max="tplMaxLenLimit" :step="10" style="width: 160px" />
+          <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">英文 160 字/条，其它语言 70 字/条；随「语言」自动调整，超出将截断</span>
         </el-form-item>
         <el-button type="primary" @click="generateFromTemplateEngine" :loading="tplGenerating">
           生成文案
@@ -598,19 +631,45 @@
             <el-input v-model="aiForm.rewriteHint" placeholder="如：换几种不同的表达风格" />
           </el-form-item>
         </template>
+        <el-form-item label="目标国家（可选）">
+          <el-select
+            v-model="aiGenCountryIso"
+            filterable
+            clearable
+            placeholder="选择后显示该国主要语言，并同步生成语言"
+            style="width: 100%"
+            @change="onAiGenCountryChange"
+          >
+            <el-option
+              v-for="c in countrySelectOptions"
+              :key="c.iso"
+              :label="`${c.name} (+${c.dial})`"
+              :value="c.iso"
+            />
+          </el-select>
+          <p v-if="aiCountryHint" class="lang-smart-hint">{{ aiCountryHint }}</p>
+        </el-form-item>
         <div style="display: flex; gap: 12px">
           <el-form-item label="语言" style="flex: 1">
             <el-select v-model="aiForm.language" style="width: 100%">
               <el-option v-for="lang in LANG_OPTIONS" :key="lang.value" :label="lang.label" :value="lang.value" />
             </el-select>
+            <div class="lang-smart-row">
+              <el-checkbox v-model="aiAutoDetectOnOpen" size="small">打开时自动识别短信框内文案语言</el-checkbox>
+              <div class="lang-smart-actions">
+                <el-button type="primary" link size="small" @click="applyAiLangFromText">识别文案语言</el-button>
+                <el-button type="primary" link size="small" @click="applyAiLangFromCountry">按首个收件号码国家</el-button>
+              </div>
+              <p v-if="aiLangHint" class="lang-smart-hint">{{ aiLangHint }}</p>
+            </div>
           </el-form-item>
           <el-form-item label="生成条数" style="flex: 1">
             <el-input-number v-model="aiForm.count" :min="1" :max="20" style="width: 100%" />
           </el-form-item>
         </div>
         <el-form-item label="单条最大字符数">
-          <el-input-number v-model="aiForm.maxLen" :min="30" :max="500" :step="10" style="width: 160px" />
-          <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">超出将自动截断</span>
+          <el-input-number v-model="aiForm.maxLen" :min="30" :max="aiMaxLenLimit" :step="10" style="width: 160px" />
+          <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">英文 160 字/条，其它语言 70 字/条；随「语言」自动调整，超出将截断</span>
         </el-form-item>
         <el-button type="primary" @click="generateFromAi" :loading="aiGenerating" :disabled="aiForm.mode === 'prompt' && !aiForm.prompt.trim()">
           <el-icon><MagicStick /></el-icon> 调用 AI 生成
@@ -651,16 +710,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import type { FormInstance } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick } from '@element-plus/icons-vue'
-import { sendSMS, submitSmsApproval } from '@/api/sms'
+import { sendBatchSMS, submitSmsApproval } from '@/api/sms'
 import { getChannels } from '@/api/channel'
 import { getDataProducts, buyAndSend, getCarriers, type DataProduct } from '@/api/data'
 import { getAiConfig, generateSmsContent } from '@/api/ai'
 import request from '@/api/index'
+import { COUNTRY_LIST, findCountryByIso } from '@/constants/countries'
 
 const { t } = useI18n()
 
@@ -686,12 +746,227 @@ const TPL_TYPES = [
 const LANG_OPTIONS = [
   { value: 'zh', label: '中文' },
   { value: 'en', label: 'English' },
+  { value: 'ja', label: '日本語' },
+  { value: 'ko', label: '한국어' },
+  { value: 'bn', label: 'বাংলা (Bengali)' },
   { value: 'pt', label: 'Português' },
   { value: 'es', label: 'Español' },
   { value: 'vi', label: 'Tiếng Việt' },
   { value: 'th', label: 'ภาษาไทย' },
   { value: 'id', label: 'Bahasa Indonesia' },
 ]
+
+/** 国际冠码前缀 → 模板语言（无专属文案库的国家回落到 en）；前缀越长越优先 */
+const PHONE_PREFIX_TO_LANG: { prefix: string; lang: string }[] = [
+  { prefix: '886', lang: 'zh' },
+  { prefix: '852', lang: 'zh' },
+  { prefix: '853', lang: 'zh' },
+  { prefix: '855', lang: 'en' },
+  { prefix: '856', lang: 'en' },
+  { prefix: '880', lang: 'bn' },
+  { prefix: '84', lang: 'vi' },
+  { prefix: '66', lang: 'th' },
+  { prefix: '62', lang: 'id' },
+  { prefix: '60', lang: 'en' },
+  { prefix: '65', lang: 'en' },
+  { prefix: '63', lang: 'en' },
+  { prefix: '55', lang: 'pt' },
+  { prefix: '54', lang: 'es' },
+  { prefix: '52', lang: 'es' },
+  { prefix: '51', lang: 'es' },
+  { prefix: '56', lang: 'es' },
+  { prefix: '57', lang: 'es' },
+  { prefix: '91', lang: 'en' },
+  { prefix: '44', lang: 'en' },
+  { prefix: '49', lang: 'en' },
+  { prefix: '33', lang: 'en' },
+  { prefix: '39', lang: 'en' },
+  { prefix: '81', lang: 'ja' },
+  { prefix: '82', lang: 'ko' },
+  { prefix: '86', lang: 'zh' },
+  { prefix: '7', lang: 'en' },
+  { prefix: '1', lang: 'en' },
+].sort((a, b) => b.prefix.length - a.prefix.length)
+
+/**
+ * ISO 3166-1 alpha-2 → 短信模板语言（未列出的国家默认 en，与现有模板池一致）
+ */
+const ISO_TO_TEMPLATE_LANG: Record<string, string> = {
+  CN: 'zh',
+  HK: 'zh',
+  MO: 'zh',
+  TW: 'zh',
+  BD: 'bn',
+  VN: 'vi',
+  TH: 'th',
+  ID: 'id',
+  BR: 'pt',
+  PT: 'pt',
+  AR: 'es',
+  MX: 'es',
+  CO: 'es',
+  CL: 'es',
+  PE: 'es',
+  VE: 'es',
+  EC: 'es',
+  GT: 'es',
+  BO: 'es',
+  PY: 'es',
+  UY: 'es',
+  CR: 'es',
+  PA: 'es',
+  CU: 'es',
+  DO: 'es',
+  SV: 'es',
+  HN: 'es',
+  NI: 'es',
+  MY: 'en',
+  PH: 'en',
+  SG: 'en',
+  IN: 'en',
+  PK: 'en',
+  NP: 'en',
+  LK: 'en',
+  MM: 'en',
+  KH: 'en',
+  LA: 'en',
+  US: 'en',
+  CA: 'en',
+  GB: 'en',
+  AU: 'en',
+  NZ: 'en',
+  IE: 'en',
+  ZA: 'en',
+  NG: 'en',
+  KE: 'en',
+  GH: 'en',
+  EG: 'en',
+  SA: 'en',
+  AE: 'en',
+  TR: 'en',
+  RU: 'en',
+  UA: 'en',
+  PL: 'en',
+  DE: 'en',
+  FR: 'en',
+  IT: 'en',
+  ES: 'en',
+  NL: 'en',
+  BE: 'en',
+  CH: 'en',
+  AT: 'en',
+  SE: 'en',
+  NO: 'en',
+  DK: 'en',
+  FI: 'en',
+  CZ: 'en',
+  RO: 'en',
+  HU: 'en',
+  GR: 'en',
+  IL: 'en',
+  IR: 'en',
+  IQ: 'en',
+  JP: 'ja',
+  KR: 'ko',
+  KZ: 'en',
+}
+
+/** 模板语言对应「主要自然语言」中文说明（用于向用户展示） */
+const TEMPLATE_LANG_NATURAL_ZH: Record<string, string> = {
+  zh: '中文',
+  bn: '孟加拉语',
+  en: '英语（或当地多语环境下常用英语文案）',
+  ja: '日语',
+  ko: '韩语',
+  pt: '葡萄牙语',
+  es: '西班牙语',
+  vi: '越南语',
+  th: '泰语',
+  id: '印尼语',
+}
+
+const countrySelectOptions = computed(() =>
+  [...COUNTRY_LIST].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')),
+)
+
+function getLangLabel(code: string): string {
+  return LANG_OPTIONS.find((l) => l.value === code)?.label || code
+}
+
+/** 智能生成单条长度上限：英文按 GSM 单条 160；其余语言按 Unicode 单条 70 */
+function maxSmsCharsForLang(lang: string): number {
+  return lang === 'en' ? 160 : 70
+}
+
+/**
+ * 去掉常见短链（无 https 的 bit.ly 等），避免仅剩拉丁字母误判为英文
+ */
+function stripNoiseForLangDetect(raw: string): string {
+  return raw
+    .replace(/\{[^}]+\}/g, ' ')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/\bbit\.ly\/[A-Za-z0-9]+\b/gi, ' ')
+    .replace(/\b(?:t\.co|tinyurl\.com|goo\.gl)\/\S+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * 根据正文粗略识别语言（孟加拉文优先于拉丁字母启发式）
+ */
+function detectLanguageFromText(text: string): string {
+  const s = stripNoiseForLangDetect(text)
+  if (!s) return 'zh'
+
+  let cjk = 0
+  let thai = 0
+  let bengali = 0
+  let arabic = 0
+  for (const ch of s) {
+    const c = ch.codePointAt(0)!
+    if ((c >= 0x4e00 && c <= 0x9fff) || (c >= 0x3400 && c <= 0x4dbf)) cjk++
+    if (c >= 0x0e00 && c <= 0x0e7f) thai++
+    if (c >= 0x0980 && c <= 0x09ff) bengali++
+    if (c >= 0x0600 && c <= 0x06ff) arabic++
+    if ((c >= 0x3040 && c <= 0x30ff) || (c >= 0x31f0 && c <= 0x31ff)) return 'ja'
+    if (c >= 0xac00 && c <= 0xd7af) return 'ko'
+  }
+  // 孟加拉文与阿拉伯文：至少 2 个区块内字符即判定（避免单字符误触）
+  if (bengali >= 2) return 'bn'
+  if (arabic >= 3) return 'en'
+  if (cjk >= 2) return 'zh'
+  if (thai >= 2) return 'th'
+  if (/[ăâđêôơưĂÂĐÊÔƠƯ]/.test(s)) return 'vi'
+  if (/\b(você|obrigado|cadastre|bônus|reais|voce)\b/i.test(s)) return 'pt'
+  if (/\b(hola|gracias|registro|dinero|usted)\b/i.test(s)) return 'es'
+  if (/[ñáéíóúü¿¡]/i.test(s) && !/[ãõ]/.test(s)) return 'es'
+  if (/[ãõç]/.test(s.toLowerCase())) return 'pt'
+  if (/[a-z]{4,}/i.test(s)) return 'en'
+  return 'zh'
+}
+
+/**
+ * 从单个号码（可含 +）推断模板语言
+ */
+function inferLanguageFromFirstPhone(raw: string): string {
+  let d = raw.replace(/\D/g, '')
+  if (d.startsWith('00')) d = d.slice(2)
+  for (const { prefix, lang } of PHONE_PREFIX_TO_LANG) {
+    if (d.startsWith(prefix)) return lang
+  }
+  return 'en'
+}
+
+/** 从号码解析 ISO（按最长国码优先匹配，与收件号码习惯一致） */
+function inferCountryIsoFromPhone(raw: string): string {
+  let d = raw.replace(/\D/g, '')
+  if (d.startsWith('00')) d = d.slice(2)
+  const sorted = [...COUNTRY_LIST].sort((a, b) => b.dial.length - a.dial.length)
+  for (const c of sorted) {
+    if (d.startsWith(c.dial)) return c.iso
+  }
+  return ''
+}
 
 // 敏感词列表（发送前自动过滤替换）
 const SENSITIVE_WORDS = [
@@ -729,6 +1004,29 @@ const TEMPLATE_POOL: Record<string, Record<string, string[]>> = {
     vi: ['Uu dai co han! Dang ky ngay de nhan thuong doc quyen!','Goi chao mung dac biet dang cho ban!','Loi moi VIP cua ban da san sang! Nhap de bat dau!'],
     th: ['ข้อเสนอจำกัด! สมัครเลยรับโบนัสพิเศษ!','แพ็คเกจต้อนรับพิเศษรอคุณอยู่!'],
     id: ['Penawaran terbatas! Daftar sekarang dan dapatkan bonus eksklusif!','Paket selamat datang spesial menunggu Anda!'],
+    ja: [
+      '期間限定！今すぐ登録で特典をプレゼント。お見逃しなく！',
+      '新規様限定のお得なキャンペーン開催中！お早めにご確認ください。',
+      '会員様だけの特別オファー！本日限りのチャンスです。',
+      '厳選オファー！この機会にぜひご登録ください。',
+      'VIP体験のご案内！今すぐ有効化して特典をお受け取りください。',
+      'お得なご紹介キャンペーン！お友達とご一緒にどうぞ。',
+    ],
+    ko: [
+      '한정 특가! 지금 가입하시면 특별 보너스를 드립니다!',
+      '신규 회원 전용 혜택이 열렸습니다. 서둘러 등록하세요!',
+      '회원님만을 위한 특별 제안, 오늘만 진행됩니다.',
+      '엄선된 혜택! 지금 등록하고 보상을 받아보세요.',
+      'VIP 체험 초대! 바로 활성화하고 보상을 받으세요.',
+      '친구 초대 이벤트! 함께하시면 추가 혜택이 있습니다.',
+    ],
+    bn: [
+      'প্রথম জমা করলেই বিশেষ পুরস্কার! এখনই নিবন্ধন করুন, সুযোগ হাতছাড়া করবেন না।',
+      'নতুন সদস্যদের জন্য উপহার! অ্যাকাউন্ট খুলুন আর বোনাস জিতুন।',
+      'সীমিত সময়ের অফার! লিংকে ক্লিক করে আজই যোগ দিন।',
+      'বন্ধুদের আমন্ত্রণ জানান—দুজনেই পুরস্কার পাবেন!',
+      '৫৮৮৮ টাকা পর্যন্ত পুরস্কার জেতার সুযোগ! প্রথম জমায়ই পাবেন।',
+    ],
   },
   notification: {
     zh: ['您的账户有新的重要通知，请及时查看！','温馨提醒：您的服务即将到期，请尽快续费！','系统升级通知：我们将于近期进行系统优化。','安全提醒：检测到您的账户在新设备上登录。'],
@@ -738,6 +1036,18 @@ const TEMPLATE_POOL: Record<string, Record<string, string[]>> = {
     vi: ['Thong bao quan trong cho tai khoan cua ban!'],
     th: ['แจ้งเตือนสำคัญสำหรับบัญชีของคุณ!'],
     id: ['Pemberitahuan penting untuk akun Anda!'],
+    ja: [
+      'お客様のアカウントに重要なお知らせがあります。ご確認ください。',
+      'サービス有効期限が近づいています。お早めに更新をご検討ください。',
+    ],
+    ko: [
+      '계정에 중요한 알림이 있습니다. 확인해 주세요.',
+      '서비스 만료 예정입니다. 곧 갱신해 주세요.',
+    ],
+    bn: [
+      'আপনার অ্যাকাউন্টে একটি গুরুত্বপূর্ণ বিজ্ঞপ্তি আছে, দয়া করে দেখুন।',
+      'আপনার সেবার মেয়াদ শীঘ্রই শেষ হচ্ছে, নবায়ন করুন।',
+    ],
   },
   verification: {
     zh: ['您的验证码是：{随机码}，5分钟内有效，请勿泄露给他人。','验证码 {随机码}，此验证码用于身份验证，请在5分钟内使用。','验证码 {随机码}，您正在进行身份验证操作，如非本人操作请忽略。'],
@@ -747,6 +1057,18 @@ const TEMPLATE_POOL: Record<string, Record<string, string[]>> = {
     vi: ['Ma xac minh cua ban la: {code}. Co hieu luc trong 5 phut.'],
     th: ['รหัสยืนยันของคุณคือ: {code} ใช้ได้ภายใน 5 นาที'],
     id: ['Kode verifikasi Anda: {code}. Berlaku selama 5 menit.'],
+    ja: [
+      '認証コードは {code} です。5分以内にご入力ください。他人に教えないでください。',
+      'コード：{code}。本人確認用です。5分で無効になります。',
+    ],
+    ko: [
+      '인증 코드: {code}. 5분 이내에 입력하세요. 타인에게 알리지 마세요.',
+      '코드 {code} — 본인 확인용이며 5분 후 만료됩니다.',
+    ],
+    bn: [
+      'আপনার যাচাইকরণ কোড: {code}। ৫ মিনিটের মধ্যে ব্যবহার করুন।',
+      'কোড {code} — শুধুমাত্র আপনার জন্য। কাউকে জানাবেন না।',
+    ],
   },
   greeting: {
     zh: ['节日快乐！感谢您一直以来的支持和信赖！','祝您新年快乐！新的一年，新的开始，愿好运常伴！','感恩有您！祝您节日愉快，幸福美满！'],
@@ -754,18 +1076,42 @@ const TEMPLATE_POOL: Record<string, Record<string, string[]>> = {
     pt: ['Boas festas! Obrigado pelo seu apoio continuo!'],
     es: ['Felices fiestas! Gracias por su continuo apoyo!'],
     vi: ['Chuc mung ngay le!'], th: ['สุขสันต์วันหยุด!'], id: ['Selamat hari raya!'],
+    ja: [
+      '良いお年をお迎えください。いつもご利用ありがとうございます！',
+      '新春のお慶びを申し上げます。本年もよろしくお願いいたします。',
+    ],
+    ko: [
+      '즐거운 연말 보내세요. 항상 이용해 주셔서 감사합니다!',
+      '새해 복 많이 받으세요. 올해도 잘 부탁드립니다!',
+    ],
+    bn: ['শুভ ছুটি! আপনার সমর্থনের জন্য ধন্যবাদ!', 'নতুন বছরের শুভেচ্ছা! সুখ ও সমৃদ্ধি কামনা করি।'],
   },
   promotion: {
     zh: ['限时优惠！全场商品低至3折，错过再等一年！','会员专属：今日充值享双倍积分！','爆款活动！前100名注册即送超值大礼包！','独家折扣码已为您生成，立即使用享最高50%优惠！'],
     en: ['Flash sale! Up to 70% off everything!','Members exclusive: Double points today!','Hot deal! First 100 sign-ups get a special bonus!'],
     pt: ['Venda relampago! Ate 70% de desconto!'], es: ['Venta flash! Hasta 70% de descuento!'],
     vi: ['Flash sale! Giam den 70%!'], th: ['Flash sale! ลดสูงสุด 70%!'], id: ['Flash sale! Diskon hingga 70%!'],
+    ja: ['フラッシュセール！最大70%オフのチャンス！', '会員様限定：本日ご利用でポイント2倍！'],
+    ko: ['플래시 세일! 최대 70% 할인!', '회원 전용: 오늘 충전 시 포인트 2배!'],
+    bn: ['ফ্ল্যাশ সেল! সর্বোচ্চ ৭০% পর্যন্ত ছাড়!', 'আজই রিচার্জ করুন, দিগুণ পয়েন্ট পান!'],
   },
   invitation: {
     zh: ['您的好友邀请您加入，新用户注册即享专属礼包！','诚挚邀请您注册体验！专属邀请码已为您生成！','好友推荐：立即注册，您和好友各获奖励！'],
     en: ['You\'ve been invited! Register now and get an exclusive bonus!','Join us today! Your invitation code is ready!'],
     pt: ['Voce foi convidado! Registre-se agora!'], es: ['Has sido invitado! Registrate ahora!'],
     vi: ['Ban duoc moi! Dang ky ngay!'], th: ['คุณได้รับเชิญ! สมัครเลย!'], id: ['Anda diundang! Daftar sekarang!'],
+    ja: [
+      '招待が届いています！今すぐ登録して特典を受け取りましょう。',
+      '本日からご参加ください。招待コードのご準備ができています。',
+    ],
+    ko: [
+      '초대가 도착했습니다! 지금 가입하고 특전을 받으세요.',
+      '오늘 바로 참여하세요. 초대 코드가 준비되었습니다.',
+    ],
+    bn: [
+      'আপনাকে আমন্ত্রণ জানানো হয়েছে! নিবন্ধন করুন আর বিশেষ উপহার পান।',
+      'বন্ধু আপনাকে যোগ দিতে বলেছে—এখনই সাইন আপ করুন!',
+    ],
   },
 }
 
@@ -811,13 +1157,21 @@ const selectedCarrier = ref('')
 // AI
 const aiEnabled = ref(false)
 const showTemplateEngine = ref(false)
-const tplForm = ref({ type: 'marketing', language: 'zh', keywords: '', count: 5, mode: 'type' as 'type' | 'rewrite', maxLen: 160 })
+const tplAutoDetectOnOpen = ref(true)
+const tplLangHint = ref('')
+const tplGenCountryIso = ref('')
+const tplCountryHint = ref('')
+const tplForm = ref({ type: 'marketing', language: 'zh', keywords: '', count: 5, mode: 'type' as 'type' | 'rewrite', maxLen: 70 })
 const tplGenerating = ref(false)
 const tplResults = ref<string[]>([])
 const tplSelectedSet = ref<Set<number>>(new Set())
 const tplSelectAll = ref(false)
 const showAiDialog = ref(false)
-const aiForm = ref({ prompt: '', language: 'zh', count: 5, mode: 'prompt' as 'prompt' | 'rewrite', rewriteHint: '', maxLen: 160 })
+const aiAutoDetectOnOpen = ref(true)
+const aiLangHint = ref('')
+const aiGenCountryIso = ref('')
+const aiCountryHint = ref('')
+const aiForm = ref({ prompt: '', language: 'zh', count: 5, mode: 'prompt' as 'prompt' | 'rewrite', rewriteHint: '', maxLen: 70 })
 const aiGenerating = ref(false)
 const aiResults = ref<string[]>([])
 const aiSelectedSet = ref<Set<number>>(new Set())
@@ -839,6 +1193,11 @@ const form = ref({
 })
 
 // ============ Computed ============
+
+/** 模板引擎：当前语言对应的单条字符上限（用于输入框 max） */
+const tplMaxLenLimit = computed(() => maxSmsCharsForLang(tplForm.value.language))
+/** AI 生成：当前语言对应的单条字符上限 */
+const aiMaxLenLimit = computed(() => maxSmsCharsForLang(aiForm.value.language))
 
 const senderDisplay = computed(() => {
   if (form.value.sender_id) return form.value.sender_id
@@ -972,7 +1331,7 @@ function replaceCustomVars(msg: string): string {
 function generateFromTemplateEngine() {
   tplGenerating.value = true
   tplSelectedSet.value = new Set(); tplSelectAll.value = false
-  const maxLen = tplForm.value.maxLen || 160
+  const maxLen = tplForm.value.maxLen || maxSmsCharsForLang(tplForm.value.language)
 
   setTimeout(() => {
     let raw: string[] = []
@@ -981,20 +1340,26 @@ function generateFromTemplateEngine() {
       const langPrefixes: Record<string, string[]> = {
         zh: ['', '【限时】', '【热门】', '【推荐】', '【独家】', ''],
         en: ['', '[Limited] ', '[Hot] ', '[Exclusive] ', '[Special] ', ''],
+        bn: ['', '[সীমিত] ', '[হট] ', '[বিশেষ] ', '[এক্সক্লুসিভ] ', ''],
         pt: ['', '[Limitado] ', '[Destaque] ', '[Exclusivo] ', '[Especial] ', ''],
         es: ['', '[Limitado] ', '[Destacado] ', '[Exclusivo] ', '[Especial] ', ''],
         vi: ['', '[Gioi han] ', '[Noi bat] ', '[Doc quyen] ', '[Dac biet] ', ''],
         th: ['', '[จำกัด] ', '[แนะนำ] ', '[พิเศษ] ', '[เฉพาะ] ', ''],
         id: ['', '[Terbatas] ', '[Populer] ', '[Eksklusif] ', '[Spesial] ', ''],
+        ja: ['', '【限定】', '【お得】', '【注目】', '【特別】', ''],
+        ko: ['', '[한정] ', '[특가] ', '[추천] ', '[특별] ', ''],
       }
       const langSuffixes: Record<string, string[]> = {
         zh: ['', ' 立即行动！', ' 不容错过！', ' 先到先得！', ' 点击了解更多！', ' 名额有限！'],
         en: ['', ' Act now!', ' Don\'t miss out!', ' First come first served!', ' Click to learn more!', ' Limited spots!'],
+        bn: ['', ' এখনই করুন!', ' মিস করবেন না!', ' সীমিত সুযোগ!', ' ক্লিক করুন!', ' দ্রুত!'],
         pt: ['', ' Aja agora!', ' Nao perca!', ' Vagas limitadas!', ' Saiba mais!', ' Aproveite!'],
         es: ['', ' Actua ahora!', ' No te lo pierdas!', ' Plazas limitadas!', ' Descubre mas!', ' Aprovecha!'],
         vi: ['', ' Hanh dong ngay!', ' Dung bo lo!', ' So luong co han!', ' Tim hieu them!', ' Nhanh tay!'],
         th: ['', ' ลงมือเลย!', ' อย่าพลาด!', ' จำนวนจำกัด!', ' คลิกเลย!', ' รีบเลย!'],
         id: ['', ' Ayo sekarang!', ' Jangan lewatkan!', ' Terbatas!', ' Klik untuk info!', ' Buruan!'],
+        ja: ['', ' 今すぐどうぞ！', ' お見逃しなく！', ' 詳細はこちら！', ' 数量限定！', ''],
+        ko: ['', ' 지금 바로!', ' 놓치지 마세요!', ' 자세히 보기!', ' 선착순!', ''],
       }
       const lang = tplForm.value.language
       const prefixes = langPrefixes[lang] || langPrefixes.en
@@ -1060,7 +1425,7 @@ function applyMultiTpl() {
 
 async function generateFromAi() {
   aiGenerating.value = true; aiSelectedSet.value = new Set(); aiSelectAll.value = false; aiResults.value = []
-  const maxLen = aiForm.value.maxLen || 160
+  const maxLen = aiForm.value.maxLen || maxSmsCharsForLang(aiForm.value.language)
 
   let prompt = ''
   const noEmojiHint = '严禁使用任何 emoji 表情符号。'
@@ -1121,6 +1486,140 @@ const parseNumbers = () => {
   if (!form.value.phone_numbers_text) return []
   return form.value.phone_numbers_text.split(/[\n,;\s]+/).map(n => n.trim()).filter(n => n.length >= 5)
 }
+
+/** 模板智能生成：根据短信内容框识别语言 */
+function applyTplLangFromText() {
+  const txt = form.value.message.trim()
+  if (!txt) {
+    ElMessage.warning('请先在「短信内容」中输入或粘贴文案')
+    return
+  }
+  const lang = detectLanguageFromText(txt)
+  tplForm.value.language = lang
+  tplLangHint.value = `已根据文案识别为：${getLangLabel(lang)}`
+}
+
+/** 模板智能生成：根据首个收件号码国家/区号匹配语言 */
+function applyTplLangFromCountry() {
+  const nums = parseNumbers()
+  if (!nums.length) {
+    ElMessage.warning('请先在「收件号码」中填写至少一个号码')
+    return
+  }
+  const iso = inferCountryIsoFromPhone(nums[0])
+  tplGenCountryIso.value = iso
+  if (iso) {
+    onTplGenCountryChange(iso)
+    tplLangHint.value = `已根据首个号码 ${nums[0]} 匹配国家并同步模板语言`
+  } else {
+    const lang = inferLanguageFromFirstPhone(nums[0])
+    tplForm.value.language = lang
+    tplCountryHint.value = ''
+    tplLangHint.value = `已根据首个号码 ${nums[0]} 匹配为：${getLangLabel(lang)}（未能解析国家）`
+  }
+}
+
+/** 选择目标国家后：展示主要自然语言说明，并同步模板语言 */
+function onTplGenCountryChange(iso: string | undefined) {
+  const v = (iso ?? '').trim()
+  tplGenCountryIso.value = v
+  if (!v) {
+    tplCountryHint.value = ''
+    return
+  }
+  const lang = ISO_TO_TEMPLATE_LANG[v] || 'en'
+  tplForm.value.language = lang
+  const c = findCountryByIso(v)
+  const nat = TEMPLATE_LANG_NATURAL_ZH[lang] || '当地常用语言（当前使用英语模板）'
+  tplCountryHint.value = `「${c?.name || v}」主要语言：${nat}。已选用文案模板语言：${getLangLabel(lang)}`
+}
+
+/** AI 生成：根据短信内容框识别语言 */
+function applyAiLangFromText() {
+  const txt = form.value.message.trim()
+  if (!txt) {
+    ElMessage.warning('请先在「短信内容」中输入或粘贴文案')
+    return
+  }
+  const lang = detectLanguageFromText(txt)
+  aiForm.value.language = lang
+  aiLangHint.value = `已根据文案识别为：${getLangLabel(lang)}`
+}
+
+/** AI 生成：根据首个收件号码匹配语言 */
+function applyAiLangFromCountry() {
+  const nums = parseNumbers()
+  if (!nums.length) {
+    ElMessage.warning('请先在「收件号码」中填写至少一个号码')
+    return
+  }
+  const iso = inferCountryIsoFromPhone(nums[0])
+  aiGenCountryIso.value = iso
+  if (iso) {
+    onAiGenCountryChange(iso)
+    aiLangHint.value = `已根据首个号码 ${nums[0]} 匹配国家并同步生成语言`
+  } else {
+    const lang = inferLanguageFromFirstPhone(nums[0])
+    aiForm.value.language = lang
+    aiCountryHint.value = ''
+    aiLangHint.value = `已根据首个号码 ${nums[0]} 匹配为：${getLangLabel(lang)}（未能解析国家）`
+  }
+}
+
+/** 选择目标国家后：展示主要自然语言说明，并同步 AI 生成语言 */
+function onAiGenCountryChange(iso: string | undefined) {
+  const v = (iso ?? '').trim()
+  aiGenCountryIso.value = v
+  if (!v) {
+    aiCountryHint.value = ''
+    return
+  }
+  const lang = ISO_TO_TEMPLATE_LANG[v] || 'en'
+  aiForm.value.language = lang
+  const c = findCountryByIso(v)
+  const nat = TEMPLATE_LANG_NATURAL_ZH[lang] || '当地常用语言（当前使用英语生成）'
+  aiCountryHint.value = `「${c?.name || v}」主要语言：${nat}。已选用生成语言：${getLangLabel(lang)}`
+}
+
+watch(showTemplateEngine, (open) => {
+  tplLangHint.value = ''
+  tplGenCountryIso.value = ''
+  tplCountryHint.value = ''
+  if (open && tplAutoDetectOnOpen.value) {
+    const txt = form.value.message.trim()
+    if (txt) {
+      tplForm.value.language = detectLanguageFromText(txt)
+      tplLangHint.value = `已自动识别文案语言：${getLangLabel(tplForm.value.language)}`
+    }
+  }
+  if (open) {
+    tplForm.value.maxLen = maxSmsCharsForLang(tplForm.value.language)
+  }
+})
+
+watch(showAiDialog, (open) => {
+  aiLangHint.value = ''
+  aiGenCountryIso.value = ''
+  aiCountryHint.value = ''
+  if (open && aiAutoDetectOnOpen.value) {
+    const txt = form.value.message.trim()
+    if (txt) {
+      aiForm.value.language = detectLanguageFromText(txt)
+      aiLangHint.value = `已自动识别文案语言：${getLangLabel(aiForm.value.language)}`
+    }
+  }
+  if (open) {
+    aiForm.value.maxLen = maxSmsCharsForLang(aiForm.value.language)
+  }
+})
+
+watch(() => tplForm.value.language, (lang) => {
+  tplForm.value.maxLen = maxSmsCharsForLang(lang)
+})
+
+watch(() => aiForm.value.language, (lang) => {
+  aiForm.value.maxLen = maxSmsCharsForLang(lang)
+})
 
 const filterNumbers = (type: string) => {
   const numbers = parseNumbers()
@@ -1207,41 +1706,65 @@ const handleSend = async () => {
   const numbers = parseNumbers()
   if (numbers.length === 0) { ElMessage.warning(t('smsSend.pleaseEnterNumbers')); return }
   if (!form.value.message) { ElMessage.warning(t('smsSend.pleaseEnterContent')); return }
+  if (numbers.length > 1000) {
+    ElMessage.warning('单次最多提交 1000 个号码，请分批发送')
+    return
+  }
   loading.value = true; result.value = null; sendProgress.value = 0
-  let successCount = 0, failCount = 0
 
-  // 多文案模式：均匀分配 + 清理 emoji / 敏感词
+  // 多文案轮发 + 清理 emoji / 敏感词（与后端 /sms/batch 一致）
   const msgs = (multiMessages.value.length > 1 ? multiMessages.value.map(replaceCustomVars) : [replaceCustomVars(form.value.message)])
     .map(m => sanitizeMessage(stripEmoji(m)))
-  const msgCount = msgs.length
+
+  const e164List = numbers.map((n) => {
+    let p = n.trim()
+    if (!p.startsWith('+')) p = '+' + p
+    return p
+  })
 
   try {
-    for (let i = 0; i < numbers.length; i++) {
-      let phoneNumber = numbers[i].trim()
-      if (!phoneNumber.startsWith('+')) phoneNumber = '+' + phoneNumber
-      try {
-        const finalMsg = msgs[i % msgCount]
-        const payload: any = { phone_number: phoneNumber, message: finalMsg }
-        if (form.value.sender_id) payload.sender_id = form.value.sender_id
-        if (form.value.channel_id) payload.channel_id = form.value.channel_id
-        const res = await sendSMS(payload)
-        if (res?.success) { successCount++ } else {
-          failCount++
-          if (res?.error?.code === 'BILLING_ERROR' || res?.error?.message?.includes('balance')) { ElMessage.error(t('smsSend.insufficientBalance')); break }
-        }
-      } catch { failCount++ }
-      sendProgress.value = i + 1
-      if (numbers.length > 1 && i < numbers.length - 1) await new Promise(resolve => setTimeout(resolve, 100))
+    const payload: {
+      phone_numbers: string[]
+      message: string
+      messages?: string[]
+      sender_id?: string
+      channel_id?: number
+      batch_name?: string
+    } = {
+      phone_numbers: e164List,
+      message: msgs[0],
+      batch_name: `发送页-${new Date().toLocaleString('zh-CN', { hour12: false })}`,
     }
-    result.value = { success: successCount > 0, successCount, failCount }
+    if (msgs.length > 1) payload.messages = msgs
+    if (form.value.sender_id) payload.sender_id = form.value.sender_id
+    if (form.value.channel_id) payload.channel_id = form.value.channel_id
+
+    const res = await sendBatchSMS(payload)
+    const successCount = res?.succeeded ?? 0
+    const failCount = res?.failed ?? 0
+    sendProgress.value = e164List.length
+
+    result.value = {
+      success: successCount > 0,
+      successCount,
+      failCount,
+      batchId: res?.batch_id,
+    }
     if (successCount > 0) {
       ElMessage.success(t('smsSend.sendCompleteResult', { success: successCount, fail: failCount }))
       if (form.value.resetOnlyNumbers) form.value.phone_numbers_text = ''; else handleReset()
       loadStats()
-    } else { ElMessage.error(t('smsSend.sendFailedCheckBalance', { count: failCount })) }
+    } else {
+      const firstErr = res?.messages?.find((m) => !m.success)?.error?.message
+      if (firstErr?.toLowerCase().includes('balance') || firstErr?.includes('余额')) {
+        ElMessage.error(t('smsSend.insufficientBalance'))
+      } else {
+        ElMessage.error(firstErr || t('smsSend.sendFailedCheckBalance', { count: failCount }))
+      }
+    }
   } catch (error: any) {
     result.value = { success: false, error: { message: error.message } }
-    ElMessage.error(t('smsSend.sendFailed') + ': ' + error.message)
+    ElMessage.error(t('smsSend.sendFailed') + ': ' + (error.response?.data?.detail || error.message))
   } finally { loading.value = false }
 }
 
@@ -1463,8 +1986,11 @@ onUnmounted(() => clearInterval(timeInterval))
 .result-icon { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
 .result-banner.success .result-icon { background: rgba(56, 239, 125, 0.2); color: var(--success); }
 .result-banner.error .result-icon { background: rgba(245, 87, 108, 0.2); color: var(--danger); }
-.result-text { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--text-secondary); }
-.result-text strong { color: var(--text-primary); }
+.result-text { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-secondary); }
+.result-text .result-title { color: var(--text-primary); }
+.result-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.result-task-link { color: var(--el-color-primary); font-weight: 500; text-decoration: none; }
+.result-task-link:hover { text-decoration: underline; }
 
 .preview-panel { display: flex; flex-direction: column; }
 .preview-header { margin-bottom: 12px; }
@@ -1530,6 +2056,11 @@ onUnmounted(() => clearInterval(timeInterval))
 /* 生成结果头部 */
 .gen-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5); }
 .gen-selected-tip { font-size: 12px; color: var(--el-text-color-secondary); }
+
+/* 智能生成：语言自动识别与按国家匹配 */
+.lang-smart-row { margin-top: 8px; }
+.lang-smart-actions { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; }
+.lang-smart-hint { margin: 6px 0 0; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.4; }
 
 /* 多文案配置 */
 .multi-msg-config { margin-top: 16px; padding: 12px; background: rgba(64, 158, 255, 0.04); border: 1px solid var(--el-border-color-lighter, #ebeef5); border-radius: 8px; }

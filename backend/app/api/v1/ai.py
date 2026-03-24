@@ -42,8 +42,8 @@ async def generate_sms(req: GenerateSmsRequest, account: Account = Depends(get_c
         raise HTTPException(400, "AI 功能未配置，请在环境变量中设置 AI_API_KEY")
 
     lang_map = {
-        "zh": "中文", "en": "English", "pt": "Português",
-        "es": "Español", "vi": "Tiếng Việt", "th": "ภาษาไทย",
+        "zh": "中文", "en": "English", "bn": "বাংলা (Bengali)",
+        "pt": "Português", "es": "Español", "vi": "Tiếng Việt", "th": "ภาษาไทย",
         "id": "Bahasa Indonesia", "ja": "日本語", "ko": "한국어",
     }
     lang_name = lang_map.get(req.language, req.language)

@@ -14,6 +14,37 @@ export const request: AxiosInstance = axios.create({
 // 防止 401 时重复弹窗
 let isRedirecting = false
 
+/**
+ * 客户控制台走「账户 API Key」鉴权的接口（后端 Depends(get_current_account)）。
+ * 管理员若同时存在 admin_token 与本地 api_key，原先只发 Bearer 会导致 /batches 等 401，
+ * 表现成「列表/统计偶发异常、详情加载失败」等。
+ */
+function shouldAttachCustomerApiKey(url: string | undefined): boolean {
+  if (!url) return false
+  const path = url.split('?')[0]
+  if (path.startsWith('/admin/')) return false
+  if (path.startsWith('/account/login') || path.startsWith('/account/register')) return false
+  const prefixes = [
+    '/batches',
+    '/templates',
+    '/sms/',
+    '/account/',
+    '/channels/list',
+    '/packages',
+    '/my-packages',
+    '/api-keys',
+    '/sub-accounts',
+    '/scheduled-tasks',
+    '/notifications',
+    '/security-logs',
+    '/login-attempts',
+    '/tickets',
+    '/data/',
+    '/reports/',
+  ]
+  return prefixes.some((p) => path === p || path.startsWith(`${p}/`) || path.startsWith(`${p}?`))
+}
+
 // ---------- 请求拦截器 ----------
 request.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
@@ -26,13 +57,14 @@ request.interceptors.request.use(
       }
     } else {
       const adminToken = localStorage.getItem('admin_token')
-      if (adminToken) {
+      const apiKey = localStorage.getItem('api_key')
+      if (apiKey && adminToken && shouldAttachCustomerApiKey(config.url)) {
+        config.headers['X-API-Key'] = apiKey
         config.headers['Authorization'] = `Bearer ${adminToken}`
-      } else {
-        const apiKey = localStorage.getItem('api_key')
-        if (apiKey) {
-          config.headers['X-API-Key'] = apiKey
-        }
+      } else if (adminToken) {
+        config.headers['Authorization'] = `Bearer ${adminToken}`
+      } else if (apiKey) {
+        config.headers['X-API-Key'] = apiKey
       }
     }
     return config

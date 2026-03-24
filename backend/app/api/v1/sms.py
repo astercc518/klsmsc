@@ -12,6 +12,7 @@ from app.modules.common.account import Account
 from app.modules.sms.sms_log import SMSLog
 from app.core.auth import AuthService, api_key_header
 from app.utils.validator import Validator
+from app.utils.sms_template import render_sms_variables, sms_template_has_variables
 from app.core.router import RoutingEngine
 from app.core.pricing import PricingEngine
 from app.schemas.sms import (
@@ -28,9 +29,45 @@ from app.utils.errors import (
     ValidationError, AuthenticationError,
     InsufficientBalanceError, PricingNotFoundError, ChannelNotAvailableError
 )
-from sqlalchemy import select
+from decimal import Decimal
+from sqlalchemy import select, update, func
+from app.modules.common.balance_log import BalanceLog
 
 logger = get_logger(__name__)
+
+
+async def _refund_line_charge(
+    db: AsyncSession,
+    account_id: int,
+    amount: float,
+    description: str,
+) -> None:
+    """单条短信已扣费但后续失败（如入队失败）时退回余额"""
+    if amount is None or float(amount) <= 0:
+        return
+    amt = Decimal(str(amount))
+    await db.execute(
+        update(Account).where(Account.id == account_id).values(balance=Account.balance + amt)
+    )
+    res = await db.execute(select(Account.balance).where(Account.id == account_id))
+    bal = res.scalar()
+    db.add(
+        BalanceLog(
+            account_id=account_id,
+            change_type="refund",
+            amount=float(amt),
+            balance_after=float(bal) if bal is not None else 0.0,
+            description=description[:500],
+        )
+    )
+    await db.flush()
+    try:
+        from app.utils.cache import get_cache_manager
+
+        cm = await get_cache_manager()
+        await cm.set(f"account:{account_id}:balance", float(bal) if bal is not None else 0.0, ttl=60)
+    except Exception:
+        pass
 router = APIRouter()
 
 # Optional bearer token for admin access
@@ -173,9 +210,20 @@ async def send_sms(
         
         country_code = phone_info['country_code']
         logger.debug(f"号码解析: 国家={country_code}")
-        
-        # 2. 验证内容
-        is_valid_content, error_msg, content_info = Validator.validate_content(request.message)
+
+        # 2. 内置变量替换（{随机码} 等）后再校验长度与计费
+        final_message = (
+            render_sms_variables(
+                request.message,
+                index=1,
+                phone_e164=phone_info["e164_format"],
+                country_code=country_code,
+            )
+            if sms_template_has_variables(request.message)
+            else request.message
+        )
+
+        is_valid_content, error_msg, content_info = Validator.validate_content(final_message)
         if not is_valid_content:
             return SMSSendResponse(
                 success=False,
@@ -208,7 +256,7 @@ async def send_sms(
             account_id=account.id,
             channel_id=channel.id,
             country_code=country_code,
-            message=request.message
+            message=final_message
         )
         
         if not charge_result['success']:
@@ -227,7 +275,7 @@ async def send_sms(
             channel_id=channel.id,
             phone_number=phone_info['e164_format'],
             country_code=country_code,
-            message=request.message,
+            message=final_message,
             message_count=charge_result['message_count'],
             status='queued',
             # 结算数据
@@ -244,9 +292,12 @@ async def send_sms(
         
         db.add(sms_log)
         await db.flush()
-        
+
         logger.info(f"短信记录已创建: {message_id}, Profit={sms_log.selling_price - sms_log.cost_price}")
-        
+
+        # Worker 使用独立 DB 连接，须先提交本事务，否则可能读不到未提交的 SMSLog（Message not found → 永久 queued）
+        await db.commit()
+
         # 8. 发送到消息队列（后台任务）
         from app.utils.queue import QueueManager
         
@@ -259,10 +310,33 @@ async def send_sms(
             }
         
         queue_success = QueueManager.queue_sms(message_id, http_credentials)
-        
+
         if not queue_success:
-            logger.warning(f"加入队列失败，但记录已创建: {message_id}")
-        
+            logger.error(f"加入队列失败，已退款并标记失败: {message_id}")
+            await _refund_line_charge(
+                db,
+                account.id,
+                charge_result["total_cost"],
+                f"SMS入队失败退款 {message_id}",
+            )
+            await db.execute(
+                update(SMSLog)
+                .where(SMSLog.message_id == message_id)
+                .values(
+                    status="failed",
+                    error_message="加入发送队列失败，请检查 RabbitMQ 与 Celery worker-sms 是否运行",
+                )
+            )
+            await db.flush()
+            return SMSSendResponse(
+                success=False,
+                message_id=message_id,
+                error={
+                    "code": "QUEUE_FAILED",
+                    "message": "加入发送队列失败，请检查消息队列与短信 Worker（worker-sms）",
+                },
+            )
+
         return SMSSendResponse(
             success=True,
             message_id=message_id,
@@ -335,16 +409,35 @@ async def send_batch_sms(
     """
     批量发送短信（异步入队模式）
 
-    先预校验号码并批量创建记录、扣费，然后统一入队异步发送，
-    避免逐条同步阻塞。
+    先创建发送任务（sms_batches），再预校验号码并批量创建记录、扣费，然后统一入队异步发送；
+    与发送任务页（批量列表）打通，便于查看进度。
     """
     from app.utils.queue import QueueManager
+    from app.modules.sms.sms_batch import SmsBatch, BatchStatus
 
     results = []
     succeeded = 0
     failed = 0
 
-    for phone_number in request.phone_numbers:
+    rot_messages = [m for m in (request.messages or []) if m and str(m).strip()]
+    use_rotate = len(rot_messages) > 0
+
+    # 创建发送任务（与 SMSLog.batch_id 关联，worker 会更新进度）
+    batch_label = (request.batch_name or "").strip() or f"发送页-{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    sms_batch = SmsBatch(
+        account_id=account.id,
+        batch_name=batch_label[:200],
+        total_count=0,
+        success_count=0,
+        failed_count=0,
+        status=BatchStatus.PROCESSING,
+        sender_id=request.sender_id,
+    )
+    db.add(sms_batch)
+    await db.flush()
+    batch_pk = sms_batch.id
+
+    for batch_index, phone_number in enumerate(request.phone_numbers, start=1):
         try:
             # 1. 校验号码
             is_valid, err_msg, phone_info = Validator.validate_phone_number(phone_number)
@@ -356,10 +449,30 @@ async def send_batch_sms(
 
             country_code = phone_info['country_code']
 
+            raw_body = rot_messages[(batch_index - 1) % len(rot_messages)] if use_rotate else request.message
+            has_tpl_vars = sms_template_has_variables(raw_body)
+            final_message = (
+                render_sms_variables(
+                    raw_body,
+                    index=batch_index,
+                    phone_e164=phone_info["e164_format"],
+                    country_code=country_code,
+                )
+                if has_tpl_vars
+                else raw_body
+            )
+            is_valid_content, content_err, _ = Validator.validate_content(final_message)
+            if not is_valid_content:
+                failed += 1
+                results.append({"phone_number": phone_number, "success": False,
+                                "message_id": None, "error": {"code": "INVALID_CONTENT", "message": content_err}})
+                continue
+
             # 2. 路由选择（账户已绑定通道时，仅在绑定通道中路由）
             routing_engine = RoutingEngine(db)
             channel = await routing_engine.select_channel(
                 country_code=country_code,
+                preferred_channel=request.channel_id,
                 strategy='priority',
                 account_id=account.id
             )
@@ -369,11 +482,11 @@ async def send_batch_sms(
                                 "message_id": None, "error": {"code": "NO_CHANNEL", "message": "No available channel"}})
                 continue
 
-            # 3. 计费扣款
+            # 3. 计费扣款（按替换后正文计条数）
             pricing_engine = PricingEngine(db)
             charge_result = await pricing_engine.calculate_and_charge(
                 account_id=account.id, channel_id=channel.id,
-                country_code=country_code, message=request.message,
+                country_code=country_code, message=final_message,
             )
             if not charge_result['success']:
                 failed += 1
@@ -386,16 +499,48 @@ async def send_batch_sms(
             sms_log = SMSLog(
                 message_id=message_id, account_id=account.id, channel_id=channel.id,
                 phone_number=phone_info['e164_format'], country_code=country_code,
-                message=request.message, message_count=charge_result['message_count'],
+                message=final_message, message_count=charge_result['message_count'],
                 status='queued', cost_price=charge_result['total_base_cost'],
                 selling_price=charge_result['total_cost'], currency=charge_result['currency'],
                 submit_time=datetime.now(),
+                batch_id=batch_pk,
             )
             db.add(sms_log)
             await db.flush()
+            await db.commit()
 
-            # 5. 入队异步发送
-            QueueManager.queue_sms(message_id)
+            # 5. 入队异步发送（失败则退款并记失败，避免库中永久 queued 却无任务）
+            if not QueueManager.queue_sms(message_id):
+                failed += 1
+                await _refund_line_charge(
+                    db,
+                    account.id,
+                    charge_result["total_cost"],
+                    f"批量SMS入队失败退款 {message_id}",
+                )
+                await db.execute(
+                    update(SMSLog)
+                    .where(SMSLog.message_id == message_id)
+                    .values(
+                        status="failed",
+                        error_message=(
+                            "加入发送队列失败，请检查 RabbitMQ 与 Celery worker-sms（仅消费 sms_send 的容器）是否运行"
+                        ),
+                    )
+                )
+                await db.flush()
+                results.append(
+                    {
+                        "phone_number": phone_number,
+                        "success": False,
+                        "message_id": message_id,
+                        "error": {
+                            "code": "QUEUE_FAILED",
+                            "message": "加入发送队列失败",
+                        },
+                    }
+                )
+                continue
 
             succeeded += 1
             results.append({"phone_number": phone_number, "success": True,
@@ -411,12 +556,25 @@ async def send_batch_sms(
             results.append({"phone_number": phone_number, "success": False,
                             "message_id": None, "error": {"code": "ERROR", "message": "Send failed"}})
 
+    # 与 SMSLog 条数一致，避免部分入队失败时列表「总数」与记录不符
+    cnt_row = await db.execute(
+        select(func.count()).select_from(SMSLog).where(SMSLog.batch_id == batch_pk)
+    )
+    sms_batch.total_count = int(cnt_row.scalar() or 0)
+    if succeeded == 0:
+        sms_batch.status = BatchStatus.FAILED
+        sms_batch.progress = 0
+        sms_batch.error_message = "没有成功入队的短信（号码、内容、余额或通道等原因）"
+    else:
+        sms_batch.status = BatchStatus.PROCESSING
+
     return BatchSMSResponse(
         success=True,
         total=len(request.phone_numbers),
         succeeded=succeeded,
         failed=failed,
-        messages=results
+        messages=results,
+        batch_id=batch_pk,
     )
 
 
@@ -673,12 +831,26 @@ async def execute_approved_sms(
     if not channel:
         raise HTTPException(status_code=400, detail="无可用通道")
 
+    final_message = (
+        render_sms_variables(
+            approval.content,
+            index=1,
+            phone_e164=phone_info["e164_format"],
+            country_code=phone_info["country_code"],
+        )
+        if sms_template_has_variables(approval.content)
+        else approval.content
+    )
+    is_valid_content, content_err, _ = Validator.validate_content(final_message)
+    if not is_valid_content:
+        raise HTTPException(status_code=400, detail=content_err or "内容校验失败")
+
     pricing_engine = PricingEngine(db)
     charge_result = await pricing_engine.calculate_and_charge(
         account_id=account.id,
         channel_id=channel.id,
         country_code=phone_info["country_code"],
-        message=approval.content
+        message=final_message
     )
     if not charge_result["success"]:
         raise HTTPException(status_code=400, detail=charge_result.get("error", "计费失败"))
@@ -690,7 +862,7 @@ async def execute_approved_sms(
         channel_id=channel.id,
         phone_number=phone_info["e164_format"],
         country_code=phone_info["country_code"],
-        message=approval.content,
+        message=final_message,
         message_count=charge_result["message_count"],
         status="queued",
         cost_price=charge_result["total_base_cost"],
@@ -700,10 +872,25 @@ async def execute_approved_sms(
     )
     db.add(sms_log)
     await db.flush()
+    await db.commit()
 
     from app.utils.queue import QueueManager
-    qm = QueueManager()
-    qm.queue_sms(message_id)
+
+    if not QueueManager.queue_sms(message_id):
+        await _refund_line_charge(
+            db,
+            account.id,
+            charge_result["total_cost"],
+            f"审核短信入队失败退款 {message_id}",
+        )
+        await db.execute(
+            update(SMSLog)
+            .where(SMSLog.message_id == message_id)
+            .values(status="failed", error_message="加入发送队列失败")
+        )
+        approval.send_error = "加入发送队列失败，请检查 RabbitMQ 与 worker-sms"
+        await db.commit()
+        raise HTTPException(status_code=503, detail="加入发送队列失败，请稍后重试或联系管理员")
 
     approval.message_id = message_id
     approval.send_error = None
@@ -781,6 +968,7 @@ async def get_sms_records(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     account_id: Optional[int] = None,
+    batch_id: Optional[int] = None,
     auth_context: dict = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db)
 ):
@@ -789,6 +977,7 @@ async def get_sms_records(
     from sqlalchemy.orm import aliased
     from datetime import datetime
     from app.modules.sms.channel import Channel
+    from app.modules.sms.sms_batch import SmsBatch
 
     conditions = []
 
@@ -797,6 +986,23 @@ async def get_sms_records(
             conditions.append(SMSLog.account_id == account_id)
     else:
         conditions.append(SMSLog.account_id == auth_context["account_id"])
+
+    # 按批次筛选：非管理员须校验批次归属，避免遍历他人 batch_id
+    if batch_id is not None:
+        if auth_context["is_admin"]:
+            conditions.append(SMSLog.batch_id == batch_id)
+        else:
+            own_batch = await db.scalar(
+                select(SmsBatch.id).where(
+                    SmsBatch.id == batch_id,
+                    SmsBatch.account_id == auth_context["account_id"],
+                    SmsBatch.is_deleted == False,
+                )
+            )
+            if own_batch is None:
+                conditions.append(SMSLog.id < 0)
+            else:
+                conditions.append(SMSLog.batch_id == batch_id)
 
     if status:
         conditions.append(SMSLog.status == status)
@@ -877,11 +1083,13 @@ async def get_sms_records(
 async def export_sms_records(
     status: Optional[str] = None,
     phone_number: Optional[str] = None,
+    message_id: Optional[str] = None,
     channel_id: Optional[int] = None,
     country_code: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     account_id: Optional[int] = None,
+    batch_id: Optional[int] = None,
     auth_context: dict = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db)
 ):
@@ -889,6 +1097,7 @@ async def export_sms_records(
     from sqlalchemy import and_
     from datetime import datetime
     from app.modules.sms.channel import Channel
+    from app.modules.sms.sms_batch import SmsBatch
     from fastapi.responses import StreamingResponse
     import csv
     import io
@@ -900,10 +1109,28 @@ async def export_sms_records(
     else:
         conditions.append(SMSLog.account_id == auth_context["account_id"])
 
+    if batch_id is not None:
+        if auth_context["is_admin"]:
+            conditions.append(SMSLog.batch_id == batch_id)
+        else:
+            own_batch = await db.scalar(
+                select(SmsBatch.id).where(
+                    SmsBatch.id == batch_id,
+                    SmsBatch.account_id == auth_context["account_id"],
+                    SmsBatch.is_deleted == False,
+                )
+            )
+            if own_batch is None:
+                conditions.append(SMSLog.id < 0)
+            else:
+                conditions.append(SMSLog.batch_id == batch_id)
+
     if status:
         conditions.append(SMSLog.status == status)
     if phone_number:
         conditions.append(SMSLog.phone_number.like(f"%{phone_number}%"))
+    if message_id:
+        conditions.append(SMSLog.message_id.like(f"%{message_id}%"))
     if channel_id:
         conditions.append(SMSLog.channel_id == channel_id)
     if country_code:
@@ -1096,26 +1323,12 @@ async def dlr_callback_post(
 async def dlr_callback_get(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    mid: Optional[str] = None,
-    msgid: Optional[str] = None,
-    message_id: Optional[str] = None,
-    taskid: Optional[str] = None,
-    mobile: Optional[str] = None,
-    phone: Optional[str] = None,
-    to: Optional[str] = None,
-    result: Optional[str] = None,
-    status: Optional[str] = None,
-    state: Optional[str] = None,
-    errorcode: Optional[str] = None,
-    error: Optional[str] = None,
-    recvTime: Optional[str] = None,
-    deliverytime: Optional[str] = None,
-    time: Optional[str] = None,
 ):
     """
     接收上游 DLR 回调 (GET 方式)
-    
-    支持多种常见的 URL 参数名称，自动适配不同上游
+
+    先将全部 query 转为小写键后用 parse_form_dlr 解析，兼容 mid/msgid/task_id 等任意组合；
+    避免仅依赖少量硬编码参数名导致上游已回调但系统收不到消息 ID 的异常。
     """
     if not _verify_dlr_caller(request):
         logger.warning(f"DLR GET 回调认证失败: IP={request.client.host if request.client else 'unknown'}")
@@ -1125,25 +1338,25 @@ async def dlr_callback_get(
         )
 
     try:
-        report = {
-            'message_id': mid or msgid or message_id or taskid,
-            'mobile': mobile or phone or to,
-            'status_code': result or status or state,
-            'error_code': errorcode or error,
-            'delivery_time': recvTime or deliverytime or time,
-        }
-        
         query_string = str(request.query_params)
         logger.info(f"收到 DLR 回调 (GET): {query_string}")
-        
-        if not report['message_id']:
-            logger.warning(f"DLR GET 回调缺少消息ID: {query_string}")
+
+        # 合并 query（小写键，后者覆盖同名）供表单解析器统一处理
+        qp: dict = {}
+        for k, v in request.query_params.multi_items():
+            if k:
+                qp[str(k).lower()] = v
+
+        reports = parse_form_dlr(qp)
+
+        if not reports:
+            logger.warning(f"DLR GET 无法解析报告（缺少已知消息 ID 字段）: {query_string[:500]}")
             return {"status": 0, "message": "missing message_id"}
-        
-        success, fail = await process_dlr_reports([report], db, source="push-get")
-        
+
+        success, fail = await process_dlr_reports(reports, db, source="push-get")
+
         return {"status": 0, "message": "success", "processed": success + fail}
-        
+
     except Exception as e:
         logger.error(f"处理 DLR GET 回调失败: {str(e)}")
         return {"status": 1, "message": "internal error"}

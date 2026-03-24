@@ -9,7 +9,6 @@ from datetime import datetime, date, timedelta
 import uuid
 import csv
 import io
-import random
 from decimal import Decimal
 
 from app.database import get_db
@@ -26,6 +25,7 @@ from app.schemas.data import (
 from app.api.v1.data.helpers import (
     build_filter_query, calculate_stock, serialize_product, serialize_order, serialize_number,
 )
+from app.utils.sms_template import render_sms_variables, sms_template_has_variables
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -407,28 +407,6 @@ async def buy_combo(
     }
 
 
-# ============ 变量模板替换 ============
-
-def _render_sms_template(template: str, index: int, phone: str, country: str) -> str:
-    """将短信模板中的变量占位符替换为实际值"""
-    today_str = date.today().strftime("%Y-%m-%d")
-    rand_code = str(random.randint(100000, 999999))
-
-    msg = template
-    msg = msg.replace("{序号}", str(index))
-    msg = msg.replace("{国家}", country or "")
-    msg = msg.replace("{日期}", today_str)
-    msg = msg.replace("{随机码}", rand_code)
-    msg = msg.replace("{号码}", phone.lstrip("+") if phone else "")
-    # 英文别名
-    msg = msg.replace("{index}", str(index))
-    msg = msg.replace("{country}", country or "")
-    msg = msg.replace("{date}", today_str)
-    msg = msg.replace("{code}", rand_code)
-    msg = msg.replace("{phone}", phone.lstrip("+") if phone else "")
-    return msg
-
-
 # ============ 购买模式三：买即发 ============
 
 @router.post("/buy-and-send")
@@ -479,14 +457,22 @@ async def buy_and_send(
     pricing_engine = PricingEngine(db)
     msg_list = data.messages if data.messages and len(data.messages) > 1 else [data.message]
     msg_count = len(msg_list)
-    var_tags = ("{序号}", "{国家}", "{日期}", "{随机码}", "{号码}", "{index}", "{country}", "{date}", "{code}", "{phone}")
-    msg_has_vars = [any(v in m for v in var_tags) for m in msg_list]
+    msg_has_vars = [sms_template_has_variables(m) for m in msg_list]
 
     # 预计算每条短信的通道、价格、成本
     num_plans = []  # [(num, channel, price_info, msg, parts, sell, cost), ...]
     for idx, num in enumerate(numbers, start=1):
         template = msg_list[(idx - 1) % msg_count]
-        msg = _render_sms_template(template, idx, num.phone_number, num.country_code) if msg_has_vars[(idx - 1) % msg_count] else template
+        msg = (
+            render_sms_variables(
+                template,
+                index=idx,
+                phone_e164=num.phone_number or "",
+                country_code=num.country_code or "",
+            )
+            if msg_has_vars[(idx - 1) % msg_count]
+            else template
+        )
         parts = pricing_engine._count_sms_parts(msg)
 
         phone_country = num.country_code or "PH"

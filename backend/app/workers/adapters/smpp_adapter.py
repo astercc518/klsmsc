@@ -5,7 +5,7 @@ SMPP通道适配器 - 支持 transceiver / transmitter / receiver 绑定模式
 import asyncio
 import re
 import threading
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
@@ -52,6 +52,27 @@ except ImportError:
 
 # SMPP 错误码 3 = Invalid Command ID（服务器不支持该绑定类型）
 _ESME_RINVCMDID = 3
+# 部分上游在「不支持 transceiver」或「仅允许 TX」时返回 13（Bind Failed），而非标准的 3
+_ESME_BIND_FAILED_GENERIC = 13
+
+# ESME 状态码简要说明（SMPP v3.4 常见值；不同供应商文案可能略有差异）
+_SMPP_ESME_HINTS_ZH: dict[int, str] = {
+    3: "无效命令 ID：对端可能不支持 bind_transceiver，可将通道「SMPP 绑定模式」改为 transmitter（仅发送）后重试",
+    4: "已在绑定状态：该账号可能在其他会话已绑定，需断开旧连接或联系上游释放会话",
+    13: "绑定被拒绝：常见为账号/密码错误、本机出口 IP 未加入上游白名单、未开通 transceiver、或上游仅允许 TX；若多 Celery worker 并发连接同一账号，也会因「单会话」限制出现本错误（需 Redis 集群锁或 worker-sms --concurrency=1）。请向供应商核对凭证、白名单与 bind 类型",
+    14: "无效密码（密码与上游配置不一致）",
+    15: "无效 System ID（用户名不存在或未开通）",
+}
+
+
+def _format_smpp_last_error(err_code: Optional[int], exc: Exception) -> str:
+    """生成带中文提示的连接错误文案，便于通道检测与发送记录排查"""
+    base = f"SMPP错误 (code={err_code}): {str(exc)}"
+    if err_code is not None:
+        hint = _SMPP_ESME_HINTS_ZH.get(err_code)
+        if hint:
+            return f"{base} | {hint}"
+    return base
 
 
 class SMPPAdapter:
@@ -110,11 +131,14 @@ class SMPPAdapter:
                 self._do_bind(self._bind_mode, **bind_kwargs)
             except Exception as first_err:
                 err_code = self._extract_smpp_error_code(first_err)
-                # 如果是 Invalid Command ID 且当前为 transceiver，降级到 transmitter
-                if err_code == _ESME_RINVCMDID and self._bind_mode == "transceiver":
+                # transceiver 失败且错误为「不支持该 bind」或部分上游返回的通用 Bind Failed(13)，降级尝试 transmitter
+                if (
+                    self._bind_mode == "transceiver"
+                    and err_code in (_ESME_RINVCMDID, _ESME_BIND_FAILED_GENERIC)
+                ):
                     logger.warning(
-                        f"服务器不支持 bind_transceiver (err={err_code})，"
-                        f"降级为 bind_transmitter"
+                        f"bind_transceiver 失败 (err={err_code})，尝试降级为 bind_transmitter："
+                        f"{self.channel.channel_code}"
                     )
                     # 需要重新建立TCP连接
                     try:
@@ -158,7 +182,7 @@ class SMPPAdapter:
             return True
         except Exception as e:
             err_code = self._extract_smpp_error_code(e)
-            self.last_error = f"SMPP错误 (code={err_code}): {str(e)}"
+            self.last_error = _format_smpp_last_error(err_code, e)
             logger.error(
                 f"SMPP连接失败 [{self.channel.channel_code}]: {str(e)} "
                 f"(bind_mode={self._bind_mode}, system_type='{self._system_type}', "
@@ -285,10 +309,20 @@ class SMPPAdapter:
                 f"stat={stat} err={err} -> {new_status}"
             )
 
+            dest_addr = getattr(pdu, "destination_addr", None) or ""
+            source_addr = getattr(pdu, "source_addr", None) or ""
+            receipted = getattr(pdu, "receipted_message_id", None) or ""
+            if isinstance(dest_addr, bytes):
+                dest_addr = dest_addr.decode("utf-8", errors="replace")
+            if isinstance(source_addr, bytes):
+                source_addr = source_addr.decode("utf-8", errors="replace")
+            if isinstance(receipted, bytes):
+                receipted = receipted.decode("utf-8", errors="replace")
+
             # 异步更新数据库
             threading.Thread(
                 target=self._update_dlr_status,
-                args=(upstream_id, new_status, stat, err),
+                args=(upstream_id, new_status, stat, err, str(dest_addr), str(source_addr), str(receipted)),
                 daemon=True,
                 name=f"smpp-dlr-{upstream_id}",
             ).start()
@@ -300,11 +334,18 @@ class SMPPAdapter:
             )
 
     def _update_dlr_status(
-        self, upstream_id: str, new_status: str, stat: str, err: str
+        self,
+        upstream_id: str,
+        new_status: str,
+        stat: str,
+        err: str,
+        dest_addr: str = "",
+        source_addr: str = "",
+        receipted_message_id: str = "",
     ):
         """在独立线程中同步更新 DLR 状态到数据库"""
         from datetime import datetime
-        from sqlalchemy import select as sa_select, and_
+        from sqlalchemy import select as sa_select, and_, or_
         from sqlalchemy.ext.asyncio import (
             AsyncSession as _AS,
             create_async_engine as _cae,
@@ -322,35 +363,81 @@ class SMPPAdapter:
             )
             session = _asm(eng, class_=_AS, expire_on_commit=False)()
             try:
-                # 统一转字符串匹配；兼容 B 端 submit_sm_resp 返回十进制、deliver_sm 回传十六进制（或反之）
-                upstream_id_str = str(upstream_id).strip()
-                candidate_ids = [upstream_id_str]
-                # 大小写变体（部分数据库/上游对十六进制 ID 大小写不一致）
-                if upstream_id_str and any(c in upstream_id_str.upper() for c in "ABCDEF"):
-                    candidate_ids.append(upstream_id_str.upper())
-                    candidate_ids.append(upstream_id_str.lower())
-                try:
-                    if upstream_id_str.startswith("0x") or upstream_id_str.startswith("0X"):
-                        candidate_ids.append(str(int(upstream_id_str, 16)))
-                    elif upstream_id_str.isdigit():
-                        candidate_ids.append(hex(int(upstream_id_str)))
-                    elif all(c in "0123456789abcdefABCDEF" for c in upstream_id_str):
-                        candidate_ids.append(str(int(upstream_id_str, 16)))
-                except (ValueError, TypeError):
-                    pass
-                candidate_ids = list(dict.fromkeys(candidate_ids))  # 去重
+                channel_id = self.channel.id
 
-                stmt = sa_select(SMSLog).where(
-                    and_(
-                        SMSLog.upstream_message_id.in_(candidate_ids),
-                        SMSLog.status.in_(["sent", "pending", "queued"]),
-                    )
-                ).order_by(SMSLog.submit_time.desc()).limit(1)
-                result = await session.execute(stmt)
-                sms_log = result.scalar_one_or_none()
+                def _expand_id_candidates(raw: str) -> List[str]:
+                    upstream_id_str = str(raw).strip()
+                    if not upstream_id_str:
+                        return []
+                    cands = [upstream_id_str]
+                    if any(x in upstream_id_str.upper() for x in "ABCDEF"):
+                        cands.append(upstream_id_str.upper())
+                        cands.append(upstream_id_str.lower())
+                    try:
+                        if upstream_id_str.startswith("0x") or upstream_id_str.startswith("0X"):
+                            cands.append(str(int(upstream_id_str, 16)))
+                        elif upstream_id_str.isdigit():
+                            cands.append(hex(int(upstream_id_str)))
+                        elif all(c in "0123456789abcdefABCDEF" for c in upstream_id_str):
+                            cands.append(str(int(upstream_id_str, 16)))
+                    except (ValueError, TypeError):
+                        pass
+                    return list(dict.fromkeys(cands))
+
+                candidate_ids: List[str] = []
+                for piece in (upstream_id, receipted_message_id):
+                    candidate_ids.extend(_expand_id_candidates(piece))
+                candidate_ids = list(dict.fromkeys(candidate_ids))
+
+                sms_log = None
+                if candidate_ids:
+                    stmt = sa_select(SMSLog).where(
+                        and_(
+                            SMSLog.upstream_message_id.in_(candidate_ids),
+                            SMSLog.status.in_(["sent", "pending", "queued"]),
+                        )
+                    ).order_by(SMSLog.submit_time.desc()).limit(1)
+                    # 短重试：应对主事务提交略晚于 deliver_sm 线程读库的残余竞态（每次约 80ms，最多约 400ms）
+                    for _attempt in range(5):
+                        result = await session.execute(stmt)
+                        sms_log = result.scalar_one_or_none()
+                        if sms_log:
+                            break
+                        if _attempt < 4:
+                            await asyncio.sleep(0.08)
+
+                # 上游 ID 未入库或与 submit_sm_resp 不一致时（例如误存了 SMPP sequence），用手机号兜底
+                if not sms_log:
+                    def _digits(s: str) -> str:
+                        return "".join(c for c in str(s) if c.isdigit())
+
+                    for addr in (dest_addr, source_addr):
+                        d = _digits(addr)
+                        if len(d) < 8:
+                            continue
+                        stmt2 = sa_select(SMSLog).where(
+                            and_(
+                                SMSLog.channel_id == channel_id,
+                                SMSLog.status.in_(["sent", "pending", "queued"]),
+                                or_(
+                                    SMSLog.phone_number.like(f"%{d}"),
+                                    SMSLog.phone_number == f"+{d}",
+                                ),
+                            )
+                        ).order_by(SMSLog.sent_time.desc()).limit(1)
+                        res2 = await session.execute(stmt2)
+                        sms_log = res2.scalar_one_or_none()
+                        if sms_log:
+                            logger.info(
+                                f"SMPP DLR: 按号码兜底匹配成功 upstream_id={upstream_id} -> "
+                                f"log={sms_log.message_id} phone={sms_log.phone_number}"
+                            )
+                            break
+
                 if not sms_log:
                     logger.warning(
-                        f"SMPP DLR: 未找到 upstream_id={upstream_id} (尝试过 {candidate_ids})"
+                        f"SMPP DLR: 未找到 upstream_id={upstream_id} (候选 {candidate_ids})，"
+                        f"dest={dest_addr!r} src={source_addr!r}"
                     )
                     return
 
@@ -359,6 +446,9 @@ class SMPPAdapter:
                     sms_log.delivery_time = datetime.now()
                 elif new_status == "failed":
                     sms_log.error_message = f"SMPP DLR: stat={stat} err={err}"
+                # 纠正错误保存的 sequence 等占位 ID，便于后续对账
+                if upstream_id and str(sms_log.upstream_message_id or "") != str(upstream_id).strip():
+                    sms_log.upstream_message_id = str(upstream_id).strip()
 
                 await session.commit()
                 logger.info(
@@ -392,7 +482,8 @@ class SMPPAdapter:
         try:
             if not self.connected or not self.client:
                 if not self._connect_sync():
-                    return False, None, "SMPP connection failed"
+                    # 使用 last_error 便于发送记录中展示具体原因（超时/认证/网络等）
+                    return False, None, (self.last_error or "SMPP connection failed")
 
             try:
                 import smpplib.gsm
@@ -421,6 +512,8 @@ class SMPPAdapter:
             self.client.set_message_sent_handler(_msg_sent_handler)
 
             for i, part in enumerate(parts):
+                # 每段提交前清空，避免 smpplib 将多段 submit_sm_resp 记混到同一段
+                resp_message_ids.clear()
                 try:
                     pdu = self.client.send_message(
                         source_addr_ton=(
@@ -453,18 +546,27 @@ class SMPPAdapter:
                         if isinstance(mid, bytes):
                             mid = mid.decode("utf-8", errors="replace")
                     else:
-                        mid = str(pdu.sequence) if hasattr(pdu, "sequence") else f"smpp_{i}"
+                        mid = None
+
+                    # 禁止将 pdu.sequence 当作上游 message_id：与 deliver_sm 中 id: 完全对不上，会导致 DLR 永久无法匹配
+                    if not mid or (isinstance(mid, str) and not mid.strip()):
+                        seq = getattr(pdu, "sequence", None)
+                        logger.warning(
+                            f"SMPP submit_sm 未获得上游 message_id（第 {i + 1}/{len(parts)} 段），"
+                            f"sequence={seq}；已放弃写入占位 ID，送达依赖 DLR 手机号兜底或上游修复 resp"
+                        )
+                        mid = None
 
                     message_ids.append(mid)
-                    logger.info(f"SMPP发送 {i+1}/{len(parts)}: message_id={mid}")
+                    logger.info(f"SMPP发送 {i+1}/{len(parts)}: message_id={mid!r}")
 
                 except Exception as e:
                     error_msg = f"发送部分 {i+1} 失败: {str(e)}"
                     logger.error(error_msg, exc_info=e)
                     return False, None, error_msg
 
-            final_message_id = message_ids[0] if message_ids else None
-            logger.info(f"SMPP发送成功: {sms_log.message_id} -> {final_message_id}")
+            final_message_id = next((m for m in message_ids if m), None)
+            logger.info(f"SMPP发送成功: {sms_log.message_id} -> {final_message_id!r}")
 
             # transceiver/receiver 模式下不在此断开，由 sms_worker 加入延迟断开队列，避免阻塞 Celery 任务
             return True, final_message_id, None

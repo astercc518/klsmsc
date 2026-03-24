@@ -4,6 +4,21 @@
 
 短信发送后状态一直显示「已发送」，没有更新为「已送达」或「失败」。
 
+### Worker 提交顺序竞态（已修复）
+
+`send_sms_task` 曾在 **`status=sent` 首次 commit 之后**才执行 SMPP/HTTP 发送，发送成功后再把 **`upstream_message_id`** 写在内存里，直到 **Webhook 之后**才第二次 `commit`。  
+`deliver_sm` 与 `submit_sm_resp` 往往只差几百毫秒，DLR 处理在 **独立线程**里读库时，若第二次 commit 尚未执行，**按 `upstream_message_id` 查询会落空**，日志表现为 `SMPP DLR: 未找到 upstream_id=...`；部分短信后续不再重推同一条 DLR，则界面会长期 **「送达等待中」**。
+
+**修复**：在 **`_send_via_smpp` / `_send_via_http` 返回成功之后、Webhook 之前**立即 **`await db.commit()`**，优先持久化上游 ID。
+
+### 与界面文案的对应关系（易混淆点）
+
+- **数据库 `status = sent` + 已有 `upstream_message_id`**：表示通道已受理并成功拿到上游消息 ID，**不等于**用户手机已收到。
+- **时间线里的「送达」**：仅在有 **终端 DLR** 并成功解析为送达时，才会写入 `delivery_time` 并将 `status` 更新为 `delivered`。
+- 因此会出现：**通道侧显示「已提交上游」类提示，但「送达」仍为等待中**——这在未收到/未匹配终端回执时是正常现象。
+
+前端「发送记录 → 短信详情」中已用「通道回执 / 已提交上游」等文案与 Tooltip 区分上述两个阶段；排查请以 `sms_logs.status`、`delivery_time` 及日志为准。
+
 ## 原因说明
 
 系统在短信提交成功后先标记为 `sent`（已发送），等待上游通道的 DLR（Delivery Report）回执后才会更新为 `delivered`（已送达）或 `failed`（失败）。
@@ -29,7 +44,13 @@ DLR 获取方式有两种：
 - 若为空：上游未返回消息 ID，或返回格式未被识别，DLR 无法匹配
 - 若有值：说明已保存，需确认 DLR 报告中的 message_id 与该值一致
 
-### 3. 推送模式配置（推荐）
+### 3. GET 回调参数名不全在路由声明里（已修复）
+
+历史上 `GET /dlr/callback` 仅绑定少量查询参数名（如 `mid`、`msgid`），上游若使用 `task_id`、`messageid`、`sn` 等字段，**整条请求会被当成「缺少 message_id」而丢弃**。
+
+当前实现已改为：**将 URL 全部 query 转为小写后走 `parse_form_dlr`**，与表单回调共用一套字段别名；若仍收不到，请抓包对照 `parse_form_dlr` / `dlr_handler.py` 是否需再扩展键名。
+
+### 4. 推送模式配置（推荐）
 
 若上游支持 DLR 回调，需在上游后台配置回调 URL：
 
@@ -51,7 +72,7 @@ POST https://你的域名/api/v1/sms/dlr/callback/通道编码
 
 **若上游已推送回执但状态未更新**：多为认证被拒（403）。请设置 `DLR_CALLBACK_OPEN=true`（上游不支持 Token 时）或配置 Token/IP 白名单后重启服务。
 
-### 4. 拉取模式（HTTP 通道）
+### 5. 拉取模式（HTTP 通道）
 
 系统每 30 秒会拉取 Kaola 风格接口的 DLR 报告。若通道 API 非 Kaola 格式，需确认：
 
@@ -81,7 +102,7 @@ POST https://你的域名/api/v1/sms/dlr/callback/通道编码
 
 添加方式：管理后台 → 系统配置 → 新增配置，key 填 `dlr_report_url_override`，类型选 `json`，值填上述 JSON。
 
-### 5. 查看日志
+### 6. 查看日志
 
 - 拉取：搜索 `拉取 DLR`、`解析到 N 条 DLR 报告`、`DLR 找不到对应记录`
 - 推送：搜索 `收到 DLR 回调`、`DLR 回调处理完成`
@@ -91,6 +112,9 @@ POST https://你的域名/api/v1/sms/dlr/callback/通道编码
 
 1. **扩展 upstream_message_id 提取**：支持 `mid`、`msgid`、`taskid`、`message_id`、`id` 等字段；无 list 时从响应顶层尝试提取
 2. **DLR 匹配兜底**：除 `upstream_message_id` 外，增加用 `message_id`（我们的 ID）匹配，兼容回传我们 ID 的上游
+3. **GET `/dlr/callback`**：全量 query + `parse_form_dlr`，避免非标准参数名导致静默丢回执
+4. **parse_form_dlr**：增加 `task_id`、`messageid`、`stat`、`dr` 等别名，减少「有回执但解析不到状态」的情况
+5. **日志**：`DLR 状态未识别` 时附带 `report_keys`，便于对照上游字段；若持续出现，可在 `normalize_status` 中按通道文档增补映射
 
 ## 日志排查结论（Kaola 通道）
 
@@ -100,6 +124,12 @@ POST https://你的域名/api/v1/sms/dlr/callback/通道编码
 - **KAOLA_TH**：SMPP 通道（7099），DLR 通过 deliver_sm 推送。**必须使用 transceiver 模式**才能接收；若配置为 transmitter 则无法收到 DLR。系统已对 Kaola SMPP 自动优先尝试 transceiver；若上游不支持会降级为 transmitter（此时无 DLR）
 
 DLR 按通道账号拉取，发送用哪个通道，回执就需用该通道的账号拉取。
+
+## SMPP：误存 `upstream_message_id=7` 等短数字（已修复）
+
+若 `sms_logs.upstream_message_id` 仅为 **1～3 位数字**，多为历史逻辑把 **`submit_sm` 的 PDU sequence** 误当作上游消息 ID。`deliver_sm` 报告体里的 `id:` 为长串（如 `20260324231908HY0XIBJK`），**永远对不上**，表现为一直 `sent`、无送达时间。
+
+**修复**：不再使用 `sequence` 作 ID；若 submit 未返回 message_id 则留空；DLR 处理增加 **按 `destination_addr` / `source_addr` 与通道 ID** 在 `sent` 记录中兜底匹配，并回写真实 `upstream_message_id`。
 
 ## SMPP DLR 排查清单
 

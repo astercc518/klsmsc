@@ -1596,7 +1596,7 @@ async def channel_test_send(
             if success and getattr(adapter, 'client', None) and getattr(adapter, '_bind_mode', '') in ('transceiver', 'receiver'):
                 try:
                     from app.workers.sms_worker import _smpp_schedule_delayed_disconnect
-                    _smpp_schedule_delayed_disconnect(adapter)
+                    _smpp_schedule_delayed_disconnect(adapter, channel.id)
                 except Exception:
                     await adapter.disconnect()
             else:

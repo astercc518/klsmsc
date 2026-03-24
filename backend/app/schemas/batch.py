@@ -1,7 +1,7 @@
 """
 批量发送相关的 Pydantic Schemas
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -44,7 +44,47 @@ class SmsBatchResponse(BaseModel):
     completed_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
-    
+
+    @field_validator("batch_name", mode="before")
+    @classmethod
+    def batch_name_none_as_empty(cls, v: object) -> str:
+        """极少数历史数据 batch_name 可能为 NULL"""
+        if v is None:
+            return ""
+        return str(v)
+
+    @field_validator(
+        "total_count",
+        "success_count",
+        "failed_count",
+        "processing_count",
+        "progress",
+        mode="before",
+    )
+    @classmethod
+    def int_null_as_zero(cls, v: object) -> int:
+        """旧数据 NULL 或 JDBC/部分驱动把整型以 str 返回时，避免响应校验 500"""
+        if v is None:
+            return 0
+        if isinstance(v, bool):
+            return int(v)
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float):
+            return int(v)
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return 0
+            try:
+                return int(float(s))
+            except ValueError:
+                return 0
+        try:
+            return int(v)  # Decimal 等
+        except (TypeError, ValueError):
+            return 0
+
     class Config:
         from_attributes = True
 

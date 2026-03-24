@@ -48,15 +48,22 @@
       </div>
     </div>
 
+    <p class="stats-strip">{{ $t('batchSend.pendingAndFailedStrip', { pending: stats.pending_batches, failed: stats.failed_batches }) }}</p>
+
     <!-- 任务列表 -->
     <div class="task-panel">
       <div class="panel-header">
-        <h3 class="panel-title">{{ $t('batchSend.taskList') }}</h3>
+        <div class="panel-header-text">
+          <h3 class="panel-title">{{ $t('batchSend.taskList') }}</h3>
+          <p class="panel-desc">{{ $t('batchSend.taskSourceHint') }}</p>
+        </div>
         <el-button @click="loadBatches" :icon="Refresh" size="small">{{ $t('common.refresh') }}</el-button>
       </div>
       
-      <el-table :data="batches" v-loading="loading" stripe>
-        <el-table-column prop="batch_name" :label="$t('batchSend.batchName')" width="200" />
+      <el-empty v-if="!loading && batches.length === 0" :description="$t('batchSend.emptyList')" class="task-empty" />
+      <el-table v-else :data="batches" v-loading="loading" stripe class="task-table-inner">
+        <el-table-column prop="id" :label="$t('batchSend.batchIdCol')" width="72" />
+        <el-table-column prop="batch_name" :label="$t('batchSend.batchName')" min-width="180" show-overflow-tooltip />
         <el-table-column prop="total_count" :label="$t('batchSend.totalCount')" width="80" />
         <el-table-column prop="success_count" :label="$t('batchSend.successCount')" width="80">
           <template #default="{ row }">
@@ -77,13 +84,19 @@
         <el-table-column prop="status" :label="$t('batchSend.status')" width="100">
           <template #default="{ row }">
             <el-tag v-if="row.status === 'pending'" type="info">{{ $t('batchSend.pending') }}</el-tag>
-            <el-tag v-else-if="row.status === 'processing'" type="primary">{{ $t('batchSend.processing') }}</el-tag>
+            <el-tooltip v-else-if="row.status === 'processing'" :content="$t('batchSend.processingTooltip')" placement="top" :show-after="200">
+              <el-tag type="primary" class="tag-tooltip-wrap">{{ $t('batchSend.processing') }}</el-tag>
+            </el-tooltip>
             <el-tag v-else-if="row.status === 'completed'" type="success">{{ $t('batchSend.completed') }}</el-tag>
             <el-tag v-else-if="row.status === 'failed'" type="danger">{{ $t('batchSend.failed') }}</el-tag>
             <el-tag v-else type="warning">{{ $t('batchSend.cancelled') }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" :label="$t('common.createdAt')" width="180" />
+        <el-table-column :label="$t('batchSend.createdAtLocal')" width="168">
+          <template #default="{ row }">
+            {{ formatBatchDate(row.created_at) }}
+          </template>
+        </el-table-column>
         <el-table-column :label="$t('common.action')" width="150" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="viewDetail(row)">{{ $t('common.detail') }}</el-button>
@@ -105,13 +118,98 @@
           v-model:current-page="pagination.page"
           v-model:page-size="pagination.pageSize"
           :total="pagination.total"
-          layout="total, prev, pager, next"
+          :page-sizes="[10, 20, 50, 100]"
+          layout="total, sizes, prev, pager, next, jumper"
           @current-change="loadBatches"
+          @size-change="onPageSizeChange"
           background
           small
         />
       </div>
     </div>
+
+    <el-dialog
+      v-model="detailVisible"
+      :title="$t('batchSend.taskSendRecords')"
+      width="920px"
+      class="batch-task-records-dialog"
+      destroy-on-close
+      @closed="onDetailDialogClosed"
+    >
+      <div v-loading="detailLoading" class="detail-body">
+        <el-alert v-if="detailError && !detailLoading" type="error" :closable="false" show-icon class="detail-alert">
+          {{ detailError }}
+        </el-alert>
+        <template v-if="detailBatch">
+          <div class="detail-task-summary">
+            <span class="summary-line">
+              <span class="summary-k">{{ $t('batchSend.batchIdCol') }}</span>
+              {{ detailBatch.id }}
+            </span>
+            <span class="summary-name" :title="detailBatch.batch_name">{{ detailBatch.batch_name }}</span>
+            <el-tag size="small" :type="batchStatusTagType(detailBatch.status)">{{ batchStatusLabel(detailBatch.status) }}</el-tag>
+            <span class="summary-meta">
+              {{ $t('batchSend.totalCount') }} {{ detailBatch.total_count }} · {{ $t('batchSend.successCount') }}
+              {{ detailBatch.success_count }} · {{ $t('batchSend.failedCount') }} {{ detailBatch.failed_count }} ·
+              {{ $t('batchSend.progress') }} {{ detailBatch.progress }}%
+            </span>
+            <span class="summary-meta">{{ $t('batchSend.createdAtLocal') }} {{ formatBatchDate(detailBatch.created_at) }}</span>
+          </div>
+          <el-alert
+            v-if="detailBatch.error_message"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="detail-batch-alert"
+          >
+            {{ detailBatch.error_message }}
+          </el-alert>
+          <div class="detail-records-toolbar">
+            <el-input
+              v-model="detailMessageId"
+              clearable
+              :placeholder="$t('batchSend.messageIdFilterPlaceholder')"
+              class="detail-msgid-input"
+              @keyup.enter="searchDetailRecords"
+            />
+            <el-button type="primary" @click="searchDetailRecords">{{ $t('smsRecords.query') }}</el-button>
+          </div>
+          <el-table :data="detailRecords" stripe max-height="440" size="small" class="detail-records-table">
+            <el-table-column v-if="isAdmin" prop="account_id" :label="$t('smsRecords.accountId')" width="72" align="center" />
+            <el-table-column prop="message_id" :label="$t('smsRecords.messageId')" min-width="148" show-overflow-tooltip />
+            <el-table-column prop="phone_number" :label="$t('smsRecords.phoneNumber')" width="142" show-overflow-tooltip />
+            <el-table-column prop="status" :label="$t('smsRecords.status')" width="108">
+              <template #default="{ row }">
+                <el-tag size="small" :type="recordStatusTagType(row.status)">{{ recordStatusLabel(row.status) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="submit_time" :label="$t('smsRecords.submitTime')" width="168">
+              <template #default="{ row }">{{ formatBatchDate(row.submit_time) }}</template>
+            </el-table-column>
+            <el-table-column
+              v-if="isAdmin"
+              prop="channel_code"
+              :label="$t('smsRecords.channel')"
+              min-width="120"
+              show-overflow-tooltip
+            />
+          </el-table>
+          <div class="detail-records-pagination">
+            <el-pagination
+              v-model:current-page="detailRecPagination.page"
+              v-model:page-size="detailRecPagination.pageSize"
+              :total="detailRecPagination.total"
+              :page-sizes="[10, 20, 50]"
+              layout="total, sizes, prev, pager, next"
+              small
+              background
+              @current-change="loadDetailRecords"
+              @size-change="onDetailPageSizeChange"
+            />
+          </div>
+        </template>
+      </div>
+    </el-dialog>
 
     <!-- 上传对话框 -->
     <el-dialog v-model="uploadDialogVisible" :title="$t('batchSend.createTask')" width="600px">
@@ -173,11 +271,18 @@ phone,name,code<br>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, Refresh } from '@element-plus/icons-vue'
-import { getBatches, getBatchStats, uploadBatchFile, cancelBatch as cancelBatchApi, type SmsBatch } from '@/api/batch'
+import {
+  getBatches,
+  getBatchStats,
+  uploadBatchFile,
+  cancelBatch as cancelBatchApi,
+  type SmsBatch,
+} from '@/api/batch'
+import { getSMSRecords } from '@/api/sms'
 import { getTemplates } from '@/api/template'
 
 const { t } = useI18n()
@@ -195,6 +300,21 @@ const stats = reactive({
 })
 const pagination = reactive({ page: 1, pageSize: 20, total: 0 })
 
+const detailVisible = ref(false)
+const detailLoading = ref(false)
+/** 当前查看的任务（用于摘要与 batch_id 查询） */
+const detailBatch = ref<SmsBatch | null>(null)
+const detailRecords = ref<any[]>([])
+const detailRecPagination = reactive({ page: 1, pageSize: 20, total: 0 })
+const detailMessageId = ref('')
+/** 记录列表加载失败时在弹窗内展示 */
+const detailError = ref('')
+
+const isAdmin = computed(() => {
+  if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('impersonate_mode') === '1') return false
+  return !!localStorage.getItem('admin_token')
+})
+
 const uploadDialogVisible = ref(false)
 const uploading = ref(false)
 const uploadFormRef = ref()
@@ -208,6 +328,13 @@ const uploadForm = reactive({
 
 const templates = ref<any[]>([])
 
+/** 列表与详情中的时间展示 */
+function formatBatchDate(iso: string | null | undefined): string {
+  if (!iso) return '-'
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString()
+}
+
 const loadBatches = async () => {
   loading.value = true
   try {
@@ -219,6 +346,11 @@ const loadBatches = async () => {
   } finally {
     loading.value = false
   }
+}
+
+function onPageSizeChange() {
+  pagination.page = 1
+  loadBatches()
 }
 
 const loadStats = async () => {
@@ -283,16 +415,113 @@ const submitUpload = async () => {
   }
 }
 
+function batchStatusLabel(status: string) {
+  const map: Record<string, string> = {
+    pending: t('batchSend.pending'),
+    processing: t('batchSend.processing'),
+    completed: t('batchSend.completed'),
+    failed: t('batchSend.failed'),
+    cancelled: t('batchSend.cancelled'),
+  }
+  return map[status] || status
+}
+
+function batchStatusTagType(status: string): 'info' | 'primary' | 'success' | 'danger' | 'warning' {
+  if (status === 'pending') return 'info'
+  if (status === 'processing') return 'primary'
+  if (status === 'completed') return 'success'
+  if (status === 'failed') return 'danger'
+  return 'warning'
+}
+
+function recordStatusLabel(status: string) {
+  const map: Record<string, string> = {
+    pending: t('smsStatus.pending'),
+    queued: t('smsStatus.queued'),
+    sent: t('smsStatus.sent'),
+    delivered: t('smsStatus.delivered'),
+    failed: t('smsStatus.failed'),
+    expired: t('smsStatus.expired'),
+  }
+  return map[status] || status
+}
+
+function recordStatusTagType(status: string): 'info' | 'primary' | 'success' | 'danger' | 'warning' {
+  if (status === 'pending' || status === 'queued') return 'info'
+  if (status === 'sent') return 'primary'
+  if (status === 'delivered') return 'success'
+  if (status === 'failed') return 'danger'
+  return 'warning'
+}
+
+const loadDetailRecords = async () => {
+  if (!detailBatch.value) return
+  detailLoading.value = true
+  detailError.value = ''
+  try {
+    const res: any = await getSMSRecords({
+      page: detailRecPagination.page,
+      page_size: detailRecPagination.pageSize,
+      batch_id: detailBatch.value.id,
+      message_id: detailMessageId.value.trim() || undefined,
+    })
+    if (res?.success) {
+      detailRecords.value = res.records || []
+      detailRecPagination.total = res.total || 0
+    } else {
+      detailRecords.value = []
+      detailRecPagination.total = 0
+    }
+  } catch (error: any) {
+    const d = error.response?.data
+    const msg =
+      (typeof d?.detail === 'string' && d.detail) ||
+      error?.message ||
+      t('batchSend.recordsLoadFailed')
+    detailError.value = msg
+    detailRecords.value = []
+    detailRecPagination.total = 0
+    ElMessage.error(msg)
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+const searchDetailRecords = () => {
+  detailRecPagination.page = 1
+  loadDetailRecords()
+}
+
+const onDetailPageSizeChange = () => {
+  detailRecPagination.page = 1
+  loadDetailRecords()
+}
+
+const onDetailDialogClosed = () => {
+  detailBatch.value = null
+  detailRecords.value = []
+  detailError.value = ''
+  detailMessageId.value = ''
+  detailRecPagination.page = 1
+  detailRecPagination.pageSize = 20
+  detailRecPagination.total = 0
+}
+
 const viewDetail = (row: SmsBatch) => {
-  ElMessageBox.alert(
-    `${t('batchSend.totalCount')}: ${row.total_count}<br>
-     ${t('batchSend.successCount')}: ${row.success_count}<br>
-     ${t('batchSend.failedCount')}: ${row.failed_count}<br>
-     ${t('batchSend.progress')}: ${row.progress}%<br>
-     ${row.error_message ? `${t('common.error')}: ${row.error_message}` : ''}`,
-    t('batchSend.batchDetail'),
-    { dangerouslyUseHTMLString: true }
-  )
+  const bid = Number(row?.id)
+  if (!Number.isFinite(bid) || bid <= 0) {
+    ElMessage.error(t('batchSend.invalidBatchId'))
+    return
+  }
+  detailError.value = ''
+  detailBatch.value = row
+  detailMessageId.value = ''
+  detailRecPagination.page = 1
+  detailRecPagination.pageSize = 20
+  detailRecPagination.total = 0
+  detailRecords.value = []
+  detailVisible.value = true
+  loadDetailRecords()
 }
 
 const cancelBatch = (row: SmsBatch) => {
@@ -465,6 +694,101 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   border-top: 1px solid var(--border-default);
+}
+
+.stats-strip {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.panel-header-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.panel-desc {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+  max-width: 720px;
+}
+
+.task-empty {
+  padding: 32px 16px;
+}
+
+.detail-body {
+  min-height: 80px;
+}
+
+.detail-alert {
+  margin-bottom: 12px;
+}
+
+.detail-task-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.detail-task-summary .summary-k {
+  color: var(--text-tertiary);
+  margin-right: 4px;
+}
+
+.detail-task-summary .summary-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.detail-task-summary .summary-meta {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.detail-batch-alert {
+  margin-bottom: 12px;
+}
+
+.detail-records-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.detail-msgid-input {
+  flex: 1;
+  min-width: 200px;
+  max-width: 360px;
+}
+
+.detail-records-table {
+  width: 100%;
+}
+
+.detail-records-pagination {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tag-tooltip-wrap {
+  cursor: help;
 }
 
 code {

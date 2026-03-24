@@ -1,12 +1,15 @@
 """
 短信发送Worker
 """
+import contextlib
 import json
 import threading
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from sqlalchemy import select
+from celery.exceptions import Retry
+
 from app.workers.celery_app import celery_app
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
@@ -32,35 +35,190 @@ logger = get_logger(__name__)
 
 # SMPP 延迟断开：发送后保持连接 N 秒以接收 DLR（deliver_sm 异步推送）
 _SMPP_DLR_WAIT_SECONDS = 300  # 5 分钟，部分上游 DLR 推送较慢
-_smpp_pending_disconnect = []
+# 按通道复用单连接：多数上游同一账号仅允许 1 条并发 bind，旧逻辑每条任务新建连接会导致第 2 条起 bind 失败，
+# 直至延迟断开释放会话（约 5 分钟），现象与「首条成功、其余失败、过一会又正常」一致。
 _smpp_cleanup_lock = threading.Lock()
+# channel_id -> (adapter, deadline)
+_smpp_disconnect_map: Dict[int, Tuple[Any, float]] = {}
+# channel_id -> 当前复用的适配器（与 disconnect_map 中对象为同一引用）
+_smpp_channel_adapter: Dict[int, Any] = {}
+_smpp_channel_locks_guard = threading.Lock()
+_smpp_channel_send_locks: Dict[int, threading.Lock] = {}
+# Celery 各子进程共用的 Redis 同步客户端（用于 SMPP 跨进程互斥）
+_smpp_sync_redis = None
 
 
-def _smpp_schedule_delayed_disconnect(adapter):
-    """将 SMPP 适配器加入延迟断开队列，N 秒后断开以接收 deliver_sm（transceiver/transmitter 均使用，避免阻塞 Celery 任务）"""
-    if not adapter or not getattr(adapter, 'client', None):
+def _get_smpp_sync_redis():
+    """Worker 进程内懒加载同步 Redis（供 SMPP 分布式锁）"""
+    global _smpp_sync_redis
+    if _smpp_sync_redis is not None:
+        return _smpp_sync_redis
+    import redis as redis_sync
+
+    _smpp_sync_redis = redis_sync.Redis(
+        host=settings.REDIS_HOST,
+        port=settings.REDIS_PORT,
+        db=settings.REDIS_DB,
+        password=settings.REDIS_PASSWORD,
+        decode_responses=False,
+        socket_connect_timeout=3,
+        socket_timeout=60,
+    )
+    return _smpp_sync_redis
+
+
+@contextlib.contextmanager
+def _smpp_cross_process_lock(channel_id: int) -> Iterator[bool]:
+    """
+    跨 Celery 子进程串行化同一 SMPP 通道的 bind/发送。
+    若关闭或未连上 Redis，yield False（与旧版行为一致，多 worker 仍可能并发 bind）。
+    """
+    if not settings.SMPP_REDIS_CLUSTER_LOCK:
+        yield False
+        return
+
+    lock = None
+    held = False
+    try:
+        r = _get_smpp_sync_redis()
+        lock = r.lock(
+            f"smpp:bind:{channel_id}",
+            timeout=300,
+            blocking_timeout=240,
+            thread_local=False,
+        )
+        if lock.acquire(blocking=True):
+            held = True
+        else:
+            logger.error(f"SMPP 等待 Redis 全局锁超时 channel_id={channel_id}")
+    except Exception as e:
+        logger.warning(
+            f"SMPP Redis 集群锁不可用，退回仅进程内锁（多 worker 时仍可能对上游并发 bind）: {e}"
+        )
+
+    try:
+        yield held
+    finally:
+        if lock is not None and held:
+            try:
+                lock.release()
+            except Exception:
+                pass
+
+
+def _get_smpp_channel_lock(channel_id: int) -> threading.Lock:
+    """同一通道发送串行化，避免多任务同时操作同一 SMPP socket"""
+    with _smpp_channel_locks_guard:
+        if channel_id not in _smpp_channel_send_locks:
+            _smpp_channel_send_locks[channel_id] = threading.Lock()
+        return _smpp_channel_send_locks[channel_id]
+
+
+def _smpp_schedule_delayed_disconnect(adapter, channel_id: int):
+    """按通道刷新延迟断开时间：同通道多次发送共用一个连接，只保留最后一次 idle 后的断开点"""
+    if not adapter or not getattr(adapter, "client", None):
         return
     with _smpp_cleanup_lock:
-        _smpp_pending_disconnect.append((adapter, time.time() + _SMPP_DLR_WAIT_SECONDS))
+        _smpp_disconnect_map[channel_id] = (adapter, time.time() + _SMPP_DLR_WAIT_SECONDS)
     # 启动清理线程（仅首次）
-    if not hasattr(_smpp_schedule_delayed_disconnect, '_cleanup_started'):
+    if not hasattr(_smpp_schedule_delayed_disconnect, "_cleanup_started"):
         def _cleanup_loop():
             while True:
                 time.sleep(30)
                 now = time.time()
-                to_disconnect = []
+                due: List[Tuple[int, Any]] = []
                 with _smpp_cleanup_lock:
-                    to_remove = [i for i, (a, t) in enumerate(_smpp_pending_disconnect) if t <= now]
-                    for i in reversed(to_remove):
-                        to_disconnect.append(_smpp_pending_disconnect.pop(i)[0])
-                for a in to_disconnect:
-                    try:
-                        a._disconnect_sync()
-                    except Exception as e:
-                        logger.warning(f"SMPP 延迟断开失败: {e}")
+                    for cid in list(_smpp_disconnect_map.keys()):
+                        adapter_ref, deadline = _smpp_disconnect_map[cid]
+                        if deadline <= now:
+                            _smpp_disconnect_map.pop(cid, None)
+                            due.append((cid, adapter_ref))
+                for cid, adapter_ref in due:
+                    lock = _get_smpp_channel_lock(cid)
+                    with lock:
+                        cur = _smpp_channel_adapter.get(cid)
+                        if cur is adapter_ref:
+                            try:
+                                adapter_ref._disconnect_sync()
+                            except Exception as e:
+                                logger.warning(f"SMPP 延迟断开失败: {e}")
+                            _smpp_channel_adapter.pop(cid, None)
+                        else:
+                            # 已被新会话替换或已摘除，仍关闭旧 socket，避免泄漏
+                            try:
+                                adapter_ref._disconnect_sync()
+                            except Exception:
+                                pass
+
         t = threading.Thread(target=_cleanup_loop, daemon=True, name="smpp-dlr-cleanup")
         t.start()
         _smpp_schedule_delayed_disconnect._cleanup_started = True
+
+
+def _send_via_smpp_sync(sms_log: SMSLog, channel: Channel) -> Tuple[bool, Optional[str], Optional[str]]:
+    """
+    在线程池/同步上下文中持锁发送 SMPP，复用同通道连接。
+    返回 (success, upstream_message_id, error_message)。
+
+    说明：Celery prefork 下每个子进程有独立的连接池与 threading.Lock；上游单会话时多进程会并发 bind，
+    导致 ESME 13。开启 SMPP_REDIS_CLUSTER_LOCK 时用 Redis 全局锁串行化，并在成功后断开以释放 bind。
+    """
+    from app.workers.adapters.smpp_adapter import SMPPAdapter
+
+    with _smpp_cross_process_lock(channel.id) as cluster_lock_held:
+        lock = _get_smpp_channel_lock(channel.id)
+        with lock:
+            adapter = _smpp_channel_adapter.get(channel.id)
+            usable = (
+                adapter is not None
+                and getattr(adapter, "connected", False)
+                and getattr(adapter, "client", None) is not None
+            )
+            if not usable:
+                if adapter is not None:
+                    try:
+                        adapter._disconnect_sync()
+                    except Exception:
+                        pass
+                    _smpp_channel_adapter.pop(channel.id, None)
+                adapter = SMPPAdapter(channel)
+                if not adapter._connect_sync():
+                    err = adapter.last_error or "SMPP connection failed"
+                    return False, None, err
+                _smpp_channel_adapter[channel.id] = adapter
+                logger.info(f"SMPP 新建并绑定连接: channel={channel.channel_code} id={channel.id}")
+
+            ok, mid, err = adapter._send_sync(sms_log)
+            if ok:
+                if cluster_lock_held:
+                    # 多 worker 时必须在释放 Redis 锁前断开 TCP，否则下一进程 bind 时上游会话仍被占用 → ESME 13
+                    try:
+                        adapter._disconnect_sync()
+                    except Exception:
+                        pass
+                    _smpp_channel_adapter.pop(channel.id, None)
+                    with _smpp_cleanup_lock:
+                        ent = _smpp_disconnect_map.get(channel.id)
+                        if ent and ent[0] is adapter:
+                            _smpp_disconnect_map.pop(channel.id, None)
+                    logger.debug(
+                        f"SMPP 集群锁模式：提交后已断开以释放上游 bind: {channel.channel_code} id={channel.id}"
+                    )
+                else:
+                    _smpp_schedule_delayed_disconnect(adapter, channel.id)
+                    logger.debug(f"SMPP 复用连接发送成功: channel={channel.channel_code} id={channel.id}")
+            else:
+                # 发送失败时连接可能已不可用，关闭并移出池，避免后续任务死复用
+                try:
+                    adapter._disconnect_sync()
+                except Exception:
+                    pass
+                _smpp_channel_adapter.pop(channel.id, None)
+                with _smpp_cleanup_lock:
+                    ent = _smpp_disconnect_map.get(channel.id)
+                    if ent and ent[0] is adapter:
+                        _smpp_disconnect_map.pop(channel.id, None)
+            return ok, mid, err
 
 
 def _run_async(coro):
@@ -85,8 +243,21 @@ def send_sms_task(self, message_id: str, http_credentials: dict = None):
     
     try:
         result = _run_async(_send_sms_async(message_id, http_credentials))
+        # API 若在事务提交前入队，Worker 会读不到未提交的 sms_logs（MySQL 默认可重复读/读已提交）
+        if (
+            isinstance(result, dict)
+            and result.get("error") == "Message not found"
+            and self.request.retries < self.max_retries
+        ):
+            countdown = 2 + int(self.request.retries) * 3
+            logger.warning(
+                f"短信记录尚未提交可见，{countdown}s 后重试: {message_id} (第{self.request.retries + 1}次)"
+            )
+            raise self.retry(countdown=countdown)
         return result
-        
+
+    except Retry:
+        raise
     except Exception as e:
         logger.error(f"发送短信失败: {message_id}, 错误: {str(e)}", exc_info=e)
         
@@ -160,6 +331,11 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None) -> dic
         else:
             logger.warning(f"不支持的协议: {channel.protocol}")
             success = False
+
+        # 发送成功后立刻提交：submit_sm_resp 写入的 upstream_message_id 必须先落库。
+        # deliver_sm 常在同一秒内到达，DLR 在独立线程读库；若仍停留在未提交的会话里，会大量出现「SMPP DLR: 未找到」且界面长期「送达等待中」。
+        if success:
+            await db.commit()
         
         # 更新状态
         if success:
@@ -494,51 +670,32 @@ async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: di
 
 async def _send_via_smpp(sms_log: SMSLog, channel: Channel) -> bool:
     """
-    通过SMPP发送短信
+    通过 SMPP 发送短信（同 Worker 进程内按 channel_id 复用连接，避免上游单会话限制导致连续失败）
     """
-    from app.workers.adapters.smpp_adapter import SMPPAdapter
-    
-    adapter = None
     smpp_success = False
     try:
         logger.info(f"通过SMPP发送短信: {sms_log.message_id} via {channel.channel_code}")
-        
-        # 创建SMPP适配器
-        adapter = SMPPAdapter(channel)
-        
-        # 发送短信
-        success, channel_message_id, error_message = await adapter.send(sms_log)
+        loop = asyncio.get_running_loop()
+        success, channel_message_id, error_message = await loop.run_in_executor(
+            None, _send_via_smpp_sync, sms_log, channel
+        )
         smpp_success = success
-        
+
         if success:
-            # 保存上游消息ID
             if channel_message_id:
                 sms_log.upstream_message_id = channel_message_id
             logger.info(f"SMPP发送成功: {sms_log.message_id} -> {channel_message_id}")
-            # 加入延迟断开队列，后台保持连接以接收 DLR，不阻塞 worker
-            try:
-                _smpp_schedule_delayed_disconnect(adapter)
-            except Exception as e:
-                logger.warning(f"SMPP 加入延迟断开失败: {e}")
             return True
-        else:
-            sms_log.error_message = error_message or "SMPP send failed"
-            logger.error(f"SMPP发送失败: {sms_log.message_id}, 错误: {error_message}")
-            return False
-        
+        sms_log.error_message = error_message or "SMPP send failed"
+        logger.error(f"SMPP发送失败: {sms_log.message_id}, 错误: {error_message}")
+        return False
+
     except Exception as e:
         error_msg = str(e)
         logger.error(f"SMPP发送异常: {error_msg}", exc_info=e)
         if sms_log:
             sms_log.error_message = error_msg
         return False
-    finally:
-        # SMPP 发送成功后已在 return 前加入延迟断开队列；失败时立即断开
-        if adapter and not smpp_success:
-            try:
-                await adapter.disconnect()
-            except Exception as e:
-                logger.warning(f"关闭SMPP适配器失败: {str(e)}")
 
 
 async def _mark_failed(message_id: str, error_message: str):

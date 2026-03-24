@@ -18,12 +18,15 @@ export const getSMSStatus = (messageId: string) => {
   return request.get(`/sms/status/${messageId}`)
 }
 
-// 批量发送短信
+// 批量发送短信（会创建发送任务 batch，可在「发送任务」页查看进度）
 export const sendBatchSMS = (data: {
   phone_numbers: string[]
   message: string
+  messages?: string[]
   sender_id?: string
+  channel_id?: number | null
   callback_url?: string
+  batch_name?: string
 }) => {
   return request.post('/sms/batch', data)
 }
