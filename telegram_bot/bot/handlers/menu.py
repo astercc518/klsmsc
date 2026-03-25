@@ -1,11 +1,14 @@
 """
 菜单处理器 - 使用按钮菜单替代命令
 """
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import time
+
+from telegram import Message, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler
-from bot.utils import get_session, logger
+from bot.utils import get_session, get_valid_customer_binding_and_account, logger
 from app.modules.common.telegram_binding import TelegramBinding
-from app.modules.common.account import Account
+from app.modules.common.account import Account, AccountChannel
+from app.modules.sms.channel import Channel
 from app.modules.common.admin_user import AdminUser
 from app.modules.common.ticket import Ticket
 from app.modules.common.recharge_order import RechargeOrder
@@ -20,6 +23,70 @@ import secrets
 # 已处理的供应商审核回复消息 (chat_id, message_id)，防止重复转发
 _processed_sms_reply_ids: set = set()
 _MAX_PROCESSED_IDS = 5000
+
+# 短信审核「等待回复」会话：user_data 在部分客户端/群场景会丢失，用 bot_data 双写备份
+SMS_APPROVAL_SESSION_TTL = 3600
+
+
+def _sms_approval_data_key(user_id: int) -> str:
+    return f"sms_approval_session:{user_id}"
+
+
+def _store_sms_approval_session(
+    context: ContextTypes.DEFAULT_TYPE, user_id: int, approval_id: int, approved: bool
+) -> None:
+    """写入等待回复状态（user_data + bot_data）"""
+    context.user_data["waiting_for"] = "sms_approval_reply"
+    context.user_data["sms_approval_id"] = approval_id
+    context.user_data["sms_approval_approved"] = approved
+    context.application.bot_data[_sms_approval_data_key(user_id)] = {
+        "approval_id": approval_id,
+        "approved": approved,
+        "ts": time.time(),
+    }
+
+
+def _clear_sms_approval_session(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+    context.user_data.pop("waiting_for", None)
+    context.user_data.pop("sms_approval_id", None)
+    context.user_data.pop("sms_approval_approved", None)
+    context.application.bot_data.pop(_sms_approval_data_key(user_id), None)
+
+
+def _peek_sms_approval_pending(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    if context.user_data.get("waiting_for") == "sms_approval_reply":
+        return True
+    key = _sms_approval_data_key(user_id)
+    pack = context.application.bot_data.get(key)
+    if not pack:
+        return False
+    if time.time() - pack.get("ts", 0) > SMS_APPROVAL_SESSION_TTL:
+        context.application.bot_data.pop(key, None)
+        return False
+    return True
+
+
+def _take_sms_approval_session(
+    context: ContextTypes.DEFAULT_TYPE, user_id: int
+) -> tuple[int | None, bool | None]:
+    """取出并清除会话；approved=False 表示拒绝。"""
+    ud = context.user_data
+    key = _sms_approval_data_key(user_id)
+    if ud.get("waiting_for") == "sms_approval_reply":
+        a_id = ud.pop("sms_approval_id", None)
+        appr = ud.pop("sms_approval_approved", None)
+        ud["waiting_for"] = None
+        context.application.bot_data.pop(key, None)
+        if a_id is not None and appr is not None:
+            return a_id, appr
+    pack = context.application.bot_data.pop(key, None)
+    if not pack:
+        return None, None
+    if time.time() - pack.get("ts", 0) > SMS_APPROVAL_SESSION_TTL:
+        return None, None
+    ud["waiting_for"] = None
+    return pack["approval_id"], pack["approved"]
+
 
 # 国家名称映射（避免编码问题，用于报价查询等展示）
 COUNTRY_NAMES = {
@@ -182,6 +249,11 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     tg_id = user.id
     
     logger.info(f"Menu callback: {data} from user {tg_id}")
+
+    # 销售：快捷登录名下客户（网页模拟登录）
+    if data.startswith("sales_login_"):
+        await handle_sales_quick_login(query, context)
+        return
     
     # 返回主菜单（清除待填号码等状态）
     if data == "menu_main":
@@ -557,9 +629,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         if len(parts) >= 2:
             approval_id = int(parts[0])
             approved = parts[1] == "1"
-            context.user_data.pop('waiting_for', None)
-            context.user_data.pop('sms_approval_id', None)
-            context.user_data.pop('sms_approval_approved', None)
+            _clear_sms_approval_session(context, query.from_user.id)
             async with get_session() as db:
                 result = await db.execute(
                     select(SmsContentApproval, Account)
@@ -653,29 +723,11 @@ async def show_account_info(query, context):
     tg_id = query.from_user.id
 
     async with get_session() as db:
-        binding_result = await db.execute(
-            select(TelegramBinding).where(
-                TelegramBinding.tg_id == tg_id,
-                TelegramBinding.is_active == True
-            )
-        )
-        binding = binding_result.scalar_one_or_none()
+        binding, account = await get_valid_customer_binding_and_account(db, tg_id)
 
-        if not binding:
+        if not binding or not account:
             await query.edit_message_text(
-                "❌ 您还未绑定账户",
-                reply_markup=get_back_menu()
-            )
-            return
-
-        acc_result = await db.execute(
-            select(Account).where(Account.id == binding.account_id)
-        )
-        account = acc_result.scalar_one_or_none()
-
-        if not account:
-            await query.edit_message_text(
-                "❌ 账户信息获取失败",
+                "❌ 未绑定有效账户或该账户已停用/删除，请使用授权码开户或重新绑定。",
                 reply_markup=get_back_menu()
             )
             return
@@ -736,23 +788,13 @@ async def show_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(msg, reply_markup=menu)
             return
         
-        # 检查是否是客户
-        binding_result = await db.execute(
-            select(TelegramBinding).where(
-                TelegramBinding.tg_id == tg_id,
-                TelegramBinding.is_active == True
-            )
-        )
-        binding = binding_result.scalar_one_or_none()
-        
-        if binding:
-            acc_result = await db.execute(
-                select(Account).where(Account.id == binding.account_id)
-            )
-            account = acc_result.scalar_one_or_none()
-            
-            balance_str = f"${account.balance:.2f}" if account else "N/A"
-            
+        # 检查是否是客户（须账户未删除且非 closed，与 /start 一致）
+        binding, account = await get_valid_customer_binding_and_account(db, tg_id)
+
+        if binding and account:
+            balance_str = f"${account.balance:.2f}"
+            context.user_data["account_id"] = account.id
+            context.user_data["user_type"] = "customer"
             await query.edit_message_text(
                 f"👋 欢迎回来\n"
                 f"💰 余额: {balance_str}\n\n"
@@ -762,11 +804,13 @@ async def show_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_main_menu_customer()
             )
             return
-        
-        # 游客
+
+        context.user_data.pop("account_id", None)
+        context.user_data.pop("user_type", None)
         await query.edit_message_text(
             "👋 欢迎使用 TG 业务助手\n\n"
-            "请选择您的身份：",
+            "您的账户已停用或已删除，请使用授权码开户或重新绑定。\n\n"
+            "请选择操作：",
             reply_markup=get_main_menu_guest()
         )
 
@@ -802,39 +846,22 @@ async def show_balance(query, context):
     tg_id = query.from_user.id
     
     async with get_session() as db:
-        binding_result = await db.execute(
-            select(TelegramBinding).where(
-                TelegramBinding.tg_id == tg_id,
-                TelegramBinding.is_active == True
-            )
-        )
-        binding = binding_result.scalar_one_or_none()
-        
-        if not binding:
+        _binding, account = await get_valid_customer_binding_and_account(db, tg_id)
+
+        if not account:
             await query.edit_message_text(
-                "❌ 您还未绑定账户",
+                "❌ 未绑定有效账户或该账户已停用/删除。",
                 reply_markup=get_back_menu()
             )
             return
-        
-        acc_result = await db.execute(
-            select(Account).where(Account.id == binding.account_id)
+
+        await query.edit_message_text(
+            f"💰 账户余额\n\n"
+            f"账户: {account.account_name}\n"
+            f"余额: ${account.balance:.4f} {account.currency}\n"
+            f"状态: {'正常' if account.status == 'active' else '已冻结'}",
+            reply_markup=get_back_menu()
         )
-        account = acc_result.scalar_one_or_none()
-        
-        if account:
-            await query.edit_message_text(
-                f"💰 账户余额\n\n"
-                f"账户: {account.account_name}\n"
-                f"余额: ${account.balance:.4f} {account.currency}\n"
-                f"状态: {'正常' if account.status == 'active' else '已冻结'}",
-                reply_markup=get_back_menu()
-            )
-        else:
-            await query.edit_message_text(
-                "❌ 账户信息获取失败",
-                reply_markup=get_back_menu()
-            )
 
 
 async def start_recharge(query, context):
@@ -854,22 +881,14 @@ async def show_history(query, context):
     tg_id = query.from_user.id
     
     async with get_session() as db:
-        # 获取绑定账户
-        binding_result = await db.execute(
-            select(TelegramBinding).where(
-                TelegramBinding.tg_id == tg_id,
-                TelegramBinding.is_active == True
-            )
-        )
-        binding = binding_result.scalar_one_or_none()
-        
-        if not binding:
+        binding, account = await get_valid_customer_binding_and_account(db, tg_id)
+        if not binding or not account:
             await query.edit_message_text(
-                "❌ 您还未绑定账户",
+                "❌ 未绑定有效账户或该账户已停用/删除。",
                 reply_markup=get_back_menu()
             )
             return
-        
+
         # 查询最近7天发送统计
         from app.modules.sms.sms_log import SmsLog
         
@@ -932,22 +951,14 @@ async def show_tickets(query, context):
     tg_id = query.from_user.id
     
     async with get_session() as db:
-        # 获取绑定账户
-        binding_result = await db.execute(
-            select(TelegramBinding).where(
-                TelegramBinding.tg_id == tg_id,
-                TelegramBinding.is_active == True
-            )
-        )
-        binding = binding_result.scalar_one_or_none()
-        
-        if not binding:
+        binding, account = await get_valid_customer_binding_and_account(db, tg_id)
+        if not binding or not account:
             await query.edit_message_text(
-                "❌ 您还未绑定账户",
+                "❌ 未绑定有效账户或该账户已停用/删除。",
                 reply_markup=get_back_menu()
             )
             return
-        
+
         # 查询最近工单
         tickets_result = await db.execute(
             select(Ticket).where(
@@ -999,8 +1010,79 @@ async def show_tickets(query, context):
         )
 
 
+async def handle_sales_quick_login(query, context):
+    """销售点击「快捷登录」：调用后端签发模拟登录链接"""
+    from bot.config import settings as bot_settings
+
+    tg_id = query.from_user.id
+    raw = query.data or ""
+    try:
+        account_id = int(raw.replace("sales_login_", ""))
+    except ValueError:
+        await query.edit_message_text("❌ 参数无效", reply_markup=get_back_menu())
+        return
+
+    secret = (getattr(bot_settings, "TELEGRAM_STAFF_API_SECRET", None) or "").strip()
+    if not secret:
+        await query.edit_message_text(
+            "❌ 未配置 TELEGRAM_STAFF_API_SECRET。\n\n"
+            "请管理员在 API 与 Bot 容器环境变量中设置相同密钥后重试。",
+            reply_markup=get_back_menu(),
+        )
+        return
+
+    import httpx
+
+    url = f"{bot_settings.API_BASE_URL.rstrip('/')}/api/v1/admin/telegram/sales-impersonate"
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            r = await client.post(
+                url,
+                json={"tg_id": tg_id, "account_id": account_id},
+                headers={"X-Telegram-Staff-Secret": secret},
+            )
+            payload = r.json()
+    except Exception as e:
+        logger.exception("sales impersonate 请求失败: %s", e)
+        await query.edit_message_text(
+            "❌ 无法连接后端，请检查 Bot 的 API_BASE_URL（Docker 内应为 http://api:8000）",
+            reply_markup=get_back_menu(),
+        )
+        return
+
+    if r.status_code != 200 or not payload.get("success"):
+        msg = payload.get("detail")
+        if isinstance(msg, list) and msg:
+            msg = msg[0].get("msg", str(msg[0])) if isinstance(msg[0], dict) else str(msg[0])
+        elif not isinstance(msg, str):
+            msg = str(payload)
+        await query.edit_message_text(
+            f"❌ 无法快捷登录\n\n{msg}",
+            reply_markup=get_back_menu(),
+        )
+        return
+
+    login_url = payload.get("login_url") or ""
+    name = payload.get("account_name", "")
+    if not login_url:
+        await query.edit_message_text("❌ 未返回登录链接", reply_markup=get_back_menu())
+        return
+
+    await query.edit_message_text(
+        f"🔐 快捷登录 · {name}\n\n"
+        f"点击下方按钮在浏览器打开客户控制台（模拟登录，请勿转发）。\n\n"
+        f"账户ID: {payload.get('account_id')}",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🌐 打开客户控制台", url=login_url)],
+                [InlineKeyboardButton("🔙 返回我的客户", callback_data="menu_my_customers")],
+            ]
+        ),
+    )
+
+
 async def show_my_customers(query, context):
-    """显示我的客户"""
+    """显示我的客户（基本信息 + 快捷登录）"""
     tg_id = query.from_user.id
     
     async with get_session() as db:
@@ -1013,54 +1095,119 @@ async def show_my_customers(query, context):
         )
         admin = admin_result.scalar_one_or_none()
         
-        if not admin:
+        if not admin or admin.role not in ['sales', 'super_admin', 'admin']:
             await query.edit_message_text(
-                "❌ 无法获取员工信息",
+                "❌ 仅销售可使用「我的客户」",
                 reply_markup=get_back_menu()
             )
             return
         
-        # 查询该销售的客户
+        # 查询该销售名下客户（未删除、正常）；单条展示字段较多，限制条数避免超出 Telegram 4096 字
         customers_result = await db.execute(
             select(Account).where(
                 Account.sales_id == admin.id,
-                Account.status == 'active'
-            ).order_by(desc(Account.created_at)).limit(10)
+                Account.status == 'active',
+                Account.is_deleted == False,  # noqa: E712
+            ).order_by(desc(Account.created_at)).limit(20)
         )
-        customers = customers_result.scalars().all()
-        
-        if not customers:
+        all_customers = customers_result.scalars().all()
+
+        if not all_customers:
             await query.edit_message_text(
                 "👥 我的客户\n\n"
                 "暂无客户记录\n\n"
-                "通过[创建开户邀请]邀请新客户",
+                "通过「创建开户邀请」邀请新客户",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🎯 创建邀请", callback_data="menu_invite")],
                     [InlineKeyboardButton("🔙 返回", callback_data="menu_main")]
                 ])
             )
             return
-        
-        # 统计信息
-        total_customers = len(customers)
-        total_balance = sum(float(c.balance or 0) for c in customers)
-        
+
+        total_customers = len(all_customers)
+        total_balance = sum(float(c.balance or 0) for c in all_customers)
+        display_note = ""
+        customers = all_customers
+        if len(all_customers) > 10:
+            display_note = f"\n（仅展示前 10 位，共 {total_customers} 位，其余请登录管理后台查看）\n"
+            customers = all_customers[:10]
+
+        # 批量解析各账户优先通道（默认优先，其次 priority）
+        acc_ids = [c.id for c in customers]
+        channel_best: dict = {}
+        if acc_ids:
+            ch_rows = await db.execute(
+                select(
+                    AccountChannel.account_id,
+                    AccountChannel.is_default,
+                    AccountChannel.priority,
+                    Channel.channel_name,
+                    Channel.channel_code,
+                )
+                .join(Channel, Channel.id == AccountChannel.channel_id)
+                .where(AccountChannel.account_id.in_(acc_ids))
+            )
+            for aid, is_def, pri, ch_name, ch_code in ch_rows.all():
+                score = (1 if is_def else 0, pri or 0)
+                if aid not in channel_best or score > channel_best[aid][0]:
+                    channel_best[aid] = (score, ch_name or "", ch_code or "")
+
+        def _channel_line(aid: int) -> str:
+            t = channel_best.get(aid)
+            if not t:
+                return "-"
+            _, nm, code = t
+            if nm and code:
+                return f"{nm} ({code})"
+            return nm or code or "-"
+
         lines = [
-            f"👥 我的客户 ({total_customers}个)\n",
-            f"💰 总余额: ${total_balance:.2f}\n"
+            f"👥 我的客户（共 {total_customers} 个）\n",
+            f"💰 总余额: ${total_balance:.2f}",
+            display_note,
+            "────────\n",
         ]
-        
-        for c in customers[:5]:  # 只显示前5个
+
+        keyboard = []
+        for c in customers:
             balance = float(c.balance or 0)
-            lines.append(f"• {c.account_name}: ${balance:.2f}")
+            up = float(c.unit_price or 0)
+            cc = (c.country_code or "").strip().upper()
+            country_label = COUNTRY_NAMES.get(cc, cc) if cc else "-"
+            if cc and country_label != cc:
+                country_disp = f"{country_label} ({cc})"
+            elif cc:
+                country_disp = cc
+            else:
+                country_disp = "-"
+            if c.tg_username:
+                tg_disp = f"@{c.tg_username}"
+            elif c.tg_id:
+                tg_disp = str(c.tg_id)
+            else:
+                tg_disp = "-"
+
+            lines.append(
+                f"名称：{c.account_name}\n"
+                f"TG：{tg_disp}\n"
+                f"国家：{country_disp}\n"
+                f"通道：{_channel_line(c.id)}\n"
+                f"单价：${up:.4f}/条\n"
+                f"余额：${balance:.2f}\n"
+                "────────\n"
+            )
+            # 按钮文案须短；callback_data ≤64 字节
+            btn_text = c.account_name.strip() if c.account_name else str(c.id)
+            if len(btn_text) > 16:
+                btn_text = btn_text[:14] + "…"
+            keyboard.append(
+                [InlineKeyboardButton(f"🔐 {btn_text}", callback_data=f"sales_login_{c.id}")]
+            )
+
+        lines.append("点击对应「🔐」生成浏览器登录链接（模拟登录客户）。")
         
-        if total_customers > 5:
-            lines.append(f"\n...还有 {total_customers - 5} 个客户")
-        
-        keyboard = [
-            [InlineKeyboardButton("🎯 创建新邀请", callback_data="menu_invite")],
-            [InlineKeyboardButton("🔙 返回", callback_data="menu_main")]
-        ]
+        keyboard.append([InlineKeyboardButton("🎯 创建新邀请", callback_data="menu_invite")])
+        keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_main")])
         
         await query.edit_message_text(
             "\n".join(lines),
@@ -1716,6 +1863,47 @@ async def _notify_customer_rejected(context, approval):
         logger.exception("通知客户审核拒绝失败: %s", e)
 
 
+async def _sync_ticket_for_sms_approval(
+    db,
+    approval: SmsContentApproval,
+    account: Account,
+    approved: bool,
+    reviewer_name: str,
+) -> None:
+    """将短信审核结果同步到关联工单（工单管理列表依赖 Ticket.status / review_status）"""
+    result = await db.execute(
+        select(Ticket)
+        .where(
+            Ticket.account_id == account.id,
+            Ticket.ticket_type == 'test',
+        )
+        .order_by(desc(Ticket.created_at))
+    )
+    ano = approval.approval_no or ''
+    for ticket in result.scalars().all():
+        ex = ticket.extra_data or {}
+        linked = ex.get('sms_approval_id') == approval.id
+        if not linked and ano and ticket.title and ano in ticket.title:
+            linked = True
+        if not linked:
+            continue
+        now = datetime.now()
+        if approved:
+            ticket.review_status = 'approved'
+            ticket.reviewed_at = now
+            ticket.review_note = f"业务助手审核通过 — {reviewer_name}"
+            ticket.status = 'resolved'
+            ticket.resolved_at = now
+            ticket.resolution = f"短信内容审核已通过（供应商）。审核人: {reviewer_name}"
+        else:
+            ticket.review_status = 'rejected'
+            ticket.reviewed_at = now
+            ticket.review_note = f"业务助手审核拒绝 — {reviewer_name}"
+            ticket.status = 'closed'
+            ticket.closed_at = now
+        break
+
+
 async def handle_sms_approval_callback(query, context, approval_id: int, approved: bool):
     """处理短信审核通过/拒绝：更新状态、通知客户（通过时带「立即发送」按钮）"""
     reviewer_name = query.from_user.full_name or query.from_user.username or "供应商"
@@ -1742,6 +1930,7 @@ async def handle_sms_approval_callback(query, context, approval_id: int, approve
             approval.status = 'approved'
             approval.reviewed_at = datetime.now()
             approval.reviewed_by_name = reviewer_name
+            await _sync_ticket_for_sms_approval(db, approval, account, True, reviewer_name)
             await db.commit()
             
             # 更新供应商群消息（移除按钮）
@@ -1759,15 +1948,13 @@ async def handle_sms_approval_callback(query, context, approval_id: int, approve
             
             # 提示输入回复内容（将转发给客户），或点击跳过
             try:
-                context.user_data['waiting_for'] = 'sms_approval_reply'
-                context.user_data['sms_approval_id'] = approval.id
-                context.user_data['sms_approval_approved'] = True
+                _store_sms_approval_session(context, query.from_user.id, approval.id, True)
                 skip_keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("⏭️ 跳过", callback_data=f"sms_approval_skip_{approval.id}_1")],
                 ])
                 await context.bot.send_message(
                     chat_id=query.message.chat_id,
-                    text="💬 请输入回复内容（将转发给客户），或点击【跳过】",
+                    text="💬 请输入回复内容或发送图片（将转发给客户），或点击【跳过】",
                     reply_markup=skip_keyboard,
                 )
             except Exception as e:
@@ -1779,6 +1966,7 @@ async def handle_sms_approval_callback(query, context, approval_id: int, approve
             approval.status = 'rejected'
             approval.reviewed_at = datetime.now()
             approval.reviewed_by_name = reviewer_name
+            await _sync_ticket_for_sms_approval(db, approval, account, False, reviewer_name)
             await db.commit()
             
             try:
@@ -1795,15 +1983,13 @@ async def handle_sms_approval_callback(query, context, approval_id: int, approve
             
             # 提示输入拒绝原因（将转发给客户），或点击跳过
             try:
-                context.user_data['waiting_for'] = 'sms_approval_reply'
-                context.user_data['sms_approval_id'] = approval.id
-                context.user_data['sms_approval_approved'] = False
+                _store_sms_approval_session(context, query.from_user.id, approval.id, False)
                 skip_keyboard = InlineKeyboardMarkup([
                     [InlineKeyboardButton("⏭️ 跳过", callback_data=f"sms_approval_skip_{approval.id}_0")],
                 ])
                 await context.bot.send_message(
                     chat_id=query.message.chat_id,
-                    text="💬 请输入拒绝原因（将转发给客户），或点击【跳过】",
+                    text="💬 请输入拒绝原因或发送图片（将转发给客户），或点击【跳过】",
                     reply_markup=skip_keyboard,
                 )
             except Exception as e:
@@ -2259,6 +2445,188 @@ async def show_customer_tickets(query, context):
         )
 
 
+async def _forward_message_media_as_fallback(
+    context: ContextTypes.DEFAULT_TYPE, customer_chat: int, msg: Message
+) -> None:
+    """copy_message 失败时按类型重发（兼容各类媒体）"""
+    cap = (msg.caption or "")[:1024] if msg.caption else None
+    if msg.photo:
+        await context.bot.send_photo(
+            chat_id=customer_chat,
+            photo=msg.photo[-1].file_id,
+            caption=cap,
+        )
+        return
+    if msg.video:
+        await context.bot.send_video(
+            chat_id=customer_chat,
+            video=msg.video.file_id,
+            caption=cap,
+        )
+        return
+    if msg.animation:
+        await context.bot.send_animation(
+            chat_id=customer_chat,
+            animation=msg.animation.file_id,
+            caption=cap,
+        )
+        return
+    if msg.document:
+        await context.bot.send_document(
+            chat_id=customer_chat,
+            document=msg.document.file_id,
+            caption=cap,
+        )
+        return
+    if msg.sticker:
+        await context.bot.send_sticker(chat_id=customer_chat, sticker=msg.sticker.file_id)
+        return
+    if msg.video_note:
+        await context.bot.send_video_note(
+            chat_id=customer_chat,
+            video_note=msg.video_note.file_id,
+        )
+        return
+
+
+async def _notify_customer_sms_approval_reply(
+    context: ContextTypes.DEFAULT_TYPE,
+    approval: SmsContentApproval,
+    approved: bool,
+    reply_note: str,
+    *,
+    media_message: Message | None = None,
+    photo_file_id: str | None = None,
+) -> None:
+    """将供应商审核回复（文字/任意媒体）转发给客户；优先 copy_message 保留从其他群复制等格式。"""
+    customer_chat = int(approval.tg_user_id)
+    if approved:
+        base = (
+            f"✅ *短信审核已通过*\n\n"
+            f"📝 内容预览: {(approval.content or '')[:80]}"
+            f"{'...' if len(approval.content or '') > 80 else ''}"
+        )
+        if reply_note:
+            base += f"\n\n💬 审核备注: {reply_note}"
+        base += "\n\n请点击「立即发送」进行发送。"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📤 立即发送", callback_data=f"send_approved_sms_{approval.id}")],
+            [InlineKeyboardButton("🔙 返回主菜单", callback_data="menu_main")],
+        ])
+        await context.bot.send_message(
+            chat_id=customer_chat,
+            text=base,
+            parse_mode='Markdown',
+            reply_markup=keyboard,
+        )
+        if media_message:
+            try:
+                await context.bot.copy_message(
+                    chat_id=customer_chat,
+                    from_chat_id=media_message.chat_id,
+                    message_id=media_message.message_id,
+                )
+            except Exception as e:
+                logger.warning("短信审核 copy_message 失败，回退 send_*: %s", e)
+                await _forward_message_media_as_fallback(context, customer_chat, media_message)
+        elif photo_file_id:
+            await context.bot.send_photo(
+                chat_id=customer_chat,
+                photo=photo_file_id,
+                caption=((reply_note and "📎 附图") or "📎 供应商提供的图片")[:1024],
+            )
+    else:
+        reject_msg = "❌ 您的短信审核未通过"
+        if reply_note:
+            reject_msg += f"\n\n💬 拒绝原因: {reply_note}"
+        reject_msg += "\n\n如有疑问请联系客服。"
+        await context.bot.send_message(
+            chat_id=customer_chat,
+            text=reject_msg,
+            reply_markup=get_main_menu_customer(),
+        )
+        if media_message:
+            try:
+                await context.bot.copy_message(
+                    chat_id=customer_chat,
+                    from_chat_id=media_message.chat_id,
+                    message_id=media_message.message_id,
+                )
+            except Exception as e:
+                logger.warning("短信审核 copy_message 失败，回退 send_*: %s", e)
+                await _forward_message_media_as_fallback(context, customer_chat, media_message)
+        elif photo_file_id:
+            await context.bot.send_photo(
+                chat_id=customer_chat,
+                photo=photo_file_id,
+                caption=((reply_note and "📎 附图") or "📎 供应商提供的说明图")[:1024],
+            )
+
+
+async def handle_sms_approval_reply_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """供应商在短信审核流程中发送图片/视频等媒体（含从其他群复制的图），转发给客户"""
+    uid = update.effective_user.id if update.effective_user else None
+    if not uid:
+        return
+    waiting_for = context.user_data.get('waiting_for')
+    chat_type = update.effective_chat.type if update.effective_chat else None
+    if chat_type in ('group', 'supergroup'):
+        group_only_flows = ('sms_approval_reply',)
+        if waiting_for and waiting_for not in group_only_flows:
+            return
+    if not _peek_sms_approval_pending(context, uid):
+        return
+
+    msg = update.message
+    if not msg:
+        return
+    if not msg.effective_attachment:
+        return
+
+    reply_note = (msg.caption or '').strip()[:500]
+
+    logger.info(
+        "短信审核媒体回复: uid=%s has_caption=%s attachment=%s",
+        uid,
+        bool(reply_note),
+        type(msg.effective_attachment).__name__,
+    )
+
+    # 去重：与文字回复相同
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    msg_id = msg.message_id if msg else None
+    if chat_id is not None and msg_id is not None:
+        key = (chat_id, msg_id)
+        if key in _processed_sms_reply_ids:
+            logger.debug("跳过已处理的消息: chat_id=%s message_id=%s", chat_id, msg_id)
+            return
+        _processed_sms_reply_ids.add(key)
+        if len(_processed_sms_reply_ids) > _MAX_PROCESSED_IDS:
+            _processed_sms_reply_ids.clear()
+
+    approval_id, approved = _take_sms_approval_session(context, uid)
+    if approval_id is None or approved is None:
+        return
+
+    async with get_session() as db:
+        result = await db.execute(
+            select(SmsContentApproval, Account)
+            .join(Account, SmsContentApproval.account_id == Account.id)
+            .where(SmsContentApproval.id == approval_id)
+        )
+        row = result.first()
+        if not row:
+            return
+        approval, _ = row
+        try:
+            await _notify_customer_sms_approval_reply(
+                context, approval, approved, reply_note, media_message=msg
+            )
+        except Exception as e:
+            logger.exception("短信审核媒体转发客户失败: %s", e)
+    await update.message.reply_text("✅ 回复已转发给客户")
+
+
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理用户文本输入"""
     waiting_for = context.user_data.get('waiting_for')
@@ -2274,16 +2642,20 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data.pop(k, None)
             return
 
-    if not waiting_for:
-        return  # 没有等待输入，忽略
-
-    text = update.message.text.strip()
     tg_id = update.effective_user.id
 
+    if not waiting_for and not _peek_sms_approval_pending(context, tg_id):
+        return  # 没有等待输入，忽略
+
+    text = (update.message.text or "").strip()
     logger.info(f"Text input: {text} for {waiting_for} from {tg_id}")
     
     # 处理供应商群审核回复（通过/拒绝后输入的回复内容，将转发给客户）
-    if waiting_for == 'sms_approval_reply':
+    sms_followup = waiting_for == 'sms_approval_reply' or (
+        waiting_for is None
+        and _sms_approval_data_key(tg_id) in context.application.bot_data
+    )
+    if sms_followup and _peek_sms_approval_pending(context, tg_id):
         # 去重：同一消息只处理一次，防止 Handler 被多次触发导致客户收到重复通知
         msg = update.message
         chat_id = update.effective_chat.id if update.effective_chat else None
@@ -2297,9 +2669,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(_processed_sms_reply_ids) > _MAX_PROCESSED_IDS:
                 _processed_sms_reply_ids.clear()
 
-        approval_id = context.user_data.pop('sms_approval_id', None)
-        approved = context.user_data.pop('sms_approval_approved', None)
-        context.user_data['waiting_for'] = None
+        approval_id, approved = _take_sms_approval_session(context, tg_id)
         if approval_id is None or approved is None:
             return
         reply_text = text[:500] if text else ""
@@ -2313,37 +2683,12 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not row:
                 return
             approval, account = row
-            if approved:
-                try:
-                    base = f"✅ *短信审核已通过*\n\n📝 内容预览: {(approval.content or '')[:80]}{'...' if len(approval.content or '') > 80 else ''}"
-                    if reply_text:
-                        base += f"\n\n💬 审核备注: {reply_text}"
-                    base += "\n\n请点击「立即发送」进行发送。"
-                    keyboard = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📤 立即发送", callback_data=f"send_approved_sms_{approval.id}")],
-                        [InlineKeyboardButton("🔙 返回主菜单", callback_data="menu_main")],
-                    ])
-                    await context.bot.send_message(
-                        chat_id=int(approval.tg_user_id),
-                        text=base,
-                        parse_mode='Markdown',
-                        reply_markup=keyboard,
-                    )
-                except Exception as e:
-                    logger.exception("通知客户审核通过失败: %s", e)
-            else:
-                try:
-                    reject_msg = "❌ 您的短信审核未通过"
-                    if reply_text:
-                        reject_msg += f"\n\n💬 拒绝原因: {reply_text}"
-                    reject_msg += "\n\n如有疑问请联系客服。"
-                    await context.bot.send_message(
-                        chat_id=int(approval.tg_user_id),
-                        text=reject_msg,
-                        reply_markup=get_main_menu_customer(),
-                    )
-                except Exception as e:
-                    logger.exception("通知客户审核拒绝失败: %s", e)
+            try:
+                await _notify_customer_sms_approval_reply(
+                    context, approval, approved, reply_text
+                )
+            except Exception as e:
+                logger.exception("通知客户审核结果失败: %s", e)
         await update.message.reply_text("✅ 回复已转发给客户")
         return
 
@@ -2720,22 +3065,22 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ticket_title = context.user_data.get('ticket_title', '无标题')
         
         async with get_session() as db:
-            # 获取账户
-            binding_result = await db.execute(
-                select(TelegramBinding).where(
-                    TelegramBinding.tg_id == tg_id,
-                    TelegramBinding.is_active == True
+            binding, account = await get_valid_customer_binding_and_account(db, tg_id)
+            if not binding or not account:
+                await update.message.reply_text(
+                    "❌ 未绑定有效账户或该账户已停用/删除，无法提交工单。",
+                    reply_markup=get_main_menu_guest(),
                 )
-            )
-            binding = binding_result.scalar_one_or_none()
-            
+                context.user_data["waiting_for"] = None
+                return
+
             # 生成工单号
             ticket_no = f"TK{datetime.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(2).upper()}"
-            
+
             # 创建工单
             new_ticket = Ticket(
                 ticket_no=ticket_no,
-                account_id=binding.account_id if binding else None,
+                account_id=binding.account_id,
                 tg_user_id=str(tg_id),
                 ticket_type=ticket_type,
                 priority='normal',
@@ -2778,28 +3123,18 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         phone = None  # 只审核文案，不填号码
         try:
             async with get_session() as db:
-                # 确保 tg_id 为 int（Telegram API 返回的 ID 可能为不同类型）
                 tg_id_int = int(tg_id) if tg_id is not None else None
-                binding_result = await db.execute(
-                    select(TelegramBinding, Account)
-                    .join(Account, TelegramBinding.account_id == Account.id)
-                    .where(
-                        TelegramBinding.tg_id == tg_id_int,
-                        TelegramBinding.is_active == True
-                    )
-                )
-                result = binding_result.first()
-                if not result:
+                binding, account = await get_valid_customer_binding_and_account(db, tg_id_int)
+                if not binding or not account:
                     logger.warning("短信审核未绑定: tg_id=%s (type=%s)", tg_id, type(tg_id).__name__)
                     await update.message.reply_text(
-                        f"❌ 您还未绑定账户\n\n"
+                        f"❌ 未绑定有效账户或该账户已停用/删除\n\n"
                         f"您的 Telegram ID: `{tg_id}`\n"
                         f"请使用邀请链接激活账户，或联系管理员将您的 ID 与账户绑定。",
                         reply_markup=get_back_menu(),
                         parse_mode='Markdown',
                     )
                     return
-                binding, account = result
                 if float(account.balance or 0) <= 0:
                     await update.message.reply_text(
                         f"❌ 余额不足\n\n当前余额: ${account.balance:.4f}\n请先充值后再发送",
@@ -2929,25 +3264,14 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         try:
             async with get_session() as db:
-                binding_result = await db.execute(
-                    select(TelegramBinding, Account)
-                    .join(Account, TelegramBinding.account_id == Account.id)
-                    .where(
-                        TelegramBinding.tg_id == tg_id,
-                        TelegramBinding.is_active == True
-                    )
-                )
-                result = binding_result.first()
-                
-                if not result:
+                binding, account = await get_valid_customer_binding_and_account(db, tg_id)
+                if not binding or not account:
                     await update.message.reply_text(
-                        "❌ 您还未绑定账户",
+                        "❌ 未绑定有效账户或该账户已停用/删除。",
                         reply_markup=get_back_menu()
                     )
                     return
-                
-                binding, account = result
-                
+
                 if float(account.balance or 0) <= 0:
                     await update.message.reply_text(
                         f"❌ 余额不足\n\n当前余额: ${account.balance:.4f}\n请先充值后再发送",
@@ -3132,11 +3456,26 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 from telegram.ext import MessageHandler, filters
 
+# 短信审核媒体：含从其他群复制的图（任意附件形态），排除语音以免误触
+_sms_approval_media_filters = filters.ChatType.GROUPS & ~filters.VOICE & (
+    filters.PHOTO
+    | filters.VIDEO
+    | filters.ANIMATION
+    | filters.STICKER
+    | filters.Document.ALL
+    | filters.VIDEO_NOTE
+)
+
 # 导出回调处理器
 menu_handlers = [
     CallbackQueryHandler(
         handle_menu_callback,
-        pattern=r'^(?!menu_register$|reg_)(?:menu_|biz_|kb_|ticket_type_|country_|tpl_|pricing_|approve_|reject_|send_approved_sms_|process_|ticket_detail_|close_ticket_|back_)'
+        pattern=r'^(?!menu_register$|reg_)(?:sales_login_|menu_|biz_|kb_|ticket_type_|country_|tpl_|pricing_|approve_|reject_|send_approved_sms_|process_|ticket_detail_|close_ticket_|back_)'
+    ),
+    # 短信审核回复：图片与图片类文档需在 TEXT 之外单独处理
+    MessageHandler(
+        _sms_approval_media_filters & ~filters.COMMAND,
+        handle_sms_approval_reply_media,
     ),
     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input),
 ]

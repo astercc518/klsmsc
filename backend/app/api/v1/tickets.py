@@ -1,11 +1,12 @@
 """工单系统API"""
 import os
+import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, update
+from sqlalchemy import select, func, and_, or_, update, delete
 from sqlalchemy.orm import selectinload
 from typing import Optional, List
 from pydantic import BaseModel, Field
@@ -694,6 +695,65 @@ async def close_ticket(
     await db.commit()
     
     return {"success": True, "message": "工单已关闭"}
+
+
+@admin_router.put("/{ticket_id}/status")
+async def update_ticket_status_admin(
+    ticket_id: int,
+    status: str = Query(..., description="目标状态"),
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin)
+):
+    """更新工单状态（与前端 PUT /admin/tickets/{id}/status 对齐）"""
+    valid_statuses = {
+        "open",
+        "assigned",
+        "in_progress",
+        "pending_user",
+        "resolved",
+        "closed",
+        "cancelled",
+    }
+    if status not in valid_statuses:
+        raise HTTPException(status_code=400, detail="无效的状态值")
+
+    ticket = await db.get(Ticket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="工单不存在")
+
+    ticket.status = status
+    now = datetime.now()
+    if status == "closed":
+        ticket.closed_at = now
+        ticket.closed_by = admin.id
+    elif status == "resolved" and not ticket.resolved_at:
+        ticket.resolved_at = now
+        ticket.resolved_by = admin.id
+
+    await db.commit()
+    return {"success": True, "message": "状态已更新"}
+
+
+@admin_router.delete("/{ticket_id}")
+async def delete_ticket_admin(
+    ticket_id: int,
+    db: AsyncSession = Depends(get_db),
+    _admin: AdminUser = Depends(get_current_admin)
+):
+    """管理员删除工单（级联删除回复，并清理附件目录）"""
+    ticket = await db.get(Ticket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="工单不存在")
+    await db.execute(delete(TicketReply).where(TicketReply.ticket_id == ticket_id))
+    await db.delete(ticket)
+    await db.commit()
+    upload_dir = TICKET_DIR / str(ticket_id)
+    if upload_dir.exists():
+        try:
+            shutil.rmtree(upload_dir)
+        except OSError:
+            pass
+    return {"success": True, "message": "工单已删除"}
 
 
 @admin_router.put("/{ticket_id}")

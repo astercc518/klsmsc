@@ -43,18 +43,34 @@ export const exportSMSRecords = (params?: any) => {
 
 // ========== 短信审核（与 Bot 同步） ==========
 
-// 提交短信审核
-export const submitSmsApproval = (data: { phone_number: string; message: string }) => {
+// 提交短信审核（仅需文案；可选号码）
+export const submitSmsApproval = (data: { message: string; phone_number?: string }) => {
   return request.post('/sms/approval', data)
 }
 
+// 删除未发送的审核记录
+export const deleteSmsApproval = (approvalId: number) => {
+  return request.delete(`/sms/approval/${approvalId}`)
+}
+
 // 获取短信审核列表
-export const getSmsApprovals = (params?: { status?: string; limit?: number; offset?: number; account_id?: number }) => {
+export const getSmsApprovals = (params?: {
+  status?: string
+  search?: string
+  limit?: number
+  offset?: number
+  account_id?: number
+}) => {
   return request.get('/sms/approvals', { params })
 }
 
-// 执行审核通过的短信发送
-export const executeApprovedSms = (approvalId: number) => {
-  return request.post(`/sms/approval/${approvalId}/execute`)
+// 单条审核详情（完整 content，用于跳转发送页预填）
+export const getSmsApprovalDetail = (approvalId: number) => {
+  return request.get(`/sms/approvals/${approvalId}`)
+}
+
+// 执行审核通过的短信发送（审核无号码时需 body.phone_number）
+export const executeApprovedSms = (approvalId: number, data?: { phone_number?: string }) => {
+  return request.post(`/sms/approval/${approvalId}/execute`, data ?? {})
 }
 

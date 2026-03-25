@@ -3,6 +3,7 @@ Telegram Bot配置
 """
 from pydantic_settings import BaseSettings
 from pydantic import Field
+from typing import Optional
 
 
 class BotSettings(BaseSettings):
@@ -13,6 +14,8 @@ class BotSettings(BaseSettings):
     
     # 后端API配置
     API_BASE_URL: str = Field(default="http://localhost:8000", description="后端API地址")
+    # 与后端 Settings.TELEGRAM_STAFF_API_SECRET 一致，用于「我的客户」快捷登录
+    TELEGRAM_STAFF_API_SECRET: Optional[str] = Field(default=None, description="销售快捷登录共享密钥")
     
     # 日志配置
     LOG_LEVEL: str = Field(default="INFO", description="日志级别")

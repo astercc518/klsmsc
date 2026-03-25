@@ -321,10 +321,16 @@
                   {{ $t('smsSend.sending') }}... ({{ sendProgress }}/{{ numberCount }})
                 </template>
               </button>
-              <!-- 单条时可提交审核 -->
-              <button v-if="numberSource === 'manual' && numberCount === 1" type="button" class="btn-audit" :disabled="loading || !form.phone_numbers_text || !form.message || approvalSubmitting" @click="handleSubmitApproval">
-                <template v-if="!approvalSubmitting">📋 提交审核</template>
-                <template v-else>提交中...</template>
+              <!-- 仅需文案即可提交审核（填一个号码时会一并带给后端） -->
+              <button
+                v-if="numberSource === 'manual'"
+                type="button"
+                class="btn-audit"
+                :disabled="loading || !form.message || approvalSubmitting"
+                @click="handleSubmitApproval"
+              >
+                <template v-if="!approvalSubmitting">📋 {{ $t('smsApprovalsPage.submitAudit') }}</template>
+                <template v-else>{{ $t('smsApprovalsPage.submitting') }}</template>
               </button>
 
               <!-- 商店模式发送按钮 -->
@@ -1674,27 +1680,27 @@ const handlePreview = () => {
 
 const approvalSubmitting = ref(false)
 const handleSubmitApproval = async () => {
-  const numbers = parseNumbers()
-  if (numbers.length !== 1) {
-    ElMessage.warning('提交审核仅支持单条，请先输入一个号码')
-    return
-  }
-  if (!form.value.message) {
+  if (!form.value.message?.trim()) {
     ElMessage.warning(t('smsSend.pleaseEnterContent'))
     return
   }
-  let phone = numbers[0].trim()
-  if (!phone.startsWith('+')) phone = '+' + phone
   approvalSubmitting.value = true
   try {
-    await submitSmsApproval({
-      phone_number: phone,
+    const payload: { message: string; phone_number?: string } = {
       message: sanitizeMessage(stripEmoji(replaceCustomVars(form.value.message))),
-    })
-    ElMessage.success('已提交审核，审核通过后可点击「立即发送」')
+    }
+    const numbers = parseNumbers()
+    if (numbers.length === 1) {
+      let phone = numbers[0].trim()
+      if (!phone.startsWith('+')) phone = '+' + phone
+      payload.phone_number = phone
+    }
+    const res: any = await submitSmsApproval(payload)
+    const ticketHint = res?.ticket_no ? ` ${t('smsApprovalsPage.ticketNo', { no: res.ticket_no })}` : ''
+    ElMessage.success(`${t('smsApprovalsPage.submitOk')}${ticketHint}`)
     handleReset()
   } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || e?.message || '提交失败')
+    ElMessage.error(e?.response?.data?.detail || e?.message || t('smsApprovalsPage.submitFailed'))
   } finally {
     approvalSubmitting.value = false
   }
@@ -1876,9 +1882,38 @@ const updateTime = () => {
 
 let timeInterval: number
 
+/** 从短信审核页跳转时一次性写入文案与号码 */
+const SMS_SEND_PREFILL_KEY = 'sms_send_prefill_from_approval'
+function consumeApprovalPrefill() {
+  try {
+    const raw = sessionStorage.getItem(SMS_SEND_PREFILL_KEY)
+    if (!raw) return
+    sessionStorage.removeItem(SMS_SEND_PREFILL_KEY)
+    const data = JSON.parse(raw) as { message?: string; phone_numbers_text?: string }
+    let filled = false
+    if (typeof data.message === 'string') {
+      form.value.message = data.message
+      if (data.message.length > 0) filled = true
+    }
+    if (typeof data.phone_numbers_text === 'string' && data.phone_numbers_text.trim()) {
+      form.value.phone_numbers_text = data.phone_numbers_text.trim()
+      filled = true
+    }
+    numberSource.value = 'manual'
+    if (filled) {
+      nextTick(() => {
+        ElMessage.success(t('smsSend.approvalPrefillFromAudit'))
+      })
+    }
+  } catch {
+    /* 忽略损坏的 session 数据 */
+  }
+}
+
 onMounted(() => {
   loadChannels(); loadStats(); updateTime(); checkAiConfig(); checkServices(); loadStoreProducts()
   timeInterval = window.setInterval(updateTime, 1000)
+  consumeApprovalPrefill()
 })
 onUnmounted(() => clearInterval(timeInterval))
 </script>

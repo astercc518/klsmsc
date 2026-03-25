@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.ip_whitelist import IPWhitelistMiddleware
 from app.config import settings
-from app.database import init_db, close_db
+from app.database import init_db, close_db, ensure_channel_dlr_preference_columns
 from app.utils.logger import setup_logging, get_logger
 from app.utils.errors import SMSGatewayException, error_response
 from app.utils.cache import get_redis_client, close_redis
@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
     
     # 初始化数据库
     await init_db()
+    await ensure_channel_dlr_preference_columns()
     logger.info("✅ 数据库初始化完成")
     
     # 初始化Redis连接

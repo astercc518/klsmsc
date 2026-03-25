@@ -1,11 +1,12 @@
 """
 管理员API路由
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update as sa_update
-from pydantic import BaseModel, EmailStr, field_validator
+from sqlalchemy import delete, select, update as sa_update
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
+from urllib.parse import quote
 from datetime import datetime
 
 from app.database import get_db
@@ -77,6 +78,9 @@ class ChannelCreateRequest(BaseModel):
     default_sender_id: Optional[str] = None
     description: Optional[str] = None
     supplier_id: Optional[int] = None  # 关联供应商ID
+    # DLR / SMPP：空则使用全局环境变量
+    smpp_dlr_socket_hold_seconds: Optional[int] = Field(None, ge=60, le=86400)
+    dlr_sent_timeout_hours: Optional[int] = Field(None, ge=4, le=720)
     
     @field_validator('protocol')
     @classmethod
@@ -114,6 +118,8 @@ class ChannelUpdateRequest(BaseModel):
     api_key: Optional[str] = None
     default_sender_id: Optional[str] = None
     supplier_id: Optional[int] = None  # 关联供应商ID
+    smpp_dlr_socket_hold_seconds: Optional[int] = Field(None, ge=60, le=86400)
+    dlr_sent_timeout_hours: Optional[int] = Field(None, ge=4, le=720)
 
 
 class PricingCreateRequest(BaseModel):
@@ -630,6 +636,9 @@ async def create_account_admin(
     import json
     import uuid
 
+    if admin.role == "sales":
+        raise HTTPException(status_code=403, detail="销售人员无权新建客户账户")
+
     if len(request.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
 
@@ -761,6 +770,9 @@ async def get_account_admin(
     if not a:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    if admin.role == "sales" and a.sales_id != admin.id:
+        raise HTTPException(status_code=403, detail="只能查看自己名下的客户")
+
     try:
         whitelist = json.loads(a.ip_whitelist) if a.ip_whitelist else []
         if not isinstance(whitelist, list):
@@ -832,11 +844,34 @@ async def update_account_admin(
     """管理员：更新账户信息（不含密码/API Key）"""
     from app.modules.common.account import Account, AccountChannel
     import json
+    import secrets
 
     result = await db.execute(select(Account).where(Account.id == account_id, Account.is_deleted == False))
     a = result.scalar_one_or_none()
     if not a:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    # 销售人员：仅可修改名下客户的在用/已暂停状态（停用/启用），不可改其他信息
+    if admin.role == "sales":
+        if a.sales_id != admin.id:
+            raise HTTPException(status_code=403, detail="只能操作自己名下的客户")
+        payload = request.model_dump(exclude_unset=True)
+        if not payload:
+            raise HTTPException(status_code=400, detail="无更新字段")
+        if set(payload.keys()) != {"status"}:
+            raise HTTPException(status_code=403, detail="销售人员仅可修改客户状态（停用/启用）")
+        st = payload.get("status")
+        if st not in ("active", "suspended"):
+            raise HTTPException(status_code=400, detail="销售仅可在「在用」与「已暂停」之间切换")
+        a.status = st
+        await db.commit()
+        try:
+            from app.utils.cache import get_cache_manager
+            cache_manager = await get_cache_manager()
+            await cache_manager.invalidate_balance_cache(account_id=account_id)
+        except Exception:
+            pass
+        return {"success": True, "message": "Account updated successfully"}
 
     if request.account_name is not None:
         a.account_name = request.account_name
@@ -901,6 +936,9 @@ async def update_account_admin(
         from app.utils.cache import get_cache_manager
         cache_manager = await get_cache_manager()
         await cache_manager.invalidate_balance_cache(account_id=account_id)
+        # 统一单价或通道变化时清除该账户售价缓存，否则买即发/发送仍可能按旧价计费
+        if request.unit_price is not None or request.channel_ids is not None:
+            await cache_manager.invalidate_price_cache_for_account(account_id)
     except Exception:
         pass
 
@@ -922,6 +960,9 @@ async def reset_account_api_key(
     if not a:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    if admin.role == "sales":
+        raise HTTPException(status_code=403, detail="销售人员无权重置 API Key")
+
     a.api_key = f"ak_{secrets.token_hex(30)}"
     a.api_secret = secrets.token_hex(32)
     await db.commit()
@@ -931,6 +972,71 @@ async def reset_account_api_key(
         "api_key": a.api_key,
         "api_secret": a.api_secret,
         "message": "API credentials reset successfully",
+    }
+
+
+class TelegramSalesImpersonateBody(BaseModel):
+    """TG 业务助手：销售快捷登录客户"""
+
+    tg_id: int
+    account_id: int
+
+
+@router.post("/telegram/sales-impersonate", response_model=dict)
+async def telegram_sales_impersonate(
+    body: TelegramSalesImpersonateBody,
+    db: AsyncSession = Depends(get_db),
+    x_telegram_staff_secret: Optional[str] = Header(None, alias="X-Telegram-Staff-Secret"),
+):
+    """
+    供 Telegram Bot 调用：校验共享密钥后，按 TG 用户解析员工身份，
+    仅允许销售登录其名下客户（与网页端模拟登录规则一致）。
+    """
+    from app.modules.common.account import Account
+
+    secret = (settings.TELEGRAM_STAFF_API_SECRET or "").strip()
+    if not secret or not x_telegram_staff_secret or x_telegram_staff_secret != secret:
+        raise HTTPException(status_code=403, detail="Invalid or missing staff secret")
+
+    result = await db.execute(
+        select(AdminUser).where(
+            AdminUser.tg_id == body.tg_id,
+            AdminUser.status == "active",
+        )
+    )
+    staff = result.scalar_one_or_none()
+    if not staff or staff.role != "sales":
+        raise HTTPException(status_code=403, detail="仅销售可使用快捷登录客户")
+
+    acc_r = await db.execute(
+        select(Account).where(
+            Account.id == body.account_id,
+            Account.is_deleted == False,
+        )
+    )
+    a = acc_r.scalar_one_or_none()
+    if not a:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if a.status != "active":
+        raise HTTPException(status_code=400, detail="Account is not active")
+    if a.sales_id != staff.id:
+        raise HTTPException(status_code=403, detail="只能登录您名下的客户")
+
+    base = (settings.PUBLIC_WEB_BASE_URL or "https://www.kaolach.com").rstrip("/")
+    login_url = (
+        f"{base}/login?impersonate=1"
+        f"&api_key={quote(a.api_key or '', safe='')}"
+        f"&account_id={a.id}"
+        f"&account_name={quote(a.account_name or '', safe='')}"
+    )
+
+    return {
+        "success": True,
+        "account_id": a.id,
+        "account_name": a.account_name,
+        "api_key": a.api_key,
+        "login_url": login_url,
+        "message": "ok",
     }
 
 
@@ -947,15 +1053,28 @@ async def impersonate_account(
     a = result.scalar_one_or_none()
     if not a:
         raise HTTPException(status_code=404, detail="Account not found")
-    
+
     if a.status != "active":
         raise HTTPException(status_code=400, detail="Account is not active")
+
+    # 销售仅能模拟自己名下的客户
+    if admin.role == "sales" and a.sales_id != admin.id:
+        raise HTTPException(status_code=403, detail="只能模拟登录自己名下的客户")
+
+    base = (settings.PUBLIC_WEB_BASE_URL or "https://www.kaolach.com").rstrip("/")
+    login_url = (
+        f"{base}/login?impersonate=1"
+        f"&api_key={quote(a.api_key or '', safe='')}"
+        f"&account_id={a.id}"
+        f"&account_name={quote(a.account_name or '', safe='')}"
+    )
 
     return {
         "success": True,
         "account_id": a.id,
         "account_name": a.account_name,
         "api_key": a.api_key,
+        "login_url": login_url,
         "message": f"Impersonating account: {a.account_name}",
     }
 
@@ -977,6 +1096,9 @@ async def reset_account_password(
     a = result.scalar_one_or_none()
     if not a:
         raise HTTPException(status_code=404, detail="Account not found")
+
+    if admin.role == "sales" and a.sales_id != admin.id:
+        raise HTTPException(status_code=403, detail="只能为自己名下的客户重置密码")
 
     a.password_hash = AuthService.hash_password(request.password)
     await db.commit()
@@ -1006,6 +1128,9 @@ async def adjust_account_balance(
         change_type = "deposit" if amount > 0 else "withdraw"
     if change_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Invalid change_type")
+
+    if admin.role == "sales":
+        raise HTTPException(status_code=403, detail="销售人员无权为客户充值或调账")
 
     result = await db.execute(select(Account).where(Account.id == account_id, Account.is_deleted == False))
     a = result.scalar_one_or_none()
@@ -1066,6 +1191,8 @@ async def list_balance_logs_admin(
     safe_limit = max(1, min(limit, 200))
     safe_offset = max(0, offset)
 
+    await _ensure_account_access_for_sales(account_id, admin, db)
+
     total_result = await db.execute(
         select(func.count(BalanceLog.id)).where(BalanceLog.account_id == account_id)
     )
@@ -1096,6 +1223,25 @@ async def list_balance_logs_admin(
             for l in logs
         ],
     }
+
+
+async def _ensure_account_access_for_sales(
+    account_id: int, admin: AdminUser, db: AsyncSession
+) -> None:
+    """销售仅能访问自己名下的账户相关接口。"""
+    if admin.role != "sales":
+        return
+    from app.modules.common.account import Account
+
+    r = await db.execute(
+        select(Account.id).where(
+            Account.id == account_id,
+            Account.is_deleted == False,
+            Account.sales_id == admin.id,
+        )
+    )
+    if r.scalar_one_or_none() is None:
+        raise HTTPException(status_code=403, detail="只能操作自己名下的客户")
 
 
 @router.get("/recharge-logs", response_model=dict)
@@ -1191,15 +1337,23 @@ async def delete_account_admin(
     
     if not account:
         raise HTTPException(status_code=404, detail="账户不存在")
-    
+
+    from app.modules.common.telegram_binding import TelegramBinding
+
     # 软删除：将状态设为closed并标记删除
-    account.status = 'closed'
+    account.status = "closed"
     account.is_deleted = True
+    account.tg_id = None
+    account.tg_username = None
+    # 解除 TG 业务助手绑定，避免 telegram_bindings 仍指向已删除账户
+    await db.execute(
+        delete(TelegramBinding).where(TelegramBinding.account_id == account_id)
+    )
     await db.commit()
 
     return {
         "success": True,
-        "message": "账户已删除"
+        "message": "账户已删除",
     }
 
 
@@ -1259,6 +1413,8 @@ async def list_channels_admin(
                 "smpp_bind_mode": ch.smpp_bind_mode or "transceiver",
                 "smpp_system_type": ch.smpp_system_type or "",
                 "smpp_interface_version": ch.smpp_interface_version or 0x34,
+                "smpp_dlr_socket_hold_seconds": getattr(ch, "smpp_dlr_socket_hold_seconds", None),
+                "dlr_sent_timeout_hours": getattr(ch, "dlr_sent_timeout_hours", None),
                 "default_sender_id": ch.default_sender_id,
                 "supplier": supplier_map.get(ch.id),
                 "created_at": ch.created_at.isoformat() if ch.created_at else None
@@ -1319,6 +1475,8 @@ async def get_channel_admin(
             "smpp_bind_mode": ch.smpp_bind_mode or "transceiver",
             "smpp_system_type": ch.smpp_system_type or "",
             "smpp_interface_version": ch.smpp_interface_version or 0x34,
+            "smpp_dlr_socket_hold_seconds": getattr(ch, "smpp_dlr_socket_hold_seconds", None),
+            "dlr_sent_timeout_hours": getattr(ch, "dlr_sent_timeout_hours", None),
             "default_sender_id": ch.default_sender_id,
             "supplier": supplier_info,
             "supplier_id": supplier_info["id"] if supplier_info else None,
@@ -1367,6 +1525,8 @@ async def create_channel(
         rate_control_window=request.rate_control_window,
         default_sender_id=request.default_sender_id.strip() if request.default_sender_id else None,
         status=request.status,
+        smpp_dlr_socket_hold_seconds=request.smpp_dlr_socket_hold_seconds,
+        dlr_sent_timeout_hours=request.dlr_sent_timeout_hours,
     )
     
     db.add(channel)
@@ -1446,9 +1606,14 @@ async def update_channel(
         channel.smpp_system_type = request.smpp_system_type
     if request.smpp_interface_version is not None:
         channel.smpp_interface_version = request.smpp_interface_version
-    
-    # 更新供应商关联（仅当请求中显式包含 supplier_id 时处理，传 null 表示清除）
+
     updated_fields = request.model_dump(exclude_unset=True)
+    if "smpp_dlr_socket_hold_seconds" in updated_fields:
+        channel.smpp_dlr_socket_hold_seconds = request.smpp_dlr_socket_hold_seconds
+    if "dlr_sent_timeout_hours" in updated_fields:
+        channel.dlr_sent_timeout_hours = request.dlr_sent_timeout_hours
+
+    # 更新供应商关联（仅当请求中显式包含 supplier_id 时处理，传 null 表示清除）
     if 'supplier_id' in updated_fields:
         from app.modules.sms.supplier import SupplierChannel
         await db.execute(
@@ -1596,7 +1761,7 @@ async def channel_test_send(
             if success and getattr(adapter, 'client', None) and getattr(adapter, '_bind_mode', '') in ('transceiver', 'receiver'):
                 try:
                     from app.workers.sms_worker import _smpp_schedule_delayed_disconnect
-                    _smpp_schedule_delayed_disconnect(adapter, channel.id)
+                    _smpp_schedule_delayed_disconnect(adapter, channel.id, channel)
                 except Exception:
                     await adapter.disconnect()
             else:

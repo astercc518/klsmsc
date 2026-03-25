@@ -101,15 +101,23 @@ class BatchSMSResponse(BaseModel):
 
 
 class SMSApprovalSubmitRequest(BaseModel):
-    """短信审核提交请求"""
-    phone_number: str = Field(..., description="目标电话号码（E.164格式）")
+    """短信审核提交请求（仅需文案；号码可选，业务助手审过后再发）"""
     message: str = Field(..., min_length=1, max_length=1000, description="短信内容")
+    phone_number: Optional[str] = Field(None, description="可选目标号码 E.164")
 
-    @validator('phone_number')
-    def validate_phone_number(cls, v):
+    @validator('phone_number', always=True)
+    def validate_phone_optional(cls, v):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        v = str(v).strip()
         if not v.startswith('+'):
             raise ValueError('Phone number must start with + (E.164 format)')
         if len(v) < 8 or len(v) > 20:
             raise ValueError('Phone number length must be between 8 and 20')
         return v
+
+
+class SMSApprovalExecuteRequest(BaseModel):
+    """执行审核通过后的发送：审核记录无号码时（如 Bot 仅文案）可在此补传"""
+    phone_number: Optional[str] = Field(None, description="接收号码 E.164；仅当审核记录未保存号码时需要")
 

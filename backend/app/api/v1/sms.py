@@ -4,7 +4,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, BackgroundTasks, Header, HTTPException
+from fastapi import APIRouter, Depends, BackgroundTasks, Header, HTTPException, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -22,6 +22,7 @@ from app.schemas.sms import (
     BatchSMSRequest,
     BatchSMSResponse,
     SMSApprovalSubmitRequest,
+    SMSApprovalExecuteRequest,
 )
 from fastapi.responses import JSONResponse
 from app.utils.logger import get_logger
@@ -30,8 +31,9 @@ from app.utils.errors import (
     InsufficientBalanceError, PricingNotFoundError, ChannelNotAvailableError
 )
 from decimal import Decimal
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, or_
 from app.modules.common.balance_log import BalanceLog
+from app.modules.common.ticket import Ticket
 
 logger = get_logger(__name__)
 
@@ -694,27 +696,53 @@ async def submit_sms_approval(
             detail="短信审核功能未启用或未配置供应商群，请直接使用发送接口"
         )
 
-    # 验证号码和内容
-    is_valid_phone, error_msg, phone_info = Validator.validate_phone_number(request.phone_number)
-    if not is_valid_phone:
-        raise HTTPException(status_code=400, detail=error_msg)
     is_valid_content, content_err, _ = Validator.validate_content(request.message)
     if not is_valid_content:
         raise HTTPException(status_code=400, detail=content_err)
+
+    phone_e164 = None
+    if request.phone_number:
+        is_valid_phone, error_msg, phone_info = Validator.validate_phone_number(request.phone_number)
+        if not is_valid_phone:
+            raise HTTPException(status_code=400, detail=error_msg)
+        phone_e164 = phone_info["e164_format"]
 
     import secrets
     approval_no = f"SA{datetime.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(2).upper()}"
     approval = SmsContentApproval(
         approval_no=approval_no,
         account_id=account.id,
-        tg_user_id="web",  # Web 端来源
-        phone_number=phone_info["e164_format"],
+        tg_user_id="web",
+        phone_number=phone_e164,
         content=request.message,
         status="pending",
     )
     db.add(approval)
+    await db.flush()
+
+    ticket_no = f"TK{datetime.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(2).upper()}"
+    sms_ticket = Ticket(
+        ticket_no=ticket_no,
+        account_id=account.id,
+        tg_user_id="web",
+        ticket_type="test",
+        priority="normal",
+        title=f"短信审核-{approval_no}",
+        description=f"内容: {(request.message or '')[:500]}",
+        status="open",
+        created_by_type="account",
+        created_by_id=account.id,
+        test_phone=phone_e164,
+        test_content=request.message,
+        review_status="pending",
+        forwarded_to_group=admin_group_id if admin_group_id else None,
+        extra_data={"sms_approval_id": approval.id},
+    )
+    db.add(sms_ticket)
     await db.commit()
     await db.refresh(approval)
+    await db.refresh(sms_ticket)
+    ticket_row_id = sms_ticket.id
 
     ok = await _forward_approval_to_telegram(
         approval.id, account.id, approval.content, db
@@ -722,17 +750,70 @@ async def submit_sms_approval(
     if not ok:
         raise HTTPException(status_code=500, detail="转发至供应商群失败，请稍后重试")
 
+    a2 = await db.get(SmsContentApproval, approval.id)
+    t2 = await db.get(Ticket, ticket_row_id)
+    if a2 and t2:
+        t2.forwarded_to_group = a2.forwarded_to_group
+        t2.forwarded_message_id = a2.forwarded_message_id
+        if a2.forwarded_to_group:
+            t2.review_status = "forwarded"
+        await db.commit()
+
     return {
         "success": True,
         "approval_no": approval_no,
         "approval_id": approval.id,
-        "message": "已提交审核，审核通过后会通知您，请点击「立即发送」进行发送"
+        "ticket_no": ticket_no,
+        "message": "已提交审核，工单已同步生成，审核通过后可前往发送页发送",
     }
+
+
+@router.delete("/approval/{approval_id}")
+async def delete_sms_approval(
+    approval_id: int,
+    account: Account = Depends(get_current_account_or_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除短信审核记录（未发送才可删）；关联测试工单将标记为已取消"""
+    from app.modules.common.sms_content_approval import SmsContentApproval
+
+    result = await db.execute(
+        select(SmsContentApproval).where(SmsContentApproval.id == approval_id)
+    )
+    approval = result.scalar_one_or_none()
+    if not approval:
+        raise HTTPException(status_code=404, detail="审核记录不存在")
+    if approval.account_id != account.id:
+        raise HTTPException(status_code=403, detail="无权删除此审核记录")
+    if approval.message_id:
+        raise HTTPException(status_code=400, detail="已发送的审核记录不可删除")
+
+    tres = await db.execute(
+        select(Ticket)
+        .where(
+            Ticket.account_id == account.id,
+            Ticket.ticket_type == "test",
+        )
+        .order_by(Ticket.created_at.desc())
+    )
+    for tick in tres.scalars().all():
+        ex = tick.extra_data or {}
+        if ex.get("sms_approval_id") == approval.id:
+            if tick.status in ("open", "assigned", "in_progress", "pending_user"):
+                tick.status = "cancelled"
+                tick.closed_at = datetime.now()
+                tick.close_reason = "用户删除短信审核"
+            break
+
+    await db.delete(approval)
+    await db.commit()
+    return {"success": True, "message": "已删除"}
 
 
 @router.get("/approvals")
 async def list_sms_approvals(
     status: Optional[str] = None,
+    search: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
     account_id: Optional[int] = None,
@@ -749,6 +830,15 @@ async def list_sms_approvals(
     conditions = [SmsContentApproval.account_id == aid]
     if status:
         conditions.append(SmsContentApproval.status == status)
+    if search and (s := search.strip()):
+        pat = f"%{s}%"
+        conditions.append(
+            or_(
+                SmsContentApproval.phone_number.ilike(pat),
+                SmsContentApproval.content.ilike(pat),
+                SmsContentApproval.approval_no.ilike(pat),
+            )
+        )
 
     result = await db.execute(
         select(SmsContentApproval)
@@ -786,15 +876,47 @@ async def list_sms_approvals(
     }
 
 
+@router.get("/approvals/{approval_id}")
+async def get_sms_approval_detail(
+    approval_id: int,
+    account: Account = Depends(get_current_account_or_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """单条审核详情（含完整短信内容，供发送页预填）"""
+    from app.modules.common.sms_content_approval import SmsContentApproval
+
+    result = await db.execute(
+        select(SmsContentApproval).where(SmsContentApproval.id == approval_id)
+    )
+    a = result.scalar_one_or_none()
+    if not a:
+        raise HTTPException(status_code=404, detail="审核记录不存在")
+    if a.account_id != account.id:
+        raise HTTPException(status_code=403, detail="无权查看此审核记录")
+    return {
+        "success": True,
+        "id": a.id,
+        "approval_no": a.approval_no,
+        "phone_number": a.phone_number,
+        "content": a.content or "",
+        "status": a.status,
+        "reviewed_at": a.reviewed_at.isoformat() if a.reviewed_at else None,
+        "message_id": a.message_id,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+    }
+
+
 @router.post("/approval/{approval_id}/execute")
 async def execute_approved_sms(
     approval_id: int,
+    exec_body: SMSApprovalExecuteRequest = Body(default_factory=SMSApprovalExecuteRequest),
     account: Account = Depends(get_current_account_or_admin),
     db: AsyncSession = Depends(get_db)
 ):
     """
     执行审核通过的短信发送（客户点击「立即发送」）
-    仅限审核状态为 approved 且未发送的记录
+    仅限审核状态为 approved 且未发送的记录。
+    若审核记录无号码（如 Telegram 仅文案审核），须在请求体中传 phone_number。
     """
     from app.modules.common.sms_content_approval import SmsContentApproval
 
@@ -817,11 +939,24 @@ async def execute_approved_sms(
     if approval.message_id:
         raise HTTPException(status_code=400, detail="该短信已发送")
 
-    # 调用发送逻辑（复用 send_sms 核心逻辑）
-    from app.utils.validator import Validator
-    is_valid_phone, _, phone_info = Validator.validate_phone_number(approval.phone_number)
+    # 号码：记录已有则用记录；否则使用本次请求补传的号码（规范化后写回库）
+    stored = (approval.phone_number or "").strip()
+    incoming = (exec_body.phone_number or "").strip()
+    if stored:
+        phone_raw = stored
+    else:
+        phone_raw = incoming
+        if not phone_raw:
+            raise HTTPException(
+                status_code=400,
+                detail="该审核未保存接收号码，请在请求中填写目标号码（E.164，如 +8613800138000）后再发送",
+            )
+    is_valid_phone, err_msg, phone_info = Validator.validate_phone_number(phone_raw)
     if not is_valid_phone:
-        raise HTTPException(status_code=400, detail="号码格式无效")
+        raise HTTPException(status_code=400, detail=err_msg or "号码格式无效")
+    if not stored and phone_info.get("e164_format"):
+        approval.phone_number = phone_info["e164_format"]
+        await db.flush()
 
     routing_engine = RoutingEngine(db)
     channel = await routing_engine.select_channel(

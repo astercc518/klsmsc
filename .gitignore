@@ -26,6 +26,7 @@ frontend/dist/
 *.local
 
 # 日志与备份
+scripts/backups/
 logs/
 *.log
 *.tar.gz

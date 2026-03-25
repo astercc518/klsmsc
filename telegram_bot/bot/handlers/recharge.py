@@ -11,10 +11,9 @@ from telegram.ext import (
     MessageHandler,
     filters
 )
-from bot.utils import get_session, logger
+from bot.utils import get_session, get_valid_customer_binding_and_account, logger
 from app.modules.common.recharge_order import RechargeOrder
 from app.modules.common.account import Account
-from app.modules.common.telegram_binding import TelegramBinding
 from sqlalchemy import select
 
 # 会话状态
@@ -26,15 +25,18 @@ async def recharge_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     tg_id = user.id
     
-    # 检查是否绑定账户
-    account_id = context.user_data.get('account_id')
-    if not account_id:
-        await update.message.reply_text(
-            "❌ 您尚未绑定账户\n\n"
-            "请先使用邀请链接激活账户，或发送 /start 查看状态"
-        )
-        return ConversationHandler.END
-    
+    async with get_session() as db:
+        _, acc = await get_valid_customer_binding_and_account(db, tg_id)
+        if not acc:
+            context.user_data.pop("account_id", None)
+            await update.message.reply_text(
+                "❌ 未绑定有效账户或该账户已停用/删除。\n\n"
+                "请先使用邀请链接激活账户，或发送 /start 查看状态"
+            )
+            return ConversationHandler.END
+        context.user_data["account_id"] = acc.id
+        account_id = acc.id
+
     logger.info(f"用户 {tg_id} 开始充值申请，账户: {account_id}")
     
     await update.message.reply_text(
@@ -122,11 +124,11 @@ async def submit_recharge(update: Update, context: ContextTypes.DEFAULT_TYPE):
             select(Account).where(Account.id == account_id)
         )
         account = acc_result.scalar_one_or_none()
-        
-        if not account:
-            await update.message.reply_text("❌ 账户不存在，请联系客服")
+
+        if not account or account.is_deleted or account.status == "closed":
+            await update.message.reply_text("❌ 账户不存在或已停用，请联系客服")
             return ConversationHandler.END
-        
+
         # 创建充值工单
         order = RechargeOrder(
             order_no=order_no,

@@ -11,10 +11,7 @@ from telegram.ext import (
 )
 from loguru import logger
 from bot.services.api_client import APIClient
-from app.database import AsyncSessionLocal
-from app.modules.common.telegram_binding import TelegramBinding
-from app.modules.common.account import Account
-from sqlalchemy import select
+from bot.utils import get_session, get_valid_customer_binding_and_account
 
 # 会话状态
 PHONE, MESSAGE = range(2)
@@ -168,13 +165,8 @@ def send_conversation():
 
 
 async def get_user_account(tg_id: int):
-    """获取用户绑定的账户"""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(Account).join(TelegramBinding).where(
-                TelegramBinding.tg_id == tg_id,
-                TelegramBinding.is_active == True
-            )
-        )
-        return result.scalar_one_or_none()
+    """获取用户绑定的有效账户（未删除且非 closed）"""
+    async with get_session() as db:
+        _, account = await get_valid_customer_binding_and_account(db, tg_id)
+        return account
 

@@ -142,7 +142,7 @@
             <span class="time-text">{{ formatTime(row.created_at) }}</span>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('common.actions')" width="200" fixed="right" align="center">
+        <el-table-column :label="$t('common.actions')" width="240" fixed="right" align="center">
           <template #default="{ row }">
             <el-button type="primary" link size="small" @click.stop="viewTicket(row)">{{ $t('common.view') }}</el-button>
             <el-button
@@ -166,6 +166,7 @@
               size="small"
               @click.stop="handleClose(row)"
             >{{ $t('tickets.close') }}</el-button>
+            <el-button type="danger" link size="small" @click.stop="handleDelete(row)">{{ $t('common.delete') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -394,14 +395,14 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { 
   Search, Refresh, Warning, Calendar, Loading, CircleCheck, Tickets, 
   User, VideoPlay, Promotion, Plus 
 } from '@element-plus/icons-vue'
 import {
   getAdminTickets, getTicketsDashboard, getAdminTicketDetail,
-  assignTicket, adminReplyTicket, resolveTicket, updateTicketStatus,
+  assignTicket, adminReplyTicket, resolveTicket, updateTicketStatus, deleteAdminTicket,
   type Ticket, type TicketDetail
 } from '@/api/ticket'
 import request from '@/api/index'
@@ -714,6 +715,30 @@ const handleClose = async (row: Ticket) => {
     loadDashboard()
   } catch (error: any) {
     ElMessage.error(error.response?.data?.detail || t('tickets.operationFailed'))
+  }
+}
+
+const handleDelete = async (row: Ticket) => {
+  try {
+    await ElMessageBox.confirm(
+      t('tickets.deleteConfirm', { no: row.ticket_no }),
+      t('common.warning'),
+      { type: 'warning', confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel') }
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteAdminTicket(row.id)
+    ElMessage.success(t('tickets.deleteSuccess'))
+    if (currentTicket.value?.id === row.id) {
+      detailDrawerVisible.value = false
+      currentTicket.value = null
+    }
+    loadTickets()
+    loadDashboard()
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.detail || t('tickets.deleteFailed'))
   }
 }
 

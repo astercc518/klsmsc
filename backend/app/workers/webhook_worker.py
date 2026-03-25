@@ -7,7 +7,7 @@ import hmac
 import hashlib
 import json
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Any, Dict, Optional
 from app.workers.celery_app import celery_app
 from app.utils.logger import get_logger
 from app.modules.common.account import Account
@@ -155,36 +155,48 @@ def _generate_signature(secret: str, payload: str) -> str:
     ).hexdigest()
 
 
-async def trigger_webhook(message_id: str, status: str, data: Optional[Dict] = None):
+# 区分「未传 account_id」与「显式传入」：Celery 中 _run_async 每任务新建并关闭事件循环，
+# 若在此使用全局 AsyncSessionLocal，会与 asyncmy 连接绑定的 loop 冲突（Future attached to a different loop）。
+_ACCOUNT_ID_ARG_UNSET = object()
+
+
+async def trigger_webhook(
+    message_id: str,
+    status: str,
+    data: Optional[Dict] = None,
+    *,
+    account_id: Any = _ACCOUNT_ID_ARG_UNSET,
+):
     """
     触发Webhook回调
-    
+
     Args:
         message_id: 消息ID
         status: 状态 (sent/delivered/failed)
         data: 额外数据
+        account_id: 若调用方已持有账户 ID（如 worker 内已有 sms_log），应传入以避免打开全局引擎会话
     """
-    # 查询短信记录获取账户ID
+    if account_id is not _ACCOUNT_ID_ARG_UNSET:
+        if not account_id:
+            logger.warning(f"无法触发Webhook: 无账户ID: {message_id}")
+            return
+        send_webhook_task.delay(account_id, message_id, status, data or {})
+        logger.debug(f"Webhook回调任务已入队: {message_id}, 状态: {status}")
+        return
+
+    # 查询短信记录获取账户ID（API 等仍在全局引擎所在 loop 上运行）
     async with AsyncSessionLocal() as db:
         from sqlalchemy import select
         from app.modules.sms.sms_log import SMSLog
-        
-        result = await db.execute(
-            select(SMSLog).where(SMSLog.message_id == message_id)
-        )
+
+        result = await db.execute(select(SMSLog).where(SMSLog.message_id == message_id))
         sms_log = result.scalar_one_or_none()
-        
+
         if not sms_log or not sms_log.account_id:
             logger.warning(f"无法触发Webhook: 短信记录不存在或无账户ID: {message_id}")
             return
-        
-        # 发送到队列
-        send_webhook_task.delay(
-            sms_log.account_id,
-            message_id,
-            status,
-            data or {}
-        )
+
+        send_webhook_task.delay(sms_log.account_id, message_id, status, data or {})
         logger.debug(f"Webhook回调任务已入队: {message_id}, 状态: {status}")
 
 

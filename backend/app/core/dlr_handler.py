@@ -427,7 +427,8 @@ async def process_dlr_reports(
                         'country_code': sms_log.country_code,
                         'delivery_time': sms_log.delivery_time.isoformat() if sms_log.delivery_time else None,
                         'error_message': sms_log.error_message
-                    }
+                    },
+                    account_id=sms_log.account_id,
                 )
             except Exception as e:
                 logger.warning(f"[{source}] 触发 Webhook 失败: {e}")

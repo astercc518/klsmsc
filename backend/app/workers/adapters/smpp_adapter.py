@@ -34,6 +34,16 @@ _DLR_PATTERN_FALLBACK = re.compile(
 _DLR_DELIVERED_STATS = {'DELIVRD', 'ACCEPTD', 'DELIVERABLE'}
 # 失败的 stat 值
 _DLR_FAILED_STATS = {'UNDELIV', 'REJECTD', 'EXPIRED', 'DELETED', 'UNKNOWN'}
+# 中间态：仅表示链路在途，不更新库（保持 sent，等待终态 DLR）
+_DLR_INTERMEDIATE_STATS = {
+    'ENROUTE', 'BUFFERD', 'BUFFERED', 'SCHEDULED', 'RETRY', 'SKIPPED',
+    'ACK', 'SUBMIT', 'SUBMITD',
+}
+# deliver_sm 可选 TLV message_state（常见与 python-smpplib / Cloudhopper 枚举一致）
+# 2=DELIVERED，3/4/5/8 为终态失败，0/1/6/7 为在途或未知，不覆盖库
+_MSG_STATE_DELIVERED = frozenset({2})
+_MSG_STATE_FAILED = frozenset({3, 4, 5, 8})
+_MSG_STATE_INTERMEDIATE = frozenset({0, 1, 6, 7})
 
 _executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="smpp")
 
@@ -281,37 +291,112 @@ class SMPPAdapter:
     #  DLR 回执处理
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _smpp_str(val) -> str:
+        if val is None:
+            return ""
+        if isinstance(val, bytes):
+            return val.decode("utf-8", errors="replace").strip()
+        return str(val).strip()
+
+    @classmethod
+    def _deliver_sm_text_body(cls, pdu) -> str:
+        """合并 short_message 与 message_payload（部分上游将 DLR 放在 TLV message_payload）"""
+        chunks: List[str] = []
+        raw = getattr(pdu, "short_message", None)
+        if raw:
+            chunks.append(
+                raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+            )
+        mp = getattr(pdu, "message_payload", None)
+        if mp:
+            chunks.append(
+                mp.decode("utf-8", errors="replace") if isinstance(mp, bytes) else str(mp)
+            )
+        return " ".join(x.strip() for x in chunks if x and str(x).strip()).strip()
+
+    def _try_parse_dlr_tlv(self, pdu) -> Optional[Tuple[str, str, str, str]]:
+        """
+        无文本 DLR 时尝试用 receipted_message_id + message_state 解析。
+        返回 (upstream_id, new_status, stat_label, err) 或 None（中间态/无数据）。
+        """
+        rid = self._smpp_str(getattr(pdu, "receipted_message_id", None))
+        if not rid:
+            return None
+        ms = getattr(pdu, "message_state", None)
+        if ms is None:
+            return None
+        try:
+            ms_i = int(ms)
+        except (TypeError, ValueError):
+            return None
+        if ms_i in _MSG_STATE_DELIVERED:
+            return rid, "delivered", f"MSGSTATE_{ms_i}", "000"
+        if ms_i in _MSG_STATE_FAILED:
+            return rid, "failed", f"MSGSTATE_{ms_i}", f"{ms_i:03d}"
+        if ms_i in _MSG_STATE_INTERMEDIATE:
+            logger.info(
+                f"[{self.channel.channel_code}] DLR TLV 中间态 message_state={ms_i} "
+                f"receipted_id={rid!r}，暂不更新"
+            )
+            return None
+        logger.warning(
+            f"[{self.channel.channel_code}] DLR TLV 未知 message_state={ms_i} "
+            f"receipted_id={rid!r}，暂不更新"
+        )
+        return None
+
     def _on_deliver_sm(self, pdu):
         """处理收到的 deliver_sm PDU（DLR 回执）"""
         try:
-            short_message = ""
-            if hasattr(pdu, "short_message") and pdu.short_message:
-                raw = pdu.short_message
-                short_message = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+            # 任意入站 deliver_sm 都刷新延迟断线时间：原逻辑仅在 submit 成功时刷新，
+            # 批量发送后若上游 DLR 明显晚于「最后一次 submit + hold」才到达，会先断 TCP 导致后续回执丢失。
+            try:
+                from app.workers.sms_worker import _smpp_schedule_delayed_disconnect
+
+                _smpp_schedule_delayed_disconnect(self, self.channel.id, self.channel)
+            except Exception:
+                pass
+
+            short_message = self._deliver_sm_text_body(pdu)
 
             logger.info(
                 f"[{self.channel.channel_code}] 收到 deliver_sm: {short_message[:200]}"
             )
 
+            upstream_id = ""
+            stat = ""
+            err = "000"
+            new_status = ""
+
             m = _DLR_PATTERN.search(short_message)
             if not m:
                 m = _DLR_PATTERN_FALLBACK.search(short_message)
-            if not m:
-                logger.debug(
-                    f"[{self.channel.channel_code}] deliver_sm 非 DLR 格式，跳过"
-                )
-                return
-
-            upstream_id = m.group("id")
-            stat = m.group("stat").upper()
-            err = m.group("err") if m.group("err") else "000"
-
-            if stat in _DLR_DELIVERED_STATS:
-                new_status = "delivered"
-            elif stat in _DLR_FAILED_STATS:
-                new_status = "failed"
+            if m:
+                upstream_id = m.group("id")
+                stat = m.group("stat").upper()
+                err = m.group("err") if m.group("err") else "000"
+                if stat in _DLR_INTERMEDIATE_STATS:
+                    logger.info(
+                        f"[{self.channel.channel_code}] DLR 中间态 stat={stat} id={upstream_id}，暂不更新"
+                    )
+                    return
+                if stat in _DLR_DELIVERED_STATS:
+                    new_status = "delivered"
+                elif stat in _DLR_FAILED_STATS:
+                    new_status = "failed"
+                else:
+                    new_status = "delivered" if err == "000" else "failed"
             else:
-                new_status = "delivered" if err == "000" else "failed"
+                tlv = self._try_parse_dlr_tlv(pdu)
+                if not tlv:
+                    if short_message:
+                        logger.debug(
+                            f"[{self.channel.channel_code}] deliver_sm 非 DLR 格式，跳过: "
+                            f"{short_message[:200]!r}"
+                        )
+                    return
+                upstream_id, new_status, stat, err = tlv
 
             logger.info(
                 f"[{self.channel.channel_code}] DLR: id={upstream_id} "

@@ -107,3 +107,25 @@ celery_app.conf.beat_schedule = {
     },
 }
 
+# 各 Worker 子进程启动时补齐 ORM 所需列（与 API 一致，避免任务内加载 Channel 失败）
+from celery.signals import worker_process_init
+
+from app.utils.logger import get_logger as _schema_get_logger
+
+_schema_logger = _schema_get_logger(__name__)
+
+
+@worker_process_init.connect
+def _ensure_channel_dlr_columns_on_worker(**_kwargs):
+    import asyncio
+
+    try:
+        from app.database import ensure_channel_dlr_preference_columns
+
+        asyncio.run(ensure_channel_dlr_preference_columns())
+    except Exception as e:
+        _schema_logger.warning(
+            "Celery Worker 启动时补齐 channels DLR 列失败（可手动执行 scripts/add_channel_dlr_columns.sql）: %s",
+            e,
+        )
+

@@ -233,15 +233,27 @@ class CacheManager:
         channel_id: Optional[int] = None,
         country_code: Optional[str] = None
     ):
-        """失效价格缓存"""
-        if channel_id and country_code:
-            await self.delete_pattern(f"price:{channel_id}:{country_code}:*")
-        elif channel_id:
-            await self.delete_pattern(f"price:{channel_id}:*")
+        """
+        失效价格缓存。
+        与 app.core.pricing.PricingEngine.get_price 键一致：
+        price:{account_id}:{channel_id}:{country_code}:{mnc}
+        """
+        if channel_id is not None and country_code:
+            await self.delete_pattern(f"price:*:{channel_id}:{country_code}:*")
+        elif channel_id is not None:
+            await self.delete_pattern(f"price:*:{channel_id}:*")
         elif country_code:
-            await self.delete_pattern(f"price:*:{country_code}:*")
+            # 第四段为国家/区号
+            await self.delete_pattern(f"price:*:*:{country_code}:*")
         else:
             await self.delete_pattern("price:*")
+
+    async def invalidate_price_cache_for_account(self, account_id: int):
+        """
+        按账户失效短信售价缓存。
+        修改账户统一单价、通道绑定后必须调用，否则 Redis 中旧单价最长可残留 1 小时。
+        """
+        await self.delete_pattern(f"price:{account_id}:*")
     
     async def invalidate_balance_cache(self, account_id: Optional[int] = None):
         """失效余额缓存"""

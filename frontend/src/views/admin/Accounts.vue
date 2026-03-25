@@ -7,7 +7,7 @@
         <p class="page-desc">{{ pageDesc }}</p>
       </div>
       <div class="header-right">
-        <el-button type="primary" @click="openCreate" class="add-btn">
+        <el-button v-if="!isSalesRole" type="primary" @click="openCreate" class="add-btn">
           <el-icon><Plus /></el-icon>
           {{ $t('customers.createAccount') }}
         </el-button>
@@ -148,28 +148,59 @@
             </span>
           </template>
         </el-table-column>
+        <el-table-column min-width="110" align="right">
+          <template #header>
+            <el-tooltip :content="$t('customers.remainingMessagesHint')" placement="top">
+              <span class="col-hint">{{ $t('customers.remainingMessages') }}</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <span class="remaining-msgs">{{ formatRemainingMessages(row) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="created_at" :label="$t('customers.createdAt')" min-width="90">
           <template #default="{ row }">
             <span class="time-text">{{ formatDate(row.created_at) }}</span>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('common.action')" width="180" fixed="right" align="center">
+        <el-table-column :label="$t('common.action')" :width="isSalesRole ? 280 : 200" fixed="right" align="center">
           <template #default="{ row }">
             <div class="action-btns">
-              <el-button link type="primary" size="small" @click="openEdit(row)">{{ $t('common.edit') }}</el-button>
-              <el-button link type="success" size="small" @click="openAdjust(row)">{{ $t('customers.recharge') }}</el-button>
-              <el-button link type="warning" size="small" @click="impersonateAccount(row)" :disabled="row.status !== 'active'">{{ $t('customers.login') }}</el-button>
-              <el-dropdown trigger="click">
-                <el-button link type="primary" size="small">{{ $t('common.more') }}</el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item @click="bindSales(row)">{{ $t('customers.assignedSales') }}</el-dropdown-item>
-                    <el-dropdown-item @click="openLogs(row)">{{ $t('customers.balance') }}</el-dropdown-item>
-                    <el-dropdown-item @click="handleResetKey(row)">{{ $t('dashboard.apiKey') }}</el-dropdown-item>
-                    <el-dropdown-item divided @click="handleDelete(row)" style="color: #f56c6c">{{ $t('common.delete') }}</el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
+              <!-- 销售：仅登录、停用/启用、重置密码 -->
+              <template v-if="isSalesRole">
+                <el-button link type="warning" size="small" @click="impersonateAccount(row)" :disabled="row.status !== 'active'">{{ $t('customers.login') }}</el-button>
+                <el-button
+                  v-if="row.status === 'active'"
+                  link
+                  type="danger"
+                  size="small"
+                  @click="salesSetStatus(row, 'suspended')"
+                >{{ $t('customers.salesSuspend') }}</el-button>
+                <el-button
+                  v-else-if="row.status === 'suspended'"
+                  link
+                  type="success"
+                  size="small"
+                  @click="salesSetStatus(row, 'active')"
+                >{{ $t('customers.salesActivate') }}</el-button>
+                <el-button link type="primary" size="small" @click="openResetPasswordDialog(row)">{{ $t('customers.resetLoginPassword') }}</el-button>
+              </template>
+              <template v-else>
+                <el-button link type="primary" size="small" @click="openEdit(row)">{{ $t('common.edit') }}</el-button>
+                <el-button link type="success" size="small" @click="openAdjust(row)">{{ $t('customers.recharge') }}</el-button>
+                <el-button link type="warning" size="small" @click="impersonateAccount(row)" :disabled="row.status !== 'active'">{{ $t('customers.login') }}</el-button>
+                <el-dropdown trigger="click">
+                  <el-button link type="primary" size="small">{{ $t('common.more') }}</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item @click="bindSales(row)">{{ $t('customers.assignedSales') }}</el-dropdown-item>
+                      <el-dropdown-item @click="openLogs(row)">{{ $t('customers.balance') }}</el-dropdown-item>
+                      <el-dropdown-item @click="handleResetKey(row)">{{ $t('dashboard.apiKey') }}</el-dropdown-item>
+                      <el-dropdown-item divided @click="handleDelete(row)" style="color: #f56c6c">{{ $t('common.delete') }}</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </template>
             </div>
           </template>
         </el-table-column>
@@ -420,6 +451,22 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 销售重置客户登录密码 -->
+    <el-dialog v-model="resetPwdVisible" :title="$t('customers.resetLoginPassword')" width="420px" :close-on-click-modal="false" append-to-body>
+      <el-form label-width="100px">
+        <el-form-item :label="$t('customers.account')">
+          <span>{{ resetPwdRow?.account_name }}</span>
+        </el-form-item>
+        <el-form-item :label="$t('customers.newPassword')" required>
+          <el-input v-model="resetPwdForm.password" type="password" show-password :placeholder="$t('customers.passwordMinLength')" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="resetPwdVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="resetPwdLoading" @click="submitResetPassword">{{ $t('common.confirm') }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -435,6 +482,7 @@ import {
   updateAccountAdmin,
   adjustAccountBalance,
   resetAccountApiKey,
+  resetAccountPassword,
   getAccountBalanceLogs,
   type AdminAccount,
 } from '@/api/admin'
@@ -442,6 +490,10 @@ import request from '@/api/index'
 import { findCountryByIso } from '@/constants/countries'
 
 const { t, locale } = useI18n()
+
+/** 销售角色：仅能登录、停用/启用、重置密码 */
+const adminRole = ref('')
+const isSalesRole = computed(() => adminRole.value === 'sales')
 
 // Props
 const props = defineProps<{
@@ -590,6 +642,15 @@ function formatAccountCountry(code: string | null | undefined): string {
   if (!c) return String(code)
   const isZh = locale.value.startsWith('zh')
   return isZh ? c.name : c.en
+}
+
+/** 剩余条数：余额 ÷ 单价（向下取整）；单价无效时显示 — */
+function formatRemainingMessages(row: { balance?: number; unit_price?: number }) {
+  const price = Number(row.unit_price ?? 0)
+  const bal = Number(row.balance ?? 0)
+  if (!Number.isFinite(price) || !Number.isFinite(bal) || price <= 0) return '—'
+  const n = Math.floor(bal / price)
+  return n.toLocaleString()
 }
 
 const form = reactive<any>({
@@ -834,8 +895,9 @@ const impersonateAccount = async (row: AdminAccount) => {
     
     const res = await request.post(`/admin/accounts/${row.id}/impersonate`)
     if (res.success && res.api_key) {
-      // 在新窗口打开，传递登录凭证
-      const loginUrl = `${window.location.origin}/login?impersonate=1&api_key=${encodeURIComponent(res.api_key)}&account_id=${res.account_id}&account_name=${encodeURIComponent(res.account_name)}`
+      const loginUrl =
+        res.login_url ||
+        `${window.location.origin}/login?impersonate=1&api_key=${encodeURIComponent(res.api_key)}&account_id=${res.account_id}&account_name=${encodeURIComponent(res.account_name)}`
       window.open(loginUrl, '_blank')
       ElMessage.success(t('customers.clientOpened', { name: row.account_name }))
     } else {
@@ -979,7 +1041,58 @@ const handleDelete = async (row: AdminAccount) => {
   }
 }
 
+async function salesSetStatus(row: AdminAccount, status: 'active' | 'suspended') {
+  const msg =
+    status === 'suspended'
+      ? t('customers.confirmSuspend', { name: row.account_name })
+      : t('customers.confirmActivate', { name: row.account_name })
+  try {
+    await ElMessageBox.confirm(msg, t('common.tip'), {
+      confirmButtonText: t('common.confirm'),
+      cancelButtonText: t('common.cancel'),
+      type: 'warning',
+    })
+    await updateAccountAdmin(row.id, { status })
+    ElMessage.success(t('customers.saveSuccess'))
+    await loadAccounts()
+  } catch (e: any) {
+    if (e !== 'cancel') {
+      ElMessage.error(e?.response?.data?.detail || e?.message || t('customers.saveFailed'))
+    }
+  }
+}
+
+const resetPwdVisible = ref(false)
+const resetPwdLoading = ref(false)
+const resetPwdRow = ref<AdminAccount | null>(null)
+const resetPwdForm = reactive({ password: '' })
+
+function openResetPasswordDialog(row: AdminAccount) {
+  resetPwdRow.value = row
+  resetPwdForm.password = ''
+  resetPwdVisible.value = true
+}
+
+async function submitResetPassword() {
+  if (!resetPwdRow.value) return
+  if (!resetPwdForm.password || resetPwdForm.password.length < 6) {
+    ElMessage.warning(t('customers.passwordMinLength'))
+    return
+  }
+  resetPwdLoading.value = true
+  try {
+    await resetAccountPassword(resetPwdRow.value.id, resetPwdForm.password)
+    ElMessage.success(t('customers.resetPasswordSuccess'))
+    resetPwdVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || t('customers.operationFailed'))
+  } finally {
+    resetPwdLoading.value = false
+  }
+}
+
 onMounted(() => {
+  adminRole.value = localStorage.getItem('admin_role') || ''
   loadAccounts()
 })
 </script>

@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from loguru import logger
 from app.database import AsyncSessionLocal
 from app.modules.common.admin_user import AdminUser
-from app.modules.common.telegram_binding import TelegramBinding
+from bot.utils import get_valid_customer_binding_and_account
 from sqlalchemy import select
 
 
@@ -24,16 +24,10 @@ async def get_user_role(tg_id: int) -> str:
         if admin:
             return admin.role  # super_admin, admin, sales, finance, tech
         
-        # 检查是否是绑定的客户
-        binding_result = await session.execute(
-            select(TelegramBinding).where(
-                TelegramBinding.tg_id == tg_id,
-                TelegramBinding.is_active == True
-            )
-        )
-        binding = binding_result.scalar_one_or_none()
-        if binding:
-            return 'customer'
+        # 检查是否是绑定的有效客户账户
+        _, account = await get_valid_customer_binding_and_account(session, tg_id)
+        if account:
+            return "customer"
         
         return 'guest'
 

@@ -4,7 +4,7 @@
 import redis
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
-from bot.utils import get_session, logger
+from bot.utils import get_session, get_valid_customer_binding_and_account, logger
 from bot.config import settings
 from app.core.invitation import InvitationService
 from app.modules.common.telegram_binding import TelegramBinding
@@ -160,28 +160,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(msg, reply_markup=menu)
                 return
             
-            # 3. 检查客户绑定状态
-            query = select(TelegramBinding).where(TelegramBinding.tg_id == tg_id)
-            result = await db.execute(query)
-            bindings = result.scalars().all()
+            # 3. 检查客户绑定状态（须未删除且非 closed，与菜单回调一致）
+            active_binding, account = await get_valid_customer_binding_and_account(db, tg_id)
 
-            # 过滤出有效绑定（账户未关闭/未删除）
-            valid_binding = None
-            for b in bindings:
-                acc_r = await db.execute(
-                    select(Account).where(
-                        Account.id == b.account_id,
-                        Account.status != 'closed',
-                        Account.is_deleted == False,
-                    )
-                )
-                acc = acc_r.scalar_one_or_none()
-                if acc:
-                    valid_binding = (b, acc)
-                    break
-
-            if not valid_binding:
+            if not account:
                 logger.info(f"User {tg_id} has no active account, sending guest menu")
+                context.user_data.pop("account_id", None)
+                context.user_data.pop("user_type", None)
                 await update.message.reply_text(
                     "👋 欢迎使用 TG 业务助手\n\n"
                     "支持短信、语音、数据三大业务\n\n"
@@ -191,7 +176,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             # 4. 有效账户
-            active_binding, account = valid_binding
             context.user_data['account_id'] = active_binding.account_id
             context.user_data['user_type'] = 'customer'
             

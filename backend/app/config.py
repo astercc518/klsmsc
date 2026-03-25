@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     # Telegram Bot配置
     TELEGRAM_BOT_TOKEN: Optional[str] = None
     TELEGRAM_ADMIN_GROUP_ID: Optional[str] = None
+    # 业务助手「销售快捷登录」：Bot 调用 /admin/telegram/sales-impersonate 时校验，须与 Bot 环境变量一致
+    TELEGRAM_STAFF_API_SECRET: Optional[str] = None
+    # 生成客户模拟登录链接用的前端基址（无尾斜杠）
+    PUBLIC_WEB_BASE_URL: str = "https://www.kaolach.com"
 
     # SMPP：多 Celery 子进程会并发 bind，上游单会话时易 ESME 13。为 True 时用 Redis 全局锁串行化，
     # 且提交成功后立即断开 TCP 以释放 bind——会导致无法在同连接上收到 deliver_sm，送达多依赖 HTTP 拉取/回调。
@@ -128,6 +132,15 @@ class Settings(BaseSettings):
 
     # submit_sm 发出后等待 submit_sm_resp 的最长秒数（入站可被 deliver_sm 插队，需 drain 至同 sequence 应答）
     SMPP_SUBMIT_RESP_WAIT_SECONDS: float = Field(default=8.0, ge=1.0, le=120.0)
+
+    # 非集群锁模式下，发送后保持 SMPP 连接的最长秒数以便接收 deliver_sm（快通道可改短，慢通道可至 24h；更久需靠 HTTP 拉取/回调）
+    SMPP_DLR_SOCKET_HOLD_SECONDS: int = Field(default=300, ge=60, le=86400)
+
+    # sent 状态超过此时长未收到终态 DLR 则标记为 expired（快通道可改短；慢通道可设 72～168；最大 720h≈30 天）
+    DLR_SENT_TIMEOUT_HOURS: int = Field(default=72, ge=4, le=720)
+
+    # 定时拉取上游 DLR 报告的 HTTP 超时（秒）
+    DLR_PULL_HTTP_TIMEOUT_SECONDS: float = Field(default=60.0, ge=10.0, le=300.0)
 
     class Config:
         env_file = ".env"

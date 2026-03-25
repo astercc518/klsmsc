@@ -3,9 +3,8 @@
 """
 from telegram import Update
 from telegram.ext import ContextTypes
-from bot.utils import get_session, logger
+from bot.utils import get_session, get_valid_customer_binding_and_account, logger
 from app.modules.common.account import Account
-from app.modules.common.telegram_binding import TelegramBinding
 from sqlalchemy import select
 
 
@@ -16,40 +15,29 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"用户 {tg_id} 查询余额")
     
-    # 获取账户ID（优先从context，否则从数据库查询）
-    account_id = context.user_data.get('account_id')
-    
-    if not account_id:
-        # 尝试从数据库获取绑定信息
-        async with get_session() as db:
-            binding_result = await db.execute(
-                select(TelegramBinding).where(
-                    TelegramBinding.tg_id == tg_id,
-                    TelegramBinding.is_active == True
-                )
+    account_id = context.user_data.get("account_id")
+
+    async with get_session() as db:
+        _, acc_valid = await get_valid_customer_binding_and_account(db, tg_id)
+        if acc_valid:
+            account_id = acc_valid.id
+            context.user_data["account_id"] = account_id
+        else:
+            context.user_data.pop("account_id", None)
+            await update.message.reply_text(
+                "❌ 未绑定有效账户或该账户已停用/删除。\n\n"
+                "请使用邀请链接激活账户，或发送 /start 查看状态"
             )
-            binding = binding_result.scalar_one_or_none()
-            
-            if binding:
-                account_id = binding.account_id
-                context.user_data['account_id'] = account_id
-            else:
-                await update.message.reply_text(
-                    "❌ 您尚未绑定账户\n\n"
-                    "请使用邀请链接激活账户，或发送 /start 查看状态"
-                )
-                return
-    
+            return
+
     await update.message.reply_text("⏳ 查询中...")
-    
+
     try:
         async with get_session() as db:
-            result = await db.execute(
-                select(Account).where(Account.id == account_id)
-            )
+            result = await db.execute(select(Account).where(Account.id == account_id))
             account = result.scalar_one_or_none()
-            
-            if not account:
+
+            if not account or account.is_deleted or account.status == "closed":
                 await update.message.reply_text(
                     "❌ 账户不存在\n\n"
                     "请联系客服处理"

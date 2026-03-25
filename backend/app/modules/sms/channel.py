@@ -25,6 +25,17 @@ class Channel(Base):
     smpp_bind_mode = Column(String(20), default="transceiver", comment="SMPP绑定模式: transceiver/transmitter/receiver")
     smpp_system_type = Column(String(13), default="", comment="SMPP system_type参数")
     smpp_interface_version = Column(Integer, default=52, comment="SMPP接口版本(0x34=52=v3.4)")
+    # NULL 表示使用全局配置（见 Settings）
+    smpp_dlr_socket_hold_seconds = Column(
+        Integer,
+        nullable=True,
+        comment="SMPP发送成功后保持TCP秒数以接收deliver_sm，空则用全局SMPP_DLR_SOCKET_HOLD_SECONDS",
+    )
+    dlr_sent_timeout_hours = Column(
+        Integer,
+        nullable=True,
+        comment="仍为sent时最长等待终态回执的小时数，空则用全局DLR_SENT_TIMEOUT_HOURS",
+    )
     api_url = Column(String(500), comment="HTTP API地址")
     api_key = Column(String(255), comment="HTTP API密钥")
     

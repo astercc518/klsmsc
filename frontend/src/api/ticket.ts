@@ -154,6 +154,11 @@ export function updateTicketStatus(ticketId: number, status: string) {
   })
 }
 
+// 删除工单（管理员）
+export function deleteAdminTicket(ticketId: number) {
+  return request.delete(`/admin/tickets/${ticketId}`)
+}
+
 // 更新工单
 export function updateTicket(ticketId: number, data: {
   priority?: string

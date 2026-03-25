@@ -33,8 +33,23 @@ import asyncio
 
 logger = get_logger(__name__)
 
-# SMPP 延迟断开：发送后保持连接 N 秒以接收 DLR（deliver_sm 异步推送）
-_SMPP_DLR_WAIT_SECONDS = 300  # 5 分钟，部分上游 DLR 推送较慢
+def _smpp_dlr_hold_seconds(channel: Optional[Channel] = None) -> float:
+    """
+    SMPP 发送成功后保持 TCP 的秒数上限（与 config 中 SMPP_DLR_SOCKET_HOLD_SECONDS 上界一致）。
+    通道级 smpp_dlr_socket_hold_seconds 非空时优先（快慢通道分别调参）。
+    """
+    cap = float(getattr(settings, "SMPP_DLR_SOCKET_HOLD_SECONDS", 300) or 300)
+    # 与 pydantic Field le=86400 对齐
+    cap_max = 86400.0
+    cap = max(60.0, min(cap, cap_max))
+    try:
+        if channel is not None:
+            ch_hold = getattr(channel, "smpp_dlr_socket_hold_seconds", None)
+            if ch_hold is not None and int(ch_hold) > 0:
+                return float(max(60, min(int(ch_hold), int(cap_max))))
+    except (TypeError, ValueError):
+        pass
+    return cap
 # 按通道复用单连接：多数上游同一账号仅允许 1 条并发 bind，旧逻辑每条任务新建连接会导致第 2 条起 bind 失败，
 # 直至延迟断开释放会话（约 5 分钟），现象与「首条成功、其余失败、过一会又正常」一致。
 _smpp_cleanup_lock = threading.Lock()
@@ -114,12 +129,12 @@ def _get_smpp_channel_lock(channel_id: int) -> threading.Lock:
         return _smpp_channel_send_locks[channel_id]
 
 
-def _smpp_schedule_delayed_disconnect(adapter, channel_id: int):
+def _smpp_schedule_delayed_disconnect(adapter, channel_id: int, channel: Optional[Channel] = None):
     """按通道刷新延迟断开时间：同通道多次发送共用一个连接，只保留最后一次 idle 后的断开点"""
     if not adapter or not getattr(adapter, "client", None):
         return
     with _smpp_cleanup_lock:
-        _smpp_disconnect_map[channel_id] = (adapter, time.time() + _SMPP_DLR_WAIT_SECONDS)
+        _smpp_disconnect_map[channel_id] = (adapter, time.time() + _smpp_dlr_hold_seconds(channel))
     # 启动清理线程（仅首次）
     if not hasattr(_smpp_schedule_delayed_disconnect, "_cleanup_started"):
         def _cleanup_loop():
@@ -201,11 +216,13 @@ def _send_via_smpp_sync(sms_log: SMSLog, channel: Channel) -> Tuple[bool, Option
                         ent = _smpp_disconnect_map.get(channel.id)
                         if ent and ent[0] is adapter:
                             _smpp_disconnect_map.pop(channel.id, None)
-                    logger.debug(
-                        f"SMPP 集群锁模式：提交后已断开以释放上游 bind: {channel.channel_code} id={channel.id}"
+                    logger.warning(
+                        f"SMPP 集群锁模式已断开连接（{channel.channel_code}），"
+                        f"本连接无法继续接收 deliver_sm；若依赖 SMPP 推送 DLR，请 "
+                        f"worker-sms --concurrency=1 且 SMPP_REDIS_CLUSTER_LOCK=false，或配置上游 HTTP report/回调"
                     )
                 else:
-                    _smpp_schedule_delayed_disconnect(adapter, channel.id)
+                    _smpp_schedule_delayed_disconnect(adapter, channel.id, channel)
                     logger.debug(f"SMPP 复用连接发送成功: channel={channel.channel_code} id={channel.id}")
             else:
                 # 发送失败时连接可能已不可用，关闭并移出池，避免后续任务死复用
@@ -353,7 +370,8 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None) -> dic
                         'phone_number': sms_log.phone_number,
                         'country_code': sms_log.country_code,
                         'channel_id': sms_log.channel_id
-                    }
+                    },
+                    account_id=sms_log.account_id,
                 )
             except Exception as e:
                 logger.warning(f"触发Webhook失败: {str(e)}")
@@ -374,7 +392,8 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None) -> dic
                         'phone_number': sms_log.phone_number,
                         'country_code': sms_log.country_code,
                         'error_message': sms_log.error_message
-                    }
+                    },
+                    account_id=sms_log.account_id,
                 )
             except Exception as e:
                 logger.warning(f"触发Webhook失败: {str(e)}")
@@ -770,7 +789,8 @@ async def _process_dlr_async(dlr_data: dict):
                     'phone_number': sms_log.phone_number,
                     'country_code': sms_log.country_code,
                     'error_message': dlr_data.get('error_message') if status == 'failed' else None
-                }
+                },
+                account_id=sms_log.account_id,
             )
         except Exception as e:
             logger.warning(f"触发Webhook失败: {str(e)}")
@@ -888,7 +908,8 @@ async def _fetch_dlr_reports_async():
             try:
                 logger.info(f"拉取 DLR: {channel.channel_code}, URL: {report_url}, method: {report_method}")
 
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                pull_timeout = float(getattr(settings, "DLR_PULL_HTTP_TIMEOUT_SECONDS", 60.0) or 60.0)
+                async with httpx.AsyncClient(timeout=pull_timeout) as client:
                     if report_method == 'POST':
                         response = await client.post(report_url, params=params)
                     else:
@@ -1030,38 +1051,81 @@ def dlr_timeout_check_task():
 
 
 async def _dlr_timeout_check_async():
-    """异步检查并标记超时的 sent 记录"""
+    """异步检查并标记超时的 sent 记录（按通道 dlr_sent_timeout_hours，否则用全局 DLR_SENT_TIMEOUT_HOURS）"""
     from datetime import timedelta
-    from sqlalchemy import and_, update, func
-
-    # 超过 4 小时仍为 sent 的记录视为超时
-    DLR_TIMEOUT_HOURS = 4
+    from sqlalchemy import and_, update
 
     db = _get_worker_session()
     try:
-        cutoff_time = datetime.now() - timedelta(hours=DLR_TIMEOUT_HOURS)
+        default_h = int(getattr(settings, "DLR_SENT_TIMEOUT_HOURS", 72) or 72)
+        default_h = max(4, min(default_h, 720))
 
-        stmt = (
+        ch_result = await db.execute(
+            select(Channel.id, Channel.dlr_sent_timeout_hours).where(
+                Channel.is_deleted == False
+            )
+        )
+        channel_rows = ch_result.all()
+        # 显式列出的通道（含仅自定义超时的通道）
+        channel_ids = {row[0] for row in channel_rows}
+        expired_count = 0
+
+        for ch_id, custom_h in channel_rows:
+            h = int(custom_h) if custom_h is not None and int(custom_h) > 0 else default_h
+            h = max(4, min(h, 720))
+            cutoff = datetime.now() - timedelta(hours=h)
+            stmt = (
+                update(SMSLog)
+                .where(
+                    and_(
+                        SMSLog.channel_id == ch_id,
+                        SMSLog.status == 'sent',
+                        SMSLog.sent_time < cutoff,
+                        SMSLog.sent_time.isnot(None),
+                    )
+                )
+                .values(
+                    status='expired',
+                    error_message=f'DLR 超时: 超过{h}小时未收到终态回执',
+                )
+            )
+            r = await db.execute(stmt)
+            expired_count += r.rowcount
+
+        # 无 channel_id、或通道已删除/未在表中的记录，用全局默认小时数
+        from sqlalchemy import or_, true as sql_true
+
+        cutoff_default = datetime.now() - timedelta(hours=default_h)
+        if channel_ids:
+            misc_where = or_(
+                SMSLog.channel_id.is_(None),
+                ~SMSLog.channel_id.in_(list(channel_ids)),
+            )
+        else:
+            misc_where = sql_true()
+
+        stmt_misc = (
             update(SMSLog)
             .where(
                 and_(
                     SMSLog.status == 'sent',
-                    SMSLog.sent_time < cutoff_time,
+                    SMSLog.sent_time < cutoff_default,
                     SMSLog.sent_time.isnot(None),
+                    misc_where,
                 )
             )
             .values(
                 status='expired',
-                error_message=f'DLR 超时: 超过{DLR_TIMEOUT_HOURS}小时未收到回执',
+                error_message=f'DLR 超时: 超过{default_h}小时未收到终态回执',
             )
         )
+        r2 = await db.execute(stmt_misc)
+        expired_count += r2.rowcount
 
-        result = await db.execute(stmt)
         await db.commit()
-        expired_count = result.rowcount
 
         if expired_count > 0:
-            logger.info(f"DLR 超时: 标记 {expired_count} 条记录为 expired")
+            logger.info(f"DLR 超时: 标记 {expired_count} 条记录为 expired（默认阈值 {default_h}h）")
         else:
             logger.debug("DLR 超时检查: 无超时记录")
 

@@ -243,6 +243,24 @@ class TestTriggerWebhook:
             assert call_args[0][1] == "trigger_test_msg"
             assert call_args[0][2] == "delivered"
 
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_trigger_webhook_explicit_account_id_no_global_session(self):
+        """显式传入 account_id 时不应使用全局 AsyncSessionLocal（避免 Celery 每任务独立 loop 与 asyncmy 冲突）"""
+        from app.workers.webhook_worker import trigger_webhook
+
+        with patch("app.workers.webhook_worker.AsyncSessionLocal") as mock_local:
+            with patch("app.workers.webhook_worker.send_webhook_task") as mock_task:
+                mock_task.delay = MagicMock()
+                await trigger_webhook(
+                    message_id="explicit_mid",
+                    status="sent",
+                    data={"k": "v"},
+                    account_id=99,
+                )
+                mock_local.assert_not_called()
+                mock_task.delay.assert_called_once_with(99, "explicit_mid", "sent", {"k": "v"})
+
 
 class TestCeleryTask:
     """Celery任务测试"""
