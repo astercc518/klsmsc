@@ -24,6 +24,13 @@ class VoiceAccount(Base):
         nullable=False,
         comment="关联本地账户ID"
     )
+    # 归属员工（可与业务账户 sales_id 一致或单独指定）
+    sales_id = Column(
+        Integer,
+        ForeignKey("admin_users.id"),
+        nullable=True,
+        comment="归属员工/销售 admin_users.id",
+    )
     
     # OKCC / 自建 SIP 凭据（自建时优先使用 sip_username）
     okcc_account = Column(String(100), comment="OKCC登录账号或兼容字段")
@@ -80,6 +87,7 @@ class VoiceAccount(Base):
     
     # 关系
     account = relationship("Account", backref="voice_accounts")
+    sales_user = relationship("AdminUser", foreign_keys=[sales_id])
     template = relationship("AccountTemplate")
     # 主叫池归属本语音子账户（与 default_caller 指向同一表的不同外键区分）
     caller_ids = relationship(

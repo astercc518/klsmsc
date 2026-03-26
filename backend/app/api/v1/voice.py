@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 from sqlalchemy import select, func
-from typing import Optional, Set
+from typing import Literal, Optional, Set
 from pydantic import BaseModel, Field
 
 from app.database import get_db
@@ -34,6 +34,16 @@ router = APIRouter(prefix="/admin/voice", tags=["Voice"])
 def _escape_like_literal(s: str) -> str:
     """将用户输入中的 LIKE 通配符按字面量匹配（反斜杠、%、_）。"""
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def _validate_sales_staff(db: AsyncSession, sales_id: int) -> None:
+    """校验归属员工存在且非超级管理员。"""
+    r = await db.execute(select(AdminUser).where(AdminUser.id == sales_id))
+    u = r.scalar_one_or_none()
+    if not u:
+        raise HTTPException(status_code=404, detail="员工不存在")
+    if u.role == "super_admin":
+        raise HTTPException(status_code=422, detail="不能将语音账户关联到超级管理员")
 
 
 class VoiceRouteCreate(BaseModel):
@@ -332,13 +342,17 @@ async def list_voice_accounts(
     status: Optional[str] = None,
     account_id: Optional[int] = Query(None, description="业务账户 accounts.id"),
     account_name: Optional[str] = Query(None, description="客户账户名模糊匹配"),
+    sales_id: Optional[int] = Query(None, description="归属员工 admin_users.id"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     admin: AdminUser = Depends(get_current_admin),
 ):
-    """获取语音账户列表（支持按业务账户 ID、客户名筛选）。"""
-    query = select(VoiceAccount).options(selectinload(VoiceAccount.account))
+    """获取语音账户列表（支持按业务账户 ID、客户名、归属员工筛选）。"""
+    query = select(VoiceAccount).options(
+        selectinload(VoiceAccount.account),
+        selectinload(VoiceAccount.sales_user),
+    )
 
     if account_name and account_name.strip():
         pat = f"%{_escape_like_literal(account_name.strip())}%"
@@ -347,6 +361,8 @@ async def list_voice_accounts(
         )
     if account_id is not None:
         query = query.where(VoiceAccount.account_id == account_id)
+    if sales_id is not None:
+        query = query.where(VoiceAccount.sales_id == sales_id)
     if country_code:
         query = query.where(VoiceAccount.country_code == country_code)
     if status:
@@ -391,6 +407,16 @@ async def list_voice_accounts(
                 }
                 if a.account
                 else None,
+                "sales_id": getattr(a, "sales_id", None),
+                "sales": (
+                    {
+                        "id": a.sales_user.id,
+                        "username": a.sales_user.username,
+                        "real_name": a.sales_user.real_name,
+                    }
+                    if getattr(a, "sales_user", None)
+                    else None
+                ),
                 "okcc_account": a.okcc_account,
                 "sip_username": a.sip_username,
                 "sip_login_hint": a.sip_username or a.okcc_account,
@@ -424,6 +450,11 @@ class VoiceAccountCreate(BaseModel):
     account_id: int = Field(..., gt=0, description="业务账户 accounts.id")
     country_code: str = Field(..., min_length=1, max_length=10, description="语音业务国家/地区代码")
     template_id: Optional[int] = Field(None, description="开户模板 ID，可选")
+    assign_mode: Literal["inherit", "none", "explicit"] = Field(
+        "inherit",
+        description="inherit=继承客户账户归属销售；none=不关联；explicit=指定 sales_id",
+    )
+    sales_id: Optional[int] = Field(None, gt=0, description="assign_mode=explicit 时必填")
 
 
 @router.post("/accounts")
@@ -449,6 +480,23 @@ async def create_voice_account(
     if (dup.scalar() or 0) > 0:
         raise HTTPException(status_code=409, detail="该业务账户已开通语音账户")
 
+    resolved_sales_id: Optional[int] = None
+    if data.assign_mode == "explicit":
+        if not data.sales_id:
+            raise HTTPException(status_code=422, detail="指定员工时必须填写 sales_id")
+        await _validate_sales_staff(db, data.sales_id)
+        resolved_sales_id = data.sales_id
+    elif data.assign_mode == "inherit":
+        resolved_sales_id = biz.sales_id
+        if resolved_sales_id is not None:
+            r = await db.execute(
+                select(AdminUser).where(AdminUser.id == resolved_sales_id)
+            )
+            if not r.scalar_one_or_none():
+                resolved_sales_id = None
+    else:
+        resolved_sales_id = None
+
     cc = data.country_code.strip()
     provider = get_voice_provider()
     result = await provider.create_account(
@@ -465,6 +513,7 @@ async def create_voice_account(
 
     voice_account = VoiceAccount(
         account_id=biz.id,
+        sales_id=resolved_sales_id,
         okcc_account=sip_user,
         sip_username=sip_user,
         okcc_password=pwd,
@@ -487,7 +536,12 @@ async def create_voice_account(
         title="创建语音账户",
         target_type="VoiceAccount",
         target_id=str(new_id),
-        detail={"business_account_id": biz.id, "country_code": cc},
+        detail={
+            "business_account_id": biz.id,
+            "country_code": cc,
+            "assign_mode": data.assign_mode,
+            "sales_id": resolved_sales_id,
+        },
         ip_address=request.client.host if request.client else None,
     )
     await db.commit()
@@ -512,6 +566,10 @@ class VoiceAccountUpdate(BaseModel):
         max_length=100,
         description="SIP 注册用户名；空字符串表示清空，回退为 okcc_account",
     )
+    sales_id: Optional[int] = Field(
+        None,
+        description="归属员工 admin_users.id；传 null 表示取消关联",
+    )
 
 
 @router.put("/accounts/{account_id}")
@@ -529,7 +587,7 @@ async def update_voice_account(
     if not account:
         raise HTTPException(status_code=404, detail="账户不存在")
 
-    upd = data.dict(exclude_unset=True)
+    upd = data.model_dump(exclude_unset=True)
     before = {}
     if "status" in upd and upd["status"]:
         before["status"] = account.status
@@ -548,6 +606,14 @@ async def update_voice_account(
         else:
             stripped = raw.strip()
             account.sip_username = stripped if stripped else None
+    if "sales_id" in upd:
+        before["sales_id"] = getattr(account, "sales_id", None)
+        sid = upd["sales_id"]
+        if sid is not None:
+            if sid <= 0:
+                raise HTTPException(status_code=422, detail="sales_id 无效")
+            await _validate_sales_staff(db, sid)
+        account.sales_id = sid
 
     await db.flush()
     if before:

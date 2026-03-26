@@ -30,6 +30,22 @@
         <el-form-item :label="$t('voice.country')">
           <el-input v-model="filters.country_code" :placeholder="$t('voice.countryCode')" clearable style="width: 120px;" />
         </el-form-item>
+        <el-form-item :label="$t('voice.assigneeStaff')">
+          <el-select
+            v-model="filters.sales_id"
+            :placeholder="$t('voice.allStaff')"
+            clearable
+            filterable
+            style="width: 180px"
+          >
+            <el-option
+              v-for="u in staffOptions"
+              :key="u.id"
+              :label="staffLabel(u)"
+              :value="u.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item :label="$t('common.status')">
           <el-select v-model="filters.status" :placeholder="$t('voice.allStatus')" clearable>
             <el-option :label="$t('voice.active')" value="active" />
@@ -53,6 +69,12 @@
         <el-table-column :label="$t('voice.localAccount')" width="150">
           <template #default="{ row }">
             <span>{{ row.account?.account_name || row.account_id }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="$t('voice.assigneeStaff')" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.sales">{{ row.sales.real_name || row.sales.username }}</span>
+            <span v-else class="text-muted">—</span>
           </template>
         </el-table-column>
         <el-table-column prop="okcc_account" :label="$t('voice.okccAccount')" width="130" show-overflow-tooltip />
@@ -99,8 +121,9 @@
             <span v-else>—</span>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('common.action')" width="400" fixed="right">
+        <el-table-column :label="$t('common.action')" width="460" fixed="right">
           <template #default="{ row }">
+            <el-button size="small" @click="openAssignStaff(row)">{{ $t('voice.editAssignee') }}</el-button>
             <el-button size="small" @click="goCallerIds(row)">{{ $t('voice.callerIdsShort') }}</el-button>
             <el-button size="small" @click="openEditSip(row)">{{ $t('voice.editSipUsername') }}</el-button>
             <el-button size="small" @click="syncAccount(row)">{{ $t('voice.sync') }}</el-button>
@@ -148,6 +171,28 @@
         <el-form-item :label="$t('voice.countryCode')" required>
           <el-input v-model="createForm.country_code" maxlength="10" show-word-limit :placeholder="$t('voice.countryCodeExample')" />
         </el-form-item>
+        <el-form-item :label="$t('voice.assignMode')">
+          <el-radio-group v-model="createForm.assign_mode">
+            <el-radio value="inherit">{{ $t('voice.assignInherit') }}</el-radio>
+            <el-radio value="none">{{ $t('voice.assignNone') }}</el-radio>
+            <el-radio value="explicit">{{ $t('voice.assignExplicit') }}</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="createForm.assign_mode === 'explicit'" :label="$t('voice.assigneeStaff')" required>
+          <el-select
+            v-model="createForm.sales_id"
+            :placeholder="$t('voice.selectStaff')"
+            filterable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="u in staffOptions"
+              :key="u.id"
+              :label="staffLabel(u)"
+              :value="u.id"
+            />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">{{ $t('common.cancel') }}</el-button>
@@ -165,6 +210,32 @@
       <template #footer>
         <el-button @click="sipVisible = false">{{ $t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="sipSaving" @click="saveSipUsername">{{ $t('common.save') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="assignVisible" :title="$t('voice.editAssignee')" width="440px" @closed="assignForm.id = 0">
+      <el-form label-width="120px">
+        <el-form-item :label="$t('voice.assigneeStaff')">
+          <el-select
+            v-model="assignForm.sales_id"
+            :placeholder="$t('voice.selectStaffOrClear')"
+            clearable
+            filterable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="u in staffOptions"
+              :key="u.id"
+              :label="staffLabel(u)"
+              :value="u.id"
+            />
+          </el-select>
+        </el-form-item>
+        <p class="sip-hint">{{ $t('voice.editAssigneeHint') }}</p>
+      </el-form>
+      <template #footer>
+        <el-button @click="assignVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="assignSaving" @click="saveAssignStaff">{{ $t('common.save') }}</el-button>
       </template>
     </el-dialog>
 
@@ -194,6 +265,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/index'
 import {
   createVoiceAccount,
+  getVoiceAccounts,
   resetVoiceAccountSipPassword,
   updateVoiceAccount,
   type VoiceAccountListItem
@@ -205,12 +277,15 @@ const router = useRouter()
 
 const loading = ref(false)
 const accounts = ref<VoiceAccountListItem[]>([])
+/** 员工下拉（与 /admin/users 一致，不含超管） */
+const staffOptions = ref<{ id: number; username: string; real_name?: string | null }[]>([])
 
 const filters = ref({
   account_id: '',
   account_name: '',
   country_code: '',
-  status: ''
+  status: '',
+  sales_id: undefined as number | undefined
 })
 
 const pagination = ref({
@@ -227,12 +302,61 @@ const sipVisible = ref(false)
 const sipSaving = ref(false)
 const sipForm = ref({ id: 0, sip_username: '' as string })
 
+const assignVisible = ref(false)
+const assignSaving = ref(false)
+const assignForm = ref({ id: 0, sales_id: undefined as number | undefined })
+
 const createVisible = ref(false)
 const createSaving = ref(false)
-const createForm = ref({ account_id: undefined as number | undefined, country_code: 'US' })
+const createForm = ref({
+  account_id: undefined as number | undefined,
+  country_code: 'US',
+  assign_mode: 'inherit' as 'inherit' | 'none' | 'explicit',
+  sales_id: undefined as number | undefined
+})
+
+function staffLabel(u: { username: string; real_name?: string | null }) {
+  const name = u.real_name?.trim() || u.username
+  return u.real_name ? `${name} (${u.username})` : u.username
+}
+
+async function loadStaff() {
+  try {
+    const res: any = await request.get('/admin/users', { params: { status: 'active' } })
+    staffOptions.value = res.users || []
+  } catch {
+    staffOptions.value = []
+  }
+}
 
 function resetCreateForm() {
-  createForm.value = { account_id: undefined, country_code: 'US' }
+  createForm.value = {
+    account_id: undefined,
+    country_code: 'US',
+    assign_mode: 'inherit',
+    sales_id: undefined
+  }
+}
+
+function openAssignStaff(row: VoiceAccountListItem) {
+  assignForm.value = { id: row.id, sales_id: row.sales_id ?? undefined }
+  assignVisible.value = true
+}
+
+async function saveAssignStaff() {
+  assignSaving.value = true
+  try {
+    await updateVoiceAccount(assignForm.value.id, {
+      sales_id: assignForm.value.sales_id ?? null
+    })
+    ElMessage.success(t('voice.updateSuccess'))
+    assignVisible.value = false
+    loadData()
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('common.failed'))
+  } finally {
+    assignSaving.value = false
+  }
 }
 
 function openCreateVoice() {
@@ -251,9 +375,21 @@ async function submitCreateVoice() {
     ElMessage.warning(t('voice.countryCodeRequired'))
     return
   }
+  if (createForm.value.assign_mode === 'explicit' && !createForm.value.sales_id) {
+    ElMessage.warning(t('voice.selectStaffRequired'))
+    return
+  }
   createSaving.value = true
   try {
-    const res: any = await createVoiceAccount({ account_id: aid, country_code: cc })
+    const payload: Parameters<typeof createVoiceAccount>[0] = {
+      account_id: aid,
+      country_code: cc,
+      assign_mode: createForm.value.assign_mode
+    }
+    if (createForm.value.assign_mode === 'explicit') {
+      payload.sales_id = createForm.value.sales_id
+    }
+    const res: any = await createVoiceAccount(payload)
     if (res?.success) {
       createVisible.value = false
       await ElMessageBox.alert(
@@ -359,16 +495,16 @@ const getStatusLabel = (status: string) => {
 const loadData = async () => {
   loading.value = true
   try {
-    const params = new URLSearchParams()
     const aid = parseAccountIdFilter()
-    if (aid !== undefined) params.append('account_id', String(aid))
-    if (filters.value.account_name?.trim()) params.append('account_name', filters.value.account_name.trim())
-    if (filters.value.country_code) params.append('country_code', filters.value.country_code)
-    if (filters.value.status) params.append('status', filters.value.status)
-    params.append('page', String(pagination.value.page))
-    params.append('page_size', String(pagination.value.pageSize))
-
-    const res = await request.get(`/admin/voice/accounts?${params.toString()}`)
+    const res: any = await getVoiceAccounts({
+      account_id: aid,
+      account_name: filters.value.account_name?.trim() || undefined,
+      country_code: filters.value.country_code || undefined,
+      status: filters.value.status || undefined,
+      sales_id: filters.value.sales_id,
+      page: pagination.value.page,
+      page_size: pagination.value.pageSize
+    })
     if (res.success) {
       accounts.value = res.items || []
       pagination.value.total = res.total || 0
@@ -427,6 +563,7 @@ const resetSipPassword = async (row: VoiceAccountListItem) => {
 }
 
 onMounted(() => {
+  loadStaff()
   loadData()
 })
 </script>
@@ -492,5 +629,9 @@ onMounted(() => {
   color: var(--text-secondary);
   margin: 0 0 12px;
   line-height: 1.5;
+}
+
+.text-muted {
+  color: var(--text-tertiary);
 }
 </style>

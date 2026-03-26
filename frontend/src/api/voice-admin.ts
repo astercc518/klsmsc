@@ -37,6 +37,8 @@ export interface VoiceAccountListItem {
   id: number
   account_id: number
   account?: { account_name: string }
+  sales_id?: number | null
+  sales?: { id: number; username: string; real_name?: string | null } | null
   okcc_account?: string | null
   sip_username?: string | null
   sip_login_hint?: string | null
@@ -60,6 +62,7 @@ export function getVoiceAccounts(params?: {
   status?: string
   account_id?: number
   account_name?: string
+  sales_id?: number
   page?: number
   page_size?: number
 }) {
@@ -73,6 +76,7 @@ export function updateVoiceAccount(
     max_concurrent_calls?: number
     daily_outbound_limit?: number
     sip_username?: string | null
+    sales_id?: number | null
   }
 ) {
   return request.put(`/admin/voice/accounts/${voiceAccountId}`, data)
@@ -83,6 +87,8 @@ export function createVoiceAccount(data: {
   account_id: number
   country_code: string
   template_id?: number | null
+  assign_mode?: 'inherit' | 'none' | 'explicit'
+  sales_id?: number
 }) {
   return request.post<{
     success: boolean
