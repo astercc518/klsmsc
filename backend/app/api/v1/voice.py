@@ -13,6 +13,7 @@ from app.api.v1.admin import get_current_admin
 from app.services.operation_log import log_operation
 from app.modules.voice.models import VoiceRoute, VoiceCall
 from app.modules.voice.campaign_models import (
+    VoiceCallerId,
     VoiceCdrWebhookLog,
     VoiceOutboundCampaign,
     VoiceOutboundContact,
@@ -267,29 +268,55 @@ async def list_voice_calls(
 async def list_voice_accounts(
     country_code: Optional[str] = None,
     status: Optional[str] = None,
+    account_id: Optional[int] = Query(None, description="业务账户 accounts.id"),
+    account_name: Optional[str] = Query(None, description="客户账户名模糊匹配"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     admin: AdminUser = Depends(get_current_admin),
 ):
-    """获取语音账户列表"""
+    """获取语音账户列表（支持按业务账户 ID、客户名筛选）。"""
     query = select(VoiceAccount).options(selectinload(VoiceAccount.account))
-    
+
+    if account_name and account_name.strip():
+        query = query.join(Account, VoiceAccount.account_id == Account.id).where(
+            Account.account_name.like(f"%{account_name.strip()}%")
+        )
+    if account_id is not None:
+        query = query.where(VoiceAccount.account_id == account_id)
     if country_code:
         query = query.where(VoiceAccount.country_code == country_code)
     if status:
         query = query.where(VoiceAccount.status == status)
-    
+
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
-    
+
     result = await db.execute(
         query.order_by(VoiceAccount.created_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
     accounts = result.scalars().all()
-    
+
+    dc_ids = {a.default_caller_id_id for a in accounts if a.default_caller_id_id}
+    dc_numbers: dict[int, str] = {}
+    if dc_ids:
+        rdc = await db.execute(
+            select(VoiceCallerId.id, VoiceCallerId.number_e164).where(
+                VoiceCallerId.id.in_(dc_ids)
+            )
+        )
+        dc_numbers = {rid: num for rid, num in rdc.all()}
+
+    def _sync_err(txt: Optional[str]) -> Optional[str]:
+        if not txt:
+            return None
+        t = txt.strip()
+        if len(t) <= 500:
+            return t
+        return t[:500] + "…"
+
     return {
         "success": True,
         "items": [
@@ -298,9 +325,17 @@ async def list_voice_accounts(
                 "account_id": a.account_id,
                 "account": {
                     "account_name": a.account.account_name
-                } if a.account else None,
+                }
+                if a.account
+                else None,
                 "okcc_account": a.okcc_account,
-                "sip_username": a.sip_username or a.okcc_account,
+                "sip_username": a.sip_username,
+                "sip_login_hint": a.sip_username or a.okcc_account,
+                "external_id": a.external_id,
+                "default_caller_id_id": a.default_caller_id_id,
+                "default_caller_number": dc_numbers.get(a.default_caller_id_id)
+                if a.default_caller_id_id
+                else None,
                 "country_code": a.country_code,
                 "balance": float(a.balance) if a.balance else 0,
                 "total_calls": a.total_calls or 0,
@@ -308,6 +343,7 @@ async def list_voice_accounts(
                 "max_concurrent_calls": getattr(a, "max_concurrent_calls", None) or 0,
                 "daily_outbound_limit": getattr(a, "daily_outbound_limit", None) or 0,
                 "status": a.status,
+                "sync_error": _sync_err(getattr(a, "sync_error", None)),
                 "last_sync_at": a.last_sync_at.isoformat() if a.last_sync_at else None,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
             }
@@ -323,6 +359,11 @@ class VoiceAccountUpdate(BaseModel):
     status: Optional[str] = None
     max_concurrent_calls: Optional[int] = Field(None, ge=0)
     daily_outbound_limit: Optional[int] = Field(None, ge=0)
+    sip_username: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="SIP 注册用户名；空字符串表示清空，回退为 okcc_account",
+    )
 
 
 @router.put("/accounts/{account_id}")
@@ -351,6 +392,14 @@ async def update_voice_account(
     if "daily_outbound_limit" in upd:
         before["daily_outbound_limit"] = getattr(account, "daily_outbound_limit", None)
         account.daily_outbound_limit = upd["daily_outbound_limit"]
+    if "sip_username" in upd:
+        before["sip_username"] = account.sip_username
+        raw = upd["sip_username"]
+        if raw is None:
+            account.sip_username = None
+        else:
+            stripped = raw.strip()
+            account.sip_username = stripped if stripped else None
 
     await db.flush()
     if before:

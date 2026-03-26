@@ -29,6 +29,52 @@ export interface VoiceCall {
   created_at?: string | null
 }
 
+/** 管理端语音账户列表项（与 GET /admin/voice/accounts 对齐） */
+export interface VoiceAccountListItem {
+  id: number
+  account_id: number
+  account?: { account_name: string }
+  okcc_account?: string | null
+  sip_username?: string | null
+  sip_login_hint?: string | null
+  external_id?: string | null
+  default_caller_id_id?: number | null
+  default_caller_number?: string | null
+  country_code: string
+  balance: number
+  max_concurrent_calls?: number
+  daily_outbound_limit?: number
+  total_calls: number
+  total_minutes: number
+  status: string
+  sync_error?: string | null
+  last_sync_at?: string | null
+  created_at?: string | null
+}
+
+export function getVoiceAccounts(params?: {
+  country_code?: string
+  status?: string
+  account_id?: number
+  account_name?: string
+  page?: number
+  page_size?: number
+}) {
+  return request.get('/admin/voice/accounts', { params })
+}
+
+export function updateVoiceAccount(
+  voiceAccountId: number,
+  data: {
+    status?: string
+    max_concurrent_calls?: number
+    daily_outbound_limit?: number
+    sip_username?: string | null
+  }
+) {
+  return request.put(`/admin/voice/accounts/${voiceAccountId}`, data)
+}
+
 export function getVoiceRoutes(params?: { country_code?: string }) {
   return request.get('/admin/voice/routes', { params })
 }

@@ -10,6 +10,23 @@
     <!-- 筛选 -->
     <div class="filter-card">
       <el-form :inline="true" :model="filters">
+        <el-form-item :label="$t('voice.accountId')">
+          <el-input
+            v-model="filters.account_id"
+            :placeholder="$t('voice.accountIdFilterHint')"
+            clearable
+            style="width: 120px"
+          />
+        </el-form-item>
+        <el-form-item :label="$t('voice.accountNameSearch')">
+          <el-input
+            v-model="filters.account_name"
+            :placeholder="$t('voice.accountNameSearchHint')"
+            clearable
+            style="width: 160px"
+            @keyup.enter="loadData"
+          />
+        </el-form-item>
         <el-form-item :label="$t('voice.country')">
           <el-input v-model="filters.country_code" :placeholder="$t('voice.countryCode')" clearable style="width: 120px;" />
         </el-form-item>
@@ -35,7 +52,20 @@
             <span>{{ row.account?.account_name || row.account_id }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="okcc_account" :label="$t('voice.okccAccount')" width="150" />
+        <el-table-column prop="okcc_account" :label="$t('voice.okccAccount')" width="130" show-overflow-tooltip />
+        <el-table-column :label="$t('voice.sipLoginName')" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.sip_login_hint || '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="external_id" :label="$t('voice.externalId')" width="120" show-overflow-tooltip />
+        <el-table-column :label="$t('voice.defaultCallerNumber')" min-width="130" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.default_caller_number">{{ row.default_caller_number }}</span>
+            <span v-else-if="row.default_caller_id_id">#{{ row.default_caller_id_id }}</span>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="country_code" :label="$t('voice.country')" width="80" />
         <el-table-column prop="balance" :label="$t('voice.balance')" width="100">
           <template #default="{ row }">
@@ -58,8 +88,18 @@
             {{ formatDate(row.last_sync_at) }}
           </template>
         </el-table-column>
-        <el-table-column :label="$t('common.action')" width="340" fixed="right">
+        <el-table-column :label="$t('voice.syncError')" min-width="120">
           <template #default="{ row }">
+            <el-tooltip v-if="row.sync_error" :content="row.sync_error" placement="top" max-width="400">
+              <el-tag type="danger" effect="plain">{{ $t('voice.syncErrorShort') }}</el-tag>
+            </el-tooltip>
+            <span v-else>—</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="$t('common.action')" width="400" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" @click="goCallerIds(row)">{{ $t('voice.callerIdsShort') }}</el-button>
+            <el-button size="small" @click="openEditSip(row)">{{ $t('voice.editSipUsername') }}</el-button>
             <el-button size="small" @click="syncAccount(row)">{{ $t('voice.sync') }}</el-button>
             <el-button size="small" @click="openQuota(row)">{{ $t('voice.quotaEdit') }}</el-button>
             <el-button size="small" type="danger" plain @click="resetSipPassword(row)">
@@ -89,6 +129,19 @@
       </div>
     </div>
 
+    <el-dialog v-model="sipVisible" :title="$t('voice.editSipUsername')" width="480px" @closed="sipForm.sip_username = ''">
+      <p class="sip-hint">{{ $t('voice.editSipUsernameHint') }}</p>
+      <el-form label-width="120px">
+        <el-form-item :label="$t('voice.sipUsernameField')">
+          <el-input v-model="sipForm.sip_username" clearable :placeholder="$t('voice.sipUsernamePlaceholder')" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="sipVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="sipSaving" @click="saveSipUsername">{{ $t('common.save') }}</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="quotaVisible" :title="$t('voice.quotaEdit')" width="440px">
       <el-form label-width="140px">
         <el-form-item :label="$t('voice.maxConcurrentCalls')">
@@ -110,32 +163,25 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/index'
-import { resetVoiceAccountSipPassword } from '@/api/voice-admin'
+import {
+  resetVoiceAccountSipPassword,
+  updateVoiceAccount,
+  type VoiceAccountListItem
+} from '@/api/voice-admin'
 import { formatDate } from '@/utils/date'
 
 const { t } = useI18n()
-
-interface VoiceAccount {
-  id: number
-  account_id: number
-  account?: { account_name: string }
-  okcc_account: string
-  country_code: string
-  balance: number
-  max_concurrent_calls?: number
-  daily_outbound_limit?: number
-  total_calls: number
-  total_minutes: number
-  status: string
-  last_sync_at?: string
-}
+const router = useRouter()
 
 const loading = ref(false)
-const accounts = ref<VoiceAccount[]>([])
+const accounts = ref<VoiceAccountListItem[]>([])
 
 const filters = ref({
+  account_id: '',
+  account_name: '',
   country_code: '',
   status: ''
 })
@@ -150,7 +196,46 @@ const quotaVisible = ref(false)
 const quotaSaving = ref(false)
 const quotaForm = ref({ id: 0, max_concurrent_calls: 0, daily_outbound_limit: 0 })
 
-const openQuota = (row: VoiceAccount) => {
+const sipVisible = ref(false)
+const sipSaving = ref(false)
+const sipForm = ref({ id: 0, sip_username: '' as string })
+
+function parseAccountIdFilter(): number | undefined {
+  const s = filters.value.account_id?.trim()
+  if (!s) return undefined
+  const n = Number.parseInt(s, 10)
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
+function goCallerIds(row: VoiceAccountListItem) {
+  router.push({ path: '/admin/voice/caller-ids', query: { account_id: String(row.account_id) } })
+}
+
+function openEditSip(row: VoiceAccountListItem) {
+  sipForm.value = {
+    id: row.id,
+    sip_username: row.sip_username ?? ''
+  }
+  sipVisible.value = true
+}
+
+async function saveSipUsername() {
+  sipSaving.value = true
+  try {
+    await updateVoiceAccount(sipForm.value.id, {
+      sip_username: sipForm.value.sip_username.trim() || null
+    })
+    ElMessage.success(t('voice.updateSuccess'))
+    sipVisible.value = false
+    loadData()
+  } catch (e: any) {
+    ElMessage.error(e.message || t('common.failed'))
+  } finally {
+    sipSaving.value = false
+  }
+}
+
+const openQuota = (row: VoiceAccountListItem) => {
   quotaForm.value = {
     id: row.id,
     max_concurrent_calls: row.max_concurrent_calls ?? 0,
@@ -162,7 +247,7 @@ const openQuota = (row: VoiceAccount) => {
 const saveQuota = async () => {
   quotaSaving.value = true
   try {
-    await request.put(`/admin/voice/accounts/${quotaForm.value.id}`, {
+    await updateVoiceAccount(quotaForm.value.id, {
       max_concurrent_calls: quotaForm.value.max_concurrent_calls,
       daily_outbound_limit: quotaForm.value.daily_outbound_limit
     })
@@ -198,11 +283,14 @@ const loadData = async () => {
   loading.value = true
   try {
     const params = new URLSearchParams()
+    const aid = parseAccountIdFilter()
+    if (aid !== undefined) params.append('account_id', String(aid))
+    if (filters.value.account_name?.trim()) params.append('account_name', filters.value.account_name.trim())
     if (filters.value.country_code) params.append('country_code', filters.value.country_code)
     if (filters.value.status) params.append('status', filters.value.status)
     params.append('page', String(pagination.value.page))
     params.append('page_size', String(pagination.value.pageSize))
-    
+
     const res = await request.get(`/admin/voice/accounts?${params.toString()}`)
     if (res.success) {
       accounts.value = res.items || []
@@ -215,7 +303,7 @@ const loadData = async () => {
   }
 }
 
-const syncAccount = async (row: VoiceAccount) => {
+const syncAccount = async (row: VoiceAccountListItem) => {
   try {
     await request.post(`/admin/voice/accounts/${row.id}/sync`)
     ElMessage.success(t('voice.syncRequestSent'))
@@ -225,10 +313,10 @@ const syncAccount = async (row: VoiceAccount) => {
   }
 }
 
-const toggleStatus = async (row: VoiceAccount) => {
+const toggleStatus = async (row: VoiceAccountListItem) => {
   const newStatus = row.status === 'active' ? 'suspended' : 'active'
   try {
-    await request.put(`/admin/voice/accounts/${row.id}`, { status: newStatus })
+    await updateVoiceAccount(row.id, { status: newStatus })
     ElMessage.success(t('voice.statusUpdated'))
     loadData()
   } catch (e: any) {
@@ -236,7 +324,7 @@ const toggleStatus = async (row: VoiceAccount) => {
   }
 }
 
-const resetSipPassword = async (row: VoiceAccount) => {
+const resetSipPassword = async (row: VoiceAccountListItem) => {
   try {
     await ElMessageBox.confirm(t('voice.confirmResetSipPassword'), t('voice.resetSipPassword'), {
       type: 'warning',
@@ -316,5 +404,12 @@ onMounted(() => {
   font-size: 12px;
   color: var(--text-tertiary);
   margin: 0 0 0 140px;
+}
+
+.sip-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 12px;
+  line-height: 1.5;
 }
 </style>

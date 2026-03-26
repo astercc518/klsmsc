@@ -69,6 +69,7 @@
 </template>
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -81,6 +82,10 @@ import {
 } from '@/api/voice-admin'
 
 const { t } = useI18n()
+const route = useRoute()
+
+/** 来自路由 ?account_id= 或与语音账户页联动筛选 */
+const filterAccountId = ref<number | undefined>(undefined)
 
 const loading = ref(false)
 const saving = ref(false)
@@ -111,7 +116,9 @@ async function loadRoutes() {
 async function load() {
   loading.value = true
   try {
-    const res: any = await getVoiceCallerIds()
+    const res: any = await getVoiceCallerIds(
+      filterAccountId.value != null ? { account_id: filterAccountId.value } : undefined
+    )
     items.value = res.items || res.data?.items || []
   } finally {
     loading.value = false
@@ -196,6 +203,11 @@ async function remove(row: any) {
 }
 
 onMounted(() => {
+  const q = route.query.account_id
+  if (q != null && q !== '') {
+    const n = Number.parseInt(String(q), 10)
+    if (Number.isFinite(n) && n > 0) filterAccountId.value = n
+  }
   loadRoutes()
   load()
 })
