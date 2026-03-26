@@ -31,6 +31,11 @@ from sqlalchemy.orm import selectinload
 router = APIRouter(prefix="/admin/voice", tags=["Voice"])
 
 
+def _escape_like_literal(s: str) -> str:
+    """将用户输入中的 LIKE 通配符按字面量匹配（反斜杠、%、_）。"""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class VoiceRouteCreate(BaseModel):
     country_code: str = Field(..., max_length=10)
     provider_id: Optional[int] = None
@@ -279,8 +284,9 @@ async def list_voice_accounts(
     query = select(VoiceAccount).options(selectinload(VoiceAccount.account))
 
     if account_name and account_name.strip():
+        pat = f"%{_escape_like_literal(account_name.strip())}%"
         query = query.join(Account, VoiceAccount.account_id == Account.id).where(
-            Account.account_name.like(f"%{account_name.strip()}%")
+            Account.account_name.like(pat, escape="\\")
         )
     if account_id is not None:
         query = query.where(VoiceAccount.account_id == account_id)

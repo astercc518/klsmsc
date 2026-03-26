@@ -2715,6 +2715,8 @@ export default {
     campaignsDesc: 'Import contacts and run outbound dialing (gateway required)',
     callerIdsTitle: 'Caller ID Pool',
     callerIdsDesc: 'Outbound CLI numbers for manual dial and campaigns',
+    callerIdsFilteredByAccount: 'Showing caller IDs for business account #{id} only',
+    clearAccountFilter: 'Show all',
     hangupSmsTitle: 'Hang-up SMS Rules',
     hangupSmsDesc: 'Send SMS after calls by rules',
     dncTitle: 'Do-Not-Call',

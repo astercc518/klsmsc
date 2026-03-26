@@ -5,6 +5,20 @@
       <p class="page-desc">{{ $t('voice.callerIdsDesc') }}</p>
     </div>
     <div class="table-card">
+      <el-alert
+        v-if="filterAccountId != null"
+        type="info"
+        :closable="false"
+        show-icon
+        class="filter-banner"
+      >
+        <template #default>
+          <span>{{ $t('voice.callerIdsFilteredByAccount', { id: filterAccountId }) }}</span>
+          <el-button type="primary" link class="filter-clear" @click="clearAccountFilter">
+            {{ $t('voice.clearAccountFilter') }}
+          </el-button>
+        </template>
+      </el-alert>
       <el-button type="primary" @click="openCreate">{{ $t('common.add') }}</el-button>
       <el-table :data="items" v-loading="loading" stripe class="mt-2">
         <el-table-column prop="id" label="ID" width="70" />
@@ -68,8 +82,8 @@
   </div>
 </template>
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { ref, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -83,6 +97,7 @@ import {
 
 const { t } = useI18n()
 const route = useRoute()
+const router = useRouter()
 
 /** 来自路由 ?account_id= 或与语音账户页联动筛选 */
 const filterAccountId = ref<number | undefined>(undefined)
@@ -125,11 +140,28 @@ async function load() {
   }
 }
 
+/** 从 URL 同步账户筛选（与语音账户页「主叫池」跳转联动） */
+function syncFilterFromRoute() {
+  const q = route.query.account_id
+  if (q != null && q !== '') {
+    const n = Number.parseInt(String(q), 10)
+    filterAccountId.value = Number.isFinite(n) && n > 0 ? n : undefined
+  } else {
+    filterAccountId.value = undefined
+  }
+}
+
+function clearAccountFilter() {
+  const q = { ...route.query } as Record<string, string | string[] | undefined>
+  delete q.account_id
+  router.replace({ path: route.path, query: q })
+}
+
 function openCreate() {
   isEdit.value = false
   editingId.value = null
   form.value = {
-    account_id: 1,
+    account_id: filterAccountId.value ?? 1,
     number_e164: '',
     label: '',
     trunk_ref: '',
@@ -203,14 +235,18 @@ async function remove(row: any) {
 }
 
 onMounted(() => {
-  const q = route.query.account_id
-  if (q != null && q !== '') {
-    const n = Number.parseInt(String(q), 10)
-    if (Number.isFinite(n) && n > 0) filterAccountId.value = n
-  }
+  syncFilterFromRoute()
   loadRoutes()
   load()
 })
+
+watch(
+  () => route.query.account_id,
+  () => {
+    syncFilterFromRoute()
+    load()
+  }
+)
 </script>
 <style scoped>
 .mt-2 {
@@ -237,5 +273,11 @@ onMounted(() => {
   font-size: 14px;
   color: var(--text-tertiary);
   margin: 0;
+}
+.filter-banner {
+  margin-bottom: 12px;
+}
+.filter-clear {
+  margin-left: 8px;
 }
 </style>

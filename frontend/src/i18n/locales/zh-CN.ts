@@ -2766,6 +2766,8 @@ export default {
     campaignsDesc: '创建外呼活动、导入名单并启动拨打（需配置外呼网关）',
     callerIdsTitle: '主叫号码池',
     callerIdsDesc: '配置外显主叫号码，供手拨与外呼任务使用',
+    callerIdsFilteredByAccount: '当前仅显示业务账户 #{id} 的主叫号码',
+    clearAccountFilter: '显示全部',
     hangupSmsTitle: '挂机短信规则',
     hangupSmsDesc: '通话结束后按规则向被叫发送短信',
     dncTitle: '语音禁呼名单',
