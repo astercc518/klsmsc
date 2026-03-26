@@ -10,7 +10,12 @@ celery_app = Celery(
     'sms_gateway',
     broker=settings.RABBITMQ_URL,
     backend=f'redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/1',
-    include=['app.workers.sms_worker', 'app.workers.data_worker', 'app.workers.settlement_worker']
+    include=[
+        'app.workers.sms_worker',
+        'app.workers.data_worker',
+        'app.workers.settlement_worker',
+        'app.workers.voice_worker',
+    ]
 )
 
 # Celery配置
@@ -49,6 +54,10 @@ celery_app.conf.task_queues = {
         'exchange': 'data_tasks',
         'routing_key': 'data_tasks',
     },
+    'voice_tasks': {
+        'exchange': 'voice_tasks',
+        'routing_key': 'voice_tasks',
+    },
     'settlement_tasks': {
         'exchange': 'settlement_tasks',
         'routing_key': 'settlement_tasks',
@@ -61,6 +70,11 @@ celery_app.conf.task_routes.update({
     'settlement_refresh_monthly_commission_task': {'queue': 'settlement_tasks'},
 })
 # 任务路由 - 数据业务
+celery_app.conf.task_routes.update({
+    'voice_campaign_tick_task': {'queue': 'voice_tasks'},
+    'voice_campaign_scan_task': {'queue': 'voice_tasks'},
+    'voice_cdr_retry_failed_task': {'queue': 'voice_tasks'},
+})
 celery_app.conf.task_routes.update({
     'data_refresh_all_product_stock': {'queue': 'data_tasks'},
     'data_recycle_expired_numbers': {'queue': 'data_tasks'},
@@ -94,6 +108,11 @@ celery_app.conf.beat_schedule = {
     'dlr-timeout-check-every-10min': {
         'task': 'dlr_timeout_check_task',
         'schedule': 600.0,
+    },
+    # 每 2 分钟重试失败的 CDR Webhook
+    'voice-cdr-retry-every-2min': {
+        'task': 'voice_cdr_retry_failed_task',
+        'schedule': 120.0,
     },
     # 每月 1 日 02:00 生成上月销售佣金结算单
     'settlement-commission-monthly': {

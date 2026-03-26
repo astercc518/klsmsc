@@ -25,10 +25,17 @@ class VoiceAccount(Base):
         comment="关联本地账户ID"
     )
     
-    # OKCC系统信息
-    okcc_account = Column(String(100), comment="OKCC登录账号")
+    # OKCC / 自建 SIP 凭据（自建时优先使用 sip_username）
+    okcc_account = Column(String(100), comment="OKCC登录账号或兼容字段")
     okcc_password = Column(String(255), comment="OKCC密码（加密存储）")
-    external_id = Column(String(100), unique=True, comment="OKCC系统账户ID")
+    sip_username = Column(String(100), nullable=True, comment="SIP 注册用户名")
+    external_id = Column(String(100), unique=True, comment="外部语音平台账户ID")
+    default_caller_id_id = Column(
+        Integer,
+        ForeignKey("voice_caller_ids.id"),
+        nullable=True,
+        comment="默认外显主叫号码",
+    )
     
     # 业务信息
     country_code = Column(String(10), nullable=False, comment="国家代码")
@@ -52,6 +59,18 @@ class VoiceAccount(Base):
     last_sync_at = Column(DateTime, comment="最后同步时间")
     sync_error = Column(Text, comment="同步错误信息")
     
+    # 外呼配额（0 表示不限制，由 Worker 与名单状态近似 enforcement）
+    max_concurrent_calls = Column(
+        Integer,
+        default=0,
+        comment="账户级最大并发外呼路数，0 不限制",
+    )
+    daily_outbound_limit = Column(
+        Integer,
+        default=0,
+        comment="每日外呼尝试上限，0 不限制",
+    )
+
     # 额外数据
     extra_data = Column(JSON, comment="额外数据")
     
@@ -62,6 +81,11 @@ class VoiceAccount(Base):
     # 关系
     account = relationship("Account", backref="voice_accounts")
     template = relationship("AccountTemplate")
+    default_caller = relationship(
+        "VoiceCallerId",
+        foreign_keys=[default_caller_id_id],
+        post_update=True,
+    )
     
     def __repr__(self):
         return f"<VoiceAccount(id={self.id}, okcc={self.okcc_account}, status={self.status})>"

@@ -396,9 +396,9 @@ const handleLogin = async () => {
             doAdminSuccess(adminResp)
             return
           }
-          lastError = adminResp?.error || 'invalid_credentials'
-        } catch (e: any) {
-          lastError = e?.response?.data?.error || e?.message || 'invalid_credentials'
+          lastError = toLoginErrorString(adminResp?.error) || 'invalid_credentials'
+        } catch (e: unknown) {
+          lastError = pickAxiosLoginError(e) || lastError || 'invalid_credentials'
         }
       }
       // 尝试客户登录
@@ -408,9 +408,9 @@ const handleLogin = async () => {
           await doCustomerSuccess(accountResp)
           return
         }
-        lastError = accountResp?.error || lastError
-      } catch (e: any) {
-        lastError = e?.response?.data?.error || e?.message || lastError
+        lastError = toLoginErrorString(accountResp?.error) || lastError
+      } catch (e: unknown) {
+        lastError = pickAxiosLoginError(e) || lastError
       }
       // 若先试了管理员，此处不再重试；否则再试管理员
       if (isEmailLike) {
@@ -420,12 +420,13 @@ const handleLogin = async () => {
             doAdminSuccess(adminResp)
             return
           }
-          lastError = adminResp?.error || lastError
-        } catch (e: any) {
-          lastError = e?.response?.data?.error || e?.message || lastError
+          lastError = toLoginErrorString(adminResp?.error) || lastError
+        } catch (e: unknown) {
+          lastError = pickAxiosLoginError(e) || lastError
         }
       }
-      ElMessage.error(mapLoginError(lastError))
+      const errMsg = mapLoginError(lastError)
+      if (errMsg) ElMessage.error(errMsg)
       resetCaptcha()
     } finally {
       loading.value = false
@@ -433,10 +434,50 @@ const handleLogin = async () => {
   })
 }
 
-const mapLoginError = (error: string): string => {
-  if (!error) return t('login.invalidCredentials')
-  if (error.startsWith('invalid_credentials')) {
-    const parts = error.split(':')
+/** 从 axios 错误体解析可映射的文案（兼容 500 时 error 为 { code, message } 对象） */
+const pickAxiosLoginError = (e: unknown): string => {
+  const ex = e as { response?: { data?: { error?: unknown; detail?: unknown } }; message?: unknown }
+  const data = ex?.response?.data
+  if (data?.error !== undefined) {
+    const er = data.error
+    if (typeof er === 'string') return er
+    if (er && typeof er === 'object') {
+      const o = er as { message?: unknown; code?: unknown }
+      if (typeof o.message === 'string') return o.message
+      if (typeof o.code === 'string') return o.code
+    }
+  }
+  if (typeof data?.detail === 'string') return data.detail
+  if (typeof ex?.message === 'string') return ex.message
+  return ''
+}
+
+/** 将任意 API/axios 错误统一为字符串，避免对非字符串调用 startsWith */
+const toLoginErrorString = (input: unknown): string => {
+  if (input == null) return ''
+  if (typeof input === 'string') return input
+  if (typeof input === 'number' || typeof input === 'boolean') return String(input)
+  if (typeof input === 'object') {
+    const o = input as Record<string, unknown>
+    if (typeof o.message === 'string') return o.message
+    if (typeof o.code === 'string') return o.code
+    if (typeof o.error === 'string') return o.error
+    if (o.error && typeof o.error === 'object') {
+      const inner = o.error as Record<string, unknown>
+      if (typeof inner.message === 'string') return inner.message
+      if (typeof inner.code === 'string') return inner.code
+    }
+  }
+  return pickAxiosLoginError(input)
+}
+
+const mapLoginError = (error: unknown): string => {
+  const raw = toLoginErrorString(error).trim()
+  if (!raw) return t('login.invalidCredentials')
+  // 全局 500 响应已在 axios 拦截器提示，此处不再重复弹窗
+  if (raw === 'Internal server error' || raw === 'INTERNAL_SERVER_ERROR') return ''
+  if (raw.startsWith('invalid_credentials')) {
+    const parts = raw.split(':')
     return parts[1] ? t('login.invalidCredentialsRemaining', { n: parts[1] }) : t('login.invalidCredentials')
   }
   const m: Record<string, string> = {
@@ -446,7 +487,7 @@ const mapLoginError = (error: string): string => {
     account_not_bound: t('login.tgNotBound'), cooldown: t('login.tgCooldown'),
     too_many_attempts: t('login.tgTooManyAttempts'), invalid_username: t('login.enterUsername'),
   }
-  return m[error] || error
+  return m[raw] || raw
 }
 
 const resetCaptcha = () => { captchaRef.value?.reset(); captchaVerified.value = false }

@@ -142,6 +142,34 @@ class Settings(BaseSettings):
     # 定时拉取上游 DLR 报告的 HTTP 超时（秒）
     DLR_PULL_HTTP_TIMEOUT_SECONDS: float = Field(default=60.0, ge=10.0, le=300.0)
 
+    # ========== 自建语音（SIP / CDR / 外呼网关）==========
+    # okcc：沿用 OKCC HTTP 客户端；self_hosted：自建栈 + VoiceProvider
+    VOICE_PROVIDER: str = Field(default="self_hosted", description="okcc | self_hosted")
+    VOICE_SIP_DOMAIN: str = ""
+    VOICE_SIP_PORT: int = 5060
+    VOICE_SIP_TRANSPORT: str = "udp"  # udp | tcp | tls
+    # CDR Webhook HMAC（空则仅开发环境建议配合 APP_DEBUG 使用）
+    VOICE_CDR_WEBHOOK_SECRET: str = ""
+    # 可选：仅允许这些 IP 访问 CDR Webhook（逗号分隔）；空表示不限制
+    VOICE_CDR_WEBHOOK_IP_WHITELIST: str = ""
+    # 外呼 HTTP 网关（FreeSWITCH ESL 封装服务）
+    VOICE_GATEWAY_BASE_URL: Optional[str] = None
+    VOICE_ORIGINATE_TOKEN: str = ""
+    # CDR Webhook 按源 IP 每分钟最大请求数（0 表示不单独限制，仍走全局限流中间件）
+    VOICE_CDR_WEBHOOK_IP_RATE_PER_MINUTE: int = Field(default=300, ge=0, le=100000)
+    # CDR 失败重试（Celery 定时任务重放 raw_payload）
+    VOICE_CDR_MAX_RETRIES: int = Field(default=10, ge=1, le=100)
+    # 挂机短信：同一被叫每日上限（Redis 计数，失败则仅记日志不拦截）
+    VOICE_HANGUP_SMS_MAX_PER_CALLEE_PER_DAY: int = Field(default=20, ge=1, le=500)
+    # 外呼前语音余额下限（低于则跳过拨打，0 表示不校验）
+    VOICE_MIN_BALANCE_FOR_ORIGINATE: float = Field(default=0.0, ge=0.0)
+
+    @property
+    def voice_cdr_webhook_ip_list(self) -> List[str]:
+        if not self.VOICE_CDR_WEBHOOK_IP_WHITELIST:
+            return []
+        return [ip.strip() for ip in self.VOICE_CDR_WEBHOOK_IP_WHITELIST.split(",") if ip.strip()]
+
     class Config:
         env_file = ".env"
         case_sensitive = True

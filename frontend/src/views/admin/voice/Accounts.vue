@@ -42,6 +42,8 @@
             ${{ parseFloat(row.balance || 0).toFixed(2) }}
           </template>
         </el-table-column>
+        <el-table-column prop="max_concurrent_calls" :label="$t('voice.maxConcurrentCalls')" width="100" />
+        <el-table-column prop="daily_outbound_limit" :label="$t('voice.dailyOutboundLimit')" width="110" />
         <el-table-column prop="total_calls" :label="$t('voice.totalCalls')" width="90" />
         <el-table-column prop="total_minutes" :label="$t('voice.totalMinutes')" width="90" />
         <el-table-column prop="status" :label="$t('common.status')" width="90">
@@ -56,9 +58,13 @@
             {{ formatDate(row.last_sync_at) }}
           </template>
         </el-table-column>
-        <el-table-column :label="$t('common.action')" width="180" fixed="right">
+        <el-table-column :label="$t('common.action')" width="340" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="syncAccount(row)">{{ $t('voice.sync') }}</el-button>
+            <el-button size="small" @click="openQuota(row)">{{ $t('voice.quotaEdit') }}</el-button>
+            <el-button size="small" type="danger" plain @click="resetSipPassword(row)">
+              {{ $t('voice.resetSipPassword') }}
+            </el-button>
             <el-button 
               size="small" 
               :type="row.status === 'active' ? 'warning' : 'success'"
@@ -82,14 +88,31 @@
         />
       </div>
     </div>
+
+    <el-dialog v-model="quotaVisible" :title="$t('voice.quotaEdit')" width="440px">
+      <el-form label-width="140px">
+        <el-form-item :label="$t('voice.maxConcurrentCalls')">
+          <el-input-number v-model="quotaForm.max_concurrent_calls" :min="0" :max="99999" style="width: 100%" />
+        </el-form-item>
+        <el-form-item :label="$t('voice.dailyOutboundLimit')">
+          <el-input-number v-model="quotaForm.daily_outbound_limit" :min="0" :max="9999999" style="width: 100%" />
+        </el-form-item>
+        <p class="quota-hint">{{ $t('voice.quotaZeroHint') }}</p>
+      </el-form>
+      <template #footer>
+        <el-button @click="quotaVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="quotaSaving" @click="saveQuota">{{ $t('common.save') }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/index'
+import { resetVoiceAccountSipPassword } from '@/api/voice-admin'
 import { formatDate } from '@/utils/date'
 
 const { t } = useI18n()
@@ -101,6 +124,8 @@ interface VoiceAccount {
   okcc_account: string
   country_code: string
   balance: number
+  max_concurrent_calls?: number
+  daily_outbound_limit?: number
   total_calls: number
   total_minutes: number
   status: string
@@ -120,6 +145,36 @@ const pagination = ref({
   pageSize: 20,
   total: 0
 })
+
+const quotaVisible = ref(false)
+const quotaSaving = ref(false)
+const quotaForm = ref({ id: 0, max_concurrent_calls: 0, daily_outbound_limit: 0 })
+
+const openQuota = (row: VoiceAccount) => {
+  quotaForm.value = {
+    id: row.id,
+    max_concurrent_calls: row.max_concurrent_calls ?? 0,
+    daily_outbound_limit: row.daily_outbound_limit ?? 0
+  }
+  quotaVisible.value = true
+}
+
+const saveQuota = async () => {
+  quotaSaving.value = true
+  try {
+    await request.put(`/admin/voice/accounts/${quotaForm.value.id}`, {
+      max_concurrent_calls: quotaForm.value.max_concurrent_calls,
+      daily_outbound_limit: quotaForm.value.daily_outbound_limit
+    })
+    ElMessage.success(t('voice.quotaSaved'))
+    quotaVisible.value = false
+    loadData()
+  } catch (e: any) {
+    ElMessage.error(e.message || t('common.failed'))
+  } finally {
+    quotaSaving.value = false
+  }
+}
 
 const getStatusType = (status: string) => {
   const map: Record<string, string> = {
@@ -181,6 +236,31 @@ const toggleStatus = async (row: VoiceAccount) => {
   }
 }
 
+const resetSipPassword = async (row: VoiceAccount) => {
+  try {
+    await ElMessageBox.confirm(t('voice.confirmResetSipPassword'), t('voice.resetSipPassword'), {
+      type: 'warning',
+      confirmButtonText: t('common.confirm'),
+      cancelButtonText: t('common.cancel')
+    })
+  } catch {
+    return
+  }
+  try {
+    const res: any = await resetVoiceAccountSipPassword(row.id)
+    if (res?.success && res.sip_password) {
+      await ElMessageBox.alert(
+        `${t('voice.sipUserLabel')}: ${res.sip_username || '—'}\n${t('voice.sipPasswordLabel')}: ${res.sip_password}`,
+        t('voice.sipPasswordShowOnce'),
+        { confirmButtonText: t('common.confirm'), dangerouslyUseHTMLString: false }
+      )
+      ElMessage.success(t('voice.sipPasswordResetLogged'))
+    }
+  } catch (e: any) {
+    ElMessage.error(e.message || t('common.failed'))
+  }
+}
+
 onMounted(() => {
   loadData()
 })
@@ -230,5 +310,11 @@ onMounted(() => {
   margin-top: 16px;
   display: flex;
   justify-content: flex-end;
+}
+
+.quota-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin: 0 0 0 140px;
 }
 </style>

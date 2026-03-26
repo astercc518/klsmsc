@@ -31,8 +31,17 @@ from app.modules.sms.supplier import Supplier, SupplierChannel, SupplierRate, Se
 from app.modules.data.models import DataNumber, DataProduct, DataOrder, DataImportBatch, DataOrderNumber, DataPricingTemplate, DataProductRating
 from app.modules.data.data_account import DataAccount, DataExtractionLog
 
-# Voice Module (New)
+# Voice Module
 from app.modules.voice.models import VoiceRoute, VoiceCall
+from app.modules.voice.voice_account import VoiceAccount, VoiceRechargeLog
+from app.modules.voice.campaign_models import (
+    VoiceCallerId,
+    VoiceOutboundCampaign,
+    VoiceOutboundContact,
+    VoiceHangupSmsRule,
+    VoiceDncNumber,
+    VoiceCdrWebhookLog,
+)
 
 # Legacy/Unmoved (if any)
 from app.modules.common.account_pricing import AccountPricing

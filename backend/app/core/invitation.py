@@ -256,55 +256,57 @@ class InvitationService:
         template_id: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        创建语音账户（对接OKCC系统）
+        创建语音账户（OKCC 或自建 VoiceProvider）
         """
-        from app.services.okcc_client import get_okcc_client
-        
-        okcc = get_okcc_client()
-        
+        from app.services.voice_provider import get_voice_provider
+
+        provider = get_voice_provider()
+
         try:
-            # 调用OKCC创建账户
-            result = await okcc.create_account({
-                'account_name': account.account_name,
-                'country_code': country_code,
+            result = await provider.create_account({
+                "account_name": account.account_name,
+                "country_code": country_code,
             })
-            
-            if result.get('success'):
-                data = result.get('data', {})
-                
-                # 创建本地语音账户记录
+
+            if result.get("success"):
+                data = result.get("data", {})
+                sip_user = data.get("account")
+                pwd = data.get("password")
+
                 voice_account = VoiceAccount(
                     account_id=account.id,
-                    okcc_account=data.get('account'),
-                    okcc_password=data.get('password'),  # 实际应加密存储
-                    external_id=data.get('external_id'),
+                    okcc_account=sip_user,
+                    sip_username=sip_user,
+                    okcc_password=pwd,
+                    external_id=data.get("external_id"),
                     country_code=country_code,
                     template_id=template_id,
-                    status='active',
-                    balance=0
+                    status="active",
+                    balance=0,
                 )
                 self.db.add(voice_account)
-                
-                logger.info(f"语音账户创建成功: {account.account_name} -> OKCC:{data.get('account')}")
-                
+
+                logger.info(f"语音账户创建成功: {account.account_name} -> {sip_user}")
+
                 return {
                     "success": True,
-                    "okcc_account": data.get('account'),
-                    "okcc_password": data.get('password'),
-                    "message": "语音账户已创建，请使用以上信息登录OKCC系统"
+                    "okcc_account": sip_user,
+                    "sip_username": sip_user,
+                    "okcc_password": pwd,
+                    "message": "语音账户已创建，请使用返回的 SIP 账号登录软电话",
                 }
-            else:
-                logger.error(f"OKCC账户创建失败: {result.get('message')}")
-                return {
-                    "success": False,
-                    "message": f"语音账户创建失败: {result.get('message')}"
-                }
-                
+
+            logger.error(f"语音账户创建失败: {result.get('message')}")
+            return {
+                "success": False,
+                "message": f"语音账户创建失败: {result.get('message')}",
+            }
+
         except Exception as e:
             logger.error(f"创建语音账户异常: {e}")
             return {
                 "success": False,
-                "message": f"语音账户创建异常: {str(e)}"
+                "message": f"语音账户创建异常: {str(e)}",
             }
     
     async def _create_data_account(

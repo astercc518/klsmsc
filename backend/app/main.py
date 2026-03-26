@@ -8,6 +8,8 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.ip_whitelist import IPWhitelistMiddleware
+from sqlalchemy import text
+
 from app.config import settings
 from app.database import (
     init_db,
@@ -145,6 +147,32 @@ async def health_check():
     }
 
 
+@app.get("/health/voice")
+async def health_voice():
+    """语音模块依赖探测：数据库与 Redis（供运维与 FS 网关探活）。"""
+    from app.database import engine
+    from app.utils.cache import get_redis_client
+
+    ok_db = True
+    ok_redis = True
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception:
+        ok_db = False
+    try:
+        r = await get_redis_client()
+        await r.ping()
+    except Exception:
+        ok_redis = False
+    degraded = not (ok_db and ok_redis)
+    return {
+        "status": "degraded" if degraded else "ok",
+        "database": ok_db,
+        "redis": ok_redis,
+    }
+
+
 @app.get("/")
 async def root():
     """根路径"""
@@ -161,7 +189,8 @@ from app.api.v1 import (
     templates, api_keys, batches, scheduled_tasks, sub_accounts, packages,
     notifications, security_logs, suppliers, tickets, settlements,
     sales_commission, knowledge,
-    channel_relations, voice, account_templates, ai, admin_logs
+    channel_relations, voice, voice_webhooks, voice_customer, voice_extra,
+    account_templates, ai, admin_logs
 )
 from app.api.v1.data import (
     admin_numbers_router, admin_products_router, admin_orders_router,
@@ -202,6 +231,9 @@ app.include_router(customer_router, prefix="/api/v1/data", tags=["数据业务-�
 app.include_router(channel_relations.router, prefix="/api/v1", tags=["Channel Relations"])
 # 语音业务管理
 app.include_router(voice.router, prefix="/api/v1", tags=["Voice"])
+app.include_router(voice_webhooks.router, prefix="/api/v1", tags=["Voice Webhooks"])
+app.include_router(voice_customer.router, prefix="/api/v1", tags=["Voice Customer"])
+app.include_router(voice_extra.router, prefix="/api/v1", tags=["Voice"])
 # 开户模板管理
 app.include_router(account_templates.router, prefix="/api/v1", tags=["Account Templates"])
 # AI 文案生成

@@ -106,6 +106,16 @@
                 </div>
                 <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.callRecords') }}</span>
               </div>
+
+              <div class="nav-item" :class="{ active: isActive('/voice/caller-ids') }" @click="navigate('/voice/caller-ids')">
+                <div class="nav-icon">
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <path d="M4 6h12M4 10h8M4 14h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    <rect x="2" y="3" width="16" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                  </svg>
+                </div>
+                <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.voiceCallerIdsCustomer') }}</span>
+              </div>
             </div>
 
             <!-- 数据业务 -->
@@ -407,6 +417,39 @@
                     </svg>
                   </div>
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.callRecords') }}</span>
+                </div>
+                <div class="nav-item" :class="{ active: isActive('/admin/voice/ops') }" @click="navigate('/admin/voice/ops')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M3 14L7 10L10 13L17 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      <path d="M14 6H17V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.voiceOpsMetrics') }}</span>
+                </div>
+                <div class="nav-item" :class="{ active: isActive('/admin/voice/caller-ids') }" @click="navigate('/admin/voice/caller-ids')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 4H16V16H4V4Z" stroke="currentColor" stroke-width="1.5"/></svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.voiceCallerIds') }}</span>
+                </div>
+                <div class="nav-item" :class="{ active: isActive('/admin/voice/campaigns') }" @click="navigate('/admin/voice/campaigns')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 10L10 3L17 10" stroke="currentColor" stroke-width="1.5"/></svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.voiceCampaigns') }}</span>
+                </div>
+                <div class="nav-item" :class="{ active: isActive('/admin/voice/hangup-sms') }" @click="navigate('/admin/voice/hangup-sms')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 6H16V14H4V6Z" stroke="currentColor" stroke-width="1.5"/></svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.voiceHangupSms') }}</span>
+                </div>
+                <div class="nav-item" :class="{ active: isActive('/admin/voice/dnc') }" @click="navigate('/admin/voice/dnc')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5"/></svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.voiceDnc') }}</span>
                 </div>
               </div>
 

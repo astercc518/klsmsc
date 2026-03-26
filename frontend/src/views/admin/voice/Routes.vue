@@ -22,6 +22,8 @@
         <el-table-column prop="provider_id" :label="$t('voice.providerId')" width="120" />
         <el-table-column prop="priority" :label="$t('voice.priority')" width="120" />
         <el-table-column prop="cost_per_minute" :label="$t('voice.costPerMinute')" width="140" />
+        <el-table-column prop="trunk_profile" :label="$t('voice.trunkProfile')" min-width="120" show-overflow-tooltip />
+        <el-table-column prop="dial_prefix" :label="$t('voice.dialPrefix')" width="100" />
         <el-table-column prop="created_at" :label="$t('common.createdAt')" width="180">
           <template #default="{ row }">
             {{ row.created_at ? new Date(row.created_at).toLocaleString() : '-' }}
@@ -36,7 +38,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="isEdit ? $t('voice.editRoute') : $t('voice.addRoute')" width="480px">
+    <el-dialog v-model="dialogVisible" :title="isEdit ? $t('voice.editRoute') : $t('voice.addRoute')" width="520px">
       <el-form :model="form" label-width="110px">
         <el-form-item :label="$t('voice.countryCode')" required>
           <el-input v-model="form.country_code" :placeholder="$t('voice.countryCodePlaceholder')" :disabled="isEdit" />
@@ -49,6 +51,15 @@
         </el-form-item>
         <el-form-item :label="$t('voice.costPerMinute')">
           <el-input-number v-model="form.cost_per_minute" :min="0" :step="0.001" style="width: 100%" />
+        </el-form-item>
+        <el-form-item :label="$t('voice.trunkProfile')">
+          <el-input v-model="form.trunk_profile" :placeholder="$t('voice.trunkProfileHint')" />
+        </el-form-item>
+        <el-form-item :label="$t('voice.dialPrefix')">
+          <el-input v-model="form.dial_prefix" />
+        </el-form-item>
+        <el-form-item :label="$t('voice.routeNotes')">
+          <el-input v-model="form.notes" type="textarea" :rows="2" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -79,7 +90,10 @@ const form = ref({
   country_code: '',
   provider_id: undefined as number | undefined,
   priority: 0,
-  cost_per_minute: 0
+  cost_per_minute: 0,
+  trunk_profile: '' as string | undefined,
+  dial_prefix: '' as string | undefined,
+  notes: '' as string | undefined
 })
 
 const loadRoutes = async () => {
@@ -97,7 +111,15 @@ const loadRoutes = async () => {
 const openCreate = () => {
   isEdit.value = false
   currentId.value = null
-  form.value = { country_code: '', provider_id: undefined, priority: 0, cost_per_minute: 0 }
+  form.value = {
+    country_code: '',
+    provider_id: undefined,
+    priority: 0,
+    cost_per_minute: 0,
+    trunk_profile: '',
+    dial_prefix: '',
+    notes: ''
+  }
   dialogVisible.value = true
 }
 
@@ -108,7 +130,10 @@ const openEdit = (row: any) => {
     country_code: row.country_code,
     provider_id: row.provider_id || undefined,
     priority: row.priority,
-    cost_per_minute: row.cost_per_minute
+    cost_per_minute: row.cost_per_minute,
+    trunk_profile: row.trunk_profile || '',
+    dial_prefix: row.dial_prefix || '',
+    notes: row.notes || ''
   }
   dialogVisible.value = true
 }
