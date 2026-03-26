@@ -164,6 +164,12 @@ class Settings(BaseSettings):
     # 外呼前语音余额下限（低于则跳过拨打，0 表示不校验）
     VOICE_MIN_BALANCE_FOR_ORIGINATE: float = Field(default=0.0, ge=0.0)
 
+    # VOS（如 VOS3000）可选：管理地址，用于管理端连通性探测；业务出局仍走语音路由 + 外呼网关
+    VOS_HTTP_BASE: Optional[str] = Field(default=None, description="VOS Web 管理根 URL，如 https://vos.example.com:8080")
+    VOS_HTTP_USERNAME: Optional[str] = None
+    VOS_HTTP_PASSWORD: Optional[str] = None
+    VOS_HTTP_VERIFY_SSL: bool = Field(default=True, description="探测 VOS 管理地址时是否校验 TLS 证书")
+
     @property
     def voice_cdr_webhook_ip_list(self) -> List[str]:
         if not self.VOICE_CDR_WEBHOOK_IP_WHITELIST:

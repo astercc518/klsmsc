@@ -8,6 +8,9 @@ export interface VoiceRoute {
   cost_per_minute: number
   trunk_profile?: string | null
   dial_prefix?: string | null
+  /** generic=通用 FS/Trunk；vos=对接 VOS（如 VOS3000） */
+  gateway_type?: string
+  vos_gateway_name?: string | null
   notes?: string | null
   created_at?: string | null
 }
@@ -105,8 +108,21 @@ export function createVoiceRoute(data: {
   trunk_profile?: string | null
   dial_prefix?: string | null
   notes?: string | null
+  gateway_type?: string
+  vos_gateway_name?: string | null
 }) {
   return request.post('/admin/voice/routes', data)
+}
+
+/** VOS 管理 HTTP 是否配置及可选连通性探测 */
+export function getVoiceVosStatus() {
+  return request.get<{
+    success: boolean
+    vos_http_base_configured: boolean
+    vos_http_username_set: boolean
+    reachable: boolean | null
+    detail: string
+  }>('/admin/voice/vos/status')
 }
 
 export function updateVoiceRoute(routeId: number, data: any) {

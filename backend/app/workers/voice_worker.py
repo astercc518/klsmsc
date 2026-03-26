@@ -18,6 +18,7 @@ from app.modules.voice.campaign_models import (
     VoiceOutboundContact,
     VoiceDncNumber,
 )
+from app.modules.voice.models import VoiceRoute
 from app.modules.voice.voice_account import VoiceAccount
 from app.utils.logger import get_logger
 from app.workers.celery_app import celery_app
@@ -101,6 +102,7 @@ async def _count_today_outbound_attempts(db: AsyncSession, account_id: int) -> i
 
 
 async def _originate(
+    db: AsyncSession,
     *,
     account_id: int,
     phone: str,
@@ -115,6 +117,19 @@ async def _originate(
         logger.warning("未配置 VOICE_GATEWAY_BASE_URL，跳过真实外呼")
         return {"success": False, "message": "gateway not configured"}
 
+    voice_route_block: Optional[Dict[str, Any]] = None
+    if voice_route_id is not None:
+        r = await db.execute(select(VoiceRoute).where(VoiceRoute.id == voice_route_id))
+        vr = r.scalar_one_or_none()
+        if vr:
+            voice_route_block = {
+                "id": vr.id,
+                "gateway_type": getattr(vr, "gateway_type", None) or "generic",
+                "vos_gateway_name": getattr(vr, "vos_gateway_name", None),
+                "trunk_profile": vr.trunk_profile,
+                "dial_prefix": vr.dial_prefix,
+            }
+
     url = base.rstrip("/") + "/originate"
     headers = {}
     if settings.VOICE_ORIGINATE_TOKEN:
@@ -126,6 +141,7 @@ async def _originate(
         "caller_id": caller_id,
         "trunk_ref": trunk_ref,
         "voice_route_id": voice_route_id,
+        "voice_route": voice_route_block,
         "ai_mode": (ai_mode or "ivr")[:16],
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -210,6 +226,7 @@ async def _process_campaign_batch_async(campaign_id: int, limit: int = 20) -> Di
 
             caller, trunk_ref, vrid = await _pick_caller_id(db, camp, c)
             res = await _originate(
+                db,
                 account_id=camp.account_id,
                 phone=c.phone_e164,
                 campaign_id=campaign_id,

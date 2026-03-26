@@ -11,6 +11,7 @@
           @keyup.enter="loadRoutes"
         />
         <el-button @click="loadRoutes">{{ $t('smsRecords.query') }}</el-button>
+        <el-button @click="checkVosStatus">{{ $t('voice.vosStatusCheck') }}</el-button>
         <el-button type="primary" @click="openCreate">{{ $t('voice.addRoute') }}</el-button>
       </div>
     </div>
@@ -22,6 +23,8 @@
         <el-table-column prop="provider_id" :label="$t('voice.providerId')" width="120" />
         <el-table-column prop="priority" :label="$t('voice.priority')" width="120" />
         <el-table-column prop="cost_per_minute" :label="$t('voice.costPerMinute')" width="140" />
+        <el-table-column prop="gateway_type" :label="$t('voice.gatewayType')" width="100" />
+        <el-table-column prop="vos_gateway_name" :label="$t('voice.vosGatewayName')" min-width="120" show-overflow-tooltip />
         <el-table-column prop="trunk_profile" :label="$t('voice.trunkProfile')" min-width="120" show-overflow-tooltip />
         <el-table-column prop="dial_prefix" :label="$t('voice.dialPrefix')" width="100" />
         <el-table-column prop="created_at" :label="$t('common.createdAt')" width="180">
@@ -52,6 +55,15 @@
         <el-form-item :label="$t('voice.costPerMinute')">
           <el-input-number v-model="form.cost_per_minute" :min="0" :step="0.001" style="width: 100%" />
         </el-form-item>
+        <el-form-item :label="$t('voice.gatewayType')">
+          <el-select v-model="form.gateway_type" style="width: 100%">
+            <el-option :label="$t('voice.gatewayTypeGeneric')" value="generic" />
+            <el-option :label="$t('voice.gatewayTypeVos')" value="vos" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="form.gateway_type === 'vos'" :label="$t('voice.vosGatewayName')" required>
+          <el-input v-model="form.vos_gateway_name" :placeholder="$t('voice.vosGatewayNameHint')" />
+        </el-form-item>
         <el-form-item :label="$t('voice.trunkProfile')">
           <el-input v-model="form.trunk_profile" :placeholder="$t('voice.trunkProfileHint')" />
         </el-form-item>
@@ -74,7 +86,13 @@
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getVoiceRoutes, createVoiceRoute, updateVoiceRoute, deleteVoiceRoute } from '@/api/voice-admin'
+import {
+  getVoiceRoutes,
+  createVoiceRoute,
+  updateVoiceRoute,
+  deleteVoiceRoute,
+  getVoiceVosStatus,
+} from '@/api/voice-admin'
 
 const { t } = useI18n()
 
@@ -91,6 +109,8 @@ const form = ref({
   provider_id: undefined as number | undefined,
   priority: 0,
   cost_per_minute: 0,
+  gateway_type: 'generic' as 'generic' | 'vos',
+  vos_gateway_name: '' as string | undefined,
   trunk_profile: '' as string | undefined,
   dial_prefix: '' as string | undefined,
   notes: '' as string | undefined
@@ -108,6 +128,25 @@ const loadRoutes = async () => {
   }
 }
 
+const checkVosStatus = async () => {
+  try {
+    const res = await getVoiceVosStatus()
+    const lines = [
+      `${t('voice.vosHttpConfigured')}: ${res.vos_http_base_configured ? t('common.yes') : t('common.no')}`,
+      `${t('voice.vosHttpUserSet')}: ${res.vos_http_username_set ? t('common.yes') : t('common.no')}`,
+    ]
+    if (res.reachable != null) {
+      lines.push(`${t('voice.vosReachable')}: ${res.reachable ? t('common.yes') : t('common.no')}`)
+    }
+    lines.push('', res.detail || '')
+    await ElMessageBox.alert(lines.join('\n'), t('voice.vosStatusTitle'), {
+      confirmButtonText: t('common.confirm'),
+    })
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || t('common.failed'))
+  }
+}
+
 const openCreate = () => {
   isEdit.value = false
   currentId.value = null
@@ -116,6 +155,8 @@ const openCreate = () => {
     provider_id: undefined,
     priority: 0,
     cost_per_minute: 0,
+    gateway_type: 'generic',
+    vos_gateway_name: '',
     trunk_profile: '',
     dial_prefix: '',
     notes: ''
@@ -131,6 +172,8 @@ const openEdit = (row: any) => {
     provider_id: row.provider_id || undefined,
     priority: row.priority,
     cost_per_minute: row.cost_per_minute,
+    gateway_type: (row.gateway_type === 'vos' ? 'vos' : 'generic') as 'generic' | 'vos',
+    vos_gateway_name: row.vos_gateway_name || '',
     trunk_profile: row.trunk_profile || '',
     dial_prefix: row.dial_prefix || '',
     notes: row.notes || ''
@@ -143,13 +186,22 @@ const saveRoute = async () => {
     ElMessage.warning(t('voice.pleaseEnterCountryCode'))
     return
   }
+  if (form.value.gateway_type === 'vos' && !form.value.vos_gateway_name?.trim()) {
+    ElMessage.warning(t('voice.vosGatewayNameRequired'))
+    return
+  }
   saving.value = true
   try {
+    const payload = {
+      ...form.value,
+      vos_gateway_name:
+        form.value.gateway_type === 'vos' ? form.value.vos_gateway_name?.trim() : null,
+    }
     if (isEdit.value && currentId.value) {
-      await updateVoiceRoute(currentId.value, form.value)
+      await updateVoiceRoute(currentId.value, payload)
       ElMessage.success(t('voice.updateSuccess'))
     } else {
-      await createVoiceRoute(form.value)
+      await createVoiceRoute(payload)
       ElMessage.success(t('voice.createSuccess'))
     }
     dialogVisible.value = false

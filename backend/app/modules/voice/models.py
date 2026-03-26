@@ -16,6 +16,14 @@ class VoiceRoute(Base):
     # 与 FreeSWITCH/网关出局配置对齐，供运维侧双写与对账
     trunk_profile = Column(String(128), nullable=True, comment="FS 网关 profile 或 Trunk 名")
     dial_prefix = Column(String(32), nullable=True, comment="出局拨号前缀")
+    # VOS（如 VOS3000）对接：gateway_type=vos 时 vos_gateway_name 与 VOS 落地/对接网关名一致
+    gateway_type = Column(
+        String(32),
+        nullable=False,
+        default="generic",
+        comment="generic=通用；vos=对接 VOS",
+    )
+    vos_gateway_name = Column(String(128), nullable=True, comment="VOS 网关/落地名称")
     notes = Column(Text, nullable=True, comment="备注")
     
     created_at = Column(DateTime, server_default=func.now())

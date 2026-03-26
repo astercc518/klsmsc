@@ -44,6 +44,17 @@ class VoiceRouteCreate(BaseModel):
     trunk_profile: Optional[str] = Field(None, max_length=128)
     dial_prefix: Optional[str] = Field(None, max_length=32)
     notes: Optional[str] = None
+    # 出局类型：generic 通用 FS/Trunk；vos 对接 VOS（如 VOS3000）落地网关
+    gateway_type: str = Field(
+        "generic",
+        max_length=32,
+        description="generic | vos",
+    )
+    vos_gateway_name: Optional[str] = Field(
+        None,
+        max_length=128,
+        description="VOS 侧网关/落地名称，与 gateway_type=vos 配合",
+    )
 
 
 class VoiceRouteUpdate(BaseModel):
@@ -54,6 +65,8 @@ class VoiceRouteUpdate(BaseModel):
     trunk_profile: Optional[str] = Field(None, max_length=128)
     dial_prefix: Optional[str] = Field(None, max_length=32)
     notes: Optional[str] = None
+    gateway_type: Optional[str] = Field(None, max_length=32)
+    vos_gateway_name: Optional[str] = Field(None, max_length=128)
 
 
 @router.get("/routes")
@@ -78,6 +91,8 @@ async def list_voice_routes(
                 "cost_per_minute": r.cost_per_minute,
                 "trunk_profile": getattr(r, "trunk_profile", None),
                 "dial_prefix": getattr(r, "dial_prefix", None),
+                "gateway_type": getattr(r, "gateway_type", None) or "generic",
+                "vos_gateway_name": getattr(r, "vos_gateway_name", None),
                 "notes": getattr(r, "notes", None),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
@@ -94,6 +109,11 @@ async def create_voice_route(
     db: AsyncSession = Depends(get_db),
     admin: AdminUser = Depends(get_current_admin),
 ):
+    gt = (data.gateway_type or "generic").strip().lower()
+    if gt not in ("generic", "vos"):
+        raise HTTPException(status_code=422, detail="gateway_type 仅支持 generic 或 vos")
+    if gt == "vos" and not (data.vos_gateway_name and str(data.vos_gateway_name).strip()):
+        raise HTTPException(status_code=422, detail="对接 VOS 时需填写 VOS 网关名称")
     route = VoiceRoute(
         country_code=data.country_code,
         provider_id=data.provider_id,
@@ -102,6 +122,8 @@ async def create_voice_route(
         trunk_profile=data.trunk_profile,
         dial_prefix=data.dial_prefix,
         notes=data.notes,
+        gateway_type=gt,
+        vos_gateway_name=(data.vos_gateway_name.strip() if data.vos_gateway_name else None),
     )
     db.add(route)
     await db.flush()
@@ -136,8 +158,19 @@ async def update_voice_route(
         raise HTTPException(status_code=404, detail="Route not found")
 
     update_data = data.dict(exclude_unset=True)
+    if "gateway_type" in update_data and update_data["gateway_type"] is not None:
+        gt = str(update_data["gateway_type"]).strip().lower()
+        if gt not in ("generic", "vos"):
+            raise HTTPException(status_code=422, detail="gateway_type 仅支持 generic 或 vos")
+        update_data["gateway_type"] = gt
+    if "vos_gateway_name" in update_data and update_data["vos_gateway_name"] is not None:
+        v = update_data["vos_gateway_name"]
+        update_data["vos_gateway_name"] = v.strip() if isinstance(v, str) and v.strip() else None
     for key, value in update_data.items():
         setattr(route, key, value)
+
+    if route.gateway_type == "vos" and not (route.vos_gateway_name or "").strip():
+        raise HTTPException(status_code=422, detail="对接 VOS 时需填写 VOS 网关名称")
 
     await db.flush()
     await log_operation(
@@ -182,6 +215,30 @@ async def delete_voice_route(
     )
     await db.commit()
     return {"success": True}
+
+
+@router.get("/vos/status")
+async def voice_vos_status(
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """VOS 可选 HTTP 管理地址配置与连通性（业务出局以路由表 + 外呼网关为准）。"""
+    from app.services.vos_client import vos_http_reachable, vos_settings_summary
+
+    summary = vos_settings_summary()
+    reachable: Optional[bool] = None
+    detail = ""
+    if summary.get("vos_http_base_configured"):
+        ok, detail = await vos_http_reachable()
+        reachable = ok
+    else:
+        detail = "未配置 VOS_HTTP_BASE，仅使用路由表中的 VOS 网关名对接出局网关"
+
+    return {
+        "success": True,
+        **summary,
+        "reachable": reachable,
+        "detail": detail,
+    }
 
 
 @router.get("/calls")
