@@ -446,6 +446,11 @@ async def _update_batch_progress(db, batch_id: int):
                 batch.status = BatchStatus.COMPLETED
                 batch.error_message = f"部分失败: {failed}/{total}"
             batch.completed_at = datetime.now()
+        else:
+            # 仍有排队/发送中：批次回到处理中（如失败重发后重新入队）
+            batch.status = BatchStatus.PROCESSING
+            batch.completed_at = None
+            batch.error_message = None
 
         await db.commit()
 
@@ -937,8 +942,10 @@ async def _fetch_dlr_reports_async():
                         if reports:
                             logger.info(f"[{channel.channel_code}] 解析到 {len(reports)} 条 DLR 报告")
                             success, fail = await process_dlr_reports(
-                                reports, db,
-                                source=f"pull-{channel.channel_code}"
+                                reports,
+                                db,
+                                source=f"pull-{channel.channel_code}",
+                                channel_id=channel.id,
                             )
                             total_success += success
                             total_fail += fail

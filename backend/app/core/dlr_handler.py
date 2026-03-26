@@ -14,7 +14,7 @@ import re
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple, Any
 from enum import Enum
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.sms.sms_log import SMSLog
 from app.utils.logger import get_logger
@@ -326,7 +326,8 @@ def parse_form_dlr(form_data: Dict) -> List[Dict]:
 async def process_dlr_reports(
     reports: List[Dict],
     db: AsyncSession,
-    source: str = "unknown"
+    source: str = "unknown",
+    channel_id: Optional[int] = None,
 ) -> Tuple[int, int]:
     """
     处理 DLR 报告列表
@@ -335,6 +336,7 @@ async def process_dlr_reports(
         reports: DLR 报告列表
         db: 数据库会话
         source: 来源标识（用于日志）
+        channel_id: 若指定则仅匹配该通道下的短信，避免跨通道 upstream_message_id 碰撞误更新
         
     Returns:
         (成功数, 失败数)
@@ -353,9 +355,12 @@ async def process_dlr_reports(
             # 查找对应的短信记录：优先用上游消息ID匹配（多候选避免大小写/进制差异）
             sms_log = None
             if id_candidates:
+                conds = [SMSLog.upstream_message_id.in_(id_candidates)]
+                if channel_id is not None:
+                    conds.append(SMSLog.channel_id == channel_id)
                 query = (
                     select(SMSLog)
-                    .where(SMSLog.upstream_message_id.in_(id_candidates))
+                    .where(and_(*conds))
                     .order_by(SMSLog.submit_time.desc())
                     .limit(1)
                 )
@@ -364,9 +369,12 @@ async def process_dlr_reports(
 
             # 兜底：部分上游会回传我们的 message_id，尝试用我们的 ID 匹配
             if not sms_log:
+                conds2 = [SMSLog.message_id == msg_id_str]
+                if channel_id is not None:
+                    conds2.append(SMSLog.channel_id == channel_id)
                 query = (
                     select(SMSLog)
-                    .where(SMSLog.message_id == msg_id_str)
+                    .where(and_(*conds2))
                     .order_by(SMSLog.submit_time.desc())
                     .limit(1)
                 )
@@ -376,10 +384,18 @@ async def process_dlr_reports(
             # 如果没找到，尝试用手机号匹配
             if not sms_log and report.get('mobile'):
                 clean_mobile = str(report['mobile']).lstrip('+').strip()
-                query = select(SMSLog).where(
+                conds3 = [
                     SMSLog.phone_number.like(f"%{clean_mobile}"),
-                    SMSLog.status == 'sent'
-                ).order_by(SMSLog.submit_time.desc()).limit(1)
+                    SMSLog.status == 'sent',
+                ]
+                if channel_id is not None:
+                    conds3.append(SMSLog.channel_id == channel_id)
+                query = (
+                    select(SMSLog)
+                    .where(and_(*conds3))
+                    .order_by(SMSLog.submit_time.desc())
+                    .limit(1)
+                )
                 result = await db.execute(query)
                 sms_log = result.scalars().first()
             

@@ -55,12 +55,12 @@
             </div>
           </div>
           
-          <button class="recharge-btn">
+          <button type="button" class="recharge-btn" @click="openSalesTelegram">
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
               <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/>
               <path d="M9 6V12M6 9H12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
             </svg>
-            {{ $t('balance.contactAdmin') }}
+            {{ $t('balance.contactSales') }}
           </button>
         </div>
       </div>
@@ -108,30 +108,6 @@
               </li>
             </ul>
           </div>
-          
-          <div class="info-section">
-            <h4 class="section-title">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M8 2L10.5 7L16 7.5L12 11.5L13 17L8 14L3 17L4 11.5L0 7.5L5.5 7L8 2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-              </svg>
-              {{ $t('balance.rechargePromo') }}
-            </h4>
-            <div class="promo-cards">
-              <div class="promo-card">
-                <span class="promo-amount">$100</span>
-                <span class="promo-bonus">{{ $t('balance.bonus', { amount: '$5' }) }}</span>
-              </div>
-              <div class="promo-card featured">
-                <span class="promo-tag">{{ $t('common.recommended') }}</span>
-                <span class="promo-amount">$500</span>
-                <span class="promo-bonus">{{ $t('balance.bonus', { amount: '$30' }) }}</span>
-              </div>
-              <div class="promo-card">
-                <span class="promo-amount">$1000</span>
-                <span class="promo-bonus">{{ $t('balance.bonus', { amount: '$100' }) }}</span>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -159,7 +135,7 @@
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { getBalance } from '@/api/account'
+import { getBalance, getAccountInfo } from '@/api/account'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -167,6 +143,8 @@ const balance = ref(0)
 const currency = ref('USD')
 const lowBalanceThreshold = ref(100)
 const accountId = ref('')
+/** 归属商务 Telegram 用户名（不含 @），来自 /account/info */
+const salesTgUsername = ref<string | null>(null)
 
 const loadData = async () => {
   loading.value = true
@@ -175,12 +153,34 @@ const loadData = async () => {
     balance.value = res.balance
     currency.value = res.currency
     lowBalanceThreshold.value = res.low_balance_threshold || 100
-    accountId.value = res.account_id
+    accountId.value = String(res.account_id)
+
+    try {
+      const info = await getAccountInfo()
+      salesTgUsername.value = info.sales_tg_username?.trim() || null
+    } catch {
+      salesTgUsername.value = null
+    }
   } catch (error: any) {
     ElMessage.error(t('common.loadFailed'))
   } finally {
     loading.value = false
   }
+}
+
+/** 打开归属商务的 Telegram，便于客户联系充值 */
+function openSalesTelegram() {
+  const raw = salesTgUsername.value
+  if (!raw) {
+    ElMessage.warning(t('balance.noSalesTg'))
+    return
+  }
+  const u = raw.replace(/^@+/, '').trim()
+  if (!u) {
+    ElMessage.warning(t('balance.noSalesTg'))
+    return
+  }
+  window.open(`https://t.me/${encodeURIComponent(u)}`, '_blank', 'noopener,noreferrer')
 }
 
 onMounted(() => {
@@ -505,60 +505,6 @@ onMounted(() => {
   background: var(--text-quaternary);
 }
 
-.promo-cards {
-  display: flex;
-  gap: 12px;
-}
-
-.promo-card {
-  flex: 1;
-  padding: 16px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border-subtle);
-  border-radius: 14px;
-  text-align: center;
-  position: relative;
-  transition: all 0.2s;
-}
-
-.promo-card:hover {
-  border-color: var(--border-hover);
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.promo-card.featured {
-  border-color: rgba(50, 215, 75, 0.3);
-  background: rgba(50, 215, 75, 0.05);
-}
-
-.promo-tag {
-  position: absolute;
-  top: -8px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 2px 10px;
-  background: linear-gradient(135deg, #32D74B 0%, #28CD41 100%);
-  border-radius: 10px;
-  font-size: 10px;
-  font-weight: 600;
-  color: white;
-  text-transform: uppercase;
-}
-
-.promo-amount {
-  display: block;
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 4px;
-}
-
-.promo-bonus {
-  font-size: 12px;
-  color: var(--success);
-  font-weight: 500;
-}
-
 /* ========== 近期交易 ========== */
 .transactions-section {
   background: var(--bg-card);
@@ -606,10 +552,6 @@ onMounted(() => {
   
   .amount {
     font-size: 44px;
-  }
-  
-  .promo-cards {
-    flex-direction: column;
   }
   
   .balance-info {

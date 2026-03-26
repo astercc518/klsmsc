@@ -5,13 +5,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, desc
 from typing import Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from app.database import get_db
 from app.modules.common.security_log import SecurityLog, LoginAttempt, SecurityEventType, SecurityLevel
 from app.schemas.security_log import (
-    SecurityLogResponse, SecurityLogListResponse,
-    LoginAttemptResponse, SecurityStats
+    SecurityLogResponse,
+    SecurityLogListResponse,
+    LoginAttemptResponse,
+    LoginAttemptListResponse,
+    SecurityStats,
 )
 from app.core.auth import get_current_account
 from app.modules.common.account import Account
@@ -65,7 +68,7 @@ async def list_security_logs(
         result = await db.execute(query)
         logs = result.scalars().all()
         
-        items = [SecurityLogResponse.from_orm(log) for log in logs]
+        items = [SecurityLogResponse.model_validate(log) for log in logs]
         
         return SecurityLogListResponse(
             total=total,
@@ -99,7 +102,7 @@ async def get_security_stats(
         login_attempts_today = (await db.execute(
             select(func.count()).select_from(LoginAttempt).where(
                 LoginAttempt.username == current_account.account_name,
-                LoginAttempt.created_at >= today
+                LoginAttempt.attempted_at >= today
             )
         )).scalar()
         
@@ -108,7 +111,7 @@ async def get_security_stats(
             select(func.count()).select_from(LoginAttempt).where(
                 LoginAttempt.username == current_account.account_name,
                 LoginAttempt.success == False,
-                LoginAttempt.created_at >= today
+                LoginAttempt.attempted_at >= today
             )
         )).scalar()
         
@@ -141,7 +144,7 @@ async def get_security_stats(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/login-attempts", response_model=list[LoginAttemptResponse], summary="查询登录记录")
+@router.get("/login-attempts", response_model=LoginAttemptListResponse, summary="查询登录记录")
 async def list_login_attempts(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -149,23 +152,35 @@ async def list_login_attempts(
     current_account: Account = Depends(get_current_account),
     db: AsyncSession = Depends(get_db)
 ):
-    """查询登录尝试记录"""
+    """查询登录尝试记录（分页，含 total）"""
     try:
         conditions = [LoginAttempt.username == current_account.account_name]
-        
+
         if success is not None:
             conditions.append(LoginAttempt.success == success)
-        
+
+        count_query = select(func.count()).select_from(LoginAttempt).where(and_(*conditions))
+        total = (await db.execute(count_query)).scalar() or 0
+
         offset = (page - 1) * page_size
-        query = select(LoginAttempt).where(and_(*conditions)).order_by(
-            desc(LoginAttempt.created_at)
-        ).limit(page_size).offset(offset)
-        
+        query = (
+            select(LoginAttempt)
+            .where(and_(*conditions))
+            .order_by(desc(LoginAttempt.attempted_at))
+            .limit(page_size)
+            .offset(offset)
+        )
+
         result = await db.execute(query)
         attempts = result.scalars().all()
-        
-        return [LoginAttemptResponse.from_orm(attempt) for attempt in attempts]
-        
+
+        return LoginAttemptListResponse(
+            total=total,
+            items=[LoginAttemptResponse.model_validate(a) for a in attempts],
+            page=page,
+            page_size=page_size,
+        )
+
     except Exception as e:
         logger.error(f"Failed to list login attempts: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

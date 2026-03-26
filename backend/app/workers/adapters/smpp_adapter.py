@@ -77,6 +77,11 @@ _SMPP_ESME_HINTS_ZH: dict[int, str] = {
     15: "无效 System ID（用户名不存在或未开通）",
 }
 
+# submit_sm_resp 的 command_status：部分网关使用标准表未列出的数值（如 9），需供应商文档解读
+_SUBMIT_SM_RESP_HINTS_ZH: dict[int, str] = {
+    9: "状态码 9 不在 SMPP v3.4 标准命名区间（多为网关私有拒绝）。请向 sms.dbcpaas/供应商确认：账号与子账号状态、+55 路由与产品是否开通、默认发件号(Sender)是否备案、余额与日限、号码是否为 E.164。",
+}
+
 
 def _format_smpp_last_error(err_code: Optional[int], exc: Exception) -> str:
     """生成带中文提示的连接错误文案，便于通道检测与发送记录排查"""
@@ -111,10 +116,15 @@ class SMPPAdapter:
     async def connect(self) -> bool:
         """连接SMPP服务器（异步包装）"""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(_executor, self._connect_sync)
+        return await loop.run_in_executor(
+            _executor, lambda: self._connect_sync(start_heartbeat=True)
+        )
 
-    def _connect_sync(self) -> bool:
-        """同步连接SMPP服务器，支持绑定模式自动降级"""
+    def _connect_sync(self, start_heartbeat: bool = True) -> bool:
+        """同步连接SMPP服务器，支持绑定模式自动降级。
+
+        start_heartbeat: 为 False 时仅重建会话（供心跳线程内重连），避免重复启动 _heartbeat_loop。
+        """
         try:
             import smpplib.client
             import smpplib.consts
@@ -182,11 +192,12 @@ class SMPPAdapter:
                 self.client.set_message_received_handler(self._on_deliver_sm)
                 logger.info(f"已注册 deliver_sm 回调: {self.channel.channel_code}")
 
-            threading.Thread(
-                target=self._heartbeat_loop,
-                daemon=True,
-                name=f"smpp-heartbeat-{self.channel.id}",
-            ).start()
+            if start_heartbeat:
+                threading.Thread(
+                    target=self._heartbeat_loop,
+                    daemon=True,
+                    name=f"smpp-heartbeat-{self.channel.id}",
+                ).start()
 
             return True
 
@@ -282,7 +293,9 @@ class SMPPAdapter:
                 self.connected = False
                 try:
                     time.sleep(5)
-                    self._connect_sync()
+                    # 不在此再次启动心跳线程，否则会出现双线程抢读同一 socket
+                    if not self._connect_sync(start_heartbeat=False):
+                        break
                 except Exception as reconnect_error:
                     logger.error(f"SMPP重连失败: {str(reconnect_error)}")
                     break
@@ -487,6 +500,7 @@ class SMPPAdapter:
                 if candidate_ids:
                     stmt = sa_select(SMSLog).where(
                         and_(
+                            SMSLog.channel_id == channel_id,
                             SMSLog.upstream_message_id.in_(candidate_ids),
                             SMSLog.status.in_(["sent", "pending", "queued"]),
                         )
@@ -728,8 +742,10 @@ class SMPPAdapter:
                             desc = smpplib.consts.DESCRIPTIONS.get(
                                 st_i, str(st)
                             )
+                            _hint = _SUBMIT_SM_RESP_HINTS_ZH.get(st_i, "")
+                            _suffix = f" | {_hint}" if _hint else ""
                             return False, None, (
-                                f"SMPP 提交被拒（第 {i + 1}/{len(parts)} 段）: {desc} ({st_i})"
+                                f"SMPP 提交被拒（第 {i + 1}/{len(parts)} 段）: {desc} ({st_i}){_suffix}"
                             )
                         mid = self._pdu_message_id(resp_pdu)
                         if isinstance(mid, str):

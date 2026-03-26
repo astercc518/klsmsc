@@ -116,3 +116,11 @@ class BatchUploadResponse(BaseModel):
     file_size: int
     total_count: int
     message: str
+
+
+class BatchRetryFailedResponse(BaseModel):
+    """失败重发响应"""
+    retried: int = Field(..., description="成功重新入队条数")
+    skipped: int = Field(0, description="未重发条数（缺数据、计费或入队失败等）")
+    errors: List[str] = Field(default_factory=list, description="失败原因摘要（最多若干条）")
+    message: str = Field(default="", description="说明")

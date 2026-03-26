@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, update
+from sqlalchemy import select, func, and_, or_, update, case
 from sqlalchemy.orm import selectinload
 from typing import Optional, List
 from pydantic import BaseModel, Field
@@ -1262,8 +1262,8 @@ async def get_supplier_statistics(
     # 构建查询
     query = select(
         func.count(SMSLog.id).label('total'),
-        func.sum(func.case((SMSLog.status == 'delivered', 1), else_=0)).label('success'),
-        func.sum(func.case((SMSLog.status == 'failed', 1), else_=0)).label('failed'),
+        func.sum(case((SMSLog.status == 'delivered', 1), else_=0)).label('success'),
+        func.sum(case((SMSLog.status == 'failed', 1), else_=0)).label('failed'),
         func.sum(SMSLog.cost_price).label('cost')
     ).where(SMSLog.channel_id.in_(channel_ids))
     

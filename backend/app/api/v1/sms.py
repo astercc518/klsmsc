@@ -1214,120 +1214,6 @@ async def get_sms_records(
     }
 
 
-@router.get("/records/export")
-async def export_sms_records(
-    status: Optional[str] = None,
-    phone_number: Optional[str] = None,
-    message_id: Optional[str] = None,
-    channel_id: Optional[int] = None,
-    country_code: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    account_id: Optional[int] = None,
-    batch_id: Optional[int] = None,
-    auth_context: dict = Depends(get_auth_context),
-    db: AsyncSession = Depends(get_db)
-):
-    """导出发送记录为 CSV"""
-    from sqlalchemy import and_
-    from datetime import datetime
-    from app.modules.sms.channel import Channel
-    from app.modules.sms.sms_batch import SmsBatch
-    from fastapi.responses import StreamingResponse
-    import csv
-    import io
-
-    conditions = []
-    if auth_context["is_admin"]:
-        if account_id:
-            conditions.append(SMSLog.account_id == account_id)
-    else:
-        conditions.append(SMSLog.account_id == auth_context["account_id"])
-
-    if batch_id is not None:
-        if auth_context["is_admin"]:
-            conditions.append(SMSLog.batch_id == batch_id)
-        else:
-            own_batch = await db.scalar(
-                select(SmsBatch.id).where(
-                    SmsBatch.id == batch_id,
-                    SmsBatch.account_id == auth_context["account_id"],
-                    SmsBatch.is_deleted == False,
-                )
-            )
-            if own_batch is None:
-                conditions.append(SMSLog.id < 0)
-            else:
-                conditions.append(SMSLog.batch_id == batch_id)
-
-    if status:
-        conditions.append(SMSLog.status == status)
-    if phone_number:
-        conditions.append(SMSLog.phone_number.like(f"%{phone_number}%"))
-    if message_id:
-        conditions.append(SMSLog.message_id.like(f"%{message_id}%"))
-    if channel_id:
-        conditions.append(SMSLog.channel_id == channel_id)
-    if country_code:
-        conditions.append(SMSLog.country_code == country_code)
-    if start_date:
-        try:
-            conditions.append(SMSLog.submit_time >= datetime.strptime(start_date, "%Y-%m-%d"))
-        except ValueError:
-            pass
-    if end_date:
-        try:
-            end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
-            conditions.append(SMSLog.submit_time <= end_dt)
-        except ValueError:
-            pass
-
-    where_clause = and_(*conditions) if conditions else True
-
-    query = (
-        select(SMSLog, Channel.channel_code, Channel.channel_name)
-        .outerjoin(Channel, SMSLog.channel_id == Channel.id)
-        .where(where_clause)
-        .order_by(SMSLog.id.desc())
-        .limit(10000)
-    )
-    result = await db.execute(query)
-    rows = result.all()
-
-    output = io.StringIO()
-    output.write('\ufeff')  # BOM for Excel
-    writer = csv.writer(output)
-    writer.writerow([
-        "ID", "消息ID", "上游消息ID", "账户ID", "通道", "手机号",
-        "国家", "内容", "条数", "状态", "成本价", "售价", "利润",
-        "币种", "提交时间", "发送时间", "送达时间", "错误信息"
-    ])
-
-    for r, ch_code, ch_name in rows:
-        writer.writerow([
-            r.id, r.message_id, r.upstream_message_id or "", r.account_id,
-            ch_code or "", r.phone_number, r.country_code or "",
-            (r.message or "")[:200], r.message_count,
-            r.status,
-            float(r.cost_price) if r.cost_price else 0,
-            float(r.selling_price) if r.selling_price else 0,
-            float(r.profit) if r.profit else 0,
-            r.currency or "USD",
-            r.submit_time.strftime("%Y-%m-%d %H:%M:%S") if r.submit_time else "",
-            r.sent_time.strftime("%Y-%m-%d %H:%M:%S") if r.sent_time else "",
-            r.delivery_time.strftime("%Y-%m-%d %H:%M:%S") if r.delivery_time else "",
-            r.error_message or "",
-        ])
-
-    output.seek(0)
-    filename = f"sms_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
-
-
 # ============ 上游 DLR 回调接口 (推送模式) ============
 
 from fastapi import Request, Body
@@ -1388,6 +1274,53 @@ def _verify_dlr_caller(request: Request) -> bool:
     return False
 
 
+async def _handle_dlr_callback_post(
+    request: Request,
+    db: AsyncSession,
+    channel_id: Optional[int] = None,
+    source: str = "push",
+):
+    """
+    解析 POST 体并处理 DLR；channel_id 非空时仅更新该通道下的短信（与拉取任务一致）。
+    """
+    content_type = request.headers.get('content-type', '')
+    body = await request.body()
+    body_text = body.decode('utf-8', errors='ignore')
+
+    logger.info(f"收到 DLR 回调 (POST): content_type={content_type}, body={body_text[:500]}")
+
+    reports = []
+
+    if 'json' in content_type:
+        try:
+            import json
+            data = json.loads(body_text)
+            reports = parse_json_dlr(data)
+        except Exception as e:
+            logger.warning(f"JSON 解析失败: {e}")
+
+    elif 'xml' in content_type:
+        reports = parse_xml_dlr(body_text)
+
+    elif 'form' in content_type or 'urlencoded' in content_type:
+        form_data = await request.form()
+        reports = parse_form_dlr(dict(form_data))
+
+    else:
+        reports = detect_and_parse_dlr(body_text, content_type)
+
+    if not reports:
+        logger.warning(f"DLR 回调无法解析或无有效报告: {body_text[:200]}")
+        return {"status": 0, "message": "no valid reports"}
+
+    success, fail = await process_dlr_reports(
+        reports, db, source=source, channel_id=channel_id
+    )
+
+    logger.info(f"DLR 回调处理完成: 成功={success}, 失败={fail}")
+    return {"status": 0, "message": "success", "processed": success + fail}
+
+
 @router.post("/dlr/callback")
 async def dlr_callback_post(
     request: Request,
@@ -1413,42 +1346,7 @@ async def dlr_callback_post(
         )
 
     try:
-        content_type = request.headers.get('content-type', '')
-        body = await request.body()
-        body_text = body.decode('utf-8', errors='ignore')
-        
-        logger.info(f"收到 DLR 回调 (POST): content_type={content_type}, body={body_text[:500]}")
-        
-        # 解析 DLR 报告
-        reports = []
-        
-        if 'json' in content_type:
-            try:
-                import json
-                data = json.loads(body_text)
-                reports = parse_json_dlr(data)
-            except Exception as e:
-                logger.warning(f"JSON 解析失败: {e}")
-        
-        elif 'xml' in content_type:
-            reports = parse_xml_dlr(body_text)
-        
-        elif 'form' in content_type or 'urlencoded' in content_type:
-            form_data = await request.form()
-            reports = parse_form_dlr(dict(form_data))
-        
-        else:
-            reports = detect_and_parse_dlr(body_text, content_type)
-        
-        if not reports:
-            logger.warning(f"DLR 回调无法解析或无有效报告: {body_text[:200]}")
-            return {"status": 0, "message": "no valid reports"}
-        
-        success, fail = await process_dlr_reports(reports, db, source="push")
-        
-        logger.info(f"DLR 回调处理完成: 成功={success}, 失败={fail}")
-        return {"status": 0, "message": "success", "processed": success + fail}
-        
+        return await _handle_dlr_callback_post(request, db, channel_id=None, source="push")
     except Exception as e:
         logger.error(f"处理 DLR 回调失败: {str(e)}", exc_info=True)
         return {"status": 1, "message": "internal error"}
@@ -1488,7 +1386,9 @@ async def dlr_callback_get(
             logger.warning(f"DLR GET 无法解析报告（缺少已知消息 ID 字段）: {query_string[:500]}")
             return {"status": 0, "message": "missing message_id"}
 
-        success, fail = await process_dlr_reports(reports, db, source="push-get")
+        success, fail = await process_dlr_reports(
+            reports, db, source="push-get", channel_id=None
+        )
 
         return {"status": 0, "message": "success", "processed": success + fail}
 
@@ -1509,5 +1409,39 @@ async def dlr_callback_by_channel(
     URL 中包含通道编码，便于区分不同上游的回调
     例如: /api/v1/sms/dlr/callback/KAOLA_MO
     """
+    from app.modules.sms.channel import Channel
+
     logger.info(f"收到通道 {channel_code} 的 DLR 回调")
-    return await dlr_callback_post(request, db)
+    if not _verify_dlr_caller(request):
+        logger.warning(
+            f"DLR 回调认证失败: channel={channel_code}, "
+            f"IP={request.client.host if request.client else 'unknown'}"
+        )
+        return JSONResponse(
+            status_code=403,
+            content={"status": 1, "message": "Forbidden"}
+        )
+
+    ch_res = await db.execute(
+        select(Channel).where(
+            Channel.channel_code == channel_code,
+            Channel.is_deleted == False,
+        )
+    )
+    channel = ch_res.scalar_one_or_none()
+    if not channel:
+        return JSONResponse(
+            status_code=404,
+            content={"status": 1, "message": f"unknown channel: {channel_code}"},
+        )
+
+    try:
+        return await _handle_dlr_callback_post(
+            request,
+            db,
+            channel_id=channel.id,
+            source=f"push-{channel_code}",
+        )
+    except Exception as e:
+        logger.error(f"处理 DLR 回调失败: {str(e)}", exc_info=True)
+        return {"status": 1, "message": "internal error"}

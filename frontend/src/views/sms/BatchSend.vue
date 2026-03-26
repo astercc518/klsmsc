@@ -97,18 +97,38 @@
             {{ formatBatchDate(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column :label="$t('common.action')" width="150" fixed="right">
+        <el-table-column :label="$t('common.action')" min-width="300" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="viewDetail(row)">{{ $t('common.detail') }}</el-button>
-            <el-button 
-              v-if="row.status === 'pending' || row.status === 'processing'" 
-              link 
-              type="danger" 
-              size="small" 
-              @click="cancelBatch(row)"
-            >
-              {{ $t('common.cancel') }}
-            </el-button>
+            <div class="task-actions">
+              <el-button link type="primary" size="small" @click="viewDetail(row)">{{ $t('common.detail') }}</el-button>
+              <el-button
+                link
+                type="primary"
+                size="small"
+                :loading="exportingBatchId === row.id"
+                @click="exportBatchCsv(row)"
+              >
+                {{ $t('batchSend.exportCsv') }}
+              </el-button>
+              <el-button
+                v-if="canRetryFailedBatch(row)"
+                link
+                type="warning"
+                size="small"
+                @click="retryFailedBatch(row)"
+              >
+                {{ $t('batchSend.retryFailed') }}
+              </el-button>
+              <el-button 
+                v-if="row.status === 'pending' || row.status === 'processing'" 
+                link 
+                type="danger" 
+                size="small" 
+                @click="cancelBatch(row)"
+              >
+                {{ $t('common.cancel') }}
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -123,7 +143,7 @@
           @current-change="loadBatches"
           @size-change="onPageSizeChange"
           background
-          small
+          size="small"
         />
       </div>
     </div>
@@ -201,7 +221,7 @@
               :total="detailRecPagination.total"
               :page-sizes="[10, 20, 50]"
               layout="total, sizes, prev, pager, next"
-              small
+              size="small"
               background
               @current-change="loadDetailRecords"
               @size-change="onDetailPageSizeChange"
@@ -280,6 +300,8 @@ import {
   getBatchStats,
   uploadBatchFile,
   cancelBatch as cancelBatchApi,
+  retryBatchFailed as retryBatchFailedApi,
+  exportBatchRecordsCsv,
   type SmsBatch,
 } from '@/api/batch'
 import { getSMSRecords } from '@/api/sms'
@@ -327,12 +349,29 @@ const uploadForm = reactive({
 })
 
 const templates = ref<any[]>([])
+/** 正在导出 CSV 的任务 id，用于按钮 loading */
+const exportingBatchId = ref<number | null>(null)
 
 /** 列表与详情中的时间展示 */
 function formatBatchDate(iso: string | null | undefined): string {
   if (!iso) return '-'
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString()
+}
+
+/** 失败条数（兼容 snake_case / camelCase） */
+function batchFailedCount(row: SmsBatch & Record<string, unknown>): number {
+  const v = row.failed_count ?? row.failedCount
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+/** 是否显示「失败重发」：有失败记录，且非待处理/已取消（含处理中部分失败、已完成、全失败） */
+function canRetryFailedBatch(row: SmsBatch & Record<string, unknown>): boolean {
+  if (batchFailedCount(row) <= 0) return false
+  const st = String(row.status ?? '').toLowerCase()
+  if (st === 'pending' || st === 'cancelled') return false
+  return true
 }
 
 const loadBatches = async () => {
@@ -524,6 +563,43 @@ const viewDetail = (row: SmsBatch) => {
   loadDetailRecords()
 }
 
+const exportBatchCsv = async (row: SmsBatch) => {
+  const id = Number(row?.id)
+  if (!Number.isFinite(id) || id <= 0) {
+    ElMessage.error(t('batchSend.invalidBatchId'))
+    return
+  }
+  exportingBatchId.value = id
+  try {
+    const res: BlobPart = await exportBatchRecordsCsv(id)
+    const blob = new Blob([res], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `batch_${id}_${Date.now()}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success(t('batchSend.exportCsvSuccess'))
+  } catch (error: any) {
+    const d = error.response?.data
+    let msg = t('batchSend.exportCsvFailed')
+    if (d instanceof Blob) {
+      try {
+        const text = await d.text()
+        const j = JSON.parse(text)
+        if (typeof j?.detail === 'string') msg = j.detail
+      } catch {
+        /* 忽略 */
+      }
+    } else if (typeof d?.detail === 'string') {
+      msg = d.detail
+    }
+    ElMessage.error(msg)
+  } finally {
+    exportingBatchId.value = null
+  }
+}
+
 const cancelBatch = (row: SmsBatch) => {
   ElMessageBox.confirm(t('batchSend.confirmCancel', { name: row.batch_name }), t('common.info'), {
     confirmButtonText: t('common.confirm'),
@@ -537,6 +613,28 @@ const cancelBatch = (row: SmsBatch) => {
       loadStats()
     } catch (error: any) {
       ElMessage.error(error.response?.data?.detail || t('common.failed'))
+    }
+  }).catch(() => {})
+}
+
+const retryFailedBatch = (row: SmsBatch & Record<string, unknown>) => {
+  if (batchFailedCount(row) <= 0) return
+  ElMessageBox.confirm(t('batchSend.confirmRetryFailed'), t('common.info'), {
+    confirmButtonText: t('common.confirm'),
+    cancelButtonText: t('common.cancel'),
+    type: 'warning'
+  }).then(async () => {
+    try {
+      const res = await retryBatchFailedApi(row.id)
+      const msg =
+        res.message ||
+        t('batchSend.retrySuccess', { count: res.retried, skipped: res.skipped })
+      ElMessage.success(msg)
+      loadBatches()
+      loadStats()
+    } catch (error: any) {
+      const d = error.response?.data?.detail
+      ElMessage.error(typeof d === 'string' ? d : t('batchSend.retryFailedMsg'))
     }
   }).catch(() => {})
 }
@@ -667,6 +765,14 @@ onMounted(() => {
 /* 表格 */
 .task-table {
   --el-table-border-color: var(--border-default);
+}
+
+.task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  line-height: 1.5;
 }
 
 .task-name {

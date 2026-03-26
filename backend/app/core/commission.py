@@ -33,9 +33,10 @@ async def calculate_sales_commission(
     """
     计算指定周期内各销售的佣金。
 
-    逻辑：SMSLog 按 account_id 关联 Account，取 sales_id；
-    仅统计 status='delivered' 的短信（成功送达才计佣金）；
-    佣金 = 客户消费(selling_price) × commission_rate / 100
+    逻辑：仅统计 Account.sales_id 匹配且未删除的客户；
+    仅统计 status='delivered' 的短信；
+    对每个客户：营收=sum(selling_price)，成本=sum(cost_price)（仅该客户本条短信成本）；
+    毛利=max(0, 营收-成本)；佣金=各客户毛利之和 × commission_rate / 100。
 
     Args:
         db: 数据库会话
@@ -44,7 +45,7 @@ async def calculate_sales_commission(
         sales_id: 可选，仅计算指定销售
 
     Returns:
-        列表，每项含 sales_id, sales_name, total_revenue, commission_rate, commission_amount, details(按客户)
+        列表，每项含 sales_id, sales_name, total_revenue, total_cost, commission_rate, commission_amount, details(按客户)
     """
     # 1. 获取有 commission_rate > 0 的销售
     sales_query = select(AdminUser).where(
@@ -73,11 +74,12 @@ async def calculate_sales_commission(
         if not account_ids:
             continue
 
-        # 3. 统计该周期内这些客户的消费（仅 delivered）
+        # 3. 统计该周期内这些客户的营收与成本（仅 delivered，与 sms_logs 一一对应）
         stats_query = select(
             SMSLog.account_id,
             func.count(SMSLog.id).label('sms_count'),
             func.coalesce(func.sum(SMSLog.selling_price), 0).label('total_revenue'),
+            func.coalesce(func.sum(SMSLog.cost_price), 0).label('total_cost'),
         ).where(
             SMSLog.account_id.in_(account_ids),
             SMSLog.status == 'delivered',
@@ -88,19 +90,30 @@ async def calculate_sales_commission(
         stats_result = await db.execute(stats_query)
         stats_rows = stats_result.all()
 
-        total_revenue = sum(float(r.total_revenue or 0) for r in stats_rows)
-        total_sms = sum(r.sms_count or 0 for r in stats_rows)
         commission_rate = float(sales.commission_rate or 0)
-        commission_amount = total_revenue * (commission_rate / 100)
+        rate_frac = commission_rate / 100.0
 
         details = []
+        total_revenue = 0.0
+        total_cost = 0.0
+        total_commission = 0.0
+        total_sms = 0
+
         for row in stats_rows:
             rev = float(row.total_revenue or 0)
-            comm = rev * (commission_rate / 100)
+            cost = float(row.total_cost or 0)
+            profit = max(0.0, rev - cost)
+            comm = profit * rate_frac
+            sms_c = int(row.sms_count or 0)
+            total_sms += sms_c
+            total_revenue += rev
+            total_cost += cost
+            total_commission += comm
             details.append({
                 'account_id': row.account_id,
-                'sms_count': row.sms_count or 0,
+                'sms_count': sms_c,
                 'total_revenue': rev,
+                'total_cost': cost,
                 'commission_amount': comm,
             })
 
@@ -110,7 +123,8 @@ async def calculate_sales_commission(
             'commission_rate': commission_rate,
             'total_sms_count': total_sms,
             'total_revenue': total_revenue,
-            'commission_amount': commission_amount,
+            'total_cost': total_cost,
+            'commission_amount': total_commission,
             'details': details,
         })
 
@@ -155,6 +169,7 @@ async def create_commission_settlement(
         period_end=period_end,
         total_sms_count=data['total_sms_count'],
         total_revenue=Decimal(str(data['total_revenue'])),
+        total_cost=Decimal(str(data.get('total_cost', 0))),
         commission_rate=Decimal(str(data['commission_rate'])),
         commission_amount=Decimal(str(data['commission_amount'])),
         currency='USD',
@@ -169,6 +184,7 @@ async def create_commission_settlement(
             account_id=d['account_id'],
             total_sms_count=d['sms_count'],
             total_revenue=Decimal(str(d['total_revenue'])),
+            total_cost=Decimal(str(d.get('total_cost', 0))),
             commission_rate=Decimal(str(data['commission_rate'])),
             commission_amount=Decimal(str(d['commission_amount'])),
         )

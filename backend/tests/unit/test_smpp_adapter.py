@@ -17,6 +17,10 @@ def mock_channel():
     channel.username = "test_user"
     channel.password = "test_pass"
     channel.default_sender_id = "TestSID"
+    # 避免 MagicMock 进入日志 f-string 的 :02x 等格式化导致 TypeError
+    channel.smpp_bind_mode = "transceiver"
+    channel.smpp_system_type = ""
+    channel.smpp_interface_version = 0x34
     return channel
 
 
@@ -54,7 +58,8 @@ class TestSMPPAdapterInit:
         adapter = SMPPAdapter(mock_channel)
         
         assert hasattr(adapter, '_lock')
-        assert isinstance(adapter._lock, type(threading.Lock()))
+        # 适配器使用 RLock，与发送线程、心跳线程串行化读 socket 一致
+        assert isinstance(adapter._lock, type(threading.RLock()))
 
 
 class TestSMPPConnect:
@@ -290,18 +295,23 @@ class TestSMPPErrorHandling:
     
     @pytest.mark.unit
     def test_send_exception_handling(self, mock_channel, mock_sms_log):
-        """测试发送异常处理"""
+        """测试发送异常处理（make_parts 抛错应走外层 except 并断开标记）"""
         from app.workers.adapters.smpp_adapter import SMPPAdapter
-        
+
         adapter = SMPPAdapter(mock_channel)
         adapter.connected = True
         adapter.client = MagicMock()
-        
-        # 模拟发送时抛出异常
-        with patch.dict('sys.modules', {'smpplib.gsm': MagicMock(), 'smpplib.consts': MagicMock()}):
-            with patch('smpplib.gsm.make_parts', side_effect=Exception("Send failed")):
-                # 由于import复杂，这里测试基本流程
-                pass
+
+        # 与 _send_sync 内「import smpplib.gsm」一致，直接 patch 已安装子模块
+        with patch(
+            "smpplib.gsm.make_parts",
+            side_effect=Exception("Send failed"),
+        ):
+            success, msg_id, error = adapter._send_sync(mock_sms_log)
+            assert success is False
+            assert msg_id is None
+            assert error is not None
+            assert "Send failed" in error
     
     @pytest.mark.unit
     def test_connection_lost_during_send(self, mock_channel, mock_sms_log):

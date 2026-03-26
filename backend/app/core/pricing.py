@@ -2,13 +2,14 @@
 计费引擎模块
 """
 from decimal import Decimal
-from typing import Dict, Optional
+from typing import Dict, FrozenSet, List, Optional, Tuple
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.sms.country_pricing import CountryPricing
 from app.modules.common.account_pricing import AccountPricing
 from app.modules.common.account import Account
 from app.modules.sms.channel import Channel
+from app.modules.sms.supplier import SupplierChannel, SupplierRate
 from app.modules.common.balance_log import BalanceLog
 from app.utils.errors import InsufficientBalanceError, PricingNotFoundError
 from app.utils.logger import get_logger
@@ -17,12 +18,108 @@ import json
 
 logger = get_logger(__name__)
 
+# 短信日志 country_code 常见为国际区号（如 66、55），供应商费率表常见为 ISO2（TH、BR）。
+# 同一国家多种写法需视为等价，否则结算按分组查 SupplierRate 会漏匹配、单价显示为 0。
+_COUNTRY_CODE_EQUIVALENCE: Tuple[FrozenSet[str], ...] = (
+    frozenset({"TH", "66"}),
+    frozenset({"BR", "55"}),
+    frozenset({"BD", "880"}),
+    frozenset({"ID", "62"}),
+    frozenset({"MY", "60"}),
+    frozenset({"VN", "84"}),
+    frozenset({"PH", "63"}),
+    frozenset({"SG", "65"}),
+    frozenset({"JP", "81"}),
+    frozenset({"KR", "82"}),
+    frozenset({"IN", "91"}),
+    frozenset({"PK", "92"}),
+    frozenset({"MX", "52"}),
+    frozenset({"AR", "54"}),
+    frozenset({"CO", "57"}),
+    frozenset({"CL", "56"}),
+    frozenset({"PE", "51"}),
+    frozenset({"EG", "20"}),
+    frozenset({"NG", "234"}),
+    frozenset({"KE", "254"}),
+    frozenset({"ZA", "27"}),
+    frozenset({"AE", "971"}),
+    frozenset({"SA", "966"}),
+    frozenset({"TR", "90"}),
+    frozenset({"RU", "7"}),
+    frozenset({"UA", "380"}),
+    frozenset({"GB", "44"}),
+    frozenset({"DE", "49"}),
+    frozenset({"FR", "33"}),
+    frozenset({"ES", "34"}),
+    frozenset({"IT", "39"}),
+    frozenset({"AU", "61"}),
+    frozenset({"NZ", "64"}),
+)
+
 
 class PricingEngine:
     """计费引擎"""
     
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    @staticmethod
+    def _supplier_rate_country_variants(country_code: str) -> List[str]:
+        """
+        供应商费率表 country_code 可能与短信日志不一致（ISO2 如 TH 与区号 66 等）。
+        返回用于 IN 查询的等价代码列表。
+        """
+        if not country_code or not str(country_code).strip():
+            return []
+        c = str(country_code).strip().upper()
+        for group in _COUNTRY_CODE_EQUIVALENCE:
+            if c in group:
+                return list(group)
+        return [c]
+
+    async def resolve_base_cost_per_sms(
+        self,
+        channel_id: int,
+        country_code: str,
+        channel: Optional[Channel] = None,
+    ) -> Decimal:
+        """
+        解析上游成本单价（每条），与供应商结算、后台「供应商国家费率」一致。
+        优先级：SupplierRate（通道关联供应商 + 国家 + sms）> Channel.cost_rate。
+        按提交计费时同样写入 sms_logs.cost_price，结算侧 sum(cost_price) 即可。
+        """
+        if channel is None:
+            ch_row = await self.db.execute(select(Channel).where(Channel.id == channel_id))
+            channel = ch_row.scalar_one_or_none()
+
+        codes = self._supplier_rate_country_variants(country_code)
+        if codes:
+            sc_row = await self.db.execute(
+                select(SupplierChannel.supplier_id).where(
+                    SupplierChannel.channel_id == channel_id,
+                    SupplierChannel.status == 'active',
+                )
+            )
+            supplier_ids = [r[0] for r in sc_row.all()]
+            for sid in supplier_ids:
+                rate_row = await self.db.execute(
+                    select(SupplierRate.cost_price)
+                    .where(
+                        SupplierRate.supplier_id == sid,
+                        SupplierRate.business_type == 'sms',
+                        SupplierRate.status == 'active',
+                        SupplierRate.country_code.in_(codes),
+                    )
+                    .order_by(SupplierRate.id.desc())
+                    .limit(1)
+                )
+                cp = rate_row.scalar_one_or_none()
+                if cp is not None and float(cp) > 0:
+                    return Decimal(str(cp))
+
+        if channel and channel.cost_rate is not None:
+            return Decimal(str(channel.cost_rate))
+        return Decimal('0.0000')
     
     async def calculate_and_charge(
         self,
@@ -48,12 +145,14 @@ class PricingEngine:
             price_per_sms = Decimal(str(price_info['price']))
             currency = price_info['currency']
             
-            # 3. 查询成本价格 (Cost Price) - 从通道基础费率获取
+            # 3. 成本单价：供应商国家费率 SupplierRate（如孟加拉 0.0066）优先，其次通道 cost_rate
             channel_result = await self.db.execute(
                 select(Channel).where(Channel.id == channel_id)
             )
             channel = channel_result.scalar_one_or_none()
-            base_cost_per_sms = channel.cost_rate if channel and channel.cost_rate else Decimal('0.0000')
+            base_cost_per_sms = await self.resolve_base_cost_per_sms(
+                channel_id, country_code, channel
+            )
             
             # 4. 计算总费用
             total_sell_price = price_per_sms * message_count

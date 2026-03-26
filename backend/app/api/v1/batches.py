@@ -1,10 +1,12 @@
 """
 批量发送 API
 """
+import re
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
-from typing import Optional
+from sqlalchemy import select, func, and_, update
+from typing import Optional, List
 from datetime import datetime
 import csv
 import os
@@ -15,8 +17,12 @@ from app.modules.sms.sms_batch import SmsBatch, BatchStatus
 from app.modules.sms.sms_template import SmsTemplate
 from app.schemas.batch import (
     SmsBatchCreate, SmsBatchResponse, SmsBatchListResponse,
-    SmsBatchStats, BatchUploadResponse
+    SmsBatchStats, BatchUploadResponse, BatchRetryFailedResponse,
 )
+from app.modules.sms.sms_log import SMSLog
+from app.core.pricing import PricingEngine
+from app.utils.queue import QueueManager
+from app.utils.errors import InsufficientBalanceError, PricingNotFoundError
 from app.core.auth import get_current_account
 from app.modules.common.account import Account
 from app.utils.logger import get_logger
@@ -24,9 +30,42 @@ from app.utils.logger import get_logger
 router = APIRouter()
 logger = get_logger(__name__)
 
+
+def _mask_phone_for_export(phone: Optional[str]) -> str:
+    """导出 CSV 时手机号脱敏：长号码保留前 3 位与后 5 位，中间 ****（如 919****01595）。"""
+    if not phone:
+        return ""
+    digits = re.sub(r"\D", "", str(phone))
+    n = len(digits)
+    if n == 0:
+        return ""
+    if n <= 3:
+        return "*" * n
+    if n >= 12:
+        return digits[:3] + "****" + digits[-5:]
+    if n >= 8:
+        suffix_len = n - 7
+        return digits[:3] + "****" + digits[-suffix_len:]
+    if n == 7:
+        return digits[:2] + "****" + digits[-1]
+    if n == 6:
+        return digits[:2] + "****" + digits[-2:]
+    if n == 5:
+        return digits[:2] + "**" + digits[-1]
+    return digits[0] + "**" + digits[-1]
+
 # 上传目录配置
 UPLOAD_DIR = "/var/smsc/backend/uploads/batches"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+def _is_data_warehouse_send_batch(batch: SmsBatch) -> bool:
+    """
+    数据仓库「购数并发送」创建的批次名称以 DataSend- 开头；
+    下单时已一并扣除数据费与短信费，失败重发不再重复扣短信费。
+    """
+    name = (batch.batch_name or "").strip()
+    return name.startswith("DataSend-")
 
 
 @router.post("/batches/upload", response_model=BatchUploadResponse, summary="上传CSV批量发送")
@@ -294,6 +333,95 @@ async def get_batch(
         raise HTTPException(status_code=500, detail="批次数据格式异常，请联系管理员查看日志")
 
 
+@router.get("/batches/{batch_id}/export", summary="导出批次发送明细 CSV（手机号脱敏）")
+async def export_batch_records_csv(
+    batch_id: int,
+    current_account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    """导出该批量任务下短信明细；手机号列已脱敏，便于外发。"""
+    from app.modules.sms.channel import Channel
+
+    q_batch = select(SmsBatch).where(
+        SmsBatch.id == batch_id,
+        SmsBatch.account_id == current_account.id,
+        SmsBatch.is_deleted == False,
+    )
+    result = await db.execute(q_batch)
+    batch = result.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="批次不存在")
+
+    query = (
+        select(SMSLog, Channel.channel_code)
+        .outerjoin(Channel, SMSLog.channel_id == Channel.id)
+        .where(
+            SMSLog.batch_id == batch_id,
+            SMSLog.account_id == current_account.id,
+        )
+        .order_by(SMSLog.id.asc())
+        .limit(10000)
+    )
+    rows = (await db.execute(query)).all()
+
+    output = io.StringIO()
+    output.write("\ufeff")
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "ID",
+            "消息ID",
+            "上游消息ID",
+            "通道",
+            "手机号(脱敏)",
+            "国家",
+            "内容",
+            "条数",
+            "状态",
+            "成本价",
+            "售价",
+            "利润",
+            "币种",
+            "提交时间",
+            "发送时间",
+            "送达时间",
+            "错误信息",
+        ]
+    )
+
+    for r, ch_code in rows:
+        writer.writerow(
+            [
+                r.id,
+                r.message_id,
+                r.upstream_message_id or "",
+                ch_code or "",
+                _mask_phone_for_export(r.phone_number),
+                r.country_code or "",
+                (r.message or "")[:200],
+                r.message_count,
+                r.status,
+                float(r.cost_price) if r.cost_price else 0,
+                float(r.selling_price) if r.selling_price else 0,
+                float(r.profit) if r.profit else 0,
+                r.currency or "USD",
+                r.submit_time.strftime("%Y-%m-%d %H:%M:%S") if r.submit_time else "",
+                r.sent_time.strftime("%Y-%m-%d %H:%M:%S") if r.sent_time else "",
+                r.delivery_time.strftime("%Y-%m-%d %H:%M:%S") if r.delivery_time else "",
+                r.error_message or "",
+            ]
+        )
+
+    output.seek(0)
+    # 仅 ASCII 文件名：Starlette 用 latin-1 编码响应头，批次名含中文会导致 UnicodeEncodeError → 500
+    filename_ascii = f"batch_{batch_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(
+        iter([output.getvalue().encode("utf-8")]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename_ascii}"'},
+    )
+
+
 @router.delete("/batches/{batch_id}", summary="取消批次")
 async def cancel_batch(
     batch_id: int,
@@ -327,3 +455,167 @@ async def cancel_batch(
         await db.rollback()
         logger.error(f"Failed to cancel batch: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/batches/{batch_id}/retry-failed",
+    response_model=BatchRetryFailedResponse,
+    summary="失败重发",
+)
+async def retry_batch_failed(
+    batch_id: int,
+    current_account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    将批次内状态为 failed 的短信重新入队发送。
+
+    - 普通群发：按当前费率重新扣费（失败完成时已按条退款，重发等价于新发送）。
+    - 数据仓库购数并发送（批次名 DataSend- 开头）：购数时已含短信费用，重发不再扣费，沿用原记录计费字段。
+    """
+    from app.api.v1.sms import _refund_line_charge
+    from app.workers.sms_worker import _update_batch_progress
+
+    q_batch = select(SmsBatch).where(
+        SmsBatch.id == batch_id,
+        SmsBatch.account_id == current_account.id,
+        SmsBatch.is_deleted == False,
+    )
+    result = await db.execute(q_batch)
+    batch = result.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="批次不存在")
+
+    if batch.status == BatchStatus.CANCELLED:
+        raise HTTPException(status_code=400, detail="已取消的批次无法重发")
+    if batch.status == BatchStatus.PENDING:
+        raise HTTPException(status_code=400, detail="批次尚未开始处理，请稍后再试")
+
+    q_logs = (
+        select(SMSLog)
+        .where(
+            SMSLog.batch_id == batch_id,
+            SMSLog.account_id == current_account.id,
+            SMSLog.status == "failed",
+        )
+        .order_by(SMSLog.id)
+    )
+    logs_result = await db.execute(q_logs)
+    failed_logs: List[SMSLog] = list(logs_result.scalars().all())
+    if not failed_logs:
+        raise HTTPException(status_code=400, detail="没有可重发的失败记录")
+
+    skip_sms_charge = _is_data_warehouse_send_batch(batch)
+    pricing_engine = PricingEngine(db)
+    retried = 0
+    skipped = 0
+    err_lines: List[str] = []
+    max_err_show = 12
+
+    for sms_log in failed_logs:
+        if not sms_log.channel_id or not sms_log.country_code or not (sms_log.message or "").strip():
+            skipped += 1
+            if len(err_lines) < max_err_show:
+                err_lines.append(
+                    f"{sms_log.message_id}: 缺少通道、国家或正文，无法重发"
+                )
+            continue
+
+        if skip_sms_charge:
+            # 数据仓库购数并发送：不重复扣费，保留原 message_count / 价格字段
+            sms_log.status = "queued"
+            sms_log.error_message = None
+            sms_log.sent_time = None
+            sms_log.delivery_time = None
+            sms_log.upstream_message_id = None
+            await db.commit()
+
+            if not QueueManager.queue_sms(sms_log.message_id):
+                await db.execute(
+                    update(SMSLog)
+                    .where(SMSLog.message_id == sms_log.message_id)
+                    .values(
+                        status="failed",
+                        error_message=(
+                            "加入发送队列失败，请检查 RabbitMQ 与 Celery worker-sms 是否运行"
+                        ),
+                    )
+                )
+                await db.commit()
+                skipped += 1
+                if len(err_lines) < max_err_show:
+                    err_lines.append(f"{sms_log.message_id}: 加入发送队列失败")
+                continue
+
+            retried += 1
+            continue
+
+        try:
+            charge_result = await pricing_engine.calculate_and_charge(
+                account_id=current_account.id,
+                channel_id=int(sms_log.channel_id),
+                country_code=str(sms_log.country_code),
+                message=str(sms_log.message),
+                mnc=None,
+            )
+        except InsufficientBalanceError as e:
+            req = (e.details or {}).get("required", "")
+            avail = (e.details or {}).get("available", "")
+            raise HTTPException(
+                status_code=402,
+                detail=f"余额不足，已成功重发 {retried} 条。需要 {req}，当前可用 {avail}",
+            )
+        except PricingNotFoundError as e:
+            skipped += 1
+            if len(err_lines) < max_err_show:
+                err_lines.append(f"{sms_log.message_id}: 计费失败（{e.message}）")
+            continue
+
+        sms_log.status = "queued"
+        sms_log.error_message = None
+        sms_log.sent_time = None
+        sms_log.delivery_time = None
+        sms_log.upstream_message_id = None
+        sms_log.message_count = int(charge_result.get("message_count") or 1)
+        sms_log.cost_price = charge_result["total_base_cost"]
+        sms_log.selling_price = charge_result["total_cost"]
+        sms_log.currency = charge_result.get("currency") or "USD"
+
+        await db.commit()
+
+        if not QueueManager.queue_sms(sms_log.message_id):
+            await _refund_line_charge(
+                db,
+                current_account.id,
+                float(charge_result["total_cost"]),
+                f"失败重发入队失败退款 {sms_log.message_id}",
+            )
+            await db.execute(
+                update(SMSLog)
+                .where(SMSLog.message_id == sms_log.message_id)
+                .values(
+                    status="failed",
+                    error_message=(
+                        "加入发送队列失败，请检查 RabbitMQ 与 Celery worker-sms 是否运行"
+                    ),
+                )
+            )
+            await db.commit()
+            skipped += 1
+            if len(err_lines) < max_err_show:
+                err_lines.append(f"{sms_log.message_id}: 加入发送队列失败")
+            continue
+
+        retried += 1
+
+    await _update_batch_progress(db, batch_id)
+
+    msg = f"已重发 {retried} 条"
+    if skipped:
+        msg += f"，{skipped} 条未重发"
+    return BatchRetryFailedResponse(
+        retried=retried,
+        skipped=skipped,
+        errors=err_lines,
+        message=msg,
+    )

@@ -120,9 +120,16 @@ def _ensure_channel_dlr_columns_on_worker(**_kwargs):
     import asyncio
 
     try:
-        from app.database import ensure_channel_dlr_preference_columns
+        from app.database import (
+            ensure_channel_dlr_preference_columns,
+            ensure_sales_commission_total_cost_columns,
+        )
 
-        asyncio.run(ensure_channel_dlr_preference_columns())
+        async def _ensure_schema():
+            await ensure_channel_dlr_preference_columns()
+            await ensure_sales_commission_total_cost_columns()
+
+        asyncio.run(_ensure_schema())
     except Exception as e:
         _schema_logger.warning(
             "Celery Worker 启动时补齐 channels DLR 列失败（可手动执行 scripts/add_channel_dlr_columns.sql）: %s",

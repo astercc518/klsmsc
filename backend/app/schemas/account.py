@@ -40,6 +40,11 @@ class AccountInfoResponse(BaseModel):
     tg_username: Optional[str] = None
     unit_price: Optional[float] = None  # 短信单价(USD/条)，用于前端预估费用
     created_at: str
+    # 仪表盘等展示用
+    client_name: Optional[str] = None  # 客户名称：优先公司名称，否则账户名
+    country_code: Optional[str] = None  # 国家/地区代码
+    remaining_sms_estimate: Optional[int] = None  # 按单价估算剩余可发条数（余额/单价向下取整）
+    sales_tg_username: Optional[str] = None  # 归属商务 Telegram，便于客户联系
 
 
 class AccountCreateRequest(BaseModel):

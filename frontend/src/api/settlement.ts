@@ -23,6 +23,9 @@ export interface Settlement {
   paid_at?: string
   notes?: string
   created_at?: string
+  /** 后端列表扩展 */
+  settlement_month?: string
+  channel_count?: number
 }
 
 export interface SettlementDetail {
@@ -71,6 +74,8 @@ export function getSettlementsSummary(params?: {
   status?: string
   start_date?: string
   end_date?: string
+  settlement_month?: string
+  supplier_keyword?: string
 }) {
   return request.get('/admin/settlements/summary', { params })
 }
@@ -83,6 +88,12 @@ export function getSettlements(params?: {
   status?: string
   start_date?: string
   end_date?: string
+  /** 结算月 YYYY-MM */
+  settlement_month?: string
+  /** 供应商名称模糊搜索 */
+  supplier_keyword?: string
+  sort_by?: 'created_at' | 'total_sms_count' | 'final_amount'
+  sort_order?: 'asc' | 'desc'
 }) {
   return request.get('/admin/settlements', { params })
 }
@@ -95,6 +106,18 @@ export function generateSettlement(data: {
   notes?: string
 }) {
   return request.post('/admin/settlements/generate', data)
+}
+
+/** 批量生成指定月份：全部供应商结算、销售佣金、活跃客户账单（已存在或无数据则跳过） */
+export function autoGenerateMonthSettlements(params?: {
+  year?: number
+  month?: number
+  include_suppliers?: boolean
+  include_employees?: boolean
+  include_customers?: boolean
+  due_days?: number
+}) {
+  return request.post('/admin/settlements/auto-generate-month', {}, { params })
 }
 
 // 获取结算单详情
@@ -132,6 +155,11 @@ export function cancelSettlement(settlementId: number, reason: string) {
   })
 }
 
+// 删除结算单（仅草稿/待确认/已取消）
+export function deleteSettlement(settlementId: number) {
+  return request.delete(`/admin/settlements/${settlementId}`)
+}
+
 // ============ 利润报表接口 ============
 
 // 获取利润报表
@@ -152,6 +180,10 @@ export function getCustomerBills(params?: {
   page_size?: number
   account_id?: number
   status?: string
+  settlement_month?: string
+  account_keyword?: string
+  sort_by?: 'created_at' | 'total_sms_count' | 'total_amount'
+  sort_order?: 'asc' | 'desc'
 }) {
   return request.get('/admin/bills', { params })
 }
@@ -192,6 +224,8 @@ export interface CommissionSettlement {
   period_end: string
   total_sms_count: number
   total_revenue: number
+  /** 该员工名下客户在本周期内的短信成本汇总 */
+  total_cost?: number
   commission_rate: number
   commission_amount: number
   currency: string
@@ -206,6 +240,8 @@ export function getCommissionSummary(params?: {
   status?: string
   start_date?: string
   end_date?: string
+  settlement_month?: string
+  sales_keyword?: string
 }) {
   return request.get('/admin/sales-commission/summary', { params })
 }
@@ -218,6 +254,10 @@ export function getCommissionSettlements(params?: {
   status?: string
   start_date?: string
   end_date?: string
+  settlement_month?: string
+  sales_keyword?: string
+  sort_by?: 'created_at' | 'total_sms_count' | 'commission_amount' | 'total_cost'
+  sort_order?: 'asc' | 'desc'
 }) {
   return request.get('/admin/sales-commission', { params })
 }

@@ -95,6 +95,58 @@ async def ensure_channel_dlr_preference_columns():
         )
 
 
+async def ensure_sales_commission_total_cost_columns():
+    """
+    与 SalesCommissionSettlement / SalesCommissionDetail ORM 对齐：补齐 total_cost。
+    未执行 alembic 时查询会因 Unknown column 导致员工结算接口 500；启动时自动 ALTER。
+    仅处理 MySQL / MariaDB。
+    """
+    url = (settings.DATABASE_URL or "").lower()
+    if "mysql" not in url and "mariadb" not in url:
+        return
+    specs = [
+        ("sales_commission_settlements", "名下客户短信成本汇总"),
+        ("sales_commission_details", "该客户周期内成本"),
+    ]
+    try:
+        async with engine.begin() as conn:
+            for table_name, col_comment in specs:
+                t = await conn.execute(
+                    text(
+                        "SELECT COUNT(*) AS c FROM information_schema.TABLES "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tbl"
+                    ),
+                    {"tbl": table_name},
+                )
+                tr = t.first()
+                if not tr or (tr[0] or 0) == 0:
+                    continue
+                r = await conn.execute(
+                    text(
+                        "SELECT COUNT(*) AS c FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tbl "
+                        "AND COLUMN_NAME = 'total_cost'"
+                    ),
+                    {"tbl": table_name},
+                )
+                row = r.first()
+                if row and (row[0] or 0) > 0:
+                    continue
+                # 与 alembic 004：Numeric(14,4) NOT NULL DEFAULT 0 一致
+                await conn.execute(
+                    text(
+                        f"ALTER TABLE `{table_name}` ADD COLUMN `total_cost` "
+                        f"DECIMAL(14,4) NOT NULL DEFAULT 0 COMMENT '{col_comment}'"
+                    )
+                )
+                _schema_logger.info("已自动补齐 %s.total_cost", table_name)
+    except Exception as e:
+        _schema_logger.warning(
+            "自动补齐 sales_commission total_cost 列失败（请执行 alembic upgrade 或手工 ALTER）: %s",
+            e,
+        )
+
+
 async def close_db():
     """关闭数据库连接"""
     await engine.dispose()

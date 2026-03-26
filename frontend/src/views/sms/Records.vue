@@ -8,10 +8,6 @@
         <p class="status-explain">{{ $t('smsRecords.statusExplain') }}</p>
       </div>
       <div class="header-actions">
-        <button class="action-btn export" @click="handleExport" :disabled="exporting">
-          <el-icon><Download /></el-icon>
-          {{ exporting ? $t('smsRecords.exporting') : $t('smsRecords.exportCsv') }}
-        </button>
         <button class="action-btn refresh" @click="loadRecords">
           <el-icon><Refresh /></el-icon>
           {{ $t('common.refresh') }}
@@ -356,8 +352,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Download, Refresh, Search, View } from '@element-plus/icons-vue'
-import { getSMSRecords, exportSMSRecords } from '@/api/sms'
+import { Refresh, Search, View } from '@element-plus/icons-vue'
+import { getSMSRecords } from '@/api/sms'
 import { getAccountsAdmin, getChannelsAdmin } from '@/api/admin'
 import { COUNTRY_LIST, findCountryByDial, findCountryByIso } from '@/constants/countries'
 
@@ -378,7 +374,6 @@ function countryDisplay(code: string | null | undefined): string {
 // 国家筛选选项（按中文名排序）
 const countryOptions = [...COUNTRY_LIST].sort((a, b) => a.name.localeCompare(b.name))
 const loading = ref(false)
-const exporting = ref(false)
 const detailVisible = ref(false)
 const currentRecord = ref<any>(null)
 
@@ -510,28 +505,6 @@ const handleViewDetail = (row: any) => {
   detailVisible.value = true
 }
 
-const handleExport = async () => {
-  exporting.value = true
-  try {
-    const params = { ...buildParams() }
-    delete params.page
-    delete params.page_size
-    const res: any = await exportSMSRecords(params)
-    const blob = new Blob([res], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `sms_records_${new Date().toISOString().slice(0, 10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-    ElMessage.success('导出成功')
-  } catch {
-    ElMessage.error('导出失败')
-  } finally {
-    exporting.value = false
-  }
-}
-
 const loadAccounts = async () => {
   if (!isAdmin.value) return
   try {
@@ -617,14 +590,6 @@ onMounted(() => {
 .action-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
-}
-.action-btn.export {
-  background: rgba(50, 215, 75, 0.1);
-  border-color: rgba(50, 215, 75, 0.3);
-  color: #32d74b;
-}
-.action-btn.export:hover {
-  background: rgba(50, 215, 75, 0.2);
 }
 .action-btn:disabled {
   opacity: 0.5;

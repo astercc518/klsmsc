@@ -47,3 +47,15 @@ export const getBatchDetail = (id: number) => {
 export const cancelBatch = (id: number) => {
   return request.delete(`/batches/${id}`)
 }
+
+/** 失败记录重新计费并入队 */
+export const retryBatchFailed = (id: number) => {
+  return request.post<{ retried: number; skipped: number; errors: string[]; message: string }>(
+    `/batches/${id}/retry-failed`
+  )
+}
+
+/** 导出批次明细 CSV（后端手机号脱敏） */
+export const exportBatchRecordsCsv = (id: number) => {
+  return request.get(`/batches/${id}/export`, { responseType: 'blob' })
+}

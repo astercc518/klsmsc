@@ -1,5 +1,12 @@
 <template>
   <div class="settings-page">
+    <p class="page-intro">{{ $t('accountManage.pageDesc') }}</p>
+
+    <!-- 账户概览（只读）；下方为基础信息、密码、TG、通知等设置 -->
+    <div class="overview-wrap">
+      <AccountOverviewPanel :info="accountInfoFull" :loading="overviewLoading" />
+    </div>
+
     <el-row :gutter="20">
       <!-- 基础信息 -->
       <el-col :span="12">
@@ -158,9 +165,12 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getAccountInfo, generateAccountTgBindCode, unbindAccountTelegram } from '@/api/account'
+import { getAccountInfo, generateAccountTgBindCode, unbindAccountTelegram, type AccountInfo } from '@/api/account'
+import AccountOverviewPanel from '@/components/account/AccountOverviewPanel.vue'
 
 const { t } = useI18n()
+const accountInfoFull = ref<AccountInfo | null>(null)
+const overviewLoading = ref(false)
 const profileLoading = ref(false)
 const passwordLoading = ref(false)
 const notifyLoading = ref(false)
@@ -197,17 +207,27 @@ const notifyForm = reactive({
 const passwordFormRef = ref()
 
 const loadAccountInfo = async () => {
+  overviewLoading.value = true
   try {
-    const res: any = await getAccountInfo()
-    profileForm.username = res.account_name || res.username || ''
+    const res = await getAccountInfo()
+    accountInfoFull.value = res
+    profileForm.username = res.account_name || ''
     profileForm.email = res.email || ''
     profileForm.company = res.company_name || ''
     profileForm.phone = res.contact_phone || ''
     tgId.value = res.tg_id || null
     tgUsername.value = res.tg_username || ''
     tgBound.value = !!res.tg_id
+    try {
+      localStorage.setItem('account_name', res.account_name)
+    } catch {
+      /* ignore */
+    }
   } catch (error: any) {
+    accountInfoFull.value = null
     ElMessage.error(t('accountSettings.loadAccountInfoFailed'))
+  } finally {
+    overviewLoading.value = false
   }
 }
 
@@ -326,6 +346,17 @@ onMounted(() => {
 <style scoped>
 .settings-page {
   width: 100%;
+}
+
+.page-intro {
+  font-size: 14px;
+  color: var(--text-tertiary);
+  margin: 0 0 16px;
+  line-height: 1.5;
+}
+
+.overview-wrap {
+  margin-bottom: 20px;
 }
 
 .tg-binding-section {

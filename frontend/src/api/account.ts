@@ -36,9 +36,31 @@ export const getBalance = () => {
   return request.get('/account/balance')
 }
 
+/** 客户账户信息（/account/info） */
+export interface AccountInfo {
+  id: number
+  account_name: string
+  email?: string | null
+  balance: number
+  currency: string
+  status: string
+  services?: string
+  company_name?: string | null
+  contact_person?: string | null
+  rate_limit?: number | null
+  tg_id?: number | null
+  tg_username?: string | null
+  unit_price?: number | null
+  created_at: string
+  client_name?: string | null
+  country_code?: string | null
+  remaining_sms_estimate?: number | null
+  sales_tg_username?: string | null
+}
+
 // 查询账户信息
 // 管理员模式下返回模拟数据，impersonate 模式调用真实 API
-export const getAccountInfo = () => {
+export const getAccountInfo = (): Promise<AccountInfo> => {
   const isImpersonate = sessionStorage.getItem('impersonate_mode') === '1'
   if (isImpersonate) {
     return request.get('/account/info')

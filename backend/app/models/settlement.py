@@ -212,8 +212,9 @@ class SalesCommissionSettlement(Base):
     # 汇总数据
     total_sms_count = Column(Integer, default=0, comment='总短信条数')
     total_revenue = Column(Numeric(14, 4), default=0, comment='客户消费总额(营收)')
+    total_cost = Column(Numeric(14, 4), default=0, comment='名下客户短信成本汇总(cost_price)，仅归属该销售的客户')
     commission_rate = Column(Numeric(5, 2), default=0, comment='佣金比例(%)')
-    commission_amount = Column(Numeric(14, 4), default=0, comment='佣金金额')
+    commission_amount = Column(Numeric(14, 4), default=0, comment='佣金金额(按毛利计提)')
     currency = Column(String(10), default='USD', comment='币种')
     
     # 状态
@@ -245,8 +246,9 @@ class SalesCommissionDetail(Base):
     account_id = Column(INTEGER(unsigned=True), ForeignKey('accounts.id'), nullable=False, comment='客户ID')
     total_sms_count = Column(Integer, default=0, comment='短信条数')
     total_revenue = Column(Numeric(14, 4), default=0, comment='客户消费金额')
+    total_cost = Column(Numeric(14, 4), default=0, comment='该客户周期内成本(cost_price)')
     commission_rate = Column(Numeric(5, 2), default=0, comment='佣金比例(%)')
-    commission_amount = Column(Numeric(14, 4), default=0, comment='佣金金额')
+    commission_amount = Column(Numeric(14, 4), default=0, comment='佣金金额(按该客户毛利计提)')
     
     created_at = Column(DateTime, server_default=func.now())
     

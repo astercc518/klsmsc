@@ -225,8 +225,9 @@ const getLevelTagType = (level: string) => {
 
 const loadStats = async () => {
   try {
-    const res = await securityLogApi.getStats()
-    Object.assign(stats, res.data)
+    // request 拦截器已返回 response.data，勿再套一层 .data
+    const res: any = await securityLogApi.getStats()
+    Object.assign(stats, res)
   } catch (error: any) {
     ElMessage.error(error.response?.data?.detail || t('security.loadStatsFailed'))
   }
@@ -235,14 +236,14 @@ const loadStats = async () => {
 const loadLogs = async () => {
   loadingLogs.value = true
   try {
-    const res = await securityLogApi.list({
+    const res: any = await securityLogApi.list({
       page: logPagination.page,
       page_size: logPagination.page_size,
       event_type: searchForm.event_type || undefined,
       level: searchForm.level || undefined
     })
-    logs.value = res.data.items
-    logPagination.total = res.data.total
+    logs.value = res.items ?? []
+    logPagination.total = res.total ?? 0
   } catch (error: any) {
     ElMessage.error(error.response?.data?.detail || t('security.loadLogsFailed'))
   } finally {
@@ -253,14 +254,13 @@ const loadLogs = async () => {
 const loadLoginAttempts = async () => {
   loadingAttempts.value = true
   try {
-    const res = await securityLogApi.getLoginAttempts({
+    const res: any = await securityLogApi.getLoginAttempts({
       page: attemptPagination.page,
       page_size: attemptPagination.page_size,
       success: loginSuccess.value
     })
-    loginAttempts.value = res.data
-    // Note: API返回的是数组，没有total，这里需要处理
-    attemptPagination.total = res.data.length
+    loginAttempts.value = res.items ?? []
+    attemptPagination.total = res.total ?? 0
   } catch (error: any) {
     ElMessage.error(error.response?.data?.detail || t('security.loadLoginRecordsFailed'))
   } finally {

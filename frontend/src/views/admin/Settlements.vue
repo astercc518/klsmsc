@@ -2,9 +2,8 @@
   <div class="settlements-page">
     <div class="page-header">
       <h2 class="page-title">{{ $t('menu.settlementManage') }}</h2>
-      <el-button type="primary" @click="showGenerateDialog">
-        <el-icon><Plus /></el-icon>
-        {{ $t('settlements.generate') }}
+      <el-button type="success" plain :loading="autoGenerating" @click="runAutoGenerateMonth">
+        {{ $t('settlements.autoGenerateMonth') }}
       </el-button>
     </div>
 
@@ -12,36 +11,30 @@
     <el-tabs v-model="activeTab" class="main-tabs">
       <!-- 供应商结算 -->
       <el-tab-pane :label="$t('settlements.supplierSettlement')" name="supplier">
-        <!-- 汇总卡片 -->
-        <div class="summary-grid" v-if="settlementSummary">
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('settlements.totalSettlements') }}</div>
-            <div class="summary-value">{{ settlementSummary.total_count }}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('settlements.totalAmount') }}</div>
-            <div class="summary-value">{{ formatMoney(settlementSummary.total_amount) }}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('settlements.draftCount') }}</div>
-            <div class="summary-value text-info">{{ settlementSummary.draft_count }}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('settlements.paidCount') }}</div>
-            <div class="summary-value text-success">{{ settlementSummary.paid_count }}</div>
-          </div>
-        </div>
-
-        <!-- 搜索筛选 -->
-        <el-card class="filter-card">
-          <el-form :inline="true" :model="filters" class="filter-form">
-            <el-form-item :label="$t('settlements.supplier')">
-              <el-select v-model="filters.supplier_id" :placeholder="$t('common.all')" clearable>
-                <el-option v-for="s in supplierOptions" :key="s.id" :label="s.supplier_name" :value="s.id" />
-              </el-select>
+        <!-- 筛选：结算月 + 供应商名称 + 查询 -->
+        <el-card class="filter-card supplier-filter-card">
+          <el-form :inline="true" :model="filters" class="filter-form supplier-filter-form">
+            <el-form-item :label="$t('settlements.settlementMonth')">
+              <el-date-picker
+                v-model="filters.settlementMonth"
+                type="month"
+                value-format="YYYY-MM"
+                :placeholder="$t('settlements.selectSettlementMonth')"
+                clearable
+                class="supplier-month-picker"
+              />
+            </el-form-item>
+            <el-form-item :label="$t('settlements.supplierName')">
+              <el-input
+                v-model="filters.supplierKeyword"
+                clearable
+                :placeholder="$t('settlements.supplierNamePlaceholder')"
+                class="supplier-name-input"
+                @keyup.enter="loadSettlements"
+              />
             </el-form-item>
             <el-form-item :label="$t('settlements.status')">
-              <el-select v-model="filters.status" :placeholder="$t('common.all')" clearable>
+              <el-select v-model="filters.status" :placeholder="$t('common.all')" clearable style="width: 140px">
                 <el-option :label="$t('settlements.draft')" value="draft" />
                 <el-option :label="$t('settlements.pending')" value="pending" />
                 <el-option :label="$t('settlements.confirmed')" value="confirmed" />
@@ -49,47 +42,59 @@
                 <el-option :label="$t('settlements.cancelled')" value="cancelled" />
               </el-select>
             </el-form-item>
-            <el-form-item :label="$t('settlements.dateRange')">
-              <el-date-picker
-                v-model="filters.dateRange"
-                type="daterange"
-                :range-separator="$t('profit.to')"
-                value-format="YYYY-MM-DD"
-                clearable
-              />
-            </el-form-item>
             <el-form-item>
               <el-button type="primary" @click="loadSettlements">{{ $t('common.search') }}</el-button>
             </el-form-item>
           </el-form>
         </el-card>
 
+        <!-- 主操作：创建账单、导出 -->
+        <div class="supplier-toolbar">
+          <el-button type="primary" @click="showGenerateDialog">
+            <el-icon><Plus /></el-icon>
+            {{ $t('settlements.createBill') }}
+          </el-button>
+          <el-button @click="exportSupplierSettlementsCsv">
+            <el-icon><Download /></el-icon>
+            {{ $t('settlements.exportBill') }}
+          </el-button>
+        </div>
+
         <!-- 结算单列表 -->
         <el-card class="table-card">
-          <el-table :data="settlements" v-loading="loading" stripe class="responsive-table">
-            <el-table-column prop="settlement_no" :label="$t('settlements.settlementNo')" width="200" />
-            <el-table-column prop="supplier_name" :label="$t('settlements.supplier')" width="150" />
-            <el-table-column :label="$t('settlements.period')" width="200">
+          <el-table
+            :data="settlements"
+            v-loading="loading"
+            stripe
+            class="responsive-table supplier-settlement-table"
+            @sort-change="onSupplierSortChange"
+            @selection-change="onSupplierSelectionChange"
+          >
+            <el-table-column type="selection" width="48" fixed />
+            <el-table-column prop="settlement_month" :label="$t('settlements.settlementMonth')" width="100" />
+            <el-table-column prop="supplier_name" :label="$t('settlements.supplierName')" min-width="140" show-overflow-tooltip />
+            <el-table-column prop="channel_count" :label="$t('settlements.channelCount')" width="92" align="center" />
+            <el-table-column
+              prop="total_sms_count"
+              :label="$t('settlements.orderCount')"
+              width="112"
+              sortable="custom"
+              align="right"
+            />
+            <el-table-column
+              prop="final_amount"
+              :label="$t('settlements.orderAmountCny')"
+              width="140"
+              sortable="custom"
+              align="right"
+            >
               <template #default="{ row }">
-                {{ formatDate(row.period_start) }} ~ {{ formatDate(row.period_end) }}
+                {{ formatMoneyHighPrecision(row.final_amount) }}
               </template>
             </el-table-column>
-            <el-table-column prop="total_sms_count" :label="$t('settlements.smsCount')" width="100" />
-            <el-table-column prop="total_cost" :label="$t('settlements.costAmount')" width="120">
+            <el-table-column prop="notes" :label="$t('settlements.remarks')" min-width="120" show-overflow-tooltip>
               <template #default="{ row }">
-                {{ row.currency }} {{ formatMoney(row.total_cost) }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="adjustment_amount" :label="$t('settlements.adjustment')" width="100">
-              <template #default="{ row }">
-                <span :class="{ 'text-success': row.adjustment_amount > 0, 'text-danger': row.adjustment_amount < 0 }">
-                  {{ row.adjustment_amount > 0 ? '+' : '' }}{{ formatMoney(row.adjustment_amount) }}
-                </span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="final_amount" :label="$t('settlements.finalAmount')" width="120">
-              <template #default="{ row }">
-                <strong>{{ row.currency }} {{ formatMoney(row.final_amount) }}</strong>
+                {{ row.notes || '—' }}
               </template>
             </el-table-column>
             <el-table-column prop="status" :label="$t('settlements.status')" width="100">
@@ -99,35 +104,34 @@
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="created_at" :label="$t('common.createdAt')" width="160">
+            <el-table-column :label="$t('common.action')" min-width="268" fixed="right">
               <template #default="{ row }">
-                {{ formatTime(row.created_at) }}
-              </template>
-            </el-table-column>
-            <el-table-column :label="$t('common.action')" width="180" fixed="right">
-              <template #default="{ row }">
-                <el-button type="primary" link size="small" @click="viewSettlement(row)">{{ $t('common.detail') }}</el-button>
-                <el-button
-                  v-if="row.status === 'draft'"
-                  type="success"
-                  link
-                  size="small"
-                  @click="handleConfirm(row)"
-                >{{ $t('common.confirm') }}</el-button>
-                <el-button
-                  v-if="row.status === 'confirmed'"
-                  type="primary"
-                  link
-                  size="small"
-                  @click="handlePay(row)"
-                >{{ $t('settlements.paid') }}</el-button>
-                <el-button
-                  v-if="['draft', 'pending', 'confirmed'].includes(row.status)"
-                  type="danger"
-                  link
-                  size="small"
-                  @click="handleCancel(row)"
-                >{{ $t('common.cancel') }}</el-button>
+                <div class="settlement-table-actions">
+                  <el-button type="primary" link size="small" @click="viewSettlement(row)">{{ $t('settlements.actionBill') }}</el-button>
+                  <el-button type="primary" link size="small" @click="viewSettlement(row)">{{ $t('settlements.actionDetails') }}</el-button>
+                  <el-button type="primary" link size="small" @click="exportOneSettlementRow(row)">{{ $t('settlements.actionDownload') }}</el-button>
+                  <el-dropdown trigger="click" class="settlement-more-dropdown" @command="(cmd: string) => onSupplierRowMore(cmd, row)">
+                    <span class="settlement-more-trigger">
+                      <el-button type="primary" link size="small">
+                        {{ $t('settlements.moreActions') }} <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                      </el-button>
+                    </span>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item v-if="row.status === 'draft'" command="confirm">{{ $t('common.confirm') }}</el-dropdown-item>
+                        <el-dropdown-item v-if="row.status === 'confirmed'" command="pay">{{ $t('settlements.paid') }}</el-dropdown-item>
+                        <el-dropdown-item v-if="['draft', 'pending', 'confirmed'].includes(row.status)" command="cancel" divided>{{ $t('common.cancel') }}</el-dropdown-item>
+                        <el-dropdown-item
+                          v-if="['draft', 'pending', 'cancelled'].includes(row.status)"
+                          command="delete"
+                          divided
+                        >
+                          {{ $t('common.delete') }}
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -146,188 +150,119 @@
         </el-card>
       </el-tab-pane>
 
-      <!-- 利润报表 -->
-      <el-tab-pane :label="$t('profit.title')" name="profit">
-        <el-card class="filter-card">
-          <el-form :inline="true" :model="profitFilters" class="filter-form">
-            <el-form-item :label="$t('profit.dateRange')">
+      <!-- 员工结算（原销售佣金） -->
+      <el-tab-pane :label="$t('settlements.employeeSettlement')" name="employee">
+        <el-card class="filter-card supplier-filter-card">
+          <el-form :inline="true" :model="employeeFilters" class="filter-form supplier-filter-form">
+            <el-form-item :label="$t('settlements.settlementMonth')">
               <el-date-picker
-                v-model="profitFilters.dateRange"
-                type="daterange"
-                :range-separator="$t('profit.to')"
-                :start-placeholder="$t('profit.startDate')"
-                :end-placeholder="$t('profit.endDate')"
-                value-format="YYYY-MM-DD"
+                v-model="employeeFilters.settlementMonth"
+                type="month"
+                value-format="YYYY-MM"
+                :placeholder="$t('settlements.selectSettlementMonth')"
+                clearable
+                class="supplier-month-picker"
               />
             </el-form-item>
-            <el-form-item :label="$t('profit.groupBy')">
-              <el-select v-model="profitFilters.group_by">
-                <el-option :label="$t('profit.byDate')" value="day" />
-                <el-option :label="$t('profit.bySupplier')" value="supplier" />
-                <el-option :label="$t('profit.byCountry')" value="country" />
-                <el-option :label="$t('profit.byChannel')" value="channel" />
-              </el-select>
-            </el-form-item>
-            <el-form-item :label="$t('settlements.supplier')">
-              <el-select v-model="profitFilters.supplier_id" :placeholder="$t('common.all')" clearable>
-                <el-option
-                  v-for="s in supplierOptions"
-                  :key="s.id"
-                  :label="s.supplier_name"
-                  :value="s.id"
-                />
-              </el-select>
-            </el-form-item>
-            <el-form-item>
-              <el-button type="primary" @click="loadProfitReport">{{ $t('smsRecords.query') }}</el-button>
-            </el-form-item>
-          </el-form>
-        </el-card>
-
-        <!-- 汇总卡片 -->
-        <div class="summary-grid" v-if="profitSummary">
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('profit.totalCost') }}</div>
-            <div class="summary-value text-danger">{{ formatMoney(profitSummary.total_cost) }}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('profit.totalRevenue') }}</div>
-            <div class="summary-value text-success">{{ formatMoney(profitSummary.total_revenue) }}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('profit.grossProfit') }}</div>
-            <div class="summary-value" :class="profitSummary.total_profit >= 0 ? 'text-success' : 'text-danger'">
-              {{ formatMoney(profitSummary.total_profit) }}
-            </div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('profit.profitMargin') }}</div>
-            <div class="summary-value">{{ profitSummary.overall_margin }}%</div>
-          </div>
-        </div>
-
-        <el-card class="table-card">
-          <el-table :data="profitData" v-loading="profitLoading" stripe class="responsive-table">
-            <el-table-column v-if="profitFilters.group_by === 'day'" prop="date" :label="$t('profit.date')" width="120" />
-            <el-table-column v-if="profitFilters.group_by === 'supplier'" prop="supplier_name" :label="$t('settlements.supplier')" width="150" />
-            <el-table-column v-if="profitFilters.group_by === 'country'" prop="country_code" :label="$t('profit.countryCode')" width="100" />
-            <el-table-column v-if="profitFilters.group_by === 'channel'" prop="channel_name" :label="$t('channels.channel')" width="150" />
-            <el-table-column prop="total_count" :label="$t('profit.totalSms')" width="100" />
-            <el-table-column prop="success_count" :label="$t('profit.successCount')" width="100" />
-            <el-table-column prop="total_cost" :label="$t('profit.cost')" width="120">
-              <template #default="{ row }">
-                {{ formatMoney(row.total_cost) }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="total_revenue" :label="$t('profit.revenue')" width="120">
-              <template #default="{ row }">
-                {{ formatMoney(row.total_revenue) }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="profit" :label="$t('profit.profit')" width="120">
-              <template #default="{ row }">
-                <span :class="row.profit >= 0 ? 'text-success' : 'text-danger'">
-                  {{ formatMoney(row.profit) }}
-                </span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="profit_margin" :label="$t('profit.profitMargin')" width="100">
-              <template #default="{ row }">
-                {{ row.profit_margin }}%
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-card>
-      </el-tab-pane>
-
-      <!-- 销售佣金 -->
-      <el-tab-pane :label="$t('settlements.salesCommission')" name="commission">
-        <div class="tab-header">
-          <el-button type="primary" @click="showCommissionGenerateDialog">
-            <el-icon><Plus /></el-icon>
-            {{ $t('settlements.generateCommission') }}
-          </el-button>
-        </div>
-        <div class="summary-grid" v-if="commissionSummary">
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('settlements.totalSettlements') }}</div>
-            <div class="summary-value">{{ commissionSummary.total_count }}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('settlements.totalAmount') }}</div>
-            <div class="summary-value">{{ formatMoney(commissionSummary.total_amount) }}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('settlements.draftCount') }}</div>
-            <div class="summary-value text-info">{{ commissionSummary.draft_count }}</div>
-          </div>
-          <div class="summary-card">
-            <div class="summary-label">{{ $t('settlements.paidCount') }}</div>
-            <div class="summary-value text-success">{{ commissionSummary.paid_count }}</div>
-          </div>
-        </div>
-        <el-card class="filter-card">
-          <el-form :inline="true" :model="commissionFilters" class="filter-form">
-            <el-form-item :label="$t('settlements.sales')">
-              <el-select v-model="commissionFilters.sales_id" :placeholder="$t('common.all')" clearable filterable>
-                <el-option v-for="s in salesOptions" :key="s.id" :label="s.real_name || s.username" :value="s.id" />
-              </el-select>
+            <el-form-item :label="$t('settlements.employeeName')">
+              <el-input
+                v-model="employeeFilters.salesKeyword"
+                clearable
+                :placeholder="$t('settlements.employeeNamePlaceholder')"
+                class="supplier-name-input"
+                @keyup.enter="loadCommissionSettlements"
+              />
             </el-form-item>
             <el-form-item :label="$t('settlements.status')">
-              <el-select v-model="commissionFilters.status" :placeholder="$t('common.all')" clearable>
+              <el-select v-model="employeeFilters.status" :placeholder="$t('common.all')" clearable style="width: 140px">
                 <el-option :label="$t('settlements.draft')" value="draft" />
                 <el-option :label="$t('settlements.confirmed')" value="confirmed" />
                 <el-option :label="$t('settlements.paid')" value="paid" />
                 <el-option :label="$t('settlements.cancelled')" value="cancelled" />
               </el-select>
             </el-form-item>
-            <el-form-item :label="$t('settlements.dateRange')">
-              <el-date-picker
-                v-model="commissionFilters.dateRange"
-                type="daterange"
-                :range-separator="$t('profit.to')"
-                value-format="YYYY-MM-DD"
-                clearable
-              />
-            </el-form-item>
             <el-form-item>
               <el-button type="primary" @click="loadCommissionSettlements">{{ $t('common.search') }}</el-button>
             </el-form-item>
           </el-form>
         </el-card>
+        <div class="supplier-toolbar">
+          <el-button type="primary" @click="showCommissionGenerateDialog">
+            <el-icon><Plus /></el-icon>
+            {{ $t('settlements.createBill') }}
+          </el-button>
+          <el-button @click="exportEmployeeSettlementsCsv">
+            <el-icon><Download /></el-icon>
+            {{ $t('settlements.exportBill') }}
+          </el-button>
+        </div>
         <el-card class="table-card">
-          <el-table :data="commissionSettlements" v-loading="commissionLoading" stripe class="responsive-table">
-            <el-table-column prop="settlement_no" :label="$t('settlements.settlementNo')" width="200" />
-            <el-table-column prop="sales_name" :label="$t('settlements.sales')" width="120" />
-            <el-table-column :label="$t('settlements.period')" width="200">
-              <template #default="{ row }">
-                {{ formatDate(row.period_start) }} ~ {{ formatDate(row.period_end) }}
-              </template>
+          <el-table
+            :data="commissionSettlements"
+            v-loading="commissionLoading"
+            stripe
+            class="responsive-table supplier-settlement-table"
+            @sort-change="onEmployeeSortChange"
+            @selection-change="onEmployeeSelectionChange"
+          >
+            <el-table-column type="selection" width="48" fixed />
+            <el-table-column prop="settlement_month" :label="$t('settlements.settlementMonth')" width="100" />
+            <el-table-column prop="sales_name" :label="$t('settlements.employeeName')" min-width="120" show-overflow-tooltip />
+            <el-table-column prop="customer_count" :label="$t('settlements.clientCount')" width="92" align="center" />
+            <el-table-column
+              prop="total_sms_count"
+              :label="$t('settlements.orderCount')"
+              width="112"
+              sortable="custom"
+              align="right"
+            />
+            <el-table-column
+              prop="total_cost"
+              :label="$t('settlements.employeeCustomerCost')"
+              width="120"
+              sortable="custom"
+              align="right"
+            >
+              <template #default="{ row }">{{ formatMoneyHighPrecision(row.total_cost ?? 0) }}</template>
             </el-table-column>
-            <el-table-column prop="total_revenue" :label="$t('settlements.revenueAmount')" width="120">
-              <template #default="{ row }">{{ formatMoney(row.total_revenue) }}</template>
+            <el-table-column
+              prop="commission_amount"
+              :label="$t('settlements.settlementAmount')"
+              width="140"
+              sortable="custom"
+              align="right"
+            >
+              <template #default="{ row }">{{ formatMoneyHighPrecision(row.commission_amount) }}</template>
             </el-table-column>
-            <el-table-column prop="commission_rate" :label="$t('settlements.commissionRate')" width="100">
-              <template #default="{ row }">{{ row.commission_rate }}%</template>
-            </el-table-column>
-            <el-table-column prop="commission_amount" :label="$t('settlements.commissionAmount')" width="120">
-              <template #default="{ row }">
-                <strong>{{ formatMoney(row.commission_amount) }}</strong>
-              </template>
+            <el-table-column prop="notes" :label="$t('settlements.remarks')" min-width="100" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.notes || '—' }}</template>
             </el-table-column>
             <el-table-column prop="status" :label="$t('settlements.status')" width="100">
               <template #default="{ row }">
-                <el-tag :type="commissionStatusTagType(row.status)" size="small">
-                  {{ commissionStatusMap[row.status] }}
-                </el-tag>
+                <el-tag :type="commissionStatusTagType(row.status)" size="small">{{ commissionStatusMap[row.status] }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column :label="$t('common.action')" width="180" fixed="right">
+            <el-table-column :label="$t('common.action')" min-width="268" fixed="right">
               <template #default="{ row }">
-                <el-button type="primary" link size="small" @click="viewCommissionSettlement(row)">{{ $t('common.detail') }}</el-button>
-                <el-button v-if="row.status === 'draft'" type="success" link size="small" @click="handleConfirmCommission(row)">{{ $t('common.confirm') }}</el-button>
-                <el-button v-if="row.status === 'confirmed'" type="primary" link size="small" @click="handlePayCommission(row)">{{ $t('settlements.paid') }}</el-button>
-                <el-button v-if="['draft', 'confirmed'].includes(row.status)" type="danger" link size="small" @click="handleCancelCommission(row)">{{ $t('common.cancel') }}</el-button>
+                <div class="settlement-table-actions">
+                  <el-button type="primary" link size="small" @click="viewCommissionSettlement(row)">{{ $t('settlements.actionBill') }}</el-button>
+                  <el-button type="primary" link size="small" @click="viewCommissionSettlement(row)">{{ $t('settlements.actionDetails') }}</el-button>
+                  <el-button type="primary" link size="small" @click="exportOneEmployeeRow(row)">{{ $t('settlements.actionDownload') }}</el-button>
+                  <el-dropdown trigger="click" class="settlement-more-dropdown" @command="(cmd: string) => onEmployeeRowMore(cmd, row)">
+                    <span class="settlement-more-trigger">
+                      <el-button type="primary" link size="small">
+                        {{ $t('settlements.moreActions') }} <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                      </el-button>
+                    </span>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item v-if="row.status === 'draft'" command="confirm">{{ $t('common.confirm') }}</el-dropdown-item>
+                        <el-dropdown-item v-if="row.status === 'confirmed'" command="pay">{{ $t('settlements.paid') }}</el-dropdown-item>
+                        <el-dropdown-item v-if="['draft', 'confirmed'].includes(row.status)" command="cancel" divided>{{ $t('common.cancel') }}</el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -345,23 +280,31 @@
         </el-card>
       </el-tab-pane>
 
-      <!-- 客户账单 -->
-      <el-tab-pane :label="$t('settlements.customerBilling')" name="bills">
-        <div class="tab-header">
-          <el-button type="primary" @click="showBillGenerateDialog">
-            <el-icon><Plus /></el-icon>
-            {{ $t('settlements.generateCustomerBill') }}
-          </el-button>
-        </div>
-        <el-card class="filter-card">
-          <el-form :inline="true" :model="billFilters" class="filter-form">
-            <el-form-item :label="$t('settlements.customer')">
-              <el-select v-model="billFilters.account_id" :placeholder="$t('common.all')" clearable filterable>
-                <el-option v-for="a in accountOptions" :key="a.id" :label="a.account_name" :value="a.id" />
-              </el-select>
+      <!-- 客户结算（原客户账单） -->
+      <el-tab-pane :label="$t('settlements.customerSettlement')" name="customer">
+        <el-card class="filter-card supplier-filter-card">
+          <el-form :inline="true" :model="billFilters" class="filter-form supplier-filter-form">
+            <el-form-item :label="$t('settlements.settlementMonth')">
+              <el-date-picker
+                v-model="billFilters.settlementMonth"
+                type="month"
+                value-format="YYYY-MM"
+                :placeholder="$t('settlements.selectSettlementMonth')"
+                clearable
+                class="supplier-month-picker"
+              />
+            </el-form-item>
+            <el-form-item :label="$t('settlements.customerNameCol')">
+              <el-input
+                v-model="billFilters.customerKeyword"
+                clearable
+                :placeholder="$t('settlements.customerNamePlaceholder')"
+                class="supplier-name-input"
+                @keyup.enter="loadBills"
+              />
             </el-form-item>
             <el-form-item :label="$t('settlements.status')">
-              <el-select v-model="billFilters.status" :placeholder="$t('common.all')" clearable>
+              <el-select v-model="billFilters.status" :placeholder="$t('common.all')" clearable style="width: 140px">
                 <el-option :label="$t('settlements.draft')" value="draft" />
                 <el-option :label="$t('settlements.sent')" value="sent" />
                 <el-option :label="$t('settlements.paid')" value="paid" />
@@ -374,49 +317,58 @@
             </el-form-item>
           </el-form>
         </el-card>
-
+        <div class="supplier-toolbar">
+          <el-button type="primary" @click="showBillGenerateDialog">
+            <el-icon><Plus /></el-icon>
+            {{ $t('settlements.createBill') }}
+          </el-button>
+          <el-button @click="exportCustomerBillsCsv">
+            <el-icon><Download /></el-icon>
+            {{ $t('settlements.exportBill') }}
+          </el-button>
+        </div>
         <el-card class="table-card">
-          <el-table :data="bills" v-loading="billsLoading" stripe class="responsive-table">
-            <el-table-column prop="bill_no" :label="$t('settlements.billNo')" width="200" />
-            <el-table-column prop="account_name" :label="$t('settlements.customer')" width="120" />
-            <el-table-column :label="$t('settlements.billingPeriod')" width="200">
-              <template #default="{ row }">
-                {{ formatDate(row.period_start) }} ~ {{ formatDate(row.period_end) }}
-              </template>
+          <el-table
+            :data="bills"
+            v-loading="billsLoading"
+            stripe
+            class="responsive-table supplier-settlement-table"
+            @sort-change="onCustomerSortChange"
+            @selection-change="onCustomerSelectionChange"
+          >
+            <el-table-column type="selection" width="48" fixed />
+            <el-table-column prop="settlement_month" :label="$t('settlements.settlementMonth')" width="100" />
+            <el-table-column prop="account_name" :label="$t('settlements.customerNameCol')" min-width="120" show-overflow-tooltip />
+            <el-table-column prop="country_count" :label="$t('settlements.countryCount')" width="92" align="center" />
+            <el-table-column
+              prop="total_sms_count"
+              :label="$t('settlements.orderCount')"
+              width="112"
+              sortable="custom"
+              align="right"
+            />
+            <el-table-column
+              prop="total_amount"
+              :label="$t('settlements.settlementAmount')"
+              width="140"
+              sortable="custom"
+              align="right"
+            >
+              <template #default="{ row }">{{ formatMoneyHighPrecision(row.total_amount) }}</template>
             </el-table-column>
-            <el-table-column prop="total_sms_count" :label="$t('settlements.smsCount')" width="100" />
-            <el-table-column prop="total_amount" :label="$t('settlements.amountDue')" width="120">
-              <template #default="{ row }">
-                {{ formatMoney(row.total_amount) }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="paid_amount" :label="$t('settlements.paidAmount')" width="120">
-              <template #default="{ row }">
-                {{ formatMoney(row.paid_amount) }}
-              </template>
-            </el-table-column>
-            <el-table-column prop="outstanding_amount" :label="$t('settlements.outstandingAmount')" width="120">
-              <template #default="{ row }">
-                <span :class="{ 'text-danger': row.outstanding_amount > 0 }">
-                  {{ formatMoney(row.outstanding_amount) }}
-                </span>
-              </template>
+            <el-table-column prop="notes" :label="$t('settlements.remarks')" min-width="100" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.notes || '—' }}</template>
             </el-table-column>
             <el-table-column prop="status" :label="$t('settlements.status')" width="100">
               <template #default="{ row }">
-                <el-tag :type="billStatusTagType(row.status)" size="small">
-                  {{ billStatusMap[row.status] }}
-                </el-tag>
+                <el-tag :type="billStatusTagType(row.status)" size="small">{{ billStatusMap[row.status] }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="due_date" :label="$t('settlements.dueDate')" width="120">
+            <el-table-column :label="$t('common.action')" width="200" fixed="right">
               <template #default="{ row }">
-                {{ formatDate(row.due_date) }}
-              </template>
-            </el-table-column>
-            <el-table-column :label="$t('common.action')" width="150" fixed="right">
-              <template #default="{ row }">
-                <el-button type="primary" link size="small" @click="viewBill(row)">{{ $t('common.detail') }}</el-button>
+                <el-button type="primary" link size="small" @click="viewBill(row)">{{ $t('settlements.actionBill') }}</el-button>
+                <el-button type="primary" link size="small" @click="viewBill(row)">{{ $t('settlements.actionDetails') }}</el-button>
+                <el-button type="primary" link size="small" @click="exportOneCustomerBillRow(row)">{{ $t('settlements.actionDownload') }}</el-button>
                 <el-button
                   v-if="row.outstanding_amount > 0"
                   type="success"
@@ -680,6 +632,8 @@
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item :label="$t('settlements.commissionRevenue')">{{ formatMoney(currentCommissionSettlement.total_revenue) }}</el-descriptions-item>
+          <el-descriptions-item :label="$t('settlements.employeeCustomerCost')">{{ formatMoney(currentCommissionSettlement.total_cost ?? 0) }}</el-descriptions-item>
+          <el-descriptions-item :label="$t('settlements.grossProfitForCommission')">{{ formatMoney((currentCommissionSettlement.total_revenue ?? 0) - (currentCommissionSettlement.total_cost ?? 0)) }}</el-descriptions-item>
           <el-descriptions-item :label="$t('settlements.commissionRate')">{{ currentCommissionSettlement.commission_rate }}%</el-descriptions-item>
           <el-descriptions-item :label="$t('settlements.commissionAmount')">
             <strong>{{ formatMoney(currentCommissionSettlement.commission_amount) }}</strong>
@@ -689,6 +643,9 @@
         <el-table :data="currentCommissionSettlement.details" size="small" max-height="250">
           <el-table-column prop="account_name" :label="$t('settlements.customer')" width="120" />
           <el-table-column prop="total_sms_count" :label="$t('settlements.smsCount')" width="80" />
+          <el-table-column prop="total_cost" :label="$t('settlements.employeeCustomerCost')" width="100">
+            <template #default="{ row }">{{ formatMoney(row.total_cost ?? 0) }}</template>
+          </el-table-column>
           <el-table-column prop="total_revenue" :label="$t('settlements.commissionRevenue')" width="100">
             <template #default="{ row }">{{ formatMoney(row.total_revenue) }}</template>
           </el-table-column>
@@ -757,13 +714,14 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Download, ArrowDown } from '@element-plus/icons-vue'
 import {
-  getSettlements, getSettlementsSummary, generateSettlement, getSettlementDetail,
-  confirmSettlement, paySettlement, cancelSettlement, adjustSettlement,
-  getProfitReport, getCustomerBills, getCustomerBillDetail, payCustomerBill, generateCustomerBill,
-  getCommissionSummary, getCommissionSettlements, generateCommissionSettlement,
+  getSettlements, generateSettlement, getSettlementDetail,
+  confirmSettlement, paySettlement, cancelSettlement, adjustSettlement, deleteSettlement,
+  getCustomerBills, getCustomerBillDetail, payCustomerBill, generateCustomerBill,
+  getCommissionSettlements, generateCommissionSettlement,
   getCommissionSettlementDetail, confirmCommissionSettlement, payCommissionSettlement, cancelCommissionSettlement,
+  autoGenerateMonthSettlements,
   type Settlement
 } from '@/api/settlement'
 import { getSuppliers } from '@/api/supplier'
@@ -829,44 +787,69 @@ const commissionStatusTagType = (status: string) => {
 }
 
 const formatMoney = (value: number) => value?.toFixed(2) || '0.00'
+/** 订单金额等展示 5 位小数（与参考样式一致） */
+const formatMoneyHighPrecision = (value: number) => {
+  const n = Number(value)
+  if (Number.isNaN(n)) return '0.00000'
+  return n.toFixed(5)
+}
 const formatDate = (date?: string) => date ? date.split('T')[0] : '-'
 const formatTime = (time?: string) => time ? new Date(time).toLocaleString('zh-CN') : '-'
 
-// 获取本月日期范围 [月初, 月末]
+/** 本月 [月初, 月末]，按本地时区日历；勿用 toISOString()（UTC）否则东八区等会出现跨月错位 */
 const getCurrentMonthRange = (): [string, string] => {
   const now = new Date()
-  const start = new Date(now.getFullYear(), now.getMonth(), 1)
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-  return [
-    start.toISOString().slice(0, 10),
-    end.toISOString().slice(0, 10)
-  ]
+  const y = now.getFullYear()
+  const m = now.getMonth()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const start = new Date(y, m, 1)
+  const end = new Date(y, m + 1, 0)
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  return [fmt(start), fmt(end)]
+}
+
+/** 当前年月 YYYY-MM（用于供应商结算默认筛选） */
+const getCurrentMonthYyyyMm = (): string => {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`
+}
+
+/** YYYY-MM -> [月初, 月末] 字符串，供生成结算单日期范围 */
+const monthYmToDateRange = (ym: string): string[] => {
+  const parts = ym.split('-')
+  const y = parseInt(parts[0], 10)
+  const m = parseInt(parts[1], 10)
+  if (!y || !m) return [...getCurrentMonthRange()]
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const lastDay = new Date(y, m, 0).getDate()
+  return [`${y}-${pad(m)}-01`, `${y}-${pad(m)}-${pad(lastDay)}`]
 }
 
 // 数据
 const activeTab = ref('supplier')
 const loading = ref(false)
+/** 一键批量生成当月结算（供应商+员工+客户） */
+const autoGenerating = ref(false)
 const settlements = ref<Settlement[]>([])
 const supplierOptions = ref<any[]>([])
 const filters = reactive({
-  supplier_id: null as number | null,
+  /** 结算月 YYYY-MM */
+  settlementMonth: getCurrentMonthYyyyMm(),
+  supplierKeyword: '',
   status: '',
-  dateRange: [...getCurrentMonthRange()]
 })
+const supplierTableSort = reactive({
+  sort_by: 'created_at' as 'created_at' | 'total_sms_count' | 'final_amount',
+  sort_order: 'desc' as 'asc' | 'desc',
+})
+const selectedSupplierRows = ref<Settlement[]>([])
 const pagination = reactive({
   page: 1,
   pageSize: 20,
   total: 0
 })
-
-// 结算单汇总
-const settlementSummary = ref<{
-  total_count: number
-  total_amount: number
-  draft_count: number
-  pending_count?: number
-  paid_count: number
-} | null>(null)
 
 // 生成
 const generateDialogVisible = ref(false)
@@ -913,21 +896,12 @@ const adjustRules = computed<FormRules>(() => ({
   reason: [{ required: true, message: t('settlements.enterReason'), trigger: 'blur' }]
 }))
 
-// 利润报表
-const profitLoading = ref(false)
-const profitFilters = reactive({
-  dateRange: [...getCurrentMonthRange()],
-  group_by: 'day',
-  supplier_id: null as number | null
-})
-const profitSummary = ref<any>(null)
-const profitData = ref<any[]>([])
-
 // 客户账单
 const billsLoading = ref(false)
 const billFilters = reactive({
-  account_id: null as number | null,
-  status: ''
+  settlementMonth: getCurrentMonthYyyyMm(),
+  customerKeyword: '',
+  status: '',
 })
 const bills = ref<any[]>([])
 const billPagination = reactive({
@@ -935,6 +909,11 @@ const billPagination = reactive({
   pageSize: 20,
   total: 0
 })
+const customerTableSort = reactive({
+  sort_by: 'created_at' as 'created_at' | 'total_sms_count' | 'total_amount',
+  sort_order: 'desc' as 'asc' | 'desc',
+})
+const selectedCustomerRows = ref<any[]>([])
 const accountOptions = ref<{ id: number; account_name: string; email: string }[]>([])
 
 // 生成客户账单
@@ -972,15 +951,19 @@ const billPayRules = computed<FormRules>(() => ({
   ]
 }))
 
-// 销售佣金
+// 员工结算（销售佣金）
 const commissionLoading = ref(false)
-const commissionSummary = ref<any>(null)
 const commissionSettlements = ref<any[]>([])
-const commissionFilters = reactive({
-  sales_id: null as number | null,
+const employeeFilters = reactive({
+  settlementMonth: getCurrentMonthYyyyMm(),
+  salesKeyword: '',
   status: '',
-  dateRange: [...getCurrentMonthRange()]
 })
+const employeeTableSort = reactive({
+  sort_by: 'created_at' as 'created_at' | 'total_sms_count' | 'commission_amount' | 'total_cost',
+  sort_order: 'desc' as 'asc' | 'desc',
+})
+const selectedEmployeeRows = ref<any[]>([])
 const commissionPagination = reactive({
   page: 1,
   pageSize: 20,
@@ -1025,43 +1008,112 @@ const loadSuppliers = async () => {
   }
 }
 
-const loadSettlementsSummary = async () => {
-  try {
-    const res = await getSettlementsSummary({
-      supplier_id: filters.supplier_id || undefined,
-      status: filters.status || undefined,
-      start_date: filters.dateRange?.[0],
-      end_date: filters.dateRange?.[1]
-    })
-    if (res?.success && res?.summary) {
-      settlementSummary.value = res.summary
-    }
-  } catch (error) {
-    console.error('Failed to load settlements summary:', error)
-  }
-}
-
 const loadSettlements = async () => {
   loading.value = true
   try {
     const res = await getSettlements({
       page: pagination.page,
       page_size: pagination.pageSize,
-      supplier_id: filters.supplier_id || undefined,
+      settlement_month: filters.settlementMonth || undefined,
+      supplier_keyword: filters.supplierKeyword?.trim() || undefined,
       status: filters.status || undefined,
-      start_date: filters.dateRange?.[0],
-      end_date: filters.dateRange?.[1]
+      sort_by: supplierTableSort.sort_by,
+      sort_order: supplierTableSort.sort_order,
     })
     if (res?.success) {
       settlements.value = res.settlements || []
       pagination.total = res.total ?? 0
     }
-    await loadSettlementsSummary()
   } catch (error) {
     console.error('Failed to load settlements:', error)
   } finally {
     loading.value = false
   }
+}
+
+/** 表格排序（后端排序） */
+const onSupplierSortChange = (payload: { prop: string; order: string | null }) => {
+  const { prop, order } = payload
+  if (!order) {
+    supplierTableSort.sort_by = 'created_at'
+    supplierTableSort.sort_order = 'desc'
+  } else {
+    const map: Record<string, 'created_at' | 'total_sms_count' | 'final_amount'> = {
+      total_sms_count: 'total_sms_count',
+      final_amount: 'final_amount',
+    }
+    supplierTableSort.sort_by = map[prop] || 'created_at'
+    supplierTableSort.sort_order = order === 'ascending' ? 'asc' : 'desc'
+  }
+  pagination.page = 1
+  loadSettlements()
+}
+
+const onSupplierSelectionChange = (rows: Settlement[]) => {
+  selectedSupplierRows.value = rows
+}
+
+const csvEscape = (s: string) => {
+  if (s.includes(',') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
+    return `"${s.replace(/"/g, '""')}"`
+  }
+  return s
+}
+
+/** 导出当前列表或勾选行为 CSV */
+const exportSupplierSettlementsCsv = () => {
+  const rows =
+    selectedSupplierRows.value.length > 0 ? selectedSupplierRows.value : settlements.value
+  if (!rows.length) {
+    ElMessage.warning(t('settlements.exportEmpty'))
+    return
+  }
+  const headers = [
+    t('settlements.settlementMonth'),
+    t('settlements.supplierName'),
+    t('settlements.channelCount'),
+    t('settlements.orderCount'),
+    t('settlements.orderAmountCny'),
+    t('settlements.remarks'),
+    t('settlements.status'),
+    t('settlements.settlementNo'),
+  ]
+  const lines = rows.map((r) =>
+    [
+      r.settlement_month || '',
+      csvEscape(r.supplier_name || ''),
+      String(r.channel_count ?? ''),
+      String(r.total_sms_count ?? ''),
+      formatMoneyHighPrecision(r.final_amount),
+      csvEscape(r.notes || ''),
+      csvEscape(String(statusMap.value[r.status] || r.status)),
+      r.settlement_no || '',
+    ].join(',')
+  )
+  const bom = '\ufeff'
+  const csv = bom + headers.join(',') + '\n' + lines.join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `supplier_settlements_${Date.now()}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+  ElMessage.success(t('settlements.exportCsvSuccess'))
+}
+
+const exportOneSettlementRow = (row: Settlement) => {
+  const prev = selectedSupplierRows.value
+  selectedSupplierRows.value = [row]
+  exportSupplierSettlementsCsv()
+  selectedSupplierRows.value = prev
+}
+
+const onSupplierRowMore = (cmd: string, row: Settlement) => {
+  if (cmd === 'confirm') handleConfirm(row)
+  else if (cmd === 'pay') handlePay(row)
+  else if (cmd === 'cancel') handleCancel(row)
+  else if (cmd === 'delete') handleDeleteSupplierSettlement(row)
 }
 
 const showAdjustDialog = () => {
@@ -1098,8 +1150,9 @@ const submitAdjust = async () => {
 
 const showGenerateDialog = () => {
   generateForm.supplier_id = null
-  generateForm.period = []
   generateForm.notes = ''
+  const ym = filters.settlementMonth || getCurrentMonthYyyyMm()
+  generateForm.period = monthYmToDateRange(ym)
   generateDialogVisible.value = true
 }
 
@@ -1197,28 +1250,29 @@ const handleCancel = async (row: Settlement) => {
   }
 }
 
-const loadProfitReport = async () => {
-  if (!profitFilters.dateRange || profitFilters.dateRange.length !== 2) {
-    ElMessage.warning(t('profit.selectDateRange'))
+/** 删除供应商结算单（草稿/待确认/已取消） */
+const handleDeleteSupplierSettlement = async (row: Settlement) => {
+  try {
+    await ElMessageBox.confirm(
+      t('settlements.deleteSettlementConfirm', { no: row.settlement_no || row.id }),
+      t('common.delete'),
+      { type: 'warning', confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel') }
+    )
+  } catch {
     return
   }
-
-  profitLoading.value = true
   try {
-    const res = await getProfitReport({
-      start_date: profitFilters.dateRange[0],
-      end_date: profitFilters.dateRange[1],
-      group_by: profitFilters.group_by as any,
-      supplier_id: profitFilters.supplier_id || undefined
-    })
+    const res = await deleteSettlement(row.id) as { success?: boolean }
     if (res?.success) {
-      profitSummary.value = res.summary
-      profitData.value = res.data || []
+      ElMessage.success(t('settlements.deleteSettlementSuccess'))
+      loadSettlements()
+      if (currentSettlement.value?.id === row.id) {
+        detailDrawerVisible.value = false
+      }
     }
-  } catch (error) {
-    console.error('Failed to load profit report:', error)
-  } finally {
-    profitLoading.value = false
+  } catch (error: any) {
+    const msg = error?.response?.data?.detail
+    ElMessage.error(typeof msg === 'string' ? msg : t('common.operationFailed'))
   }
 }
 
@@ -1239,8 +1293,9 @@ const loadAccountOptions = async () => {
 
 const showBillGenerateDialog = () => {
   billGenerateForm.account_id = null
-  billGenerateForm.period = []
   billGenerateForm.due_days = 30
+  const ym = billFilters.settlementMonth || getCurrentMonthYyyyMm()
+  billGenerateForm.period = monthYmToDateRange(ym)
   billGenerateVisible.value = true
 }
 
@@ -1335,8 +1390,11 @@ const loadBills = async () => {
     const res = await getCustomerBills({
       page: billPagination.page,
       page_size: billPagination.pageSize,
-      account_id: billFilters.account_id || undefined,
-      status: billFilters.status || undefined
+      settlement_month: billFilters.settlementMonth || undefined,
+      account_keyword: billFilters.customerKeyword?.trim() || undefined,
+      status: billFilters.status || undefined,
+      sort_by: customerTableSort.sort_by,
+      sort_order: customerTableSort.sort_order,
     })
     if (res?.success) {
       bills.value = res.bills || []
@@ -1347,6 +1405,126 @@ const loadBills = async () => {
   } finally {
     billsLoading.value = false
   }
+}
+
+/** 一键为当前自然月批量生成供应商/员工/客户结算（后端已存在或无数据则跳过） */
+const runAutoGenerateMonth = async () => {
+  try {
+    await ElMessageBox.confirm(
+      t('settlements.autoGenerateMonthConfirm'),
+      t('settlements.autoGenerateMonth'),
+      { type: 'warning', confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel') }
+    )
+  } catch {
+    return
+  }
+  autoGenerating.value = true
+  try {
+    const now = new Date()
+    const res = (await autoGenerateMonthSettlements({
+      year: now.getFullYear(),
+      month: now.getMonth() + 1,
+    })) as {
+      success?: boolean
+      suppliers?: { created: number; skipped: number; failed: number }
+      employees?: { created: number; skipped: number; failed: number }
+      customers?: { created: number; skipped: number; failed: number }
+    }
+    if (res?.success) {
+      const s = res.suppliers || { created: 0, skipped: 0, failed: 0 }
+      const e = res.employees || { created: 0, skipped: 0, failed: 0 }
+      const c = res.customers || { created: 0, skipped: 0, failed: 0 }
+      ElMessage.success(
+        t('settlements.autoGenerateMonthResult', {
+          sy: s.created,
+          sn: s.skipped,
+          sf: s.failed,
+          ey: e.created,
+          en: e.skipped,
+          ef: e.failed,
+          cy: c.created,
+          cn: c.skipped,
+          cf: c.failed,
+        })
+      )
+      await loadSettlements()
+      await loadCommissionSettlements()
+      await loadBills()
+    }
+  } catch (error) {
+    console.error(error)
+    ElMessage.error(t('common.operationFailed'))
+  } finally {
+    autoGenerating.value = false
+  }
+}
+
+const onCustomerSortChange = (payload: { prop: string; order: string | null }) => {
+  const { prop, order } = payload
+  if (!order) {
+    customerTableSort.sort_by = 'created_at'
+    customerTableSort.sort_order = 'desc'
+  } else {
+    const map: Record<string, 'created_at' | 'total_sms_count' | 'total_amount'> = {
+      total_sms_count: 'total_sms_count',
+      total_amount: 'total_amount',
+    }
+    customerTableSort.sort_by = map[prop] || 'created_at'
+    customerTableSort.sort_order = order === 'ascending' ? 'asc' : 'desc'
+  }
+  billPagination.page = 1
+  loadBills()
+}
+
+const onCustomerSelectionChange = (rows: any[]) => {
+  selectedCustomerRows.value = rows
+}
+
+const exportCustomerBillsCsv = () => {
+  const rows = selectedCustomerRows.value.length > 0 ? selectedCustomerRows.value : bills.value
+  if (!rows.length) {
+    ElMessage.warning(t('settlements.exportEmpty'))
+    return
+  }
+  const headers = [
+    t('settlements.settlementMonth'),
+    t('settlements.customerNameCol'),
+    t('settlements.countryCount'),
+    t('settlements.orderCount'),
+    t('settlements.settlementAmount'),
+    t('settlements.remarks'),
+    t('settlements.status'),
+    t('settlements.billNo'),
+  ]
+  const lines = rows.map((r) =>
+    [
+      r.settlement_month || '',
+      csvEscape(r.account_name || ''),
+      String(r.country_count ?? ''),
+      String(r.total_sms_count ?? ''),
+      formatMoneyHighPrecision(r.total_amount),
+      csvEscape(r.notes || ''),
+      csvEscape(String(billStatusMap.value[r.status] || r.status)),
+      r.bill_no || '',
+    ].join(',')
+  )
+  const bom = '\ufeff'
+  const csv = bom + headers.join(',') + '\n' + lines.join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `customer_bills_${Date.now()}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+  ElMessage.success(t('settlements.exportCsvSuccess'))
+}
+
+const exportOneCustomerBillRow = (row: any) => {
+  const prev = selectedCustomerRows.value
+  selectedCustomerRows.value = [row]
+  exportCustomerBillsCsv()
+  selectedCustomerRows.value = prev
 }
 
 const loadSalesOptions = async () => {
@@ -1360,38 +1538,22 @@ const loadSalesOptions = async () => {
   }
 }
 
-const loadCommissionSummary = async () => {
-  try {
-    const res = await getCommissionSummary({
-      sales_id: commissionFilters.sales_id || undefined,
-      status: commissionFilters.status || undefined,
-      start_date: commissionFilters.dateRange?.[0],
-      end_date: commissionFilters.dateRange?.[1]
-    })
-    if (res?.success && res?.summary) {
-      commissionSummary.value = res.summary
-    }
-  } catch (error) {
-    console.error('Failed to load commission summary:', error)
-  }
-}
-
 const loadCommissionSettlements = async () => {
   commissionLoading.value = true
   try {
     const res = await getCommissionSettlements({
       page: commissionPagination.page,
       page_size: commissionPagination.pageSize,
-      sales_id: commissionFilters.sales_id || undefined,
-      status: commissionFilters.status || undefined,
-      start_date: commissionFilters.dateRange?.[0],
-      end_date: commissionFilters.dateRange?.[1]
+      settlement_month: employeeFilters.settlementMonth || undefined,
+      sales_keyword: employeeFilters.salesKeyword?.trim() || undefined,
+      status: employeeFilters.status || undefined,
+      sort_by: employeeTableSort.sort_by,
+      sort_order: employeeTableSort.sort_order,
     })
     if (res?.success) {
       commissionSettlements.value = res.settlements || []
       commissionPagination.total = res.total ?? 0
     }
-    await loadCommissionSummary()
   } catch (error) {
     console.error('Failed to load commission settlements:', error)
   } finally {
@@ -1399,9 +1561,88 @@ const loadCommissionSettlements = async () => {
   }
 }
 
+const onEmployeeSortChange = (payload: { prop: string; order: string | null }) => {
+  const { prop, order } = payload
+  if (!order) {
+    employeeTableSort.sort_by = 'created_at'
+    employeeTableSort.sort_order = 'desc'
+  } else {
+    const map: Record<string, 'created_at' | 'total_sms_count' | 'commission_amount' | 'total_cost'> = {
+      total_sms_count: 'total_sms_count',
+      commission_amount: 'commission_amount',
+      total_cost: 'total_cost',
+    }
+    employeeTableSort.sort_by = map[prop] || 'created_at'
+    employeeTableSort.sort_order = order === 'ascending' ? 'asc' : 'desc'
+  }
+  commissionPagination.page = 1
+  loadCommissionSettlements()
+}
+
+const onEmployeeSelectionChange = (rows: any[]) => {
+  selectedEmployeeRows.value = rows
+}
+
+const exportEmployeeSettlementsCsv = () => {
+  const rows =
+    selectedEmployeeRows.value.length > 0 ? selectedEmployeeRows.value : commissionSettlements.value
+  if (!rows.length) {
+    ElMessage.warning(t('settlements.exportEmpty'))
+    return
+  }
+  const headers = [
+    t('settlements.settlementMonth'),
+    t('settlements.employeeName'),
+    t('settlements.clientCount'),
+    t('settlements.orderCount'),
+    t('settlements.employeeCustomerCost'),
+    t('settlements.settlementAmount'),
+    t('settlements.remarks'),
+    t('settlements.status'),
+    t('settlements.settlementNo'),
+  ]
+  const lines = rows.map((r) =>
+    [
+      r.settlement_month || '',
+      csvEscape(r.sales_name || ''),
+      String(r.customer_count ?? ''),
+      String(r.total_sms_count ?? ''),
+      formatMoneyHighPrecision(r.total_cost ?? 0),
+      formatMoneyHighPrecision(r.commission_amount),
+      csvEscape(r.notes || ''),
+      csvEscape(String(commissionStatusMap.value[r.status] || r.status)),
+      r.settlement_no || '',
+    ].join(',')
+  )
+  const bom = '\ufeff'
+  const csv = bom + headers.join(',') + '\n' + lines.join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `employee_settlements_${Date.now()}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+  ElMessage.success(t('settlements.exportCsvSuccess'))
+}
+
+const exportOneEmployeeRow = (row: any) => {
+  const prev = selectedEmployeeRows.value
+  selectedEmployeeRows.value = [row]
+  exportEmployeeSettlementsCsv()
+  selectedEmployeeRows.value = prev
+}
+
+const onEmployeeRowMore = (cmd: string, row: any) => {
+  if (cmd === 'confirm') handleConfirmCommission(row)
+  else if (cmd === 'pay') handlePayCommission(row)
+  else if (cmd === 'cancel') handleCancelCommission(row)
+}
+
 const showCommissionGenerateDialog = () => {
   commissionGenerateForm.sales_id = null
-  commissionGenerateForm.period = ''
+  const ym = employeeFilters.settlementMonth || getCurrentMonthYyyyMm()
+  commissionGenerateForm.period = ym
   commissionGenerateVisible.value = true
 }
 
@@ -1500,23 +1741,41 @@ const handleCancelCommission = async (row: any) => {
 }
 
 watch(activeTab, (tab) => {
-  if (tab === 'bills') loadBills()
-  if (tab === 'commission') {
-    loadCommissionSettlements()
-    loadSalesOptions()
-  }
+  if (tab === 'customer') loadBills()
+  if (tab === 'employee') loadCommissionSettlements()
 })
 
 onMounted(() => {
   loadSuppliers()
   loadSettlements()
   loadAccountOptions()
+  loadSalesOptions()
 })
 </script>
 
 <style scoped>
 .settlements-page {
   width: 100%;
+}
+
+.supplier-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.supplier-filter-card {
+  margin-bottom: 12px;
+}
+
+.supplier-name-input {
+  min-width: 200px;
+}
+
+.supplier-month-picker {
+  min-width: 160px;
 }
 
 .page-header {
@@ -1559,6 +1818,26 @@ onMounted(() => {
   min-width: 800px;
 }
 
+/* 操作列：flex 间距 + 取消 link 按钮默认负边距，避免「下载」与「更多」重叠 */
+.settlement-table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.settlement-table-actions :deep(.el-button.is-link) {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.settlement-more-trigger {
+  display: inline-flex;
+  align-items: center;
+}
+.settlement-table-actions :deep(.settlement-more-dropdown) {
+  flex-shrink: 0;
+}
 
 .pagination-wrapper {
   display: flex;

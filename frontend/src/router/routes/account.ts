@@ -4,9 +4,11 @@ import type { RouteRecordRaw } from 'vue-router'
 export const accountRoutes: RouteRecordRaw[] = [
   {
     path: '/account/info',
-    name: 'AccountInfo',
-    component: () => import('@/views/account/Info.vue'),
-    meta: { titleKey: 'menu.accountInfo', icon: 'User' },
+    redirect: '/account/settings',
+  },
+  {
+    path: '/account/manage',
+    redirect: '/account/settings',
   },
   {
     path: '/account/api-keys',
@@ -18,7 +20,7 @@ export const accountRoutes: RouteRecordRaw[] = [
     path: '/account/settings',
     name: 'AccountSettings',
     component: () => import('@/views/account/Settings.vue'),
-    meta: { titleKey: 'menu.accountSettings', icon: 'Setting' },
+    meta: { titleKey: 'menu.accountManagement', icon: 'Setting' },
   },
   {
     path: '/account/sub-accounts',

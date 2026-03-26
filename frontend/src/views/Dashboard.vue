@@ -351,7 +351,7 @@
           </div>
         </div>
 
-        <!-- 送达成功 -->
+        <!-- 本周发送 -->
         <div class="metric-card">
           <div class="metric-header">
             <div class="metric-icon success">
@@ -360,19 +360,15 @@
                 <path d="M7 10L9 12L13 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </div>
-            <span class="metric-label">{{ $t('dashboard.delivered') }}</span>
+            <span class="metric-label">{{ $t('dashboard.weekSent') }}</span>
           </div>
           <div class="metric-body">
-            <span class="metric-value">{{ formatNumber(todayDelivered) }}</span>
+            <span class="metric-value">{{ formatNumber(weekSent) }}</span>
             <span class="metric-unit">{{ $t('dashboard.items') }}</span>
-          </div>
-          <div class="metric-footer">
-            <span class="metric-rate success">{{ formatRate(successRate) }}%</span>
-            <span class="metric-compare">{{ $t('dashboard.successRate') }}</span>
           </div>
         </div>
 
-        <!-- 发送失败 -->
+        <!-- 本月发送 -->
         <div class="metric-card">
           <div class="metric-header">
             <div class="metric-icon failed">
@@ -381,15 +377,11 @@
                 <path d="M8 8L12 12M12 8L8 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
               </svg>
             </div>
-            <span class="metric-label">{{ $t('dashboard.failed') }}</span>
+            <span class="metric-label">{{ $t('dashboard.monthSent') }}</span>
           </div>
           <div class="metric-body">
-            <span class="metric-value">{{ formatNumber(todayFailed) }}</span>
+            <span class="metric-value">{{ formatNumber(monthSent) }}</span>
             <span class="metric-unit">{{ $t('dashboard.items') }}</span>
-          </div>
-          <div class="metric-footer">
-            <span class="metric-rate failed">{{ formatRate(failRate) }}%</span>
-            <span class="metric-compare">{{ $t('dashboard.failRate') }}</span>
           </div>
         </div>
 
@@ -460,14 +452,15 @@
                 </div>
                 <span class="action-label">{{ $t('menu.sendRecords') }}</span>
               </div>
-              <div class="action-btn info" @click="$router.push('/reports')">
+              <div class="action-btn info" @click="$router.push('/sms/approvals')">
                 <div class="action-icon">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                    <path d="M3 20H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                    <path d="M6 20V14M10 20V10M14 20V12M18 20V8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    <path d="M9 12L11 14L15 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M9 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    <path d="M12 3v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                   </svg>
                 </div>
-                <span class="action-label">{{ $t('menu.dataReport') }}</span>
+                <span class="action-label">{{ $t('menu.smsAudit') }}</span>
               </div>
             </div>
           </div>
@@ -568,16 +561,51 @@
                 {{ $t('dashboard.accountInfo') }}
               </h2>
             </div>
-            <div class="account-details">
+            <div class="account-details account-details-customer">
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.clientName') }}</span>
+                <span class="account-value">{{ customerDisplayName }}</span>
+              </div>
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.tgAccount') }}</span>
+                <span class="account-value">{{ formatTgHandle(customerAccountInfo?.tg_username) }}</span>
+              </div>
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.country') }}</span>
+                <span class="account-value">{{ countryDisplay(customerAccountInfo?.country_code) }}</span>
+              </div>
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.unitPrice') }}</span>
+                <span class="account-value">
+                  <template v-if="customerAccountInfo?.unit_price != null && customerAccountInfo.unit_price > 0">
+                    {{ customerAccountInfo.currency }} {{ formatNumber(customerAccountInfo.unit_price) }} / {{ $t('dashboard.perSms') }}
+                  </template>
+                  <template v-else>—</template>
+                </span>
+              </div>
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.balance') }}</span>
+                <span class="account-value">{{ customerAccountInfo ? `${customerAccountInfo.currency} ${formatNumber(customerAccountInfo.balance)}` : '—' }}</span>
+              </div>
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.remainingSms') }}</span>
+                <span class="account-value">
+                  {{ customerAccountInfo?.remaining_sms_estimate != null ? formatNumber(customerAccountInfo.remaining_sms_estimate) : '—' }}
+                </span>
+              </div>
+              <div class="account-row">
+                <span class="account-label">{{ $t('dashboard.salesContactTg') }}</span>
+                <span class="account-value">{{ formatTgHandle(customerAccountInfo?.sales_tg_username) }}</span>
+              </div>
               <div class="account-row">
                 <span class="account-label">{{ $t('dashboard.accountName') }}</span>
                 <span class="account-value">{{ accountName }}</span>
               </div>
               <div class="account-row">
                 <span class="account-label">{{ $t('dashboard.accountStatus') }}</span>
-                <span class="status-badge active">
+                <span :class="['status-badge', customerAccountStatusClass]">
                   <span class="status-dot"></span>
-                  {{ $t('common.active') }}
+                  {{ customerAccountStatusLabel }}
                 </span>
               </div>
               <div class="account-row">
@@ -603,7 +631,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getBalance } from '@/api/account'
+import { getAccountInfo, type AccountInfo } from '@/api/account'
 import { getChannels } from '@/api/channel'
 import { getStatistics } from '@/api/reports'
 import { getAdminDashboard } from '@/api/admin'
@@ -614,6 +642,10 @@ const { t } = useI18n()
 const loading = ref(false)
 const balance = ref<number>(0)
 const todaySent = ref<number>(0)
+/** 客户仪表盘：本周 / 本月发送条数 */
+const weekSent = ref<number>(0)
+const monthSent = ref<number>(0)
+const customerAccountInfo = ref<AccountInfo | null>(null)
 const todayDelivered = ref<number>(0)
 const todayFailed = ref<number>(0)
 const successRate = ref<number>(0)
@@ -647,6 +679,59 @@ const maskedApiKey = computed(() => {
   if (!apiKey.value) return '-'
   return apiKey.value.substring(0, 8) + '••••' + apiKey.value.substring(apiKey.value.length - 4)
 })
+
+const customerDisplayName = computed(() => {
+  const c = customerAccountInfo.value
+  if (!c) return accountName.value
+  const name = (c.client_name || c.company_name || c.account_name || '').trim()
+  return name || accountName.value
+})
+
+const customerAccountStatusLabel = computed(() => {
+  const s = customerAccountInfo.value?.status || ''
+  if (s === 'active') return t('common.active')
+  if (s === 'suspended') return t('dashboard.accountSuspended')
+  if (s === 'closed') return t('dashboard.accountClosed')
+  return s || '—'
+})
+
+const customerAccountStatusClass = computed(() => {
+  const s = customerAccountInfo.value?.status || ''
+  if (s === 'active') return 'active'
+  if (s === 'suspended') return 'warning'
+  if (s === 'closed') return 'inactive'
+  return 'inactive'
+})
+
+/** Telegram 展示为 @username */
+function formatTgHandle(raw?: string | null): string {
+  if (raw == null || String(raw).trim() === '') return '—'
+  const u = String(raw).trim().replace(/^@+/, '')
+  return u ? `@${u}` : '—'
+}
+
+/** 国家代码展示（可后续接完整国家库） */
+function countryDisplay(code?: string | null): string {
+  if (code == null || String(code).trim() === '') return '—'
+  const c = String(code).trim().toUpperCase()
+  const map: Record<string, string> = {
+    CN: '中国',
+    US: '美国',
+    GB: '英国',
+    BR: '巴西',
+    BD: '孟加拉国',
+    IN: '印度',
+    ID: '印度尼西亚',
+    MX: '墨西哥',
+    PH: '菲律宾',
+    VN: '越南',
+    TH: '泰国',
+    MY: '马来西亚',
+    JP: '日本',
+    KR: '韩国',
+  }
+  return map[c] || code
+}
 
 const roleClass = computed(() => {
   if (adminRole.value === 'super_admin' || adminRole.value === 'admin') return 'admin'
@@ -771,30 +856,59 @@ const loadStaffData = async () => {
 
 const loadCustomerData = async () => {
   try {
-    const balanceRes = await getBalance()
-    balance.value = Number(balanceRes.balance) || 0
-    accountId.value = balanceRes.account_id
-    
+    const infoRes = await getAccountInfo()
+    customerAccountInfo.value = infoRes
+    balance.value = Number(infoRes.balance) || 0
+    accountId.value = String(infoRes.id)
+    if (infoRes.account_name) {
+      accountName.value = infoRes.account_name
+      try {
+        localStorage.setItem('account_name', infoRes.account_name)
+      } catch {
+        /* ignore */
+      }
+    }
+
     const channelsRes = await getChannels()
     channels.value = channelsRes.channels || []
     availableChannels.value = channels.value.filter((c: any) => c.status === 'active').length
-    
+
+    const todayStr = new Date().toISOString().split('T')[0]
     try {
-      const today = new Date().toISOString().split('T')[0]
-      const statsRes = await getStatistics(today, today)
+      const statsRes = await getStatistics(todayStr, todayStr)
       todaySent.value = Number(statsRes.total_sent) || 0
-      todayDelivered.value = Number(statsRes.total_delivered) || 0
-      todayFailed.value = Number(statsRes.total_failed) || 0
-      successRate.value = Number(statsRes.success_rate) || 0
-      failRate.value = todaySent.value > 0 ? (todayFailed.value / todaySent.value * 100) : 0
     } catch {
       todaySent.value = 0
-      todayDelivered.value = 0
-      todayFailed.value = 0
-      successRate.value = 0
-      failRate.value = 0
     }
-    
+
+    const now = new Date()
+    const dow = now.getDay()
+    const diffToMonday = dow === 0 ? -6 : 1 - dow
+    const weekStart = new Date(now)
+    weekStart.setDate(now.getDate() + diffToMonday)
+    weekStart.setHours(0, 0, 0, 0)
+    const weekStartStr = weekStart.toISOString().split('T')[0]
+    try {
+      const weekStats = await getStatistics(weekStartStr, todayStr)
+      weekSent.value = Number(weekStats.total_sent) || 0
+    } catch {
+      weekSent.value = 0
+    }
+
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    const monthStartStr = monthStart.toISOString().split('T')[0]
+    try {
+      const monthStats = await getStatistics(monthStartStr, todayStr)
+      monthSent.value = Number(monthStats.total_sent) || 0
+    } catch {
+      monthSent.value = 0
+    }
+
+    todayDelivered.value = 0
+    todayFailed.value = 0
+    successRate.value = 0
+    failRate.value = 0
+
     try {
       const recordsRes = await getSMSRecords({ page: 1, page_size: 5 })
       recentRecords.value = recordsRes.records || []
@@ -1478,6 +1592,25 @@ onUnmounted(() => {
 .status-badge.active {
   background: rgba(56, 239, 125, 0.1);
   color: var(--success);
+}
+
+.status-badge.warning {
+  background: rgba(255, 193, 7, 0.12);
+  color: var(--warning);
+}
+
+.status-badge.inactive {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--text-tertiary);
+}
+
+.account-details-customer .account-row {
+  align-items: flex-start;
+}
+
+.account-details-customer .account-value {
+  text-align: right;
+  word-break: break-all;
 }
 
 .status-badge .status-dot {

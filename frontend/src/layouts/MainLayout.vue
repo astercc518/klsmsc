@@ -549,14 +549,14 @@
               <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.balance') }}</span>
             </div>
 
-            <div class="nav-item" :class="{ active: isActive('/account/info') }" @click="navigate('/account/info')">
+            <div class="nav-item" :class="{ active: isAccountManageActive() }" @click="navigate('/account/settings')">
               <div class="nav-icon">
                 <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                   <circle cx="10" cy="7" r="4" stroke="currentColor" stroke-width="1.5"/>
                   <path d="M3 17C3 14 6 12 10 12C14 12 17 14 17 17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
                 </svg>
               </div>
-              <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.personalInfo') }}</span>
+              <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.accountManagement') }}</span>
             </div>
           </div>
         </nav>
@@ -616,12 +616,12 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <div v-else class="user-card" @click="toggleUserMenu">
+          <div v-else class="user-card user-card-clickable" @click="toggleUserMenu">
             <div class="user-avatar">
-              {{ accountName.charAt(0).toUpperCase() }}
+              {{ customerSidebarDisplay.charAt(0).toUpperCase() }}
             </div>
             <div class="user-info" v-if="!sidebarCollapsed">
-              <span class="user-name">{{ accountName }}</span>
+              <span class="user-name" :title="customerSidebarDisplay">{{ customerSidebarDisplay }}</span>
               <span class="user-role">{{ roleDisplayName }}</span>
             </div>
           </div>
@@ -771,6 +771,8 @@ const isFinance = computed(() => isStaff.value && adminRole.value === 'finance')
 
 // 客户开通的业务类型
 const customerServices = ref<string[]>(['sms'])
+/** 侧栏展示名（优先客户名称/公司名） */
+const customerSidebarName = ref('')
 
 // 是否开通短信业务
 const hasSmsService = computed(() => customerServices.value.includes('sms'))
@@ -796,6 +798,16 @@ const roleDisplayName = computed(() => {
 })
 
 const isActive = (path: string) => route.path === path
+
+const isAccountManageActive = () =>
+  ['/account/settings', '/account/manage', '/account/info'].includes(route.path)
+
+/** 客户侧栏标题：接口返回的客户名称优先，避免仅显示 TG 前缀 ID */
+const customerSidebarDisplay = computed(() => {
+  if (isStaff.value) return accountName.value
+  const n = customerSidebarName.value.trim()
+  return n || accountName.value
+})
 const expandedMenus = ref<string[]>([])
 
 const toggleSubmenu = (menu: string) => {
@@ -817,7 +829,7 @@ const toggleSidebar = () => {
 
 const toggleUserMenu = () => {
   if (isStaff.value) return
-  router.push('/account/info')
+  router.push('/account/settings')
 }
 
 const handleUserMenuCommand = (command: string) => {
@@ -878,9 +890,16 @@ const loadCustomerServices = async () => {
     if (info?.services) {
       customerServices.value = info.services.split(',').map((s: string) => s.trim())
     }
+    const display =
+      (info as { client_name?: string; company_name?: string; account_name?: string })?.client_name ||
+      info?.company_name ||
+      info?.account_name ||
+      ''
+    customerSidebarName.value = String(display || '').trim()
   } catch {
     // 默认显示短信业务
     customerServices.value = ['sms']
+    customerSidebarName.value = ''
   }
 }
 

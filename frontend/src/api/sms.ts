@@ -36,11 +36,6 @@ export const getSMSRecords = (params?: any) => {
   return request.get('/sms/records', { params })
 }
 
-// 导出发送记录 CSV
-export const exportSMSRecords = (params?: any) => {
-  return request.get('/sms/records/export', { params, responseType: 'blob' })
-}
-
 // ========== 短信审核（与 Bot 同步） ==========
 
 // 提交短信审核（仅需文案；可选号码）

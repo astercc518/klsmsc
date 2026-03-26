@@ -1,7 +1,7 @@
 """
 安全日志相关的 Pydantic Schemas
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -30,6 +30,8 @@ class SecurityLevel(str, Enum):
 
 class SecurityLogResponse(BaseModel):
     """安全日志响应"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     account_id: Optional[int]
     event_type: SecurityEventType
@@ -38,9 +40,6 @@ class SecurityLogResponse(BaseModel):
     user_agent: Optional[str]
     details: Optional[Dict[str, Any]]
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 
 class SecurityLogListResponse(BaseModel):
@@ -52,16 +51,23 @@ class SecurityLogListResponse(BaseModel):
 
 
 class LoginAttemptResponse(BaseModel):
-    """登录尝试响应"""
+    """登录尝试响应（ORM 字段为 attempted_at，对外 JSON 仍为 created_at）"""
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
     id: int
-    username: str
-    ip_address: str
+    username: Optional[str] = None
+    ip_address: Optional[str] = None
     success: bool
-    failure_reason: Optional[str]
-    created_at: datetime
-    
-    class Config:
-        from_attributes = True
+    failure_reason: Optional[str] = None
+    created_at: datetime = Field(validation_alias="attempted_at")
+
+
+class LoginAttemptListResponse(BaseModel):
+    """登录记录分页"""
+    total: int
+    items: List[LoginAttemptResponse]
+    page: int
+    page_size: int
 
 
 class SecurityStats(BaseModel):

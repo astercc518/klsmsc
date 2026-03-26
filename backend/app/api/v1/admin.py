@@ -2658,7 +2658,7 @@ async def get_admin_statistics(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    管理员系统级统计
+    管理员系统级统计。销售角色仅统计归属客户（accounts.sales_id = 当前员工）的发送数据。
     """
     from app.modules.sms.sms_log import SMSLog
     from sqlalchemy import func, and_, case, or_
@@ -2675,20 +2675,28 @@ async def get_admin_statistics(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format")
     
-    # 全系统统计（含收入、利润）
-    query = select(
-        func.count(SMSLog.id).label("total_sent"),
-        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
-        func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
-        func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("total_pending"),
-        func.sum(SMSLog.cost_price).label("total_cost"),
-        func.sum(SMSLog.selling_price).label("total_revenue")
-    ).where(
-        and_(
-            SMSLog.submit_time >= start_dt,
-            SMSLog.submit_time < end_dt
+    time_filter = and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt)
+    # 销售：仅本人名下客户
+    if admin.role == "sales":
+        query = select(
+            func.count(SMSLog.id).label("total_sent"),
+            func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
+            func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
+            func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("total_pending"),
+            func.sum(SMSLog.cost_price).label("total_cost"),
+            func.sum(SMSLog.selling_price).label("total_revenue"),
+        ).select_from(SMSLog).join(Account, SMSLog.account_id == Account.id).where(
+            and_(time_filter, Account.sales_id == admin.id, Account.is_deleted == False)
         )
-    )
+    else:
+        query = select(
+            func.count(SMSLog.id).label("total_sent"),
+            func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
+            func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
+            func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("total_pending"),
+            func.sum(SMSLog.cost_price).label("total_cost"),
+            func.sum(SMSLog.selling_price).label("total_revenue"),
+        ).where(time_filter)
     
     result = await db.execute(query)
     row = result.first()
@@ -2822,14 +2830,19 @@ async def get_admin_success_rate(
         SMSLog.submit_time < end_dt
     )
 
-    # 按通道统计
+    # 按通道统计（销售仅看归属客户）
     ch_query = select(
         Channel.id, Channel.channel_code, Channel.channel_name,
         func.count(SMSLog.id).label("total"),
-        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered")
-    ).join(SMSLog, Channel.id == SMSLog.channel_id).where(base_filter).group_by(
-        Channel.id, Channel.channel_code, Channel.channel_name
-    )
+        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
+    ).join(SMSLog, Channel.id == SMSLog.channel_id)
+    if admin.role == "sales":
+        ch_query = ch_query.join(Account, SMSLog.account_id == Account.id).where(
+            and_(base_filter, Account.sales_id == admin.id, Account.is_deleted == False)
+        )
+    else:
+        ch_query = ch_query.where(base_filter)
+    ch_query = ch_query.group_by(Channel.id, Channel.channel_code, Channel.channel_name)
     ch_result = await db.execute(ch_query)
     by_channel = []
     for r in ch_result:
@@ -2843,10 +2856,24 @@ async def get_admin_success_rate(
     country_query = select(
         SMSLog.country_code,
         func.count(SMSLog.id).label("total"),
-        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered")
-    ).where(base_filter, SMSLog.country_code.isnot(None)).group_by(
-        SMSLog.country_code
-    ).order_by(func.count(SMSLog.id).desc()).limit(15)
+        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
+    )
+    if admin.role == "sales":
+        country_query = country_query.select_from(SMSLog).join(
+            Account, SMSLog.account_id == Account.id
+        ).where(
+            and_(
+                base_filter,
+                SMSLog.country_code.isnot(None),
+                Account.sales_id == admin.id,
+                Account.is_deleted == False,
+            )
+        )
+    else:
+        country_query = country_query.where(base_filter, SMSLog.country_code.isnot(None))
+    country_query = country_query.group_by(SMSLog.country_code).order_by(
+        func.count(SMSLog.id).desc()
+    ).limit(15)
     country_result = await db.execute(country_query)
     by_country = []
     for r in country_result:
@@ -2858,8 +2885,14 @@ async def get_admin_success_rate(
 
     total_query = select(
         func.count(SMSLog.id).label("total"),
-        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered")
-    ).where(base_filter)
+        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
+    )
+    if admin.role == "sales":
+        total_query = total_query.select_from(SMSLog).join(
+            Account, SMSLog.account_id == Account.id
+        ).where(and_(base_filter, Account.sales_id == admin.id, Account.is_deleted == False))
+    else:
+        total_query = total_query.where(base_filter)
     tr = (await db.execute(total_query)).first()
     overall = round((tr.delivered or 0) / (tr.total or 1) * 100, 2)
 
@@ -2874,7 +2907,7 @@ async def get_admin_daily_stats(
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """管理员：每日统计（全系统，用于图表）"""
+    """管理员：每日统计（用于图表）。销售角色仅统计归属客户。"""
     from app.modules.sms.sms_log import SMSLog
     from sqlalchemy.sql import text
 
@@ -2888,18 +2921,35 @@ async def get_admin_daily_stats(
         end_dt = datetime.now().date()
         start_dt = end_dt - timedelta(days=max(1, min(90, days)) - 1)
 
-    query = text("""
-        SELECT DATE(submit_time) as date,
-            COUNT(*) as total_sent,
-            SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as total_delivered,
-            SUM(cost_price) as total_cost,
-            SUM(selling_price) as total_revenue
-        FROM sms_logs
-        WHERE submit_time >= :start_date AND submit_time < :end_date
-        GROUP BY DATE(submit_time)
-        ORDER BY date ASC
-    """)
-    result = await db.execute(query, {"start_date": start_dt, "end_date": end_dt})
+    if admin.role == "sales":
+        query = text("""
+            SELECT DATE(l.submit_time) as date,
+                COUNT(*) as total_sent,
+                SUM(CASE WHEN l.status = 'delivered' THEN 1 ELSE 0 END) as total_delivered,
+                SUM(l.cost_price) as total_cost,
+                SUM(l.selling_price) as total_revenue
+            FROM sms_logs l
+            INNER JOIN accounts a ON a.id = l.account_id
+                AND a.sales_id = :sales_id AND a.is_deleted = 0
+            WHERE l.submit_time >= :start_date AND l.submit_time < :end_date
+            GROUP BY DATE(l.submit_time)
+            ORDER BY date ASC
+        """)
+        bind = {"start_date": start_dt, "end_date": end_dt, "sales_id": admin.id}
+    else:
+        query = text("""
+            SELECT DATE(submit_time) as date,
+                COUNT(*) as total_sent,
+                SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as total_delivered,
+                SUM(cost_price) as total_cost,
+                SUM(selling_price) as total_revenue
+            FROM sms_logs
+            WHERE submit_time >= :start_date AND submit_time < :end_date
+            GROUP BY DATE(submit_time)
+            ORDER BY date ASC
+        """)
+        bind = {"start_date": start_dt, "end_date": end_dt}
+    result = await db.execute(query, bind)
     statistics = []
     for row in result:
         ts, td = row.total_sent or 0, row.total_delivered or 0

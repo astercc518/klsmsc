@@ -100,21 +100,44 @@ async def get_account_info(
             if tg_user:
                 tg_username = tg_user.username
 
+    # 归属销售（商务）TG，供客户联系
+    sales_tg_username: Optional[str] = None
+    if account.sales_id:
+        from app.modules.common.admin_user import AdminUser
+        sales_row = await db.execute(
+            select(AdminUser).where(AdminUser.id == account.sales_id)
+        )
+        sales_user = sales_row.scalar_one_or_none()
+        if sales_user and sales_user.tg_username:
+            sales_tg_username = sales_user.tg_username.strip().lstrip("@")
+
+    unit_f = float(account.unit_price) if account.unit_price is not None else 0.0
+    bal_f = float(account.balance)
+    remaining_sms: Optional[int] = None
+    if unit_f > 0:
+        remaining_sms = int(bal_f // unit_f)
+
+    client_name = (account.company_name or "").strip() or account.account_name
+
     return AccountInfoResponse(
         id=account.id,
         account_name=account.account_name,
         email=account.email,
-        balance=float(account.balance),
+        balance=bal_f,
         currency=account.currency,
-        status=account.status,
+        status=account.status.value if hasattr(account.status, "value") else str(account.status),
         services=account.services or "sms",
         company_name=account.company_name,
         contact_person=account.contact_person,
         rate_limit=account.rate_limit,
         tg_id=tg_id,
         tg_username=tg_username,
-        unit_price=float(account.unit_price) if account.unit_price is not None else None,
-        created_at=account.created_at.isoformat()
+        unit_price=unit_f if account.unit_price is not None else None,
+        created_at=account.created_at.isoformat(),
+        client_name=client_name,
+        country_code=account.country_code,
+        remaining_sms_estimate=remaining_sms,
+        sales_tg_username=sales_tg_username,
     )
 
 
