@@ -45,6 +45,9 @@
 
     <!-- 数据表格 -->
     <div class="table-card">
+      <div class="table-toolbar">
+        <el-button type="primary" @click="openCreateVoice">{{ $t('voice.createVoiceAccount') }}</el-button>
+      </div>
       <el-table :data="accounts" v-loading="loading" stripe>
         <el-table-column prop="id" label="ID" width="70" />
         <el-table-column :label="$t('voice.localAccount')" width="150">
@@ -129,6 +132,29 @@
       </div>
     </div>
 
+    <el-dialog v-model="createVisible" :title="$t('voice.createVoiceAccountTitle')" width="480px" @closed="resetCreateForm">
+      <p class="sip-hint">{{ $t('voice.createVoiceAccountHint') }}</p>
+      <el-form label-width="120px">
+        <el-form-item :label="$t('voice.businessAccountIdLabel')" required>
+          <el-input-number
+            v-model="createForm.account_id"
+            :min="1"
+            :step="1"
+            controls-position="right"
+            style="width: 100%"
+            :placeholder="$t('voice.accountIdFilterHint')"
+          />
+        </el-form-item>
+        <el-form-item :label="$t('voice.countryCode')" required>
+          <el-input v-model="createForm.country_code" maxlength="10" show-word-limit :placeholder="$t('voice.countryCodeExample')" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="createSaving" @click="submitCreateVoice">{{ $t('common.save') }}</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="sipVisible" :title="$t('voice.editSipUsername')" width="480px" @closed="sipForm.sip_username = ''">
       <p class="sip-hint">{{ $t('voice.editSipUsernameHint') }}</p>
       <el-form label-width="120px">
@@ -167,6 +193,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '@/api/index'
 import {
+  createVoiceAccount,
   resetVoiceAccountSipPassword,
   updateVoiceAccount,
   type VoiceAccountListItem
@@ -199,6 +226,56 @@ const quotaForm = ref({ id: 0, max_concurrent_calls: 0, daily_outbound_limit: 0 
 const sipVisible = ref(false)
 const sipSaving = ref(false)
 const sipForm = ref({ id: 0, sip_username: '' as string })
+
+const createVisible = ref(false)
+const createSaving = ref(false)
+const createForm = ref({ account_id: undefined as number | undefined, country_code: 'US' })
+
+function resetCreateForm() {
+  createForm.value = { account_id: undefined, country_code: 'US' }
+}
+
+function openCreateVoice() {
+  resetCreateForm()
+  createVisible.value = true
+}
+
+async function submitCreateVoice() {
+  const aid = createForm.value.account_id
+  if (aid == null || aid < 1) {
+    ElMessage.warning(t('voice.businessAccountIdInvalid'))
+    return
+  }
+  const cc = createForm.value.country_code?.trim()
+  if (!cc) {
+    ElMessage.warning(t('voice.countryCodeRequired'))
+    return
+  }
+  createSaving.value = true
+  try {
+    const res: any = await createVoiceAccount({ account_id: aid, country_code: cc })
+    if (res?.success) {
+      createVisible.value = false
+      await ElMessageBox.alert(
+        `${t('voice.sipUserLabel')}: ${res.sip_username ?? res.okcc_account ?? '—'}\n${t('voice.sipPasswordLabel')}: ${res.sip_password ?? '—'}\n\n${t('voice.voiceAccountIdLabel')}: ${res.voice_account_id}`,
+        t('voice.createVoiceAccountSuccessTitle'),
+        { confirmButtonText: t('common.confirm') }
+      )
+      loadData()
+    }
+  } catch (e: any) {
+    // 4xx/5xx 多数已在 axios 拦截器中提示；仅补充网络错误与 422 校验详情
+    const st = e?.response?.status
+    if (!e?.response) {
+      ElMessage.error(e?.message || t('common.failed'))
+    } else if (st === 422) {
+      const d = e?.response?.data?.detail
+      ElMessage.error(typeof d === 'string' ? d : t('common.failed'))
+    }
+  } finally {
+    createSaving.value = false
+  }
+}
 
 function parseAccountIdFilter(): number | undefined {
   const s = filters.value.account_id?.trim()
@@ -392,6 +469,10 @@ onMounted(() => {
   padding: 16px;
   border-radius: 12px;
   border: 1px solid var(--border-default);
+}
+
+.table-toolbar {
+  margin-bottom: 12px;
 }
 
 .pagination-wrapper {

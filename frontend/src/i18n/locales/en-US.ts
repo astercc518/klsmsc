@@ -2606,6 +2606,16 @@ export default {
     // Voice Accounts
     accountsTitle: 'Voice Account Management',
     accountsDesc: 'Manage voice accounts and SIP credentials',
+    createVoiceAccount: 'Create voice account',
+    createVoiceAccountTitle: 'Enable voice for a business account',
+    createVoiceAccountHint:
+      'Enter an existing business account ID (accounts.id). Each business account can only have one voice account.',
+    businessAccountIdLabel: 'Business account ID',
+    businessAccountIdInvalid: 'Enter a valid business account ID (positive integer)',
+    countryCodeRequired: 'Country / region code is required',
+    countryCodeExample: 'e.g. US, CN',
+    createVoiceAccountSuccessTitle: 'Voice account created',
+    voiceAccountIdLabel: 'Voice account ID',
     accountIdFilterHint: 'Business account ID',
     accountNameSearch: 'Account name',
     accountNameSearchHint: 'Fuzzy search',

@@ -75,6 +75,24 @@ export function updateVoiceAccount(
   return request.put(`/admin/voice/accounts/${voiceAccountId}`, data)
 }
 
+/** 为已有业务账户开通语音子账户（POST /admin/voice/accounts） */
+export function createVoiceAccount(data: {
+  account_id: number
+  country_code: string
+  template_id?: number | null
+}) {
+  return request.post<{
+    success: boolean
+    voice_account_id: number
+    account_id: number
+    okcc_account?: string | null
+    sip_username?: string | null
+    sip_password?: string | null
+    external_id?: string | null
+    message?: string
+  }>('/admin/voice/accounts', data)
+}
+
 export function getVoiceRoutes(params?: { country_code?: string }) {
   return request.get('/admin/voice/routes', { params })
 }

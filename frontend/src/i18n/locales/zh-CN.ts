@@ -2658,6 +2658,16 @@ export default {
     // Voice Accounts
     accountsTitle: '语音账户管理',
     accountsDesc: '管理客户语音账户与 SIP 凭据',
+    createVoiceAccount: '开通语音账户',
+    createVoiceAccountTitle: '为业务账户开通语音',
+    createVoiceAccountHint:
+      '填写系统中已存在的客户业务账户 ID（accounts 表主键）。同一业务账户仅能开通一个语音账户。',
+    businessAccountIdLabel: '业务账户 ID',
+    businessAccountIdInvalid: '请输入有效的业务账户 ID（正整数）',
+    countryCodeRequired: '请填写国家/地区代码',
+    countryCodeExample: '如 US、CN',
+    createVoiceAccountSuccessTitle: '语音账户已创建',
+    voiceAccountIdLabel: '语音账户 ID',
     accountIdFilterHint: '业务账户 ID',
     accountNameSearch: '客户名称',
     accountNameSearchHint: '模糊匹配',

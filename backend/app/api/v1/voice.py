@@ -361,6 +361,91 @@ async def list_voice_accounts(
     }
 
 
+class VoiceAccountCreate(BaseModel):
+    """管理端为已有业务账户开通语音子账户"""
+
+    account_id: int = Field(..., gt=0, description="业务账户 accounts.id")
+    country_code: str = Field(..., min_length=1, max_length=10, description="语音业务国家/地区代码")
+    template_id: Optional[int] = Field(None, description="开户模板 ID，可选")
+
+
+@router.post("/accounts")
+async def create_voice_account(
+    data: VoiceAccountCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """为已有业务账户开通语音账户：调用 VoiceProvider 开户并落库，一次性返回 SIP 密码。"""
+    from app.services.voice_provider import get_voice_provider
+
+    acc_result = await db.execute(select(Account).where(Account.id == data.account_id))
+    biz = acc_result.scalar_one_or_none()
+    if not biz:
+        raise HTTPException(status_code=404, detail="业务账户不存在")
+
+    dup = await db.execute(
+        select(func.count()).select_from(VoiceAccount).where(
+            VoiceAccount.account_id == data.account_id
+        )
+    )
+    if (dup.scalar() or 0) > 0:
+        raise HTTPException(status_code=409, detail="该业务账户已开通语音账户")
+
+    cc = data.country_code.strip()
+    provider = get_voice_provider()
+    result = await provider.create_account(
+        {"account_name": biz.account_name, "country_code": cc}
+    )
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("message") or "语音平台开户失败",
+        )
+    pdata = result.get("data") or {}
+    sip_user = pdata.get("account")
+    pwd = pdata.get("password")
+
+    voice_account = VoiceAccount(
+        account_id=biz.id,
+        okcc_account=sip_user,
+        sip_username=sip_user,
+        okcc_password=pwd,
+        external_id=pdata.get("external_id"),
+        country_code=cc,
+        template_id=data.template_id,
+        status="active",
+        balance=0,
+    )
+    db.add(voice_account)
+    await db.flush()
+    new_id = voice_account.id
+
+    await log_operation(
+        db,
+        admin_id=admin.id,
+        admin_name=admin.username,
+        module="voice",
+        action="create",
+        title="创建语音账户",
+        target_type="VoiceAccount",
+        target_id=str(new_id),
+        detail={"business_account_id": biz.id, "country_code": cc},
+        ip_address=request.client.host if request.client else None,
+    )
+    await db.commit()
+    return {
+        "success": True,
+        "voice_account_id": new_id,
+        "account_id": biz.id,
+        "okcc_account": sip_user,
+        "sip_username": sip_user,
+        "sip_password": pwd,
+        "external_id": pdata.get("external_id"),
+        "message": "语音账户已创建，请妥善保管 SIP 密码（仅本次返回）",
+    }
+
+
 class VoiceAccountUpdate(BaseModel):
     status: Optional[str] = None
     max_concurrent_calls: Optional[int] = Field(None, ge=0)
