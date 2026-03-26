@@ -98,7 +98,8 @@
 ## 上线发布检查
 
 1. **数据库**：在部署环境执行 `alembic upgrade head`（含 `005`～`008` 等语音相关迁移），确认无报错。
-2. **环境变量**：按上文「smsc 环境变量补充」与 `app/config.py` 配置 `VOICE_*`（含 `VOICE_CDR_WEBHOOK_SECRET`、SIP 域名端口等）。
-3. **进程**：重启 API 服务；若使用 Celery，重启 **worker** 以加载 `voice_worker` 定时/任务逻辑。
-4. **前端**：构建并发布静态资源（`npm run build`），确保客户路由与管理端语音菜单已发布。
-5. **网关侧**：自建 Kamailio/FreeSWITCH 按本文档对接 CDR Webhook 与（可选）HTTP originate；与运维确认 Trunk、`trunk_profile` 双写。
+2. **环境变量**：项目根目录 `.env` 可参考 `.env.example` 中语音段落；`docker-compose` 已将 `VOICE_*` 注入 **api**、**worker**（须消费 **`voice_tasks`** 队列）等。
+3. **Celery**：Worker 必须订阅 **`voice_tasks`**；Beat 下发 `voice_campaign_scan_task`（每 30 秒）与 `voice_cdr_retry_failed_task`（每 2 分钟）。
+4. **进程**：示例：`docker compose build --no-cache frontend && docker compose up -d --force-recreate api worker beat frontend`。
+5. **验证**：`GET /health/voice` 中 `database`/`redis` 为 true；CDR Webhook 为 `POST /api/v1/voice/webhooks/cdr`。
+6. **网关侧**：自建 Kamailio/FreeSWITCH 按本文档对接 CDR Webhook 与（可选）HTTP originate；与运维确认 Trunk、`trunk_profile` 双写。

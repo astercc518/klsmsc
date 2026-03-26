@@ -94,6 +94,19 @@ services:
       DLR_CALLBACK_IP_WHITELIST: ${DLR_CALLBACK_IP_WHITELIST:-}
       TELEGRAM_STAFF_API_SECRET: ${TELEGRAM_STAFF_API_SECRET:-}
       PUBLIC_WEB_BASE_URL: ${PUBLIC_WEB_BASE_URL:-https://www.kaolach.com}
+      # 语音模块（自建栈 / CDR Webhook / 外呼网关；从根目录 .env 注入）
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-self_hosted}
+      VOICE_SIP_DOMAIN: ${VOICE_SIP_DOMAIN:-}
+      VOICE_SIP_PORT: ${VOICE_SIP_PORT:-5060}
+      VOICE_SIP_TRANSPORT: ${VOICE_SIP_TRANSPORT:-udp}
+      VOICE_CDR_WEBHOOK_SECRET: ${VOICE_CDR_WEBHOOK_SECRET:-}
+      VOICE_CDR_WEBHOOK_IP_WHITELIST: ${VOICE_CDR_WEBHOOK_IP_WHITELIST:-}
+      VOICE_GATEWAY_BASE_URL: ${VOICE_GATEWAY_BASE_URL:-}
+      VOICE_ORIGINATE_TOKEN: ${VOICE_ORIGINATE_TOKEN:-}
+      VOICE_CDR_WEBHOOK_IP_RATE_PER_MINUTE: ${VOICE_CDR_WEBHOOK_IP_RATE_PER_MINUTE:-300}
+      VOICE_CDR_MAX_RETRIES: ${VOICE_CDR_MAX_RETRIES:-10}
+      VOICE_HANGUP_SMS_MAX_PER_CALLEE_PER_DAY: ${VOICE_HANGUP_SMS_MAX_PER_CALLEE_PER_DAY:-20}
+      VOICE_MIN_BALANCE_FOR_ORIGINATE: ${VOICE_MIN_BALANCE_FOR_ORIGINATE:-0}
     ports:
       - "8000:8000"
     volumes:
@@ -138,6 +151,18 @@ services:
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
       DLR_SENT_TIMEOUT_HOURS: ${DLR_SENT_TIMEOUT_HOURS:-72}
       DLR_PULL_HTTP_TIMEOUT_SECONDS: ${DLR_PULL_HTTP_TIMEOUT_SECONDS:-60}
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-self_hosted}
+      VOICE_SIP_DOMAIN: ${VOICE_SIP_DOMAIN:-}
+      VOICE_SIP_PORT: ${VOICE_SIP_PORT:-5060}
+      VOICE_SIP_TRANSPORT: ${VOICE_SIP_TRANSPORT:-udp}
+      VOICE_CDR_WEBHOOK_SECRET: ${VOICE_CDR_WEBHOOK_SECRET:-}
+      VOICE_CDR_WEBHOOK_IP_WHITELIST: ${VOICE_CDR_WEBHOOK_IP_WHITELIST:-}
+      VOICE_GATEWAY_BASE_URL: ${VOICE_GATEWAY_BASE_URL:-}
+      VOICE_ORIGINATE_TOKEN: ${VOICE_ORIGINATE_TOKEN:-}
+      VOICE_CDR_WEBHOOK_IP_RATE_PER_MINUTE: ${VOICE_CDR_WEBHOOK_IP_RATE_PER_MINUTE:-300}
+      VOICE_CDR_MAX_RETRIES: ${VOICE_CDR_MAX_RETRIES:-10}
+      VOICE_HANGUP_SMS_MAX_PER_CALLEE_PER_DAY: ${VOICE_HANGUP_SMS_MAX_PER_CALLEE_PER_DAY:-20}
+      VOICE_MIN_BALANCE_FOR_ORIGINATE: ${VOICE_MIN_BALANCE_FOR_ORIGINATE:-0}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
@@ -149,8 +174,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    # 不消费 sms_send：避免 data_tasks 等长任务占满并发时短信长期卡在 RabbitMQ（库中仍为 queued）
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4 -Q celery,sms_dlr,data_tasks,settlement_tasks
+    # 含 voice_tasks：外呼 tick、CDR 重试等（与 Beat 下发的语音队列一致）
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4 -Q celery,sms_dlr,data_tasks,settlement_tasks,voice_tasks
     restart: unless-stopped
     networks:
       - smsc-network
@@ -219,6 +244,8 @@ services:
       RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
       DLR_SENT_TIMEOUT_HOURS: ${DLR_SENT_TIMEOUT_HOURS:-72}
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-self_hosted}
+      VOICE_CDR_MAX_RETRIES: ${VOICE_CDR_MAX_RETRIES:-10}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs

@@ -114,6 +114,11 @@ celery_app.conf.beat_schedule = {
         'task': 'voice_cdr_retry_failed_task',
         'schedule': 120.0,
     },
+    # 每 30 秒扫描 running 外呼任务并投递 tick（与网关配合时启用）
+    'voice-campaign-scan-every-30s': {
+        'task': 'voice_campaign_scan_task',
+        'schedule': 30.0,
+    },
     # 每月 1 日 02:00 生成上月销售佣金结算单
     'settlement-commission-monthly': {
         'task': 'settlement_commission_monthly_task',
