@@ -81,6 +81,12 @@ class VoiceAccount(Base):
     # 关系
     account = relationship("Account", backref="voice_accounts")
     template = relationship("AccountTemplate")
+    # 主叫池归属本语音子账户（与 default_caller 指向同一表的不同外键区分）
+    caller_ids = relationship(
+        "VoiceCallerId",
+        foreign_keys="VoiceCallerId.voice_account_id",
+        back_populates="voice_account",
+    )
     default_caller = relationship(
         "VoiceCallerId",
         foreign_keys=[default_caller_id_id],

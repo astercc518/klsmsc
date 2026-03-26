@@ -49,7 +49,12 @@ class VoiceCallerId(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     account = relationship("Account", backref="voice_caller_ids")
-    voice_account = relationship("VoiceAccount", backref="caller_ids")
+    # 与 VoiceAccount.default_caller（指向 voice_caller_ids.id）区分，必须指定 foreign_keys
+    voice_account = relationship(
+        "VoiceAccount",
+        foreign_keys=[voice_account_id],
+        back_populates="caller_ids",
+    )
 
 
 class VoiceOutboundCampaign(Base):
