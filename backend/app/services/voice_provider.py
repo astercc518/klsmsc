@@ -57,6 +57,10 @@ class SelfHostedVoiceProvider:
 
 def get_voice_provider() -> VoiceProvider:
     """根据 VOICE_PROVIDER 返回实现。"""
-    if settings.VOICE_PROVIDER.lower() == "okcc":
+    provider_name = settings.VOICE_PROVIDER.lower()
+    if provider_name == "okcc":
         return get_okcc_client()  # type: ignore[return-value]
+    elif provider_name == "vos":
+        from app.services.vos_client import get_vos_client
+        return get_vos_client()  # type: ignore[return-value]
     return SelfHostedVoiceProvider()

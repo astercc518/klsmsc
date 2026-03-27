@@ -16,6 +16,7 @@ from app.database import (
     close_db,
     ensure_channel_dlr_preference_columns,
     ensure_sales_commission_total_cost_columns,
+    ensure_voice_campaign_ai_prompt_column,
 )
 from app.utils.logger import setup_logging, get_logger
 from app.utils.errors import SMSGatewayException, error_response
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     await ensure_channel_dlr_preference_columns()
     await ensure_sales_commission_total_cost_columns()
+    await ensure_voice_campaign_ai_prompt_column()
     logger.info("✅ 数据库初始化完成")
     
     # 初始化Redis连接
@@ -190,6 +192,7 @@ from app.api.v1 import (
     notifications, security_logs, suppliers, tickets, settlements,
     sales_commission, knowledge,
     channel_relations, voice, voice_webhooks, voice_customer, voice_extra,
+    voice_ai_webhook,
     account_templates, ai, admin_logs
 )
 from app.api.v1.data import (
@@ -234,6 +237,7 @@ app.include_router(voice.router, prefix="/api/v1", tags=["Voice"])
 app.include_router(voice_webhooks.router, prefix="/api/v1", tags=["Voice Webhooks"])
 app.include_router(voice_customer.router, prefix="/api/v1", tags=["Voice Customer"])
 app.include_router(voice_extra.router, prefix="/api/v1", tags=["Voice"])
+app.include_router(voice_ai_webhook.router, prefix="/api/v1", tags=["Voice AI Gateway"])
 # 开户模板管理
 app.include_router(account_templates.router, prefix="/api/v1", tags=["Account Templates"])
 # AI 文案生成

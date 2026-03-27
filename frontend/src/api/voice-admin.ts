@@ -191,12 +191,51 @@ export function createVoiceCampaign(data: Record<string, unknown>) {
   return request.post('/admin/voice/campaigns', data)
 }
 
+export function updateVoiceCampaign(campaignId: number, data: Record<string, unknown>) {
+  return request.put(`/admin/voice/campaigns/${campaignId}`, data)
+}
+
+export function getVoiceCampaignContacts(
+  campaignId: number,
+  params?: {
+    status?: string
+    page?: number
+    page_size?: number
+  }
+) {
+  return request.get<{
+    success: boolean
+    total: number
+    page: number
+    page_size: number
+    items: Array<{
+      id: number
+      phone_e164: string
+      status: string
+      attempt_count?: number
+      last_error?: string | null
+      created_at?: string | null
+      updated_at?: string | null
+    }>
+  }>(`/admin/voice/campaigns/${campaignId}/contacts`, { params })
+}
+
 export function setVoiceCampaignStatus(campaignId: number, status: string) {
   return request.post(`/admin/voice/campaigns/${campaignId}/status`, { status })
 }
 
 export function importVoiceCampaignContacts(campaignId: number, phones: string[]) {
   return request.post(`/admin/voice/campaigns/${campaignId}/contacts`, { phones })
+}
+
+/** CSV 首列号码，UTF-8 */
+export function importVoiceCampaignContactsCsv(campaignId: number, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return request.post<{ success: boolean; imported: number }>(
+    `/admin/voice/campaigns/${campaignId}/contacts/csv`,
+    form
+  )
 }
 
 export function getVoiceHangupSmsRules(params?: { account_id?: number }) {

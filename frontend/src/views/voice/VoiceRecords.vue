@@ -46,14 +46,21 @@
           <el-option :label="$t('voice.inbound')" value="inbound" />
           <el-option :label="$t('voice.outbound')" value="outbound" />
         </el-select>
-        <el-input
-          v-model="campaignIdInput"
+        <el-select
+          v-model="campaignFilter"
           :placeholder="$t('voice.campaignIdFilterPlaceholder')"
-          style="width: 140px"
           clearable
-          @clear="onCampaignIdClear"
-          @keyup.enter="onFilterChange(); load()"
-        />
+          filterable
+          style="width: 220px"
+          @change="onFilterChange"
+        >
+          <el-option
+            v-for="c in campaignOptions"
+            :key="c.id"
+            :label="`${c.id} · ${c.name}`"
+            :value="c.id"
+          />
+        </el-select>
         <el-button type="primary" @click="load">{{ $t('smsRecords.query') }}</el-button>
         <el-button type="primary" plain :loading="exporting" @click="handleExport">{{ $t('voice.exportCsv') }}</el-button>
       </div>
@@ -112,7 +119,11 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
-import { getVoiceCallsCustomer, exportVoiceCallsCustomerCsv } from '@/api/voice-customer'
+import {
+  getVoiceCallsCustomer,
+  exportVoiceCallsCustomerCsv,
+  getVoiceOutboundCampaignsCustomer,
+} from '@/api/voice-customer'
 
 const { t } = useI18n()
 function directionLabel(d: string | null | undefined) {
@@ -132,32 +143,19 @@ const dateBasis = ref<'created_at' | 'start_time'>('created_at')
 /** 未选表示不筛选状态 */
 const statusFilter = ref<string | undefined>(undefined)
 const directionFilter = ref<string | undefined>(undefined)
-/** 外呼任务 ID 文本，空则不带参数 */
-const campaignIdInput = ref('')
+/** 外呼任务筛选，空则不带参数 */
+const campaignFilter = ref<number | undefined>(undefined)
+const campaignOptions = ref<{ id: number; name: string }[]>([])
 
 function onFilterChange() {
   page.value = 1
 }
 
-function onCampaignIdClear() {
-  onFilterChange()
-}
-
-/** 解析任务 ID：非法或空返回 undefined */
 function parsedCampaignId(): number | undefined {
-  const s = campaignIdInput.value?.trim()
-  if (!s) return undefined
-  const n = Number.parseInt(s, 10)
-  if (!Number.isFinite(n) || n < 1) return undefined
-  return n
+  return campaignFilter.value
 }
 
 async function load() {
-  const rawCampaign = campaignIdInput.value?.trim()
-  if (rawCampaign && parsedCampaignId() === undefined) {
-    ElMessage.warning(t('voice.campaignIdInvalid'))
-    return
-  }
   loading.value = true
   try {
     const [start_date, end_date] = dateRange.value || []
@@ -188,11 +186,6 @@ function onPage(p: number) {
 }
 
 async function handleExport() {
-  const rawCampaign = campaignIdInput.value?.trim()
-  if (rawCampaign && parsedCampaignId() === undefined) {
-    ElMessage.warning(t('voice.campaignIdInvalid'))
-    return
-  }
   exporting.value = true
   try {
     const [start_date, end_date] = dateRange.value || []
@@ -218,7 +211,18 @@ async function handleExport() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  try {
+    const res: any = await getVoiceOutboundCampaignsCustomer()
+    campaignOptions.value = (res.items || []).map((x: { id: number; name: string }) => ({
+      id: x.id,
+      name: x.name,
+    }))
+  } catch {
+    campaignOptions.value = []
+  }
+  load()
+})
 </script>
 
 <style scoped>

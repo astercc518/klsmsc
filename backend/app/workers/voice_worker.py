@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy import and_, func, or_, select
@@ -26,16 +27,27 @@ from app.workers.celery_app import celery_app
 logger = get_logger(__name__)
 
 
-def _in_window(now_local: datetime, tz_name: str, start_s: Optional[str], end_s: Optional[str]) -> bool:
+def _in_window(now: datetime, tz_name: str, start_s: Optional[str], end_s: Optional[str]) -> bool:
+    """按任务时区判断当前时刻是否在可呼时间窗内；支持跨午夜（如 22:00–06:00）。"""
     if not start_s or not end_s:
         return True
     try:
         sh, sm = [int(x) for x in start_s.split(":")]
         eh, em = [int(x) for x in end_s.split(":")]
-        tnow = now_local.time()
+        name = (tz_name or "Asia/Shanghai").strip() or "Asia/Shanghai"
+        try:
+            tz = ZoneInfo(name)
+        except Exception:
+            tz = ZoneInfo("Asia/Shanghai")
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        tnow = now.astimezone(tz).time()
         a = dt_time(sh, sm)
         b = dt_time(eh, em)
-        return a <= tnow <= b
+        if a <= b:
+            return a <= tnow <= b
+        # 跨午夜：例如 22:00–次日 06:00
+        return tnow >= a or tnow <= b
     except Exception:
         return True
 
@@ -181,7 +193,7 @@ async def _process_campaign_batch_async(campaign_id: int, limit: int = 20) -> Di
                 if d >= mc:
                     return {"skipped": True, "reason": "max_concurrent_calls"}
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         if not _in_window(now, camp.timezone or "Asia/Shanghai", camp.window_start, camp.window_end):
             return {"skipped": True, "reason": "outside window"}
 

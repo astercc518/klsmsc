@@ -9,6 +9,75 @@ export function getVoiceCallerIdsCustomer() {
   return request.get('/voice/caller-ids')
 }
 
+/** 当前账户外呼任务列表 */
+export function getVoiceOutboundCampaignsCustomer() {
+  return request.get<{
+    success: boolean
+    items: Array<{
+      id: number
+      name: string
+      status: string
+      timezone?: string | null
+      window_start?: string | null
+      window_end?: string | null
+      ai_mode?: string
+      max_concurrent?: number
+      caller_id_mode?: string
+      fixed_caller_id_id?: number | null
+    }>
+  }>('/voice/outbound-campaigns')
+}
+
+export function getVoiceOutboundCampaignCustomer(campaignId: number) {
+  return request.get<{ success: boolean; item: Record<string, unknown> }>(
+    `/voice/outbound-campaigns/${campaignId}`
+  )
+}
+
+export function createVoiceOutboundCampaignCustomer(data: Record<string, unknown>) {
+  return request.post<{ success: boolean; id: number }>('/voice/outbound-campaigns', data)
+}
+
+export function updateVoiceOutboundCampaignCustomer(
+  campaignId: number,
+  data: Record<string, unknown>
+) {
+  return request.put(`/voice/outbound-campaigns/${campaignId}`, data)
+}
+
+export function setVoiceOutboundCampaignStatusCustomer(campaignId: number, status: string) {
+  return request.post(`/voice/outbound-campaigns/${campaignId}/status`, { status })
+}
+
+export function importVoiceCampaignContactsCustomer(campaignId: number, phones: string[]) {
+  return request.post<{ success: boolean; imported: number }>(
+    `/voice/outbound-campaigns/${campaignId}/contacts`,
+    { phones }
+  )
+}
+
+export function importVoiceCampaignContactsCsvCustomer(campaignId: number, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return request.post<{ success: boolean; imported: number }>(
+    `/voice/outbound-campaigns/${campaignId}/contacts/csv`,
+    form
+  )
+}
+
+export function getVoiceCampaignContactsCustomer(
+  campaignId: number,
+  params?: { status?: string; page?: number; page_size?: number }
+) {
+  return request.get<{
+    success: boolean
+    total: number
+    page: number
+    page_size: number
+    items: Array<Record<string, unknown>>
+  }>(`/voice/outbound-campaigns/${campaignId}/contacts`, { params })
+}
+
 export function getVoiceCallsCustomer(params?: {
   page?: number
   page_size?: number

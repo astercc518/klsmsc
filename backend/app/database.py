@@ -147,6 +147,37 @@ async def ensure_sales_commission_total_cost_columns():
         )
 
 
+async def ensure_voice_campaign_ai_prompt_column():
+    """
+    自动为 voice_outbound_campaigns 补充 ai_prompt 字段
+    """
+    url = (settings.DATABASE_URL or "").lower()
+    if "mysql" not in url and "mariadb" not in url:
+        return
+    try:
+        async with engine.begin() as conn:
+            r = await conn.execute(
+                text(
+                    "SELECT COUNT(*) AS c FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'voice_outbound_campaigns' "
+                    "AND COLUMN_NAME = 'ai_prompt'"
+                )
+            )
+            row = r.first()
+            if row and (row[0] or 0) > 0:
+                return
+            await conn.execute(
+                text(
+                    "ALTER TABLE `voice_outbound_campaigns` ADD COLUMN `ai_prompt` "
+                    "TEXT NULL COMMENT 'AI 外呼营销提示词对话脚本'"
+                )
+            )
+            _schema_logger.info("已自动补齐 voice_outbound_campaigns.ai_prompt")
+    except Exception as e:
+        _schema_logger.warning(
+            "自动补齐 voice_outbound_campaigns.ai_prompt 失败: %s", e
+        )
+
 async def close_db():
     """关闭数据库连接"""
     await engine.dispose()

@@ -4,12 +4,12 @@ from __future__ import annotations
 import csv
 import io
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from sqlalchemy import select, func
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,10 +21,20 @@ from app.utils.voice_call_query import (
 from app.config import settings
 from app.database import get_db
 from app.modules.common.account import Account
-from app.modules.voice.campaign_models import VoiceCallerId, VoiceOutboundCampaign
+from app.modules.voice.campaign_models import (
+    VoiceCallerId,
+    VoiceOutboundCampaign,
+    VoiceOutboundContact,
+)
 from app.modules.voice.models import VoiceCall
 from app.modules.voice.voice_account import VoiceAccount
 from app.utils.voice_campaign_names import batch_outbound_campaign_names_for_account
+from app.utils.voice_contact_import import (
+    MAX_VOICE_CONTACTS_PER_IMPORT,
+    normalize_e164_phone,
+    parse_phones_from_csv_bytes,
+)
+from app.workers.voice_worker import voice_campaign_tick_task
 
 router = APIRouter(prefix="/voice", tags=["Voice Customer"])
 
@@ -52,11 +62,94 @@ async def _assert_outbound_campaign_owned(
         )
 
 
+async def _get_owned_campaign(
+    db: AsyncSession, account_id: int, campaign_id: int
+) -> VoiceOutboundCampaign:
+    """获取当前账户下的外呼任务，否则 404。"""
+    r = await db.execute(
+        select(VoiceOutboundCampaign).where(
+            VoiceOutboundCampaign.id == campaign_id,
+            VoiceOutboundCampaign.account_id == account_id,
+        )
+    )
+    c = r.scalar_one_or_none()
+    if not c:
+        raise HTTPException(status_code=404, detail="外呼任务不存在或无权访问")
+    return c
+
+
+async def _require_active_voice_account(db: AsyncSession, account_id: int) -> VoiceAccount:
+    """客户操作外呼前须已开通且为活跃状态的语音子账户。"""
+    r = await db.execute(
+        select(VoiceAccount).where(VoiceAccount.account_id == account_id).limit(1)
+    )
+    va = r.scalar_one_or_none()
+    if not va:
+        raise HTTPException(status_code=404, detail="未开通语音账户")
+    if va.status != "active":
+        raise HTTPException(
+            status_code=403,
+            detail="语音账户已暂停或关闭，无法操作外呼任务",
+        )
+    return va
+
+
+async def _ensure_fixed_caller_for_account(
+    db: AsyncSession, account_id: int, caller_id: Optional[int]
+) -> None:
+    if caller_id is None:
+        return
+    r = await db.execute(
+        select(VoiceCallerId).where(
+            VoiceCallerId.id == caller_id,
+            VoiceCallerId.account_id == account_id,
+        )
+    )
+    if not r.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="fixed_caller_id_id 不属于当前账户")
+
+
 class SipConfigResponse(BaseModel):
     sip_domain: str
     sip_port: int
     sip_transport: str
     sip_username: Optional[str] = None
+
+
+class CustomerVoiceCampaignCreate(BaseModel):
+    """客户自建外呼任务（草稿）。"""
+
+    name: str = Field(..., max_length=200)
+    timezone: str = "Asia/Shanghai"
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
+    max_concurrent: int = Field(1, ge=1, le=9999)
+    caller_id_mode: str = Field("fixed", pattern="^(fixed|round_robin|random)$")
+    fixed_caller_id_id: Optional[int] = None
+    ai_mode: str = Field("ivr", pattern="^(ivr|ai)$")
+    ai_prompt: Optional[str] = None
+
+
+class CustomerVoiceCampaignUpdate(BaseModel):
+    """客户修改任务：仅草稿或已暂停时可更新。"""
+
+    name: Optional[str] = Field(None, max_length=200)
+    timezone: Optional[str] = Field(None, max_length=64)
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
+    max_concurrent: Optional[int] = Field(None, ge=1, le=9999)
+    caller_id_mode: Optional[str] = Field(None, pattern="^(fixed|round_robin|random)$")
+    fixed_caller_id_id: Optional[int] = None
+    ai_mode: Optional[str] = Field(None, pattern="^(ivr|ai)$")
+    ai_prompt: Optional[str] = None
+
+
+class CustomerVoiceCampaignStatusBody(BaseModel):
+    status: str = Field(pattern="^(running|paused|completed|cancelled|draft)$")
+
+
+class CustomerContactsImport(BaseModel):
+    phones: List[str] = Field(default_factory=list)
 
 
 @router.get("/me")
@@ -112,6 +205,271 @@ async def voice_me(
             "max_concurrent_calls": getattr(va, "max_concurrent_calls", None) or 0,
             "daily_outbound_limit": getattr(va, "daily_outbound_limit", None) or 0,
         },
+    }
+
+
+@router.get("/outbound-campaigns")
+async def list_my_outbound_campaigns(
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    """当前业务账户下的外呼任务列表（只读，用于话单筛选等）。"""
+    r = await db.execute(
+        select(VoiceOutboundCampaign)
+        .where(VoiceOutboundCampaign.account_id == account.id)
+        .order_by(VoiceOutboundCampaign.id.desc())
+    )
+    rows = r.scalars().all()
+    return {
+        "success": True,
+        "items": [
+            {
+                "id": x.id,
+                "name": x.name,
+                "status": x.status,
+                "timezone": x.timezone,
+                "window_start": x.window_start,
+                "window_end": x.window_end,
+                "ai_mode": getattr(x, "ai_mode", None) or "ivr",
+                "ai_prompt": getattr(x, "ai_prompt", None),
+                "max_concurrent": x.max_concurrent,
+                "caller_id_mode": getattr(x, "caller_id_mode", None),
+                "fixed_caller_id_id": x.fixed_caller_id_id,
+            }
+            for x in rows
+        ],
+    }
+
+
+@router.get("/outbound-campaigns/{campaign_id}")
+async def get_my_outbound_campaign(
+    campaign_id: int,
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    """外呼任务详情（须为本账户任务）。"""
+    c = await _get_owned_campaign(db, account.id, campaign_id)
+    return {
+        "success": True,
+        "item": {
+            "id": c.id,
+            "name": c.name,
+            "status": c.status,
+            "timezone": c.timezone,
+            "window_start": c.window_start,
+            "window_end": c.window_end,
+            "max_concurrent": c.max_concurrent,
+            "caller_id_mode": getattr(c, "caller_id_mode", None),
+            "fixed_caller_id_id": c.fixed_caller_id_id,
+            "ai_mode": getattr(c, "ai_mode", None) or "ivr",
+            "ai_prompt": getattr(c, "ai_prompt", None),
+        },
+    }
+
+
+@router.post("/outbound-campaigns")
+async def create_my_outbound_campaign(
+    data: CustomerVoiceCampaignCreate,
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_active_voice_account(db, account.id)
+    mode = data.caller_id_mode
+    if mode == "fixed":
+        await _ensure_fixed_caller_for_account(db, account.id, data.fixed_caller_id_id)
+        if not data.fixed_caller_id_id:
+            raise HTTPException(status_code=422, detail="固定主叫模式下须指定 fixed_caller_id_id")
+    row = VoiceOutboundCampaign(
+        account_id=account.id,
+        name=data.name.strip(),
+        timezone=(data.timezone or "Asia/Shanghai").strip() or "Asia/Shanghai",
+        window_start=data.window_start,
+        window_end=data.window_end,
+        max_concurrent=data.max_concurrent,
+        caller_id_mode=data.caller_id_mode,
+        fixed_caller_id_id=data.fixed_caller_id_id if mode == "fixed" else None,
+        ai_mode=(data.ai_mode or "ivr")[:16],
+        ai_prompt=data.ai_prompt,
+        status="draft",
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return {"success": True, "id": row.id}
+
+
+@router.put("/outbound-campaigns/{campaign_id}")
+async def update_my_outbound_campaign(
+    campaign_id: int,
+    data: CustomerVoiceCampaignUpdate,
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    c = await _get_owned_campaign(db, account.id, campaign_id)
+    if c.status not in ("draft", "paused"):
+        raise HTTPException(
+            status_code=400,
+            detail="仅草稿或已暂停状态的任务可修改配置",
+        )
+    await _require_active_voice_account(db, account.id)
+    upd = data.dict(exclude_unset=True)
+    if "name" in upd and upd["name"] is not None:
+        c.name = (upd["name"] or "").strip() or c.name
+    if "timezone" in upd and upd["timezone"] is not None:
+        c.timezone = upd["timezone"].strip() or "Asia/Shanghai"
+    if "window_start" in upd:
+        c.window_start = upd.get("window_start")
+    if "window_end" in upd:
+        c.window_end = upd.get("window_end")
+    if "max_concurrent" in upd and upd["max_concurrent"] is not None:
+        c.max_concurrent = upd["max_concurrent"]
+    if "caller_id_mode" in upd and upd["caller_id_mode"] is not None:
+        c.caller_id_mode = upd["caller_id_mode"]
+    if "fixed_caller_id_id" in upd:
+        fid = upd.get("fixed_caller_id_id")
+        if fid is not None:
+            await _ensure_fixed_caller_for_account(db, account.id, fid)
+        c.fixed_caller_id_id = fid
+    if "ai_mode" in upd and upd["ai_mode"] is not None:
+        c.ai_mode = upd["ai_mode"][:16]
+    if "ai_prompt" in upd:
+        c.ai_prompt = upd["ai_prompt"]
+    mode = c.caller_id_mode
+    if mode == "fixed" and not c.fixed_caller_id_id:
+        raise HTTPException(status_code=422, detail="固定主叫模式下须指定 fixed_caller_id_id")
+    await db.commit()
+    await db.refresh(c)
+    return {"success": True}
+
+
+@router.post("/outbound-campaigns/{campaign_id}/status")
+async def set_my_outbound_campaign_status(
+    campaign_id: int,
+    body: CustomerVoiceCampaignStatusBody,
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_active_voice_account(db, account.id)
+    c = await _get_owned_campaign(db, account.id, campaign_id)
+    c.status = body.status
+    await db.commit()
+    if body.status == "running":
+        voice_campaign_tick_task.delay(campaign_id)
+    return {"success": True}
+
+
+@router.post("/outbound-campaigns/{campaign_id}/contacts")
+async def import_my_campaign_contacts(
+    campaign_id: int,
+    body: CustomerContactsImport,
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_active_voice_account(db, account.id)
+    await _get_owned_campaign(db, account.id, campaign_id)
+    if len(body.phones) > MAX_VOICE_CONTACTS_PER_IMPORT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"单次导入不得超过 {MAX_VOICE_CONTACTS_PER_IMPORT} 条",
+        )
+    n = 0
+    for p in body.phones:
+        phone = normalize_e164_phone(p)
+        if not phone:
+            continue
+        db.add(
+            VoiceOutboundContact(
+                campaign_id=campaign_id,
+                phone_e164=phone,
+                status="pending",
+            )
+        )
+        n += 1
+    await db.commit()
+    return {"success": True, "imported": n}
+
+
+@router.post("/outbound-campaigns/{campaign_id}/contacts/csv")
+async def import_my_campaign_contacts_csv(
+    campaign_id: int,
+    file: UploadFile = File(..., description="CSV，首列为号码"),
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    await _require_active_voice_account(db, account.id)
+    await _get_owned_campaign(db, account.id, campaign_id)
+    raw = await file.read()
+    if len(raw) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件过大")
+    try:
+        raw_phones = parse_phones_from_csv_bytes(raw)
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="CSV 须为 UTF-8 编码")
+    n = 0
+    for p in raw_phones:
+        phone = normalize_e164_phone(p)
+        if not phone:
+            continue
+        db.add(
+            VoiceOutboundContact(
+                campaign_id=campaign_id,
+                phone_e164=phone,
+                status="pending",
+            )
+        )
+        n += 1
+    await db.commit()
+    return {"success": True, "imported": n}
+
+
+@router.get("/outbound-campaigns/{campaign_id}/contacts")
+async def list_my_campaign_contacts(
+    campaign_id: int,
+    status: Optional[str] = Query(
+        None,
+        description="pending|dialing|completed|failed|skipped",
+    ),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_owned_campaign(db, account.id, campaign_id)
+    valid = {"pending", "dialing", "completed", "failed", "skipped"}
+    if status is not None and status not in valid:
+        raise HTTPException(status_code=400, detail="无效的 status 参数")
+    cnt_filters = [VoiceOutboundContact.campaign_id == campaign_id]
+    if status:
+        cnt_filters.append(VoiceOutboundContact.status == status)
+    total = (
+        await db.execute(
+            select(func.count()).select_from(VoiceOutboundContact).where(*cnt_filters)
+        )
+    ).scalar() or 0
+    list_q = select(VoiceOutboundContact).where(*cnt_filters)
+    res = await db.execute(
+        list_q.order_by(VoiceOutboundContact.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    rows = res.scalars().all()
+    return {
+        "success": True,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "id": x.id,
+                "phone_e164": x.phone_e164,
+                "status": x.status,
+                "attempt_count": x.attempt_count,
+                "last_error": (x.last_error or "")[:500] if x.last_error else None,
+                "created_at": x.created_at.isoformat() if x.created_at else None,
+                "updated_at": x.updated_at.isoformat() if x.updated_at else None,
+            }
+            for x in rows
+        ],
     }
 
 

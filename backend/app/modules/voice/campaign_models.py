@@ -93,6 +93,7 @@ class VoiceOutboundCampaign(Base):
         default="ivr",
         comment="ivr 或 ai",
     )
+    ai_prompt = Column(Text, nullable=True, comment="AI 外呼营销提示词对话脚本")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

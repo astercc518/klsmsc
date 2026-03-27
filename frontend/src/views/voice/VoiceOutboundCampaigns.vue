@@ -1,14 +1,16 @@
 <template>
-  <div class="page-container">
+  <div class="voice-page">
     <div class="page-header">
-      <h1 class="page-title">{{ $t('voice.campaignsTitle') }}</h1>
-      <p class="page-desc">{{ $t('voice.campaignsDesc') }}</p>
+      <h1 class="page-title">{{ $t('voiceCustomer.outboundCampaignsTitle') }}</h1>
+      <p class="page-desc">{{ $t('voiceCustomer.outboundCampaignsDesc') }}</p>
     </div>
-    <div class="table-card">
-      <el-button type="primary" @click="showCreate = true">{{ $t('common.add') }}</el-button>
-      <el-table :data="items" v-loading="loading" stripe class="mt-2">
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="account_id" :label="$t('voice.accountIdCol')" width="100" />
+
+    <el-card v-loading="loading">
+      <div class="toolbar">
+        <el-button type="primary" @click="openCreate">{{ $t('voice.newCampaign') }}</el-button>
+      </div>
+      <el-table :data="items" stripe class="mt-table">
+        <el-table-column prop="id" label="ID" width="72" />
         <el-table-column prop="name" :label="$t('common.name')" min-width="140" />
         <el-table-column prop="status" :label="$t('common.status')" width="100" />
         <el-table-column prop="timezone" :label="$t('voice.campaignTimezone')" width="130" show-overflow-tooltip />
@@ -17,29 +19,33 @@
             {{ formatWindow(row) }}
           </template>
         </el-table-column>
-        <el-table-column prop="max_concurrent" :label="$t('voice.campaignMaxConcurrent')" width="90" />
-        <el-table-column :label="$t('voice.callerIdMode')" width="110">
+        <el-table-column prop="max_concurrent" :label="$t('voice.campaignMaxConcurrent')" width="88" />
+        <el-table-column :label="$t('voice.callerIdMode')" width="108">
           <template #default="{ row }">
             {{ callerModeLabel(row.caller_id_mode) }}
           </template>
         </el-table-column>
-        <el-table-column prop="ai_mode" :label="$t('voice.aiMode')" width="90" />
-        <el-table-column :label="$t('common.action')" width="400" fixed="right">
+        <el-table-column prop="ai_mode" :label="$t('voice.aiMode')" width="80" />
+        <el-table-column :label="$t('common.action')" width="380" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="setStatus(row, 'running')">{{ $t('voice.start') }}</el-button>
             <el-button size="small" @click="setStatus(row, 'paused')">{{ $t('voice.pause') }}</el-button>
-            <el-button size="small" @click="openEdit(row)">{{ $t('dialog.edit') }}</el-button>
-            <el-button size="small" type="info" @click="openContacts(row)">{{ $t('voice.viewContacts') }}</el-button>
+            <el-button
+              v-if="row.status === 'draft' || row.status === 'paused'"
+              size="small"
+              @click="openEdit(row)"
+            >
+              {{ $t('dialog.edit') }}
+            </el-button>
             <el-button size="small" type="warning" @click="openImport(row)">{{ $t('voice.importContacts') }}</el-button>
+            <el-button size="small" type="info" @click="openContacts(row)">{{ $t('voice.viewContacts') }}</el-button>
           </template>
         </el-table-column>
       </el-table>
-    </div>
+    </el-card>
+
     <el-dialog v-model="showCreate" :title="$t('voice.newCampaign')" width="560px">
       <el-form label-width="140px">
-        <el-form-item :label="$t('voice.accountIdCol')">
-          <el-input v-model.number="form.account_id" type="number" />
-        </el-form-item>
         <el-form-item :label="$t('common.name')">
           <el-input v-model="form.name" />
         </el-form-item>
@@ -68,7 +74,6 @@
               clearable
             />
           </div>
-          <p class="form-hint">{{ $t('voice.campaignWindowHint') }}</p>
         </el-form-item>
         <el-form-item :label="$t('voice.campaignMaxConcurrent')">
           <el-input-number v-model="form.max_concurrent" :min="1" :max="9999" />
@@ -98,22 +103,7 @@
         <el-button type="primary" @click="create">{{ $t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
-    <el-dialog v-model="showImport" :title="$t('voice.importContacts')" width="560px">
-      <el-input v-model="importText" type="textarea" :rows="8" :placeholder="$t('voice.onePhonePerLine')" />
-      <p class="form-hint">{{ $t('voiceCustomer.csvImportHint') }}</p>
-      <el-upload
-        class="csv-upload"
-        :show-file-list="false"
-        accept=".csv,text/csv"
-        :before-upload="onAdminCsvBeforeUpload"
-      >
-        <el-button type="success" plain>{{ $t('voiceCustomer.uploadCsv') }}</el-button>
-      </el-upload>
-      <template #footer>
-        <el-button @click="showImport = false">{{ $t('common.cancel') }}</el-button>
-        <el-button type="primary" @click="doImport">{{ $t('common.confirm') }}</el-button>
-      </template>
-    </el-dialog>
+
     <el-dialog v-model="showEdit" :title="$t('voice.editCampaign')" width="560px">
       <p class="form-hint">{{ $t('voice.editCampaignHint') }}</p>
       <el-form label-width="140px">
@@ -121,29 +111,13 @@
           <el-input v-model="editForm.name" />
         </el-form-item>
         <el-form-item :label="$t('voice.campaignTimezone')">
-          <el-input v-model="editForm.timezone" :placeholder="$t('voice.campaignTimezonePlaceholder')" />
+          <el-input v-model="editForm.timezone" />
         </el-form-item>
         <el-form-item :label="$t('voice.campaignWindow')">
           <div class="window-row">
-            <el-time-select
-              v-model="editForm.window_start"
-              :placeholder="$t('voice.windowStart')"
-              start="00:00"
-              step="00:30"
-              end="23:30"
-              style="width: 120px"
-              clearable
-            />
+            <el-time-select v-model="editForm.window_start" start="00:00" step="00:30" end="23:30" style="width: 120px" clearable />
             <span class="window-sep">—</span>
-            <el-time-select
-              v-model="editForm.window_end"
-              :placeholder="$t('voice.windowEnd')"
-              start="00:00"
-              step="00:30"
-              end="23:30"
-              style="width: 120px"
-              clearable
-            />
+            <el-time-select v-model="editForm.window_end" start="00:00" step="00:30" end="23:30" style="width: 120px" clearable />
           </div>
         </el-form-item>
         <el-form-item :label="$t('voice.campaignMaxConcurrent')">
@@ -174,7 +148,25 @@
         <el-button type="primary" @click="saveEdit">{{ $t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
-    <el-dialog v-model="showContacts" :title="$t('voice.campaignContactsTitle')" width="720px" @opened="onContactsDialogOpened">
+
+    <el-dialog v-model="showImport" :title="$t('voice.importContacts')" width="560px">
+      <el-input v-model="importText" type="textarea" :rows="8" :placeholder="$t('voice.onePhonePerLine')" />
+      <p class="form-hint">{{ $t('voiceCustomer.csvImportHint') }}</p>
+      <el-upload
+        class="csv-upload"
+        :show-file-list="false"
+        accept=".csv,text/csv"
+        :before-upload="onCsvBeforeUpload"
+      >
+        <el-button type="success" plain>{{ $t('voiceCustomer.uploadCsv') }}</el-button>
+      </el-upload>
+      <template #footer>
+        <el-button @click="showImport = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="doImport">{{ $t('common.confirm') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showContacts" :title="$t('voice.campaignContactsTitle')" width="720px" @opened="onContactsOpened">
       <div class="contacts-toolbar">
         <span>{{ $t('voice.contactStatusFilter') }}</span>
         <el-select v-model="contactStatus" style="width: 160px" @change="contactPage = 1; loadContacts()">
@@ -204,26 +196,26 @@
     </el-dialog>
   </div>
 </template>
+
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import {
-  getVoiceCampaigns,
-  createVoiceCampaign,
-  updateVoiceCampaign,
-  setVoiceCampaignStatus,
-  importVoiceCampaignContacts,
-  importVoiceCampaignContactsCsv,
-  getVoiceCampaignContacts,
-} from '@/api/voice-admin'
+  getVoiceOutboundCampaignsCustomer,
+  createVoiceOutboundCampaignCustomer,
+  updateVoiceOutboundCampaignCustomer,
+  setVoiceOutboundCampaignStatusCustomer,
+  importVoiceCampaignContactsCustomer,
+  importVoiceCampaignContactsCsvCustomer,
+  getVoiceCampaignContactsCustomer,
+} from '@/api/voice-customer'
 
 const { t } = useI18n()
 const loading = ref(false)
 const items = ref<any[]>([])
 const showCreate = ref(false)
 const form = ref({
-  account_id: 1,
   name: '',
   timezone: 'Asia/Shanghai',
   window_start: '' as string | undefined,
@@ -232,11 +224,8 @@ const form = ref({
   caller_id_mode: 'fixed' as 'fixed' | 'round_robin' | 'random',
   fixed_caller_id_id: undefined as number | undefined,
   ai_mode: 'ivr' as 'ivr' | 'ai',
-  ai_prompt: ''
+  ai_prompt: '',
 })
-const showImport = ref(false)
-const importRow = ref<any>(null)
-const importText = ref('')
 
 const showEdit = ref(false)
 const editRow = ref<any>(null)
@@ -249,8 +238,12 @@ const editForm = ref({
   caller_id_mode: 'fixed' as 'fixed' | 'round_robin' | 'random',
   fixed_caller_id_id: undefined as number | undefined,
   ai_mode: 'ivr' as 'ivr' | 'ai',
-  ai_prompt: ''
+  ai_prompt: '',
 })
+
+const showImport = ref(false)
+const importRow = ref<any>(null)
+const importText = ref('')
 
 const showContacts = ref(false)
 const contactsRow = ref<any>(null)
@@ -264,8 +257,8 @@ const contactsLoading = ref(false)
 async function load() {
   loading.value = true
   try {
-    const res: any = await getVoiceCampaigns()
-    items.value = res.items || res.data?.items || []
+    const res: any = await getVoiceOutboundCampaignsCustomer()
+    items.value = res.items || []
   } finally {
     loading.value = false
   }
@@ -282,9 +275,24 @@ function callerModeLabel(mode: string | undefined) {
   const m: Record<string, string> = {
     fixed: t('voice.callerModeFixed'),
     round_robin: t('voice.callerModeRoundRobin'),
-    random: t('voice.callerModeRandom')
+    random: t('voice.callerModeRandom'),
   }
   return m[mode || 'fixed'] || mode || '—'
+}
+
+function openCreate() {
+  form.value = {
+    name: '',
+    timezone: 'Asia/Shanghai',
+    window_start: undefined,
+    window_end: undefined,
+    max_concurrent: 1,
+    caller_id_mode: 'fixed',
+    fixed_caller_id_id: undefined,
+    ai_mode: 'ivr',
+    ai_prompt: '',
+  }
+  showCreate.value = true
 }
 
 async function create() {
@@ -293,12 +301,11 @@ async function create() {
     return
   }
   const payload: Record<string, unknown> = {
-    account_id: form.value.account_id,
     name: form.value.name.trim(),
     timezone: form.value.timezone || 'Asia/Shanghai',
     max_concurrent: form.value.max_concurrent,
     caller_id_mode: form.value.caller_id_mode,
-    ai_mode: form.value.ai_mode
+    ai_mode: form.value.ai_mode,
   }
   if (form.value.window_start) payload.window_start = form.value.window_start
   if (form.value.window_end) payload.window_end = form.value.window_end
@@ -308,43 +315,16 @@ async function create() {
   if (form.value.ai_mode === 'ai') {
     payload.ai_prompt = form.value.ai_prompt || ''
   }
-  await createVoiceCampaign(payload)
+  await createVoiceOutboundCampaignCustomer(payload)
   ElMessage.success(t('voice.createSuccess'))
   showCreate.value = false
   load()
 }
 
 async function setStatus(row: any, status: string) {
-  await setVoiceCampaignStatus(row.id, status)
+  await setVoiceOutboundCampaignStatusCustomer(row.id, status)
   ElMessage.success(t('voice.updateSuccess'))
   load()
-}
-
-function openImport(row: any) {
-  importRow.value = row
-  importText.value = ''
-  showImport.value = true
-}
-
-async function doImport() {
-  const phones = importText.value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
-  await importVoiceCampaignContacts(importRow.value.id, phones)
-  ElMessage.success(t('voice.updateSuccess'))
-  showImport.value = false
-  load()
-}
-
-async function onAdminCsvBeforeUpload(file: File) {
-  if (!importRow.value?.id) return false
-  try {
-    const res: any = await importVoiceCampaignContactsCsv(importRow.value.id, file)
-    ElMessage.success(t('voiceCustomer.csvImported', { n: res.imported ?? 0 }))
-    showImport.value = false
-    load()
-  } catch {
-    ElMessage.error(t('common.failed'))
-  }
-  return false
 }
 
 function openEdit(row: any) {
@@ -358,7 +338,7 @@ function openEdit(row: any) {
     caller_id_mode: (row.caller_id_mode || 'fixed') as 'fixed' | 'round_robin' | 'random',
     fixed_caller_id_id: row.fixed_caller_id_id ?? undefined,
     ai_mode: (row.ai_mode || 'ivr') as 'ivr' | 'ai',
-    ai_prompt: row.ai_prompt || ''
+    ai_prompt: row.ai_prompt || '',
   }
   showEdit.value = true
 }
@@ -390,10 +370,36 @@ async function saveEdit() {
   } else {
     payload.ai_prompt = null
   }
-  await updateVoiceCampaign(editRow.value.id, payload)
+  await updateVoiceOutboundCampaignCustomer(editRow.value.id, payload)
   ElMessage.success(t('voice.updateSuccess'))
   showEdit.value = false
   load()
+}
+
+function openImport(row: any) {
+  importRow.value = row
+  importText.value = ''
+  showImport.value = true
+}
+
+async function doImport() {
+  const phones = importText.value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+  await importVoiceCampaignContactsCustomer(importRow.value.id, phones)
+  ElMessage.success(t('voice.updateSuccess'))
+  showImport.value = false
+}
+
+async function onCsvBeforeUpload(file: File) {
+  if (!importRow.value?.id) return false
+  try {
+    const res: any = await importVoiceCampaignContactsCsvCustomer(importRow.value.id, file)
+    ElMessage.success(t('voiceCustomer.csvImported', { n: res.imported ?? 0 }))
+    showImport.value = false
+    load()
+  } catch {
+    ElMessage.error(t('common.failed'))
+  }
+  return false
 }
 
 function openContacts(row: any) {
@@ -405,7 +411,7 @@ function openContacts(row: any) {
   showContacts.value = true
 }
 
-function onContactsDialogOpened() {
+function onContactsOpened() {
   loadContacts()
 }
 
@@ -413,7 +419,7 @@ async function loadContacts() {
   if (!contactsRow.value?.id) return
   contactsLoading.value = true
   try {
-    const res: any = await getVoiceCampaignContacts(contactsRow.value.id, {
+    const res: any = await getVoiceCampaignContactsCustomer(contactsRow.value.id, {
       page: contactPage.value,
       page_size: contactPageSize.value,
       status: contactStatus.value || undefined,
@@ -427,8 +433,30 @@ async function loadContacts() {
 
 onMounted(load)
 </script>
+
 <style scoped>
-.mt-2 { margin-top: 12px; }
+.voice-page {
+  width: 100%;
+}
+.page-header {
+  margin-bottom: 20px;
+}
+.page-title {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.page-desc {
+  font-size: 14px;
+  color: var(--text-tertiary);
+  margin: 0;
+}
+.toolbar {
+  margin-bottom: 16px;
+}
+.mt-table {
+  margin-top: 0;
+}
 .window-row {
   display: flex;
   align-items: center;
@@ -439,7 +467,7 @@ onMounted(load)
   color: var(--text-tertiary);
 }
 .form-hint {
-  margin: 6px 0 0;
+  margin: 8px 0;
   font-size: 12px;
   color: var(--text-tertiary);
 }
@@ -451,5 +479,8 @@ onMounted(load)
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
+}
+.mt-2 {
+  margin-top: 12px;
 }
 </style>

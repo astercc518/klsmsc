@@ -15,6 +15,12 @@ export const voiceRoutes: RouteRecordRaw[] = [
     meta: { titleKey: 'menu.callRecords', icon: 'Document' },
   },
   {
+    path: '/voice/outbound-campaigns',
+    name: 'VoiceOutboundCampaigns',
+    component: () => import('@/views/voice/VoiceOutboundCampaigns.vue'),
+    meta: { titleKey: 'menu.outboundCampaigns', icon: 'Promotion' },
+  },
+  {
     path: '/voice/caller-ids',
     name: 'VoiceCallerIdsCustomer',
     component: () => import('@/views/voice/VoiceCallerIdsCustomer.vue'),
