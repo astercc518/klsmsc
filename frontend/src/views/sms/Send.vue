@@ -101,9 +101,14 @@
 
               <!-- 字符计数 & 敏感词提示 -->
               <div class="msg-meta-bar">
-                <span class="char-counter" :class="{ 'over-limit': form.message.length > 160 }">
-                  {{ form.message.length }} 字符
-                  <template v-if="form.message.length > 160"> (超过160字符可能被拆分为多条)</template>
+                <span
+                  class="char-counter"
+                  :class="{ 'over-limit': messageSmsLen > singleSegmentCharLimit }"
+                >
+                  {{ messageSmsLen }} 字符
+                  <template v-if="messageSmsLen > singleSegmentCharLimit">
+                    （超过 {{ singleSegmentCharLimit }} 字符可能被拆分为多条）
+                  </template>
                 </span>
                 <span v-if="hasSensitiveWord" class="sensitive-warn">含敏感词，发送时将自动替换为 ***</span>
               </div>
@@ -130,7 +135,7 @@
 
               <div class="field-toolbar">
                 <div class="stats-info">
-                  {{ $t('smsSend.totalChars') }} <span class="highlight">{{ form.message.length }}</span> {{ $t('smsSend.chars') }}，
+                  {{ $t('smsSend.totalChars') }} <span class="highlight">{{ messageSmsLen }}</span> {{ $t('smsSend.chars') }}，
                   {{ $t('smsSend.estimatedParts') }}：<span class="highlight">{{ estimatedParts }}</span> {{ $t('smsSend.parts') }}
                 </div>
                 <div class="toolbar-actions">
@@ -827,6 +832,7 @@ import { getDataProducts, buyAndSend, getCarriers, getMyNumbersSummary, type Dat
 import { getAiConfig, generateSmsContent } from '@/api/ai'
 import request from '@/api/index'
 import { COUNTRY_LIST, findCountryByIso } from '@/constants/countries'
+import { smsCodePointLength, isGsm7Message, countSmsParts } from '@/utils/smsParts'
 
 const { t } = useI18n()
 
@@ -1392,21 +1398,16 @@ const senderInitial = computed(() => {
   return /[a-zA-Z\u4e00-\u9fa5]/.test(first) ? first.toUpperCase() : '#'
 })
 
-const estimatedParts = computed(() => {
-  const len = form.value.message.length
-  if (len === 0) return 0
-  if (len <= 70) return 1
-  return Math.ceil(len / 67)
-})
+/** 正文码点数与超限阈值（GSM-7 单条 160，否则单条 70） */
+const messageSmsLen = computed(() => smsCodePointLength(form.value.message))
+const messageIsGsm7 = computed(() => isGsm7Message(form.value.message))
+const singleSegmentCharLimit = computed(() => (messageIsGsm7.value ? 160 : 70))
 
-// 与后端 _count_sms_parts 一致：用于商店模式短信费计算（多文案时取第一条）
-function countPartsForMessage(msg: string): number {
-  if (!msg || msg.length === 0) return 0
-  if (msg.length <= 70) return 1
-  return Math.ceil(msg.length / 67)
-}
+const estimatedParts = computed(() => countSmsParts(form.value.message))
+
+// 多文案时按第一条算段数（与 buy-and-send 后端计费一致）
 const storeSmsParts = computed(() =>
-  multiMessages.value.length > 1 ? countPartsForMessage(multiMessages.value[0]) : estimatedParts.value
+  multiMessages.value.length > 1 ? countSmsParts(multiMessages.value[0]) : estimatedParts.value
 )
 
 const numberCount = computed(() => parseNumbers().length)
