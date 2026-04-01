@@ -1,8 +1,9 @@
 """客户 - 数据业务 API"""
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text as sa_text, update as sa_update
+from sqlalchemy import select, func, case, text as sa_text, update as sa_update, insert
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import joinedload
 from typing import Optional
 from datetime import datetime, date, timedelta
@@ -26,6 +27,7 @@ from app.api.v1.data.helpers import (
     build_filter_query, calculate_stock, serialize_product, serialize_order, serialize_number,
 )
 from app.utils.sms_template import render_sms_variables, sms_template_has_variables
+from app.utils.cache import get_cache_manager
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -82,23 +84,33 @@ async def customer_list_products(
     purpose: Optional[str] = None,
     freshness: Optional[str] = None,
     carrier: Optional[str] = Query(None, description="按运营商筛选"),
+    country: Optional[str] = Query(None, description="按国家/地区代码筛选"),
+    tag: Optional[str] = Query(None, description="按标签筛选"),
     db: AsyncSession = Depends(get_db),
     account: Account = Depends(get_current_account),
 ):
-    """客户获取可购买的数据商品列表（自动按关联国家过滤）"""
+    """客户获取可购买的数据商品列表"""
     query = select(DataProduct).where(
         DataProduct.is_deleted == False, DataProduct.status == "active"
     )
 
-    # 按客户数据账户的国家自动过滤
+    # 1. 基础国家过滤逻辑 - 默认显示本账户对应国家，按国家查询后才显示其他
     da_result = await db.execute(
         select(DataAccount).where(DataAccount.account_id == account.id)
     )
     da = da_result.scalar_one_or_none()
-    if da and da.country_code:
-        from sqlalchemy import cast, String
+    
+    target_country = country or (da.country_code if da else None)
+    if target_country:
         query = query.where(
-            func.json_unquote(func.json_extract(DataProduct.filter_criteria, "$.country")) == da.country_code
+            func.json_unquote(func.json_extract(DataProduct.filter_criteria, "$.country")) == target_country
+        )
+
+    # 2. 其他筛选项
+    if tag:
+        # 适应 JSON 数组格式: ["tag1", "tag2"]
+        query = query.where(
+            func.json_contains(DataProduct.filter_criteria, sa_text(f'"{tag}"'), "$.tags")
         )
 
     if product_type:
@@ -124,11 +136,68 @@ async def customer_list_products(
     result = await db.execute(query)
     products = result.scalars().all()
 
-    # 如果指定了运营商筛选，计算该运营商下每个商品的实际可用库存
-    items = []
-    product_ids = [p.id for p in products]
+    async def _fetch_available_countries(db: AsyncSession):
+        countries_query = select(
+            func.distinct(func.json_unquote(func.json_extract(DataProduct.filter_criteria, "$.country")))
+        ).where(DataProduct.is_deleted == False, DataProduct.status == "active")
+        countries_result = await db.execute(countries_query)
+        return [c[0] for c in countries_result.all() if c[0]]
+
+    # 13. 使用 Redis 缓存聚合结果
+    cache_manager = await get_cache_manager()
+    # 统计范围跟随目标国家
+    cache_key = f"data:store:agg_stats:{target_country or 'global'}"
+    cached_agg = await cache_manager.get(cache_key)
+    
+    if cached_agg:
+        agg_map = cached_agg["agg_map"]
+        country_total_carriers = cached_agg["country_total_carriers"]
+    else:
+        agg_map = {}
+        country_total_carriers = {}
+        # 构造聚合查询
+        agg_select = select(
+            DataNumber.country_code,
+            DataNumber.source,
+            DataNumber.purpose,
+            DataNumber.carrier,
+            func.count().label("cnt")
+        ).where(
+            DataNumber.account_id.is_(None),
+            DataNumber.status == 'active'
+        )
+        
+        if target_country:
+            agg_select = agg_select.where(DataNumber.country_code == target_country)
+            
+        agg_res = await db.execute(
+            agg_select.group_by(
+                DataNumber.country_code,
+                DataNumber.source,
+                DataNumber.purpose,
+                DataNumber.carrier
+            )
+        )
+        
+        for r in agg_res.fetchall():
+            co, s, p, car, cnt = r.country_code, r.source, r.purpose, r.carrier or "Unknown", int(r.cnt)
+            key_str = f"{co}:{s}:{p}" # JSON key 必须是字符串
+            if key_str not in agg_map:
+                agg_map[key_str] = {}
+            agg_map[key_str][car] = agg_map[key_str].get(car, 0) + cnt
+            
+            # 记录可用运营商 (如果指定了国家则按国家统计，否则全局统计)
+            if not target_country or co == target_country:
+                country_total_carriers[car] = country_total_carriers.get(car, 0) + cnt
+        
+        # 存入缓存 (60秒)
+        await cache_manager.set(cache_key, {
+            "agg_map": agg_map,
+            "country_total_carriers": country_total_carriers
+        }, ttl=60)
 
     # 批量获取评分统计
+    product_ids = [p.id for p in products]
     from app.modules.data.models import DataProductRating
     rating_stats = {}
     if product_ids:
@@ -164,16 +233,42 @@ async def customer_list_products(
                 rating_stats[r.product_id]["recent_max"] = r.max or 0
                 rating_stats[r.product_id]["recent_count"] = r.cnt
 
+    # 构造返回项
+    items = []
     for p in products:
         item = serialize_product(p)
+        fc = p.filter_criteria or {}
+        p_country = fc.get("country")
+        p_source = fc.get("source")
+        p_purpose = fc.get("purpose")
+        
+        # 匹配该商品的运营商分布 (增加国家维度)
+        product_dist = {}
+        if p_country and p_source and p_purpose:
+            product_dist = agg_map.get(f"{p_country}:{p_source}:{p_purpose}", {})
+        elif p_country and p_source:
+            # 兼容：按国家+来源匹配
+            for key_str, d in agg_map.items():
+                co, s, _ = key_str.split(":")
+                if co == p_country and s == p_source:
+                    for car, cnt in d.items():
+                        product_dist[car] = product_dist.get(car, 0) + cnt
+        
+        # 构造 carriers 列表并计算总库存
+        carrier_list = [{"name": c, "count": cnt} for c, cnt in product_dist.items()]
+        
+        # 过滤
         if carrier:
-            fc = dict(p.filter_criteria or {})
-            fc["carrier"] = carrier
-            stock = await calculate_stock(db, fc, public_only=True)
-            item["stock_count"] = stock
+            carrier_list = [c for c in carrier_list if c["name"] == carrier]
+            item["stock_count"] = sum(c["count"] for c in carrier_list)
             item["carrier_filter"] = carrier
-            if stock <= 0:
+            if item["stock_count"] <= 0:
                 continue
+        else:
+            item["stock_count"] = sum(c["count"] for c in carrier_list)
+        
+        item["carriers"] = carrier_list
+        
         rs = rating_stats.get(p.id, {})
         item["rating"] = {
             "avg": rs.get("avg", 0),
@@ -185,6 +280,13 @@ async def customer_list_products(
         }
         items.append(item)
 
+    # 计算所有可用国家列表 (带缓存)
+    available_countries = await cache_manager.get_or_set(
+        "data:store:available_countries",
+        lambda: _fetch_available_countries(db),
+        ttl=300
+    )
+
     return {
         "success": True,
         "items": items,
@@ -192,6 +294,8 @@ async def customer_list_products(
         "page": page,
         "page_size": page_size,
         "country_code": da.country_code if da else None,
+        "available_carriers": [{"name": c, "count": cnt} for c, cnt in country_total_carriers.items()],
+        "available_countries": available_countries
     }
 
 
@@ -787,36 +891,65 @@ async def get_my_numbers_summary(
 ):
     """私库号码按来源+用途+国家聚合统计（卡片展示用）"""
     from app.modules.data.models import SOURCE_LABELS, PURPOSE_LABELS
+    # 1. 基础聚合 (Country, Source, Purpose)
     result = await db.execute(
         select(
-            DataNumber.country_code,
-            DataNumber.source,
-            DataNumber.purpose,
-            func.count().label("count"),
+            func.coalesce(DataNumber.country_code, '').label("country_code"),
+            func.coalesce(DataNumber.source, '').label("source"),
+            func.coalesce(DataNumber.purpose, '').label("purpose"),
+            func.count().label("total_count"),
+            func.sum(case((DataNumber.use_count > 0, 1), else_=0)).label("used_count"),
             func.min(DataNumber.created_at).label("first_at"),
             func.max(DataNumber.created_at).label("last_at"),
         )
         .where(DataNumber.account_id == account.id)
-        .group_by(DataNumber.country_code, DataNumber.source, DataNumber.purpose)
+        .group_by(func.coalesce(DataNumber.country_code, ''), func.coalesce(DataNumber.source, ''), func.coalesce(DataNumber.purpose, ''))
         .order_by(func.count().desc())
     )
     rows = result.fetchall()
 
-    total = sum(r.count for r in rows)
+    # 2. 获取每个分组下的运营商分布
+    carrier_result = await db.execute(
+        select(
+            func.coalesce(DataNumber.country_code, '').label("country_code"),
+            func.coalesce(DataNumber.source, '').label("source"),
+            func.coalesce(DataNumber.purpose, '').label("purpose"),
+            DataNumber.carrier,
+            func.count().label("count")
+        )
+        .where(DataNumber.account_id == account.id)
+        .group_by(func.coalesce(DataNumber.country_code, ''), func.coalesce(DataNumber.source, ''), func.coalesce(DataNumber.purpose, ''), DataNumber.carrier)
+    )
+    carrier_rows = carrier_result.fetchall()
+
+    carrier_map = {}  # (country, source, purpose) -> list of carriers
+    for cr in carrier_rows:
+        map_key = (cr.country_code, cr.source, cr.purpose)
+        if map_key not in carrier_map:
+            carrier_map[map_key] = []
+        carrier_map[map_key].append({"name": cr.carrier or "Unknown", "count": cr.count})
+
+    total_count_all = sum(r.total_count for r in rows)
     items = []
     for r in rows:
+        map_key = (r.country_code, r.source, r.purpose)
+        total_val = r.total_count
+        used_val = int(r.used_count or 0)
         items.append({
             "country_code": r.country_code or "",
             "source": r.source or "",
             "source_label": SOURCE_LABELS.get(r.source, r.source or ""),
             "purpose": r.purpose or "",
             "purpose_label": PURPOSE_LABELS.get(r.purpose, r.purpose or ""),
-            "count": r.count,
+            "count": total_val,
+            "used_count": used_val,
+            "unused_count": total_val - used_val,
+            "carriers": carrier_map.get(map_key, []),
             "first_at": r.first_at.isoformat() if r.first_at else None,
             "last_at": r.last_at.isoformat() if r.last_at else None,
         })
 
-    return {"success": True, "items": items, "total": total}
+    return {"success": True, "items": items, "total": total_count_all}
 
 
 @router.get("/my-numbers")
@@ -853,6 +986,38 @@ async def get_my_numbers(
     }
 
 
+@router.delete("/my-numbers")
+async def delete_my_numbers_batch(
+    country: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+    purpose: Optional[str] = Query(None),
+    carrier: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    account: Account = Depends(get_current_account),
+):
+    """批量删除私有库号码（按聚合维度，改用状态置为 inactive 并解除绑定以绕过外键约束）"""
+    from sqlalchemy import update as sa_update, or_
+    stmt = sa_update(DataNumber).where(DataNumber.account_id == account.id)
+    if country:
+        stmt = stmt.where(DataNumber.country_code == country)
+    if source:
+        stmt = stmt.where(DataNumber.source == source)
+    if purpose:
+        stmt = stmt.where(DataNumber.purpose == purpose)
+    
+    # 针对 carrier 的特殊处理：前端可能传空字符串表示 Unknown
+    if carrier:
+        stmt = stmt.where(DataNumber.carrier == carrier)
+    elif carrier == "":
+        stmt = stmt.where(or_(DataNumber.carrier.is_(None), DataNumber.carrier == ""))
+    
+    stmt = stmt.values(account_id=None, status='inactive')
+    
+    result = await db.execute(stmt)
+    await db.commit()
+    return {"success": True, "message": f"成功删除 {result.rowcount} 条数据"}
+
+
 @router.get("/my-numbers/export")
 async def export_my_numbers(
     fmt: str = Query("csv", regex="^(csv|txt)$"),
@@ -862,7 +1027,7 @@ async def export_my_numbers(
     db: AsyncSession = Depends(get_db),
     account: Account = Depends(get_current_account),
 ):
-    """导出私库号码 CSV 或 TXT"""
+    """导出我的私有库号码"""
     query = select(DataNumber).where(DataNumber.account_id == account.id)
     if country:
         query = query.where(DataNumber.country_code == country)
@@ -871,36 +1036,153 @@ async def export_my_numbers(
     if purpose:
         query = query.where(DataNumber.purpose == purpose)
 
-    result = await db.execute(query.order_by(DataNumber.id))
-    numbers = result.scalars().all()
+    # 增加排序确保导出顺序一致
+    query = query.order_by(DataNumber.id.asc())
 
-    ts = datetime.now().strftime('%Y%m%d%H%M%S')
+    # 使用流式传输以支持大数据量导出
+    result = await db.stream(query)
 
-    def _strip_plus(phone: str) -> str:
-        return phone.lstrip('+') if phone else phone
+    async def generate():
+        if fmt == "csv":
+            # 写入 BOM 以防 Excel 打开中文乱码
+            yield "\ufeff"
+            yield "phone_number,country_code,carrier,source,purpose,created_at\n"
+            async for row in result:
+                num = row[0]
+                row_data = [
+                    num.phone_number,
+                    num.country_code or "",
+                    num.carrier or "",
+                    num.source or "",
+                    num.purpose or "",
+                    num.created_at.isoformat() if num.created_at else ""
+                ]
+                yield ",".join(map(str, row_data)) + "\n"
+        else:
+            async for row in result:
+                num = row[0]
+                yield f"{num.phone_number}\n"
 
-    if fmt == "txt":
-        output = "\n".join(_strip_plus(n.phone_number) for n in numbers)
-        filename = f"my_numbers_{ts}.txt"
-        return StreamingResponse(
-            iter([output]),
-            media_type="text/plain",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
-        )
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["phone_number", "country_code", "carrier", "tags", "source"])
-    for n in numbers:
-        writer.writerow([_strip_plus(n.phone_number), n.country_code, n.carrier or "", "|".join(n.tags) if n.tags else "", n.source or ""])
-
-    output.seek(0)
-    filename = f"my_numbers_{ts}.csv"
+    filename = f"my_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{fmt}"
+    media_type = "text/csv" if fmt == "csv" else "text/plain"
     return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        generate(),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition"
+        }
     )
+
+
+@router.post("/my-numbers/upload")
+async def my_numbers_upload(
+    file: UploadFile = File(...),
+    country_code: str = Form(...),
+    source: Optional[str] = Form("Manual Upload"),
+    purpose: Optional[str] = Form("Social"),
+    remarks: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db),
+    account: Account = Depends(get_current_account),
+):
+    """上传数据到私有库"""
+    if not file.filename.endswith(('.csv', '.txt')):
+        raise HTTPException(400, "仅支持 CSV 或 TXT 文件")
+
+    content = await file.read()
+    text_content = content.decode('utf-8', errors='ignore')
+    
+    # 提取号码
+    numbers_to_add = []
+    if file.filename.endswith('.csv'):
+        # 简单 CSV 解析 (第一列为号码)
+        f = io.StringIO(text_content)
+        reader = csv.reader(f)
+        for row in reader:
+            if not row or not row[0].strip(): continue
+            num = row[0].strip().lstrip('+')
+            if num.isdigit() and 7 <= len(num) <= 15:
+                numbers_to_add.append(num)
+    else:
+        # TXT 按行解析
+        lines = text_content.splitlines()
+        for line in lines:
+            num = line.strip().lstrip('+')
+            if num.isdigit() and 7 <= len(num) <= 15:
+                numbers_to_add.append(num)
+
+    if not numbers_to_add:
+        raise HTTPException(400, "未检测到有效手机号码")
+
+    # 去重
+    unique_numbers = sorted(list(set(numbers_to_add)))
+    
+    # 批量检查是否存在 (简单逻辑：检查号码是否已在库中且属于该用户或公共库)
+    # 这里的业务逻辑通常是：如果号码已在当前用户的库中，则跳过
+    # 如果号码在公共库，可以导入一份私有的副本 (或标记为该用户私有)
+    # 根据 models.py，data_numbers.phone_number 有唯一索引 idx_phone_number
+    # 所以全局唯一。如果号码已存在，我们可能无法重新插入。
+    # 
+    # 批量准备 (直接使用 INSERT IGNORE，不再单独查重以节约 2 分钟的 SELECT IN 时间)
+    to_insert = unique_numbers
+    
+    if not to_insert:
+        return {
+            "success": True,
+            "message": "上传完成，但所有号码均已在库中",
+            "total": len(unique_numbers),
+            "added": 0,
+            "duplicates": len(unique_numbers)
+        }
+
+    # 批量插入 (使用 Core insert 以提高性能)
+    batch_id = f"UP-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+    
+    import phonenumbers
+    from phonenumbers import carrier as pn_carrier
+    
+    insert_dicts = []
+    for num in to_insert:
+        # 自动识别运营商
+        detected_carrier = None
+        try:
+            phone_with_plus = num if num.startswith('+') else '+' + num
+            parse_obj = phonenumbers.parse(phone_with_plus, None)
+            detected_carrier = pn_carrier.name_for_number(parse_obj, "en")
+        except:
+            pass
+
+        insert_dicts.append({
+            "phone_number": num,
+            "country_code": country_code,
+            "source": source,
+            "purpose": purpose,
+            "remarks": remarks,
+            "account_id": account.id,
+            "status": 'active',
+            "batch_id": batch_id,
+            "carrier": detected_carrier,
+            "tags": ['private_upload'],
+            "created_at": datetime.now(),
+            "updated_at": datetime.now()
+        })
+    
+    # 分片插入，使用 mysql_insert + IGNORE
+    chunk_size = 5000
+    for i in range(0, len(insert_dicts), chunk_size):
+        chunk = insert_dicts[i:i + chunk_size]
+        stmt = mysql_insert(DataNumber).values(chunk).prefix_with('IGNORE')
+        await db.execute(stmt)
+    
+    await db.commit()
+
+    return {
+        "success": True,
+        "message": f"成功上传 {len(to_insert)} 条数据",
+        "total": len(unique_numbers),
+        "added": len(to_insert),
+        "duplicates": len(unique_numbers) - len(to_insert)
+    }
 
 
 # ============ 辅助 ============

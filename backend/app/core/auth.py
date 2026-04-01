@@ -44,16 +44,22 @@ def _utcnow() -> datetime:
 # ====================================
 
 async def get_current_account(
+    request: Request,
     api_key: Optional[str] = Security(api_key_header),
     bearer: Optional[HTTPAuthorizationCredentials] = Security(optional_bearer),
     db: AsyncSession = Depends(get_db),
 ) -> Account:
-    """获取当前认证账户：优先 X-API-Key；否则若 Bearer 以 ak_ 开头则视为 API Key（兼容只带 Authorization 的客户端）"""
+    """获取当前认证账户：优先 X-API-Key；否则若 Bearer 则视为 API Key；兜底支持 URL 参数 api_key（供文件下载）"""
     effective = api_key
     if not effective and bearer and bearer.credentials:
         token = bearer.credentials.strip()
         if token.startswith("ak_"):
             effective = token
+    
+    # 兜底支持从 URL 参数中获取 api_key
+    if not effective:
+        effective = request.query_params.get("api_key")
+        
     return await AuthService.verify_api_key(effective, db)
 
 
@@ -63,6 +69,8 @@ async def get_current_admin(
 ) -> AdminUser:
     """获取当前管理员（FastAPI Dependency）— 委托给 AuthService 实现"""
     return await AuthService.get_current_admin(credentials, db)
+
+
 
 
 class AuthService:
@@ -286,6 +294,7 @@ class AuthService:
         
         if not admin:
             raise AuthenticationError("Admin not found or inactive")
+        
         
         return admin
 

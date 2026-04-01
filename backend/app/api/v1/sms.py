@@ -421,6 +421,40 @@ async def send_batch_sms(
     succeeded = 0
     failed = 0
 
+    # 1. 如果提供了私有库过滤条件，从中展开号码
+    if request.private_library_filters:
+        from app.modules.data.models import DataNumber
+        f = request.private_library_filters
+        q = select(DataNumber.phone_number).where(DataNumber.account_id == account.id)
+        if f.get("country_code"):
+            q = q.where(DataNumber.country_code == f["country_code"])
+        if f.get("source"):
+            q = q.where(DataNumber.source == f["source"])
+        if f.get("purpose"):
+            q = q.where(DataNumber.purpose == f["purpose"])
+        if f.get("carrier"):
+            q = q.where(DataNumber.carrier == f["carrier"])
+
+        # 限制一次批量发送的数量
+        limit = int(f.get("limit", 50000))
+        q = q.limit(limit)
+        res = await db.execute(q)
+        db_nums = [r[0] for r in res.all()]
+        if db_nums:
+            if not request.phone_numbers:
+                request.phone_numbers = []
+            request.phone_numbers.extend(db_nums)
+
+    if not request.phone_numbers or len(request.phone_numbers) == 0:
+        return BatchSMSResponse(
+            success=False,
+            total=0,
+            succeeded=0,
+            failed=0,
+            messages=[],
+            batch_id=None,
+        )
+
     rot_messages = [m for m in (request.messages or []) if m and str(m).strip()]
     use_rotate = len(rot_messages) > 0
 

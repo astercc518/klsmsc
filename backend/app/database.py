@@ -164,19 +164,241 @@ async def ensure_voice_campaign_ai_prompt_column():
                 )
             )
             row = r.first()
-            if row and (row[0] or 0) > 0:
-                return
-            await conn.execute(
+            if row and (row[0] or 0) == 0:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE `voice_outbound_campaigns` ADD COLUMN `ai_prompt` "
+                        "TEXT NULL COMMENT 'AI 外呼营销提示词对话脚本'"
+                    )
+                )
+                _schema_logger.info("已自动补齐 voice_outbound_campaigns.ai_prompt")
+                
+            # Check and add tts_voice_id
+            r2 = await conn.execute(
                 text(
-                    "ALTER TABLE `voice_outbound_campaigns` ADD COLUMN `ai_prompt` "
-                    "TEXT NULL COMMENT 'AI 外呼营销提示词对话脚本'"
+                    "SELECT COUNT(*) AS c FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'voice_outbound_campaigns' "
+                    "AND COLUMN_NAME = 'tts_voice_id'"
                 )
             )
-            _schema_logger.info("已自动补齐 voice_outbound_campaigns.ai_prompt")
+            row2 = r2.first()
+            if row2 and (row2[0] or 0) == 0:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE `voice_outbound_campaigns` ADD COLUMN `tts_voice_id` "
+                        "VARCHAR(64) NULL COMMENT '大模型TTS发音人音色ID'"
+                    )
+                )
+                _schema_logger.info("已自动补齐 voice_outbound_campaigns.tts_voice_id")
+                
+            # Check and add interruptible
+            r3 = await conn.execute(
+                text(
+                    "SELECT COUNT(*) AS c FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'voice_outbound_campaigns' "
+                    "AND COLUMN_NAME = 'interruptible'"
+                )
+            )
+            row3 = r3.first()
+            if row3 and (row3[0] or 0) == 0:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE `voice_outbound_campaigns` ADD COLUMN `interruptible` "
+                        "TINYINT(1) DEFAULT 1 COMMENT 'AI交互时是否允许被用户语音打断'"
+                    )
+                )
+                _schema_logger.info("已自动补齐 voice_outbound_campaigns.interruptible")
     except Exception as e:
         _schema_logger.warning(
-            "自动补齐 voice_outbound_campaigns.ai_prompt 失败: %s", e
+            "自动补齐 voice_outbound_campaigns AI 相关字段失败: %s", e
         )
+
+async def ensure_voice_call_ai_columns():
+    """自动给 historical 的 voice_calls 表增加 AI 分析等冗余字段"""
+    try:
+        from sqlalchemy import text
+        from app.database import engine
+        async with engine.begin() as conn:
+            r = await conn.execute(
+                text(
+                    "SELECT COUNT(*) AS c FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'voice_calls' "
+                    "AND COLUMN_NAME = 'ai_transcript'"
+                )
+            )
+            row = r.first()
+            if row and (row[0] or 0) == 0:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE `voice_calls` "
+                        "ADD COLUMN `ai_transcript` LONGTEXT NULL COMMENT 'JSON格式的话术剧本数组留存', "
+                        "ADD COLUMN `ai_intent` VARCHAR(32) NULL COMMENT 'AI判定的最高意向或标签', "
+                        "ADD COLUMN `ai_summary` TEXT NULL COMMENT '该通外呼的小结提炼'"
+                    )
+                )
+                _schema_logger.info("已自动补齐 voice_calls AI意向字段 (ai_transcript, ai_intent, ai_summary)")
+    except Exception as e:
+        _schema_logger.warning("自动补齐 voice_calls AI相关字段失败: %s", e)
+
+async def ensure_voice_account_advanced_columns():
+    """自动给 voice_accounts 表增加 routing_group 等高级字段"""
+    url = (settings.DATABASE_URL or "").lower()
+    if "mysql" not in url and "mariadb" not in url:
+        return
+    try:
+        from sqlalchemy import text
+        from app.database import engine
+        async with engine.begin() as conn:
+            r = await conn.execute(
+                text(
+                    "SELECT COUNT(*) AS c FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'voice_accounts' "
+                    "AND COLUMN_NAME = 'routing_group'"
+                )
+            )
+            row = r.first()
+            if row and (row[0] or 0) == 0:
+                await conn.execute(
+                    text(
+                        "ALTER TABLE `voice_accounts` "
+                        "ADD COLUMN `routing_group` VARCHAR(50) NULL COMMENT 'VOS 路由组名称', "
+                        "ADD COLUMN `rate_group` VARCHAR(50) NULL COMMENT 'VOS 费率组名称', "
+                        "ADD COLUMN `vos_caller_id` VARCHAR(50) NULL COMMENT 'VOS 固定外显主叫'"
+                    )
+                )
+                _schema_logger.info("已自动补齐 voice_accounts 高级开户字段 (routing_group, rate_group, vos_caller_id)")
+    except Exception as e:
+        _schema_logger.warning("自动补齐 voice_accounts 高级开户字段失败: %s", e)
+
+async def ensure_voice_okcc_columns():
+    """自动给 voice_extensions 和 voice_outbound_campaigns 补充 OKCC 风格字段"""
+    url = (settings.DATABASE_URL or "").lower()
+    if "mysql" not in url and "mariadb" not in url:
+        return
+    try:
+        from sqlalchemy import text
+        from app.database import engine
+        async with engine.begin() as conn:
+            # 1. voice_extensions 扩展
+            result = await conn.execute(
+                text(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'voice_extensions'"
+                )
+            )
+            existing_cols = {row[0] for row in result.all()}
+            
+            if "agent_state" not in existing_cols:
+                await conn.execute(text(
+                    "ALTER TABLE `voice_extensions` "
+                    "ADD COLUMN `agent_state` VARCHAR(20) NOT NULL DEFAULT 'offline' COMMENT '坐席实时状态', "
+                    "ADD COLUMN `signed_in_at` DATETIME NULL COMMENT '最近一次签入时间', "
+                    "ADD COLUMN `last_state_change` DATETIME NULL COMMENT '上次状态变更时间', "
+                    "ADD COLUMN `current_call_id` VARCHAR(128) NULL COMMENT '当前正在处理的 call_id'"
+                ))
+                _schema_logger.info("已自动补齐 voice_extensions OKCC 坐席状态字段")
+
+            # 2. voice_outbound_campaigns 扩展
+            result_c = await conn.execute(
+                text(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'voice_outbound_campaigns'"
+                )
+            )
+            existing_cols_c = {row[0] for row in result_c.all()}
+            
+            if "dial_mode" not in existing_cols_c:
+                await conn.execute(text(
+                    "ALTER TABLE `voice_outbound_campaigns` "
+                    "ADD COLUMN `dial_mode` VARCHAR(16) NOT NULL DEFAULT 'progressive' COMMENT '外呼模式', "
+                    "ADD COLUMN `max_retry` INT DEFAULT 3 COMMENT '最大重试次数', "
+                    "ADD COLUMN `retry_interval_minutes` INT DEFAULT 30 COMMENT '重试间隔(分钟)'"
+                ))
+                _schema_logger.info("已自动补齐 voice_outbound_campaigns OKCC 外呼模式字段")
+
+            if "ai_script_template_id" not in existing_cols_c:
+                await conn.execute(text(
+                    "ALTER TABLE `voice_outbound_campaigns` "
+                    "ADD COLUMN `ai_script_template_id` INT NULL COMMENT '关联话术模板'"
+                ))
+                _schema_logger.info("已自动补齐 voice_outbound_campaigns 话术模板关联字段")
+
+            # 3. ai_script_templates 表创建
+            await conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS `ai_script_templates` ("
+                "  `id` INT AUTO_INCREMENT PRIMARY KEY,"
+                "  `account_id` INT UNSIGNED NULL,"
+                "  `name` VARCHAR(128) NOT NULL,"
+                "  `category` VARCHAR(64) NULL,"
+                "  `prompt_body` TEXT NOT NULL,"
+                "  `tts_voice_id` VARCHAR(64) NULL,"
+                "  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                "  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI 话术模板'"
+            ))
+                
+    except Exception as e:
+        _schema_logger.warning("自动补齐 OKCC 业务字段失败: %s", e)
+
+
+async def ensure_voice_inbound_tables():
+    """自动化创建 Phase G 呼入相关表: DID, Queue, IVR"""
+    url = (settings.DATABASE_URL or "").lower()
+    if "mysql" not in url and "mariadb" not in url:
+        return
+    try:
+        async with engine.begin() as conn:
+            # 1. voice_dids
+            await conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS `voice_dids` ("
+                "  `id` INT AUTO_INCREMENT PRIMARY KEY,"
+                "  `voice_account_id` INT NOT NULL,"
+                "  `did_number` VARCHAR(50) NOT NULL UNIQUE,"
+                "  `provider` VARCHAR(50) NULL,"
+                "  `route_type` VARCHAR(20) NOT NULL DEFAULT 'ivr',"
+                "  `route_target` VARCHAR(50) NOT NULL,"
+                "  `status` VARCHAR(20) DEFAULT 'active',"
+                "  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                "  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+                "  INDEX `idx_voice_account_id` (`voice_account_id`)"
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+            ))
+            # 2. voice_ivrs
+            await conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS `voice_ivrs` ("
+                "  `id` INT AUTO_INCREMENT PRIMARY KEY,"
+                "  `voice_account_id` INT NOT NULL,"
+                "  `name` VARCHAR(100) NOT NULL,"
+                "  `welcome_prompt` TEXT NULL,"
+                "  `key_routings` TEXT NULL,"
+                "  `timeout_action` VARCHAR(50) NULL,"
+                "  `timeout_target` VARCHAR(50) NULL,"
+                "  `status` VARCHAR(20) DEFAULT 'active',"
+                "  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                "  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+                "  INDEX `idx_voice_account_id` (`voice_account_id`)"
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+            ))
+            # 3. voice_queues
+            await conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS `voice_queues` ("
+                "  `id` INT AUTO_INCREMENT PRIMARY KEY,"
+                "  `voice_account_id` INT NOT NULL,"
+                "  `name` VARCHAR(100) NOT NULL,"
+                "  `strategy` VARCHAR(20) DEFAULT 'longest_idle',"
+                "  `agents` TEXT NULL,"
+                "  `moh_prompt` TEXT NULL,"
+                "  `max_wait_time` INT DEFAULT 300,"
+                "  `status` VARCHAR(20) DEFAULT 'active',"
+                "  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,"
+                "  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
+                "  INDEX `idx_voice_account_id` (`voice_account_id`)"
+                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+            ))
+            _schema_logger.info("✅ 已自动创建 Phase G 呼入相关表")
+    except Exception as e:
+        _schema_logger.warning("⚠️ 创建 Phase G 呼入相关表失败: %s", e)
+
 
 async def close_db():
     """关闭数据库连接"""

@@ -61,7 +61,17 @@ export interface DataOrder {
 
 // ============ 商品 ============
 
-export function getDataProducts(params?: { page?: number; page_size?: number; product_type?: string; source?: string; purpose?: string; freshness?: string; carrier?: string }) {
+export const getDataProducts = (params: {
+  page?: number
+  page_size?: number
+  product_type?: string
+  source?: string
+  purpose?: string
+  freshness?: string
+  carrier?: string
+  country?: string
+  tag?: string
+}) => {
   return request({ url: '/data/products', method: 'get', params })
 }
 
@@ -134,4 +144,17 @@ export function exportMyNumbers(params?: { fmt?: string; country?: string; sourc
     params,
     responseType: 'blob',
   })
+}
+
+export function uploadMyNumbers(data: FormData) {
+  return request({
+    url: '/data/my-numbers/upload',
+    method: 'post',
+    data,
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
+export function deleteMyNumbers(params: { country?: string; source?: string; purpose?: string; carrier?: string }) {
+  return request({ url: '/data/my-numbers', method: 'delete', params })
 }

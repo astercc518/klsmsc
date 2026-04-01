@@ -160,7 +160,85 @@
                   </svg>
                   从数据商店购买发送
                 </div>
+                <div class="source-tab" :class="{ active: numberSource === 'private' }" @click="numberSource = 'private'">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M4 2V14M12 2V14M2 14H14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                    <rect x="4" y="4" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                  </svg>
+                  从私有库载入
+                </div>
               </div>
+
+              <!-- 私有库模式 -->
+              <template v-if="numberSource === 'private'">
+                <div class="store-section">
+                  <div class="carrier-filter">
+                    <label class="carrier-label">运营商筛选:</label>
+                    <div class="carrier-tags">
+                      <span
+                        class="carrier-tag"
+                        :class="{ active: !carrierFilterPrivate }"
+                        @click="carrierFilterPrivate = ''"
+                      >全部</span>
+                      <span
+                        v-for="c in availableCarriersPrivate"
+                        :key="c.name"
+                        class="carrier-tag"
+                        :class="{ active: carrierFilterPrivate === c.name }"
+                        @click="carrierFilterPrivate = c.name"
+                      >
+                        {{ c.name }}
+                        <span class="carrier-count">{{ formatCount(c.count) }}</span>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="store-products" v-loading="loadingPrivate" style="max-height: 200px; overflow-y: auto;">
+                    <div
+                      v-for="(group, idx) in filteredPrivateGroups"
+                      :key="idx"
+                      class="store-product-item"
+                      :class="{ selected: selectedPrivateGroup === group }"
+                      @click="selectedPrivateGroup = group"
+                    >
+                      <div class="sp-info">
+                        <div class="sp-name">
+                          {{ getGroupName(group) }}
+                        </div>
+                        <div class="sp-meta">
+                          库存: {{ (carrierFilterPrivate ? (group.carriers?.find((c: any) => (c.name || 'Unknown') === carrierFilterPrivate)?.count || 0) : group.count).toLocaleString() }} 
+                          · $0.00/条
+                          <span v-if="carrierFilterPrivate" class="sp-carrier-badge">{{ carrierFilterPrivate }}</span>
+                        </div>
+                      </div>
+                      <div class="sp-check" v-if="selectedPrivateGroup === group">✓</div>
+                    </div>
+                    <el-empty v-if="filteredPrivateGroups.length === 0 && !loadingPrivate" description="该筛选条件下暂无数据" :image-size="40" />
+                  </div>
+
+                  <div v-if="selectedPrivateGroup" class="store-quantity">
+                    <label>发送数量:</label>
+                    <el-input-number
+                      v-model="privateQuantity"
+                      :min="1"
+                      :max="selectedPrivateGroup.count"
+                      :step="100"
+                      style="width: 200px"
+                    />
+                    <span class="store-cost">
+                      费用: 数据 $0.00 = 合计 <strong>$0.00</strong>
+                      <span style="margin-left: 12px; font-size: 13px; color: var(--text-tertiary); font-weight: normal;">
+                        (库存: {{ selectedPrivateGroup.count.toLocaleString() }})
+                      </span>
+                    </span>
+                  </div>
+
+                  <div class="store-footer" v-if="selectedPrivateGroup">
+                    <div class="store-summary">
+                      费用: 数据 $0.00 = 合计 <span class="total-price">$0.00</span>
+                    </div>
+                  </div>
+                </div>
+              </template>
 
               <!-- 手动输入模式 -->
               <template v-if="numberSource === 'manual'">
@@ -331,6 +409,28 @@
               >
                 <template v-if="!approvalSubmitting">📋 {{ $t('smsApprovalsPage.submitAudit') }}</template>
                 <template v-else>{{ $t('smsApprovalsPage.submitting') }}</template>
+              </button>
+
+              <!-- 私有库发送按钮 -->
+              <button 
+                v-if="numberSource === 'private'" 
+                type="button" 
+                class="btn-send" 
+                :disabled="privateSending || !selectedPrivateGroup || !form.message" 
+                @click="handlePrivateSend"
+              >
+                <template v-if="!privateSending">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M14 2L7 9M14 2L9.5 14L7 9L2 6.5L14 2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                  </svg>
+                  发送 {{ privateQuantity }} 条（私有库）
+                </template>
+                <template v-else>
+                  <svg class="spinner" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" stroke-dasharray="30" stroke-dashoffset="8" stroke-linecap="round"/>
+                  </svg>
+                  正在创建任务...
+                </template>
               </button>
 
               <!-- 商店模式发送按钮 -->
@@ -723,7 +823,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick } from '@element-plus/icons-vue'
 import { sendBatchSMS, submitSmsApproval } from '@/api/sms'
 import { getChannels } from '@/api/channel'
-import { getDataProducts, buyAndSend, getCarriers, type DataProduct } from '@/api/data'
+import { getDataProducts, buyAndSend, getCarriers, getMyNumbersSummary, type DataProduct } from '@/api/data'
 import { getAiConfig, generateSmsContent } from '@/api/ai'
 import request from '@/api/index'
 import { COUNTRY_LIST, findCountryByIso } from '@/constants/countries'
@@ -1145,7 +1245,80 @@ const showCustomVarDialog = ref(false)
 const newVarName = ref('')
 const newVarValue = ref('')
 
-const numberSource = ref<'manual' | 'store'>('manual')
+const numberSource = ref<'manual' | 'store' | 'private'>('manual')
+const loadingPrivate = ref(false)
+const privateGroups = ref<any[]>([])
+const selectedPrivateGroup = ref<any>(null)
+const carrierFilterPrivate = ref('')
+const privateQuantity = ref(1000)
+
+const availableCarriersPrivate = computed(() => {
+  const map: Record<string, number> = {}
+  privateGroups.value.forEach(g => {
+    if (g.carriers && Array.isArray(g.carriers)) {
+      g.carriers.forEach((c: any) => {
+        const name = c.name || 'Unknown'
+        map[name] = (map[name] || 0) + c.count
+      })
+    }
+  })
+  // 转换并排序：按数量降序
+  return Object.entries(map)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count)
+})
+
+const filteredPrivateGroups = computed(() => {
+  if (!carrierFilterPrivate.value) return privateGroups.value
+  return privateGroups.value.filter(g => {
+    if (g.carriers && Array.isArray(g.carriers)) {
+      return g.carriers.some((c: any) => (c.name || '未知') === carrierFilterPrivate.value)
+    }
+    return (g.carrier || '未知') === carrierFilterPrivate.value
+  })
+})
+
+watch(selectedPrivateGroup, (group) => {
+  if (group) {
+    if (carrierFilterPrivate.value) {
+      const c = group.carriers?.find((i: any) => (i.name || '未知') === carrierFilterPrivate.value)
+      privateQuantity.value = c ? c.count : group.count
+    } else {
+      privateQuantity.value = group.count
+    }
+  }
+})
+
+watch(carrierFilterPrivate, (newVal) => {
+  if (selectedPrivateGroup.value) {
+    if (newVal) {
+      const c = selectedPrivateGroup.value.carriers?.find((i: any) => (i.name || '未知') === newVal)
+      privateQuantity.value = c ? c.count : selectedPrivateGroup.value.count
+    } else {
+      privateQuantity.value = selectedPrivateGroup.value.count
+    }
+  }
+})
+
+async function fetchPrivateGroups() {
+  loadingPrivate.value = true
+  try {
+    const res = await getMyNumbersSummary()
+    if (res.success) {
+      privateGroups.value = res.items || []
+    }
+  } catch (e) {
+    ElMessage.error('获取私有库数据失败')
+  } finally {
+    loadingPrivate.value = false
+  }
+}
+
+watch(numberSource, (val) => {
+  if (val === 'private' && privateGroups.value.length === 0) {
+    fetchPrivateGroups()
+  }
+})
 const hasDataService = ref(false)
 const accountUnitPrice = ref<number | null>(null)
 
@@ -1469,11 +1642,41 @@ function toggleAiSelectAll(val: boolean) {
   if (val) { aiSelectedSet.value = new Set(aiResults.value.map((_, i) => i)) }
   else { aiSelectedSet.value = new Set() }
 }
-function applySingleAi() {
-  const idx = [...aiSelectedSet.value][0]
-  if (idx != null && aiResults.value[idx]) {
-    form.value.message = aiResults.value[idx]; multiMessages.value = []
-    showAiDialog.value = false
+// ============ 私有库发送 ============
+const privateSending = ref(false)
+async function handlePrivateSend() {
+  if (!selectedPrivateGroup.value) return ElMessage.warning('请选择要发送的号码组')
+  if (!form.value.message) return ElMessage.warning('请输入短信内容')
+
+  privateSending.value = true
+  try {
+    const res = await sendBatchSMS({
+      private_library_filters: {
+        country_code: selectedPrivateGroup.value.country_code,
+        source: selectedPrivateGroup.value.source,
+        purpose: selectedPrivateGroup.value.purpose,
+        carrier: carrierFilterPrivate.value || undefined,
+        limit: privateQuantity.value
+      },
+      message: form.value.message,
+      // 如果有多文案，传递 messages 数组
+      messages: multiMessages.value.length > 1 ? multiMessages.value : undefined,
+      sender_id: form.value.sender_id || undefined,
+      channel_id: form.value.channel_id,
+      batch_name: `私有库 - ${selectedPrivateGroup.value.country_code} - ${selectedPrivateGroup.value.sourceLabel || selectedPrivateGroup.value.source}`
+    })
+
+    if (res.success) {
+      ElMessage.success('批量发送任务已创建')
+      result.value = res
+      // 这里的逻辑可以像 handleStoreSend 一样，跳转到发送任务页面或显示成功状态
+    } else {
+      ElMessage.error(res.error?.message || '发送失败')
+    }
+  } catch (e: any) {
+    ElMessage.error('发送请求失败: ' + (e.message || ''))
+  } finally {
+    privateSending.value = false
   }
 }
 function applyMultiAi() {
@@ -1709,11 +1912,15 @@ const handleSubmitApproval = async () => {
 // ============ 手动发送 ============
 
 const handleSend = async () => {
-  const numbers = parseNumbers()
-  if (numbers.length === 0) { ElMessage.warning(t('smsSend.pleaseEnterNumbers')); return }
+  const isPrivate = numberSource.value === 'private'
+  const numbers = isPrivate ? [] : parseNumbers()
+
+  if (!isPrivate && numbers.length === 0) { ElMessage.warning(t('smsSend.pleaseEnterNumbers')); return }
+  if (isPrivate && !selectedPrivateGroup.value) { ElMessage.warning('请选择私有库分组'); return }
   if (!form.value.message) { ElMessage.warning(t('smsSend.pleaseEnterContent')); return }
-  if (numbers.length > 1000) {
-    ElMessage.warning('单次最多提交 1000 个号码，请分批发送')
+
+  if (!isPrivate && numbers.length > 5000) {
+    ElMessage.warning('单次最多提交 5000 个号码，请分批发送')
     return
   }
   loading.value = true; result.value = null; sendProgress.value = 0
@@ -1729,18 +1936,24 @@ const handleSend = async () => {
   })
 
   try {
-    const payload: {
-      phone_numbers: string[]
-      message: string
-      messages?: string[]
-      sender_id?: string
-      channel_id?: number
-      batch_name?: string
-    } = {
-      phone_numbers: e164List,
+    const payload: any = {
       message: msgs[0],
-      batch_name: `发送页-${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+      batch_name: isPrivate
+        ? `私有库发送-${selectedPrivateGroup.value.country_code}-${new Date().toLocaleString('zh-CN', { hour12: false })}`
+        : `发送页-${new Date().toLocaleString('zh-CN', { hour12: false })}`,
     }
+    if (isPrivate) {
+      payload.private_library_filters = {
+        country_code: selectedPrivateGroup.value.country_code,
+        source: selectedPrivateGroup.value.source,
+        purpose: selectedPrivateGroup.value.purpose,
+        carrier: selectedPrivateGroup.value.carrier,
+        limit: privateQuantity.value
+      }
+    } else {
+      payload.phone_numbers = e164List
+    }
+
     if (msgs.length > 1) payload.messages = msgs
     if (form.value.sender_id) payload.sender_id = form.value.sender_id
     if (form.value.channel_id) payload.channel_id = form.value.channel_id
@@ -1748,20 +1961,20 @@ const handleSend = async () => {
     const res = await sendBatchSMS(payload)
     const successCount = res?.succeeded ?? 0
     const failCount = res?.failed ?? 0
-    sendProgress.value = e164List.length
+    sendProgress.value = isPrivate ? privateQuantity.value : e164List.length
 
     result.value = {
-      success: successCount > 0,
+      success: successCount > 0 || isPrivate,
       successCount,
       failCount,
       batchId: res?.batch_id,
     }
-    if (successCount > 0) {
-      ElMessage.success(t('smsSend.sendCompleteResult', { success: successCount, fail: failCount }))
+    if (successCount > 0 || isPrivate) {
+      ElMessage.success(isPrivate ? '任务已提交，可在发送任务页查看进度' : t('smsSend.sendCompleteResult', { success: successCount, fail: failCount }))
       if (form.value.resetOnlyNumbers) form.value.phone_numbers_text = ''; else handleReset()
       loadStats()
     } else {
-      const firstErr = res?.messages?.find((m) => !m.success)?.error?.message
+      const firstErr = res?.messages?.find((m: any) => !m.success)?.error?.message
       if (firstErr?.toLowerCase().includes('balance') || firstErr?.includes('余额')) {
         ElMessage.error(t('smsSend.insufficientBalance'))
       } else {
@@ -1856,10 +2069,16 @@ const selectCarrier = (name: string) => {
   loadStoreProducts()
 }
 
-const formatCount = (n: number) => {
-  if (n >= 10000) return `${(n / 10000).toFixed(1)}w`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return String(n)
+function formatCount(count: number): string {
+  if (count >= 10000) return (count / 10000).toFixed(1) + 'w'
+  if (count >= 1000) return (count / 1000).toFixed(1) + 'k'
+  return count.toString()
+}
+
+function getGroupName(group: any) {
+  const country = findCountryByIso(group.country_code)
+  const countryName = country ? country.name : group.country_code
+  return `${countryName}-${group.source_label || group.source}-${group.purpose_label || group.purpose}`
 }
 
 const checkServices = async () => {
@@ -1973,11 +2192,11 @@ onUnmounted(() => clearInterval(timeInterval))
 .carrier-filter { margin-bottom: 12px; }
 .carrier-label { font-size: 12px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; display: block; }
 .carrier-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.carrier-tag { display: inline-flex; align-items: center; gap: 4px; padding: 4px 12px; font-size: 12px; border-radius: 14px; border: 1px solid var(--border-default); background: var(--bg-card, white); color: var(--text-secondary); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+.carrier-tag { display: inline-flex; align-items: center; gap: 4px; padding: 6px 16px; font-size: 13px; border-radius: 20px; border: 1px solid var(--border-default); background: rgba(255, 255, 255, 0.05); color: var(--text-secondary); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
 .carrier-tag:hover { border-color: var(--el-color-primary-light-5, #79bbff); color: var(--el-color-primary, #409eff); }
-.carrier-tag.active { border-color: var(--el-color-primary, #409eff); background: rgba(64, 158, 255, 0.1); color: var(--el-color-primary, #409eff); font-weight: 600; }
-.carrier-count { font-size: 10px; opacity: 0.7; }
-.sp-carrier-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: rgba(64, 158, 255, 0.12); color: var(--el-color-primary, #409eff); font-size: 10px; font-weight: 500; }
+.carrier-tag.active { border-color: var(--el-color-primary, #409eff); background: rgba(64, 158, 255, 0.1); color: var(--el-color-primary, #409eff); font-weight: 600; box-shadow: 0 0 0 1px var(--el-color-primary); }
+.carrier-count { font-size: 11px; opacity: 0.6; margin-left: 4px; }
+.sp-carrier-badge { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 10px; background: rgba(64, 158, 255, 0.15); color: var(--el-color-primary, #409eff); font-size: 11px; font-weight: 600; border: 1px solid rgba(64, 158, 255, 0.2); }
 
 .store-products { max-height: 240px; overflow-y: auto; margin-bottom: 12px; }
 .store-product-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border: 1px solid var(--border-default); border-radius: 8px; margin-bottom: 8px; cursor: pointer; transition: all 0.15s; background: var(--bg-card, white); }

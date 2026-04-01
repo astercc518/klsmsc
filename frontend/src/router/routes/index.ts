@@ -4,7 +4,6 @@ import { smsRoutes } from './sms'
 import { accountRoutes } from './account'
 import { dataRoutes } from './data'
 import { adminRoutes } from './admin'
-import { voiceRoutes } from './voice'
 
 /** 主布局下的子路由 */
 const layoutChildren: RouteRecordRaw[] = [
@@ -17,7 +16,6 @@ const layoutChildren: RouteRecordRaw[] = [
   ...smsRoutes,
   ...accountRoutes,
   ...dataRoutes,
-  ...voiceRoutes,
   {
     path: '/channels',
     name: 'Channels',

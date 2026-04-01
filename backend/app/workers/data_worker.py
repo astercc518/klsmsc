@@ -652,8 +652,6 @@ async def _auto_create_product(
     """每次导入创建独立数据商品，返回 product_code"""
 
     filter_criteria = {"source": source, "purpose": purpose, "batch_id": batch_id}
-    if freshness:
-        filter_criteria["freshness"] = freshness
 
     src_label = SOURCE_LABELS.get(source, source)
     pur_label = PURPOSE_LABELS.get(purpose, purpose)

@@ -77,6 +77,20 @@ def resolve_bot_token() -> str:
     return settings.TELEGRAM_BOT_TOKEN
 
 
+async def set_commands(application):
+    """设置 Bot 菜单命令"""
+    from telegram import BotCommand
+    commands = [
+        BotCommand("start", "主菜单 (Main Menu)"),
+        BotCommand("balance", "查询余额 (Check Balance)"),
+        BotCommand("recharge", "快速充值 (Fast Recharge)"),
+        BotCommand("help", "帮助中心 (Help Center)"),
+        BotCommand("sales_help", "业务员帮助 (Sales Help)"),
+    ]
+    await application.bot.set_my_commands(commands)
+    logger.info("Bot 菜单命令设置成功")
+
+
 def main():
     """启动Bot"""
     logger.info("Starting Telegram Bot...")
@@ -88,7 +102,13 @@ def main():
 
     persistence = PicklePersistence(filepath="bot_data.pickle")
     
-    app = ApplicationBuilder().token(bot_token).persistence(persistence).build()
+    app = (
+        ApplicationBuilder()
+        .token(bot_token)
+        .persistence(persistence)
+        .post_init(set_commands)
+        .build()
+    )
     
     # 注册 Handlers
     for handler in auth_handlers:

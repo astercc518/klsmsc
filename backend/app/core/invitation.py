@@ -15,7 +15,6 @@ from app.modules.common.account_pricing import AccountPricing
 from app.modules.common.account_template import AccountTemplate
 from app.modules.common.telegram_binding import TelegramBinding
 from app.modules.common.telegram_user import TelegramUser
-from app.modules.voice.voice_account import VoiceAccount
 from app.core.auth import AuthService
 from app.utils.logger import get_logger
 
@@ -233,12 +232,6 @@ class InvitationService:
             "login_password": login_password,
         }
 
-        # 7. 根据业务类型创建外部系统账户
-        if business_type == 'voice':
-            voice_info = await self._create_voice_account(
-                new_account, country_code, template_id
-            )
-            extra_info['voice'] = voice_info
 
         # 7. 更新邀请码状态
         invite.status = 'used'
@@ -249,65 +242,6 @@ class InvitationService:
 
         return new_account, api_key_plain, extra_info
     
-    async def _create_voice_account(
-        self, 
-        account: Account, 
-        country_code: str,
-        template_id: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """
-        创建语音账户（OKCC 或自建 VoiceProvider）
-        """
-        from app.services.voice_provider import get_voice_provider
-
-        provider = get_voice_provider()
-
-        try:
-            result = await provider.create_account({
-                "account_name": account.account_name,
-                "country_code": country_code,
-            })
-
-            if result.get("success"):
-                data = result.get("data", {})
-                sip_user = data.get("account")
-                pwd = data.get("password")
-
-                voice_account = VoiceAccount(
-                    account_id=account.id,
-                    okcc_account=sip_user,
-                    sip_username=sip_user,
-                    okcc_password=pwd,
-                    external_id=data.get("external_id"),
-                    country_code=country_code,
-                    template_id=template_id,
-                    status="active",
-                    balance=0,
-                )
-                self.db.add(voice_account)
-
-                logger.info(f"语音账户创建成功: {account.account_name} -> {sip_user}")
-
-                return {
-                    "success": True,
-                    "okcc_account": sip_user,
-                    "sip_username": sip_user,
-                    "okcc_password": pwd,
-                    "message": "语音账户已创建，请使用返回的 SIP 账号登录软电话",
-                }
-
-            logger.error(f"语音账户创建失败: {result.get('message')}")
-            return {
-                "success": False,
-                "message": f"语音账户创建失败: {result.get('message')}",
-            }
-
-        except Exception as e:
-            logger.error(f"创建语音账户异常: {e}")
-            return {
-                "success": False,
-                "message": f"语音账户创建异常: {str(e)}",
-            }
     
     async def _create_data_account(
         self,

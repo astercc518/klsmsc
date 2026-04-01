@@ -72,13 +72,14 @@ class SMSStatusResponse(BaseModel):
 
 class BatchSMSRequest(BaseModel):
     """批量发送短信请求"""
-    phone_numbers: list[str] = Field(..., min_items=1, max_items=1000, description="电话号码列表")
+    phone_numbers: Optional[list[str]] = Field(None, max_items=1000, description="电话号码列表")
     message: str = Field(..., min_length=1, max_length=1000, description="短信内容（无 messages 时使用；多文案时作占位）")
     sender_id: Optional[str] = Field(None, max_length=20, description="发送方ID（可选）")
     callback_url: Optional[str] = Field(None, description="状态回调URL（可选）")
     channel_id: Optional[int] = Field(None, description="指定通道ID（可选）")
     batch_name: Optional[str] = Field(None, max_length=200, description="发送任务名称（可选，用于任务列表展示）")
     messages: Optional[list[str]] = Field(None, description="多文案按号码轮发；非空时按序号取模选用")
+    private_library_filters: Optional[dict] = Field(None, description="私有库过滤条件 (country_code, source, purpose)")
     
     class Config:
         json_schema_extra = {

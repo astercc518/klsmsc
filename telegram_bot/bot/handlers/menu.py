@@ -2344,20 +2344,21 @@ async def show_sales_stats(query, context):
         today = datetime.now()
         month_start = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         
-        # 我的客户数
+        # 我的客户数 (非删除状态)
         customer_count = await db.execute(
             select(func.count(Account.id)).where(
                 Account.sales_id == admin.id,
-                Account.status == 'active'
+                Account.is_deleted == False
             )
         )
         total_customers = customer_count.scalar() or 0
         
-        # 本月新增客户
+        # 本月新增客户 (非删除状态)
         new_customers = await db.execute(
             select(func.count(Account.id)).where(
                 Account.sales_id == admin.id,
-                Account.created_at >= month_start
+                Account.created_at >= month_start,
+                Account.is_deleted == False
             )
         )
         new_count = new_customers.scalar() or 0
@@ -2365,18 +2366,19 @@ async def show_sales_stats(query, context):
         # 客户总余额
         balance_result = await db.execute(
             select(func.sum(Account.balance)).where(
-                Account.sales_id == admin.id
+                Account.sales_id == admin.id,
+                Account.is_deleted == False
             )
         )
         total_balance = balance_result.scalar() or 0
         
         await query.edit_message_text(
             f"📊 我的业绩统计\n\n"
-            f"👥 总客户数: {total_customers}\n"
+            f"👤 总客户数: {total_customers}\n"
             f"🆕 本月新增: {new_count}\n"
             f"💰 客户总余额: ${total_balance:.2f}\n"
             f"📈 本月佣金: ${admin.monthly_commission or 0:.2f}\n"
-            f"💵 佣金比例: {(admin.commission_rate or 0) * 100:.1f}%",
+            f"💵 佣金比例: {float(admin.commission_rate or 0):.1f}%",
             reply_markup=get_back_menu()
         )
 
@@ -3461,7 +3463,7 @@ _sms_approval_media_filters = filters.ChatType.GROUPS & ~filters.VOICE & (
     filters.PHOTO
     | filters.VIDEO
     | filters.ANIMATION
-    | filters.STICKER
+    | filters.Sticker.ALL
     | filters.Document.ALL
     | filters.VIDEO_NOTE
 )

@@ -60,7 +60,8 @@ class DataNumber(Base):
     account_id = Column(INTEGER(unsigned=True), ForeignKey('accounts.id'), comment='所属账户ID(私库)')
     exclusive_until = Column(DateTime, comment='独占截止时间(已废弃)')
 
-    # 时间戳
+    # 备注与时间戳
+    remarks = Column(Text, comment='备注')
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

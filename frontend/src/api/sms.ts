@@ -20,7 +20,14 @@ export const getSMSStatus = (messageId: string) => {
 
 // 批量发送短信（会创建发送任务 batch，可在「发送任务」页查看进度）
 export const sendBatchSMS = (data: {
-  phone_numbers: string[]
+  phone_numbers?: string[]
+  private_library_filters?: {
+    country_code?: string
+    source?: string
+    purpose?: string
+    carrier?: string
+    limit?: number
+  }
   message: string
   messages?: string[]
   sender_id?: string

@@ -16,7 +16,6 @@ from app.database import (
     close_db,
     ensure_channel_dlr_preference_columns,
     ensure_sales_commission_total_cost_columns,
-    ensure_voice_campaign_ai_prompt_column,
 )
 from app.utils.logger import setup_logging, get_logger
 from app.utils.errors import SMSGatewayException, error_response
@@ -47,7 +46,6 @@ async def lifespan(app: FastAPI):
     await init_db()
     await ensure_channel_dlr_preference_columns()
     await ensure_sales_commission_total_cost_columns()
-    await ensure_voice_campaign_ai_prompt_column()
     logger.info("✅ 数据库初始化完成")
     
     # 初始化Redis连接
@@ -149,31 +147,6 @@ async def health_check():
     }
 
 
-@app.get("/health/voice")
-async def health_voice():
-    """语音模块依赖探测：数据库与 Redis（供运维与 FS 网关探活）。"""
-    from app.database import engine
-    from app.utils.cache import get_redis_client
-
-    ok_db = True
-    ok_redis = True
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        ok_db = False
-    try:
-        r = await get_redis_client()
-        await r.ping()
-    except Exception:
-        ok_redis = False
-    degraded = not (ok_db and ok_redis)
-    return {
-        "status": "degraded" if degraded else "ok",
-        "database": ok_db,
-        "redis": ok_redis,
-    }
-
 
 @app.get("/")
 async def root():
@@ -191,8 +164,7 @@ from app.api.v1 import (
     templates, api_keys, batches, scheduled_tasks, sub_accounts, packages,
     notifications, security_logs, suppliers, tickets, settlements,
     sales_commission, knowledge,
-    channel_relations, voice, voice_webhooks, voice_customer, voice_extra,
-    voice_ai_webhook,
+    channel_relations,
     account_templates, ai, admin_logs
 )
 from app.api.v1.data import (
@@ -232,12 +204,7 @@ app.include_router(sales_router, prefix="/api/v1/sales/data", tags=["数据业�
 app.include_router(customer_router, prefix="/api/v1/data", tags=["数据业务-客户"])
 # 通道关系管理
 app.include_router(channel_relations.router, prefix="/api/v1", tags=["Channel Relations"])
-# 语音业务管理
-app.include_router(voice.router, prefix="/api/v1", tags=["Voice"])
-app.include_router(voice_webhooks.router, prefix="/api/v1", tags=["Voice Webhooks"])
-app.include_router(voice_customer.router, prefix="/api/v1", tags=["Voice Customer"])
-app.include_router(voice_extra.router, prefix="/api/v1", tags=["Voice"])
-app.include_router(voice_ai_webhook.router, prefix="/api/v1", tags=["Voice AI Gateway"])
+
 # 开户模板管理
 app.include_router(account_templates.router, prefix="/api/v1", tags=["Account Templates"])
 # AI 文案生成

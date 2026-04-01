@@ -22,6 +22,12 @@ class VoiceProvider(Protocol):
     async def sync_status(self, external_id: str) -> Dict[str, Any]:
         """同步余额与统计"""
 
+    async def update_account(self, external_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """更新平台子账号属性 (密码、并发限制、封停状态)"""
+
+    async def delete_account(self, external_id: str) -> Dict[str, Any]:
+        """删除语音平台子账户"""
+
 
 class SelfHostedVoiceProvider:
     """自建栈：无 HTTP 网关时返回可本地开户的占位数据，便于联调。"""
@@ -53,6 +59,12 @@ class SelfHostedVoiceProvider:
                 "total_minutes": 0,
             },
         }
+
+    async def update_account(self, external_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        return {"success": True, "message": "simulated update ok"}
+
+    async def delete_account(self, external_id: str) -> Dict[str, Any]:
+        return {"success": True, "message": "simulated delete ok"}
 
 
 def get_voice_provider() -> VoiceProvider:
