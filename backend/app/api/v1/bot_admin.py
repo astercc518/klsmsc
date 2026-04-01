@@ -17,6 +17,7 @@ from app.modules.common.telegram_binding import TelegramBinding
 from app.core.invitation import InvitationService
 from app.core.audit import AuditService
 from app.utils.logger import get_logger
+from app.workers.batch_worker import process_batch
 from pydantic import BaseModel
 from datetime import datetime
 import httpx
@@ -597,10 +598,8 @@ async def audit_batch(
     if request.action == 'approve':
         batch = await service.approve_batch(bid, admin.id)
         
-        # TODO: 触发发送流程（调用队列管理器）
-        # from app.utils.queue import QueueManager
-        # queue_manager = QueueManager()
-        # await queue_manager.enqueue_batch_sms(bid)
+        # 触发发送流程
+        process_batch.delay(str(bid))
         
         # 通知用户
         notify_message = (

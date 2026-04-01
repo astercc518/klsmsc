@@ -64,15 +64,11 @@ async def _send_webhook_async(account_id: int, message_id: str, status: str, dat
         if not account:
             return {"success": False, "error": "Account not found"}
         
-        # 获取Webhook URL（从账户配置或环境变量）
-        # 注意：Account模型中暂时没有webhook_url字段
-        # 实际生产环境应该添加该字段
-        webhook_url = getattr(account, 'webhook_url', None)
+        # 获取Webhook URL
+        webhook_url = account.webhook_url
         
-        # 如果没有配置webhook_url，尝试从环境变量或配置获取
+        # 如果没有配置webhook_url，跳过回调
         if not webhook_url:
-            # TODO: 从配置表或环境变量获取默认webhook_url
-            # 暂时跳过
             logger.debug(f"账户 {account_id} 未配置Webhook URL，跳过回调")
             return {"success": True, "skipped": True, "reason": "No webhook URL configured"}
         

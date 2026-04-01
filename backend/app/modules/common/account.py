@@ -76,6 +76,10 @@ class Account(Base):
     ip_whitelist = Column(Text, comment="IP白名单（JSON数组）")
     rate_limit = Column(Integer, default=1000, comment="每分钟请求限制")
     low_balance_threshold = Column(DECIMAL(12, 4), nullable=True, default=100.0000, comment="余额预警阈值")
+    # Webhook配置
+    webhook_url = Column(String(255), nullable=True, comment="Webhook回调地址")
+    webhook_secret = Column(String(128), nullable=True, comment="Webhook签名密钥")
+    
     company_name = Column(String(200), nullable=True, comment="公司名称")
     contact_person = Column(String(100), nullable=True, comment="联系人")
     contact_phone = Column(String(50), nullable=True, comment="联系电话")

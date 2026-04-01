@@ -161,9 +161,9 @@ async def upload_batch_file(
         
         logger.info(f"Batch uploaded: id={batch.id}, account={current_account.id}, count={total_count}")
         
-        # TODO: 触发异步处理任务（Celery）
-        # from app.workers.batch_worker import process_batch
-        # process_batch.delay(batch.id)
+        # 触发异步处理任务（Celery）
+        from app.workers.batch_worker import process_batch
+        process_batch.delay(batch.id)
         
         return BatchUploadResponse(
             batch_id=batch.id,
