@@ -4,6 +4,7 @@
 import phonenumbers
 from typing import Dict, Tuple, Optional, List
 from app.utils.logger import get_logger
+from app.utils.sms_segment import count_sms_parts, is_gsm7_message
 
 logger = get_logger(__name__)
 
@@ -80,25 +81,12 @@ class Validator:
             if keyword in content:
                 return False, f"包含敏感词: {keyword}", {"length": length}
         
-        # 计算拆分条数
-        # GSM-7: 160, UCS-2: 70
-        is_gsm7 = Validator._is_gsm7(content)
-        if is_gsm7:
-            parts = 1 if length <= 160 else (length + 152) // 153
-        else:
-            parts = 1 if length <= 70 else (length + 66) // 67
-            
+        # 拆分条数与计费引擎一致（含规范化）
+        is_gsm7 = is_gsm7_message(content)
+        parts = count_sms_parts(content)
+
         return True, "", {
             "length": length,
             "parts": parts,
-            "encoding": "GSM-7" if is_gsm7 else "UCS-2"
+            "encoding": "GSM-7" if is_gsm7 else "UCS-2",
         }
-
-    @staticmethod
-    def _is_gsm7(message: str) -> bool:
-        """判断是否为GSM-7编码"""
-        gsm7_chars = set(
-            "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?"
-            "¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"
-        )
-        return all(c in gsm7_chars for c in message)

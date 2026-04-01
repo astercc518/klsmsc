@@ -121,3 +121,18 @@ def test_count_sms_parts_ucs2():
     # 超长中文短信（100字符）
     long_chinese = "测试" * 50
     assert engine._count_sms_parts(long_chinese) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+def test_count_sms_parts_normalizes_invisible_chars():
+    """NBSP / 零宽等规范化后按 GSM-7 计条，避免英文文案误判为 UCS-2"""
+    engine = PricingEngine(None)
+    sample = (
+        "We are recruiting 100 trial users in Africa. We offer a $100 trial bonus "
+        "and promise to earn $20 in 5 days. Add us on WhatsApp. https://wa.me/"
+    )
+    assert engine._count_sms_parts(sample) == 1
+    # 全部普通空格改为 NBSP：未规范化时整段非 GSM-7，规范化后仍为 1 条
+    assert engine._count_sms_parts(sample.replace(" ", "\u00a0")) == 1
+    assert engine._count_sms_parts("Hello\u200bWorld") == 1

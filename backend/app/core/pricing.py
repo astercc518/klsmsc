@@ -12,6 +12,8 @@ from app.modules.sms.channel import Channel
 from app.modules.sms.supplier import SupplierChannel, SupplierRate
 from app.modules.common.balance_log import BalanceLog
 from app.utils.errors import InsufficientBalanceError, PricingNotFoundError
+from app.utils.sms_segment import count_sms_parts as _count_sms_parts_impl
+from app.utils.sms_segment import is_gsm7_message as _is_gsm7_impl
 from app.utils.logger import get_logger
 from app.utils.cache import get_cache_manager
 import json
@@ -300,21 +302,9 @@ class PricingEngine:
         return None
     
     def _count_sms_parts(self, message: str) -> int:
-        """计算短信条数"""
-        if self._is_gsm7(message):
-            if len(message) <= 160:
-                return 1
-            else:
-                return (len(message) + 152) // 153
-        else:
-            if len(message) <= 70:
-                return 1
-            else:
-                return (len(message) + 66) // 67
-    
+        """计算短信条数（含 NBSP/弯引号等规范化，与前端预估一致）"""
+        return _count_sms_parts_impl(message)
+
     def _is_gsm7(self, message: str) -> bool:
-        gsm7_chars = set(
-            "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?"
-            "¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"
-        )
-        return all(c in gsm7_chars for c in message)
+        """是否为 GSM-7 可编码正文（规范化后判断）"""
+        return _is_gsm7_impl(message)
