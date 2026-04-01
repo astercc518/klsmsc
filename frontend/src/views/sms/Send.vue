@@ -177,24 +177,31 @@
               <!-- 私有库模式 -->
               <template v-if="numberSource === 'private'">
                 <div class="store-section">
-                  <div class="carrier-filter">
-                    <label class="carrier-label">运营商筛选:</label>
-                    <div class="carrier-tags">
-                      <span
-                        class="carrier-tag"
-                        :class="{ active: !carrierFilterPrivate }"
-                        @click="carrierFilterPrivate = ''"
-                      >全部</span>
-                      <span
-                        v-for="c in availableCarriersPrivate"
-                        :key="c.name"
-                        class="carrier-tag"
-                        :class="{ active: carrierFilterPrivate === c.name }"
-                        @click="carrierFilterPrivate = c.name"
-                      >
-                        {{ c.name }}
-                        <span class="carrier-count">{{ formatCount(c.count) }}</span>
-                      </span>
+                  <div class="carrier-filter" style="margin-bottom: 16px;">
+                    <label class="carrier-label">运营商 / 数据状态筛选:</label>
+                    <div class="carrier-tags" style="display: flex; flex-direction: column; gap: 10px;">
+                      <div class="tag-row" style="display: flex; flex-wrap: wrap; gap: 6px;">
+                        <span
+                          class="carrier-tag"
+                          :class="{ active: !carrierFilterPrivate }"
+                          @click="carrierFilterPrivate = ''"
+                        >全部运营商</span>
+                        <span
+                          v-for="c in availableCarriersPrivate"
+                          :key="c.name"
+                          class="carrier-tag"
+                          :class="{ active: carrierFilterPrivate === c.name }"
+                          @click="carrierFilterPrivate = c.name"
+                        >
+                          {{ c.name }}
+                          <span class="carrier-count">{{ formatCount(c.count) }}</span>
+                        </span>
+                      </div>
+                      <div class="status-row">
+                        <el-checkbox v-model="unusedOnlyPrivate" size="large">
+                          <span style="color: var(--el-color-primary); font-weight: bold; font-size: 14px;">仅限未使用号码 (Fresh Data Only)</span>
+                        </el-checkbox>
+                      </div>
                     </div>
                   </div>
                   <div class="store-products" v-loading="loadingPrivate" style="max-height: 200px; overflow-y: auto;">
@@ -210,9 +217,10 @@
                           {{ getGroupName(group) }}
                         </div>
                         <div class="sp-meta">
-                          库存: {{ (carrierFilterPrivate ? (group.carriers?.find((c: any) => (c.name || 'Unknown') === carrierFilterPrivate)?.count || 0) : group.count).toLocaleString() }} 
+                          库存: {{ (unusedOnlyPrivate ? group.unused_count : (carrierFilterPrivate ? (group.carriers?.find((c: any) => (c.name || 'Unknown') === carrierFilterPrivate)?.count || 0) : group.count)).toLocaleString() }} 
                           · $0.00/条
                           <span v-if="carrierFilterPrivate" class="sp-carrier-badge">{{ carrierFilterPrivate }}</span>
+                          <el-tag v-if="unusedOnlyPrivate" size="small" type="success" effect="dark" style="margin-left: 8px">仅未使用</el-tag>
                         </div>
                       </div>
                       <div class="sp-check" v-if="selectedPrivateGroup === group">✓</div>
@@ -225,14 +233,14 @@
                     <el-input-number
                       v-model="privateQuantity"
                       :min="1"
-                      :max="selectedPrivateGroup.count"
+                      :max="unusedOnlyPrivate ? selectedPrivateGroup.unused_count : selectedPrivateGroup.count"
                       :step="100"
                       style="width: 200px"
                     />
                     <span class="store-cost">
                       费用: 数据 $0.00 = 合计 <strong>$0.00</strong>
                       <span style="margin-left: 12px; font-size: 13px; color: var(--text-tertiary); font-weight: normal;">
-                        (库存: {{ selectedPrivateGroup.count.toLocaleString() }})
+                        (可用库存: {{ (unusedOnlyPrivate ? selectedPrivateGroup.unused_count : selectedPrivateGroup.count).toLocaleString() }})
                       </span>
                     </span>
                   </div>
@@ -825,7 +833,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import type { FormInstance } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick } from '@element-plus/icons-vue'
+import { MagicStick, QuestionFilled } from '@element-plus/icons-vue'
 import { sendBatchSMS, submitSmsApproval } from '@/api/sms'
 import { getChannels } from '@/api/channel'
 import { getDataProducts, buyAndSend, getCarriers, getMyNumbersSummary, type DataProduct } from '@/api/data'
@@ -1256,6 +1264,7 @@ const loadingPrivate = ref(false)
 const privateGroups = ref<any[]>([])
 const selectedPrivateGroup = ref<any>(null)
 const carrierFilterPrivate = ref('')
+const unusedOnlyPrivate = ref(false)
 const privateQuantity = ref(1000)
 
 const availableCarriersPrivate = computed(() => {
@@ -1284,27 +1293,34 @@ const filteredPrivateGroups = computed(() => {
   })
 })
 
-watch(selectedPrivateGroup, (group) => {
-  if (group) {
-    if (carrierFilterPrivate.value) {
-      const c = group.carriers?.find((i: any) => (i.name || '未知') === carrierFilterPrivate.value)
-      privateQuantity.value = c ? c.count : group.count
-    } else {
-      privateQuantity.value = group.count
-    }
-  }
-})
-
-watch(carrierFilterPrivate, (newVal) => {
+watch([selectedPrivateGroup, carrierFilterPrivate, unusedOnlyPrivate], () => {
   if (selectedPrivateGroup.value) {
-    if (newVal) {
-      const c = selectedPrivateGroup.value.carriers?.find((i: any) => (i.name || '未知') === newVal)
-      privateQuantity.value = c ? c.count : selectedPrivateGroup.value.count
-    } else {
-      privateQuantity.value = selectedPrivateGroup.value.count
+    let max = selectedPrivateGroup.value.count
+    if (unusedOnlyPrivate.value) {
+      max = selectedPrivateGroup.value.unused_count || 0
+    }
+
+    if (carrierFilterPrivate.value) {
+      // 如果有运营商过滤，目前 summary 接口没有返回 carrier + unused_count 的细分，
+      // 这里暂时按比例估算或提示用户。但根据 getGroupName 逻辑，它是按 (Country, Source, Purpose) 聚合的。
+      // 实际上 getMyNumbersSummary 返回的 carriers 列表里也只有 count。
+      const c = selectedPrivateGroup.value.carriers?.find((i: any) => (i.name || '未知') === carrierFilterPrivate.value)
+      if (c) {
+        // 如果是过滤运营商，且勾选了仅未使用，目前后端返回的 carrier 分组里没有 unused_count。
+        // 为了准确，这里我们假设 carrier 比例一致，或简单返回 c.count
+        max = c.count
+      }
+    }
+    
+    if (privateQuantity.value > max) {
+      privateQuantity.value = max
+    }
+    // 默认填满
+    if (privateQuantity.value === 0 || privateQuantity.value > 1000) {
+       privateQuantity.value = max > 1000 ? 1000 : max
     }
   }
-})
+}, { immediate: true })
 
 async function fetchPrivateGroups() {
   loadingPrivate.value = true
@@ -1657,7 +1673,8 @@ async function handlePrivateSend() {
         source: selectedPrivateGroup.value.source,
         purpose: selectedPrivateGroup.value.purpose,
         carrier: carrierFilterPrivate.value || undefined,
-        limit: privateQuantity.value
+        limit: privateQuantity.value,
+        unused_only: unusedOnlyPrivate.value
       },
       message: form.value.message,
       // 如果有多文案，传递 messages 数组

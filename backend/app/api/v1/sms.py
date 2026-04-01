@@ -437,6 +437,8 @@ async def send_batch_sms(
             q = q.where(DataNumber.purpose == f["purpose"])
         if f.get("carrier"):
             q = q.where(DataNumber.carrier == f["carrier"])
+        if f.get("unused_only"):
+            q = q.where(DataNumber.use_count == 0)
 
         # 限制一次批量发送的数量
         limit = int(f.get("limit", 50000))
@@ -444,6 +446,15 @@ async def send_batch_sms(
         res = await db.execute(q)
         db_nums = [r[0] for r in res.all()]
         if db_nums:
+            # 标记为已使用
+            from sqlalchemy import update as sa_update
+            await db.execute(
+                sa_update(DataNumber)
+                .where(DataNumber.phone_number.in_(db_nums), DataNumber.account_id == account.id)
+                .values(use_count=DataNumber.use_count + 1, last_used_at=datetime.now())
+            )
+            await db.flush()
+
             if not request.phone_numbers:
                 request.phone_numbers = []
             request.phone_numbers.extend(db_nums)
