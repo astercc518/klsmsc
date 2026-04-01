@@ -5,7 +5,7 @@ import time
 
 from telegram import Message, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler
-from bot.utils import get_session, get_valid_customer_binding_and_account, logger
+from bot.utils import get_session, get_valid_customer_binding_and_account, logger, edit_and_log, send_and_log
 from app.modules.common.telegram_binding import TelegramBinding
 from app.modules.common.account import Account, AccountChannel
 from app.modules.sms.channel import Channel
@@ -280,7 +280,8 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # 发送短信（直接发送，或根据配置走审核）
     if data == "menu_send_sms":
         context.user_data['sms_submit_mode'] = 'direct'
-        await query.edit_message_text(
+        await edit_and_log(
+            query,
             "📱 发送短信\n\n"
             "请发送：**号码 内容**（号码与内容用空格或换行分隔）\n\n"
             "号码需以 + 开头的 E.164 格式，例如：\n"
@@ -294,7 +295,8 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # 短信审核（只审核文案，不要求号码）
     if data == "menu_sms_audit":
         context.user_data['sms_submit_mode'] = 'audit'
-        await query.edit_message_text(
+        await edit_and_log(
+            query,
             "📝 短信审核\n\n"
             "请直接发送需审核的**文案内容**（无需号码）\n\n"
             "例如：\n"
@@ -726,7 +728,8 @@ async def show_account_info(query, context):
         binding, account = await get_valid_customer_binding_and_account(db, tg_id)
 
         if not binding or not account:
-            await query.edit_message_text(
+            await edit_and_log(
+                query,
                 "❌ 未绑定有效账户或该账户已停用/删除，请使用授权码开户或重新绑定。",
                 reply_markup=get_back_menu()
             )
@@ -785,7 +788,7 @@ async def show_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
                     f"📢 全行业短信群发，AI语音，渗透数据！\n"
                     f"所有信息以官网 https://www.kaolach.com/ 展示为准！"
                 )
-            await query.edit_message_text(msg, reply_markup=menu)
+            await edit_and_log(query, msg, reply_markup=menu)
             return
         
         # 检查是否是客户（须账户未删除且非 closed，与 /start 一致）

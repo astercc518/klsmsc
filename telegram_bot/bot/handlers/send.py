@@ -11,7 +11,7 @@ from telegram.ext import (
 )
 from loguru import logger
 from bot.services.api_client import APIClient
-from bot.utils import get_session, get_valid_customer_binding_and_account
+from bot.utils import get_session, get_valid_customer_binding_and_account, send_and_log
 
 # 会话状态
 PHONE, MESSAGE = range(2)
@@ -24,7 +24,9 @@ async def send_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 检查是否已绑定账户
     account = await get_user_account(user.id)
     if not account or not account.api_key:
-        await update.message.reply_text(
+        await send_and_log(
+            context,
+            user.id,
             "❌ 您还未绑定账户或账户未激活\n\n"
             "请联系销售获取邀请码并使用 /start 绑定账户"
         )
@@ -35,7 +37,9 @@ async def send_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"用户 {user.id} 开始发送短信")
     
-    await update.message.reply_text(
+    await send_and_log(
+        context,
+        user.id,
         "📱 发送短信\n\n"
         "请输入目标电话号码（E.164格式，如 +8613800138000）："
     )
@@ -49,7 +53,9 @@ async def send_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # 验证号码格式
     if not phone.startswith('+'):
-        await update.message.reply_text(
+        await send_and_log(
+            context,
+            update.effective_user.id,
             "❌ 号码必须以+开头（E.164格式）\n\n"
             "例如: +8613800138000\n\n"
             "请重新输入："
@@ -57,7 +63,9 @@ async def send_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return PHONE
     
     if len(phone) < 8 or len(phone) > 20:
-        await update.message.reply_text(
+        await send_and_log(
+            context,
+            update.effective_user.id,
             "❌ 号码长度不正确\n\n"
             "请重新输入："
         )
@@ -67,7 +75,9 @@ async def send_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['phone'] = phone
     logger.info(f"用户 {update.effective_user.id} 输入号码: {phone}")
     
-    await update.message.reply_text(
+    await send_and_log(
+        context,
+        update.effective_user.id,
         f"✅ 号码已保存: {phone}\n\n"
         f"请输入短信内容："
     )
@@ -80,7 +90,9 @@ async def send_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message.text.strip()
     
     if not message:
-        await update.message.reply_text(
+        await send_and_log(
+            context,
+            update.effective_user.id,
             "❌ 短信内容不能为空，请重新输入："
         )
         return MESSAGE
@@ -106,7 +118,9 @@ async def send_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result.get('success'):
             logger.info(f"用户 {update.effective_user.id} 发送成功: {result.get('message_id')}")
             
-            await update.message.reply_text(
+            await send_and_log(
+                context,
+                update.effective_user.id,
                 f"✅ 发送成功！\n\n"
                 f"📱 号码: {context.user_data['phone']}\n"
                 f"📄 消息ID: {result.get('message_id')}\n"

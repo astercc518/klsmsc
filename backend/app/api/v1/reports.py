@@ -16,6 +16,7 @@ from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
 from app.core.auth import api_key_header, AuthService
 from app.utils.logger import get_logger
+from app.services.reports_service import ReportsService
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/reports", tags=["Reports"])
@@ -291,3 +292,28 @@ async def get_daily_stats(
         "days": days,
         "statistics": daily_stats
     }
+
+@router.get("/admin/business")
+async def get_business_report(
+    dimension: str = Query(..., description="聚合维度: customer/employee/supplier/channel/country"),
+    business_type: str = Query("all", description="业务类型: all/sms/data"),
+    time_range: str = Query("today", description="时间范围: today/this_week/this_month/last_month/custom"),
+    start_date: Optional[str] = Query(None, description="开始日期 (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="结束日期 (YYYY-MM-DD)"),
+    admin: Account = Depends(AuthService.get_current_admin), # 仅管理员可看全量报表
+    db: AsyncSession = Depends(get_db)
+):
+    """运营中心业务报表"""
+    try:
+        report_data = await ReportsService.get_business_report(
+            db, dimension, business_type, time_range, start_date, end_date
+        )
+        return {
+            "success": True,
+            "dimension": dimension,
+            "time_range": time_range,
+            "data": report_data
+        }
+    except Exception as e:
+        logger.error(f"获取业务报表失败: {str(e)}", exc_info=e)
+        return {"success": False, "message": str(e)}

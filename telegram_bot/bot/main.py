@@ -22,8 +22,10 @@ except ImportError:
 
 import asyncio
 import aiomysql
-from telegram.ext import ApplicationBuilder, PicklePersistence, CommandHandler
+from telegram.ext import ApplicationBuilder, PicklePersistence, CommandHandler, MessageHandler, TypeHandler, filters, ContextTypes
+from telegram import Update
 from bot.utils import logger
+from bot.services.message_service import MessageService
 from bot.handlers.auth import auth_handlers
 from bot.handlers.sales import sales_handlers
 from bot.handlers.bulk import bulk_handler
@@ -91,6 +93,11 @@ async def set_commands(application):
     logger.info("Bot 菜单命令设置成功")
 
 
+async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """全局日志处理器"""
+    await MessageService.log_incoming(update)
+
+
 def main():
     """启动Bot"""
     logger.info("Starting Telegram Bot...")
@@ -109,6 +116,9 @@ def main():
         .post_init(set_commands)
         .build()
     )
+    
+    # 注册全局日志处理器 (group=-1 确保在业务处理器之前执行)
+    app.add_handler(TypeHandler(Update, log_update), group=-1)
     
     # 注册 Handlers
     for handler in auth_handlers:

@@ -52,6 +52,18 @@ export const adminRoutes: RouteRecordRaw[] = [
     meta: { titleKey: 'menu.whitelist', icon: 'Check' },
   },
   {
+    path: '/admin/bot/recharge-audit',
+    name: 'BotRechargeAudit',
+    component: () => import('@/views/bot/RechargeAudit.vue'),
+    meta: { titleKey: 'menu.rechargeAudit', icon: 'Money' },
+  },
+  {
+    path: '/admin/bot/batch-audit',
+    name: 'BotBatchAudit',
+    component: () => import('@/views/bot/BatchAudit.vue'),
+    meta: { titleKey: 'menu.batchAudit', icon: 'Stamp' },
+  },
+  {
     path: '/admin/business-knowledge',
     name: 'BusinessKnowledge',
     component: () => import('@/views/admin/BusinessKnowledge.vue'),
@@ -120,5 +132,11 @@ export const adminRoutes: RouteRecordRaw[] = [
     name: 'DataPricing',
     component: () => import('@/views/admin/data/Pricing.vue'),
     meta: { titleKey: 'menu.dataPricing', icon: 'PriceTag' },
+  },
+  {
+    path: '/admin/reports/business',
+    name: 'AdminBusinessReport',
+    component: () => import('@/views/admin/BusinessReport.vue'),
+    meta: { titleKey: 'menu.businessReport', icon: 'TrendCharts' },
   },
 ]

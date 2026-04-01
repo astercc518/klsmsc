@@ -100,3 +100,16 @@ export async function getDailyStats(days: number = 7): Promise<DailyStatsRespons
     : '/reports/daily-stats';
   return request.get<DailyStatsResponse>(url, { params: { days } });
 }
+
+/**
+ * 获取多维度业务报表 (管理端)
+ */
+export async function getBusinessReport(params: {
+  dimension: string;
+  business_type?: string;
+  time_range?: string;
+  start_date?: string;
+  end_date?: string;
+}): Promise<any> {
+  return request.get('/reports/admin/business', { params });
+}

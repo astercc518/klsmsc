@@ -1471,15 +1471,6 @@ export default {
   exportBill: '导出账单',
   exportCsvSuccess: '导出成功',
   exportEmpty: '暂无数据可导出',
-  factsTitle: '关于 SMS 的重要事实 - 在移动互联网时代，SMS 是接触潜在客户的最直接方式之一',
-  flowDesc: '欢迎使用 考拉出海，开启您的云上之旅！以简单、安全和可靠的方式在几分钟内发送批量短信，推动业务绩效',
-  footerAbout: '关于',
-  footerAboutUs: '关于 考拉出海',
-  footerContact: '联系我们',
-  footerDesc: '我们致力于创新通信解决方案，让 SMS 消息自由传递，满足您所有短信营销需求。您可以毫不费力地发送一次性验证码、通知、时事通讯、提醒和营销短信。',
-  footerProducts: '产品 & 解决方案',
-  footerSupport: '支持中心',
-  footerTerms: '服务条款',
   generateCommission: '生成佣金结算单',
   generateCustomerBill: '生成客户账单',
   generateFailed: '生成失败',
@@ -1494,110 +1485,156 @@ export default {
     systemNormal: '系统正常'
   },
   landing: {
-    advantages: {
-      coverage: {
-        ctaSupport: '前往支持中心',
-        faqDesc: '考拉出海 目标是让您轻松开始使用群发短信并充分利用它的诸多优势。无论您是群发 SMS 的新手还是经验丰富的用户，您都会找到有关功能、定价等常见问题的答案。',
-        industry: {
-          channel: {
-            coverageLabels: {
-            },
-            pricingDesc: '零月租费零服务费，按照实际发送量计费，价格透明',
-            report: {
-            }
-          }
-        }
-      }
+    pageTitle: '考拉出海 Kaolach - 全球短信群发解决方案',
+    nav: {
+      home: '首页',
+      smsProducts: 'SMS 产品',
+      intlSms: '国际短信',
+      intlSmsDesc: '覆盖全球 190 多个国家/地区',
+      verifySms: '验证码短信',
+      verifySmsDesc: '高到达率，秒级触达',
+      marketingSms: '营销短信',
+      marketingSmsDesc: '不限行业，内容宽松',
+      smsApi: '短信 API',
+      smsApiDesc: 'HTTP / SMPP 接口即接即用',
+      solutions: '解决方案',
+      pricing: '覆盖范围 & 定价',
+      support: '支持中心',
+      faq: '常见问题',
+      flow: '使用流程',
+      contact: '联系我们',
+      about: '关于我们',
+      freeTest: '免费测试'
     },
-    advantagesDesc: '致力使用优质的群发 SMS 解决方案将您的营销内容通过我们的高质量SMS网关送达至目标受众的设备',
-    contact: {
-      businessManagerDesc: '扫码添加微信或通过 TG 联系商务经理',
-      businessManagerTitle: '商务经理',
-      businessManagerWx: '微信',
-      line1: '全行业短信群发！',
-      line3: '业务支付全部独立后台线上下单！',
-      sectionTitle: '联系我们',
-      sendMessage: '发送消息',
-      title: '考拉出海 官方唯一 TG 号',
-      username: '@kaolachbot'
-    },
-    cta: '立即使用',
-    ctaContact: '联系客服',
-    ctaOnlineConsult: '在线咨询',
-    ctaOpenAccount: '立即开户',
-    ctaSub: '创建账户即可免费测试，或联系客服获取定制方案。',
-    ctaTitle: '准备好开始了吗？',
     hero: {
-      badges: '免费测试 · 无需信用卡 · 按量付费',
-      contact: '联系客服',
-      desc: '在几秒内发送 10000～500000 条短信，通过高质量 SMS 网关送达至目标受众，95%+ 短信 3 分钟内被阅读。',
-      freeTest: '免费测试',
       subtitle: '免费测试 · 即充即用',
-      tag1: '免费测试',
-      tag2: '不限行业 内容宽松',
-      tag3: '秒级触达 数据透明 实时报告',
       title: '可靠的',
       titleHighlight: '国际短信群发',
       titleSuffix: '解决方案',
-      trust: 'Trusted by {n} teams'
-    },
-    nav: {
-      about: '关于我们',
-      contact: '联系我们',
-      faq: '常见问题',
-      flow: '使用流程',
+      desc: '在几秒内发送 10000～500000 条短信，通过高质量 SMS 网关送达至目标受众，95%+ 短信 3 分钟内被阅读。',
       freeTest: '免费测试',
-      home: '首页',
-      intlSms: '国际短信',
-      intlSmsDesc: '覆盖全球190多个国家/地区',
-      marketingSms: '营销短信',
-      marketingSmsDesc: '不限行业，内容宽松',
-      pricing: '覆盖范围 & 定价',
-      smsApi: '短信 API',
-      smsApiDesc: 'HTTP / SMPP 接口即接即用',
-      smsProducts: 'SMS 产品',
-      solutions: '解决方案',
-      support: '支持中心',
-      verifySms: '验证码短信',
-      verifySmsDesc: '高到达率，秒级触达'
+      contact: '联系客服',
+      badges: '免费测试 · 无需信用卡 · 按量付费',
+      trust: '全球 {n} 企业信赖'
+    },
+    phoneMsg1: '您的验证码是 888888，5分钟内有效。',
+    phoneMsg2: '新品上市！回复 START 获取优惠。',
+    phoneMsg3: '已成功发送 50,000 条营销短信。',
+    phoneMsg4: '物流提醒：您的包裹已到达配送站。',
+    trustedBy: '全球 20,000+ 企业信赖',
+    coverageLabels: {
+      countries: '国家/地区',
+      operators: '运营商',
+      delivery: '到达率',
+      viewTime: '查阅时间'
     },
     sections: {
+      solutions: 'SMS SOLUTION',
+      solutionsTitle: '提供多元化的 SMS 解决方案',
+      products: 'SMS PRODUCTS',
+      productsTitle: '考拉出海 短信产品',
       advantages: 'WHY CHOOSE US',
       advantagesTitle: '考拉出海的优势',
-      faq: 'FAQs',
-      faqTitle: '关于 SMS 的常见问题',
-      flow: 'Use Flow',
-      flowTitle: '使用流程',
-      pricingLabel: 'Coverage & Pricing',
+      pricingLabel: 'COVERAGE & PRICING',
       pricingTitle: '覆盖范围 & 定价',
-      products: 'SMS Products',
-      productsTitle: '考拉出海 短信产品',
-      solutions: 'SMS Solution',
-      solutionsTitle: '提供多元化的 SMS 解决方案'
-    },
-    solLink: '了解详情',
-    solutions: {
-      finance: {
-        invest: {
-          ecommerce: {
-            sports: {
-              entertainment: {
-                ctaLearnMore: '了解详情',
-                ctaTryNow: '立即体验',
-                game: {
-                },
-                productLabels: {
-                },
-                productsDesc: '通过独立后台短信群发和短信接口触发方式，为用户提供国际短信标准通道、验证码短信、营销短信、HTTP/SMPP API 等短信服务'
-              }
-            }
-          }
-        }
-      }
+      faq: 'FAQS',
+      faqTitle: '关于 SMS 的常见问题',
+      flow: 'USE FLOW',
+      flowTitle: '使用流程'
     },
     solutionsDesc: '全面的行业场景解决方案，满足不同客户的个性化服务，覆盖互联网、金融、信贷、投资、棋牌、游戏、电商、教育等众多领域',
-    title: '考拉出海 国际短信网关 - 全球短信群发解决方案',
-    trustedBy: '全球 20,000+ 企业信赖'
+    ctaOpenAccount: '立即开户',
+    ctaOnlineConsult: '在线咨询',
+    solutions: {
+      finance: { title: '金融行业', desc: '为您提供高安全、高到达率的验证码与通知短信，助力金融服务。' },
+      invest: { title: '投资理财', desc: '实时推送市场动态与投资机会，精准触达潜在投资者。' },
+      ecommerce: { title: '电子商务', desc: '促销活动、订单提醒、会员关怀，全方位提升电商转化。' },
+      sports: { title: '体育竞技', desc: '赛事提醒、比分预测、活动通知，点燃用户的竞技热情。' },
+      entertainment: { title: '泛娱乐', desc: '社交提醒、直播通知、活动推广，提升用户活跃与留存。' },
+      game: { title: '游戏行业', desc: '新服开启、礼包领取、召回短信，有效提升游戏用户生命周期。' }
+    },
+    solLink: '了解详情',
+    productsDesc: '通过独立后台短信群发和短信接口触发方式，为用户提供国际短信标准通道、验证码短信、营销短信、HTTP/SMPP API 等短信服务',
+    productLabels: {
+      intl: '国际短信',
+      verify: '验证码短信',
+      api: '短信 API'
+    },
+    productIntl: [
+      { title: '全球覆盖', desc: '覆盖全球 190+ 国家和地区，800+ 移动运营商。' },
+      { title: '不限行业', desc: '支持营销、通知、验证码等多种业务类型，内容宽松。' }
+    ],
+    productVerify: [
+      { title: '极速送达', desc: '全球通道直连，秒级触达，验证码到达率 99% 以上。' },
+      { title: '高稳定性', desc: '多条备用通道冗余，智能路由规划，确保业务不中断。' },
+      { title: '灵活接入', desc: '支持 HTTP/SMPP 协议，完善的 API 文档，快速集成。' }
+    ],
+    productApi: [
+      { title: '开发者友好', desc: '提供多种开发语言 SDK & 示例，最快 10 分钟完成集成。' },
+      { title: '实时报告', desc: '详尽的发送报告与状态回调，数据透明，轻松监控。' }
+    ],
+    ctaTryNow: '立即体验',
+    ctaLearnMore: '了解详情',
+    advantagesDesc: '致力使用优质的群发 SMS 解决方案将您的营销内容通过我们的高质量 SMS 网关送达至目标受众的设备',
+    advantages: {
+      coverage: { title: '全球覆盖', desc: '覆盖 190+ 国家及 800+ 运营商，确保您的消息传遍世界。' },
+      industry: { title: '内容宽松', desc: '不限行业，内容审核宽松，适用于各类营销与通知场景。' },
+      channel: { title: '高质量通道', desc: '优质直连通道，高成功率，支持高并发发送任务。' },
+      report: { title: '数据透明', desc: '实时发送报告，数据可见，结果可查，助力营销效果评估。' }
+    },
+    pricingDesc: '零月租费零服务费，按照实际发送量计费，价格透明',
+    priceFeatures: [
+      { title: '按需计费', desc: '无固定费用，仅为您发送成功的短信付费。' },
+      { title: '阶梯折扣', desc: '发送量越大，单价越低，助力大型营销活动。' },
+      { title: '透明公开', desc: '后台实时查询消费记录，每一分钱都清晰可见。' }
+    ],
+    faqDesc: '考拉出海 目标是让您轻松开始使用群发短信并充分利用它的诸多优势。',
+    ctaSupport: '前往支持中心',
+    faqs: [
+      { q: '如何开始发送短信？', a: '注册账户并充值后，即可在后台手动群发或通过 API 接入发送。' },
+      { q: '支持哪些支付方式？', a: '支持加密货币 (USDT) 等主流支付方式。' },
+      { q: '短信发送失败会计费吗？', a: '仅对发送成功的短信（接收到状态报告）计费。' },
+      { q: '内容审核需要多久？', a: '大多数内容几秒内自动通过，敏感内容需人工审核。' },
+      { q: '如何查看发送报告？', a: '后台提供详细的发送记录和分析报表。' },
+      { q: '我可以发送营销短信吗？', a: '可以，考拉出海不限行业，支持各类合规营销短信。' }
+    ],
+    flowDesc: '欢迎使用 考拉出海，开启您的云上之旅！以简单、安全和可靠的方式在几分钟内发送批量短信。',
+    flowSteps: [
+      { title: '注册账户', desc: '简单几步即可完成账户注册，支持多种语言。' },
+      { title: '在线充值', desc: '通过 TG 或后台自助充值，余额即刻到账。' },
+      { title: '提交任务', desc: '上传 CSV 号码文件或使用接口触发发送。' },
+      { title: '实时监控', desc: '查看实时状态报告，掌握每一条短信的动向。' }
+    ],
+    ctaViewSteps: '查看详情步骤',
+    contact: {
+      sectionTitle: '联系我们',
+      title: '官方唯一 TG',
+      line1: '全行业短信群发！',
+      line2: '实时回复，专业支持。',
+      line3: '业务支付全部独立后台线上下单！',
+      sendMessage: '发送消息',
+      businessManagerTitle: '商务经理',
+      businessManagerWx: '微信',
+      businessManagerDesc: '扫码添加微信或通过 TG 联系商务经理'
+    },
+    factsTitle: '关于 SMS 的重要事实',
+    facts: [
+      { val: '2/3', lbl: '的人口拥有手机' },
+      { val: '98%', lbl: '的短信被阅读' },
+      { val: '3s', lbl: '平均阅读速度' },
+      { val: '190+', lbl: '国家覆盖' }
+    ],
+    ctaTitle: '准备好开始了吗？',
+    ctaSub: '创建账户即可免费测试，或联系客服获取定制方案。',
+    cta: '立即使用',
+    ctaContact: '联系客服',
+    footerDesc: '我们致力于创新通信解决方案，让 SMS 消息自由传递，满足您所有短信营销需求。',
+    footerProducts: '产品 & 解决方案',
+    footerAbout: '关于',
+    footerContact: '联系我们',
+    footerAboutUs: '关于 考拉出海',
+    footerSupport: '支持中心',
+    footerTerms: '服务条款'
   },
   language: {
     en: 'English',
@@ -1665,8 +1702,9 @@ export default {
     batchAudit: '群发审核',
     botConfig: 'Bot配置',
     botInvites: '开户邀约',
-    botMessages: '消息记录',
-    businessKnowledge: '业务知识',
+    botMessages: '机器人消息',
+    businessReport: '业务报表',
+    businessKnowledge: '业务知识库',
     callRecords: '通话记录',
     channelConfig: '通道配置',
     channels: '通道管理',
@@ -1878,13 +1916,6 @@ export default {
     channelDistribution: '通道分布',
     channelName: '通道名称',
     channelStats: '通道统计',
-    cost: '费用',
-    costStats: '费用统计',
-    costTrend: '费用趋势',
-    count: '数量',
-    country: '国家',
-    countryCode: '国家代码',
-    countryDistribution: '国家分布',
     countryStats: '国家统计',
     dailyStats: '每日统计',
     dailyTrend: '每日趋势',
@@ -1892,6 +1923,32 @@ export default {
     dateRange: '日期范围',
     delivered: '已送达',
     deliveredCount: '送达量',
+    dimension: '聚合维度',
+    dimCustomer: '客户维度',
+    dimEmployee: '员工维度',
+    dimSupplier: '供应商维度',
+    dimChannel: '通道维度',
+    dimCountry: '国家维度',
+    businessType: '业务类型',
+    timeRange: '时间范围',
+    today: '今天',
+    thisWeek: '本周',
+    thisMonth: '本月',
+    lastMonth: '上月',
+    custom: '自定义',
+    dataDetails: '数据详情',
+    charts: '数据可视化',
+    distribution: '分布分析',
+    trend: '业务趋势',
+    revenue: '营收',
+    cost: '成本',
+    profit: '利润',
+    count: '总量',
+    successRate: '成功率',
+    totalRevenue: '总收入',
+    totalCost: '总成本',
+    totalProfit: '总利润',
+    sendCount: '发送量',
     endDate: '结束日期',
     export: '导出',
     exportCsv: '导出CSV',
@@ -1906,29 +1963,20 @@ export default {
     loadFailed: '数据加载失败',
     loadSuccess: '数据加载成功',
     noData: '暂无数据',
-    pageDesc: '查看短信发送统计和趋势分析',
+    pageDesc: '查看业务统计和趋势分析',
     percentage: '占比',
-    profit: '利润',
     query: '查询',
-    revenue: '营收',
     selectEndDate: '选择结束日期',
     selectStartDate: '选择开始日期',
-    sendCount: '发送量',
     sendTrend: '发送趋势',
     sent: '已发送',
     startDate: '开始日期',
-    successRate: '成功率',
     successRatePercent: '成功率(%)',
     successRateTrend: '成功率趋势',
-    thisMonth: '本月',
-    title: '数据报表',
-    today: '今天',
-    totalCost: '总成本',
+    title: '业务报表',
     totalDelivered: '成功送达',
     totalFailed: '发送失败',
     totalPending: '待处理',
-    totalProfit: '总利润',
-    totalRevenue: '总收入',
     totalSent: '总发送量'
   },
   roles: {

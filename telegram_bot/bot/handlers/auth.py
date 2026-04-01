@@ -4,7 +4,7 @@
 import redis
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
-from bot.utils import get_session, get_valid_customer_binding_and_account, logger
+from bot.utils import get_session, get_valid_customer_binding_and_account, logger, send_and_log
 from bot.config import settings
 from app.core.invitation import InvitationService
 from app.modules.common.telegram_binding import TelegramBinding
@@ -87,7 +87,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                     msg += "⚠️ <i>请妥善保存以上信息，密码和密钥不会再次显示</i>\n\n请选择操作："
 
-                    await update.message.reply_text(
+                    await send_and_log(
+                        context,
+                        tg_id,
                         msg,
                         parse_mode='HTML',
                         reply_markup=get_main_menu_customer(),
@@ -157,7 +159,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"📢 全行业短信群发，AI语音，渗透数据！\n"
                         f"所有信息以官网 https://www.kaolach.com/ 展示为准！"
                     )
-                await update.message.reply_text(msg, reply_markup=menu)
+                await send_and_log(context, tg_id, msg, reply_markup=menu)
                 return
             
             # 3. 检查客户绑定状态（须未删除且非 closed，与菜单回调一致）
@@ -182,7 +184,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             balance_str = f"${account.balance:.2f}" if account else "N/A"
             account_name = account.account_name if account else "未知"
             
-            await update.message.reply_text(
+            await send_and_log(
+                context,
+                tg_id,
                 f"👋 欢迎回来，{username}\n\n"
                 f"📦 账户: {account_name}\n"
                 f"💰 余额: {balance_str}\n\n"

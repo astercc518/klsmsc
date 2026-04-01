@@ -634,8 +634,9 @@ async def buy_and_send(
         price_info = await pricing_engine.get_price(channel.id, dial_code, account_id=account.id)
         if not price_info:
             price_info = await pricing_engine.get_price(channel.id, phone_country, account_id=account.id)
+        base_cost = await pricing_engine.resolve_base_cost_per_sms(channel.id, phone_country, channel)
         sell = float(price_info['price']) * parts if price_info else 0.0
-        cost = float(channel.cost_rate or 0) * parts
+        cost = float(base_cost) * parts
         currency = price_info['currency'] if price_info else 'USD'
         num_plans.append((num, channel, price_info, msg, parts, sell, cost, currency))
 

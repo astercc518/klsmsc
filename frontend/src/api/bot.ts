@@ -133,3 +133,68 @@ export function deleteTemplate(id: number) {
     method: 'delete'
   })
 }
+
+// 3. Recharges
+export function getRecharges(params?: {
+  status?: string
+  page?: number
+  limit?: number
+}) {
+  return request({
+    url: '/admin/bot/recharges',
+    method: 'get',
+    params
+  })
+}
+
+export function auditRecharge(oid: number, data: { action: 'approve' | 'reject'; reason?: string }) {
+  return request({
+    url: `/admin/bot/recharges/${oid}/audit`,
+    method: 'post',
+    data
+  })
+}
+
+// 4. Batches
+export function getBotBatches(params?: {
+  status?: string
+  page?: number
+  limit?: number
+}) {
+  return request({
+    url: '/admin/bot/batches',
+    method: 'get',
+    params
+  })
+}
+
+export function auditBatch(bid: string, data: { action: 'approve' | 'reject'; reason?: string }) {
+  return request({
+    url: `/admin/bot/batches/${bid}/audit`,
+    method: 'post',
+    data
+  })
+}
+
+// 5. Config
+export function getBotConfig() {
+  return request({
+    url: '/admin/bot/config',
+    method: 'get'
+  })
+}
+
+export function saveBotConfig(data: any) {
+  return request({
+    url: '/admin/bot/config',
+    method: 'post',
+    data
+  })
+}
+
+export function restartBot() {
+  return request({
+    url: '/admin/bot/restart',
+    method: 'post'
+  })
+}

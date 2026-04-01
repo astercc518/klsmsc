@@ -11,7 +11,7 @@ from telegram.ext import (
     MessageHandler,
     filters
 )
-from bot.utils import get_session, get_valid_customer_binding_and_account, logger
+from bot.utils import get_session, get_valid_customer_binding_and_account, logger, send_and_log
 from app.modules.common.recharge_order import RechargeOrder
 from app.modules.common.account import Account
 from sqlalchemy import select
@@ -29,7 +29,9 @@ async def recharge_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, acc = await get_valid_customer_binding_and_account(db, tg_id)
         if not acc:
             context.user_data.pop("account_id", None)
-            await update.message.reply_text(
+            await send_and_log(
+                context,
+                tg_id,
                 "❌ 未绑定有效账户或该账户已停用/删除。\n\n"
                 "请先使用邀请链接激活账户，或发送 /start 查看状态"
             )
@@ -39,7 +41,9 @@ async def recharge_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"用户 {tg_id} 开始充值申请，账户: {account_id}")
     
-    await update.message.reply_text(
+    await send_and_log(
+        context,
+        tg_id,
         "💰 **充值申请**\n\n"
         "请输入充值金额（USD）：\n"
         "例如：100 或 50.5\n\n"
@@ -61,7 +65,9 @@ async def recharge_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if amount > 100000:
             raise ValueError("单次充值不能超过 $100,000")
     except ValueError as e:
-        await update.message.reply_text(
+        await send_and_log(
+            context,
+            update.effective_user.id,
             f"❌ 金额格式错误: {e}\n\n"
             "请输入正确的金额（如：100 或 50.5）："
         )
@@ -70,7 +76,9 @@ async def recharge_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['recharge_amount'] = amount
     logger.info(f"用户 {update.effective_user.id} 输入充值金额: ${amount}")
     
-    await update.message.reply_text(
+    await send_and_log(
+        context,
+        update.effective_user.id,
         f"✅ 充值金额: **${amount:.2f} USD**\n\n"
         "请上传付款凭证（截图/照片）\n"
         "或发送 /skip 跳过（稍后补充）",
@@ -143,7 +151,9 @@ async def submit_recharge(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         logger.info(f"充值工单已创建: {order_no}, 账户: {account_id}, 金额: ${amount}")
     
-    await update.message.reply_text(
+    await send_and_log(
+        context,
+        update.effective_user.id,
         f"✅ **充值申请已提交！**\n\n"
         f"📋 工单号: `{order_no}`\n"
         f"💰 金额: ${amount:.2f} USD\n"

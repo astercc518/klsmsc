@@ -181,7 +181,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Check, Setting, ChatDotRound, Switch, Message, Warning, Link } from '@element-plus/icons-vue'
-import request from '@/api/index'
+import { getBotConfig, saveBotConfig, restartBot as restartBotApi } from '@/api/bot'
 
 const { t } = useI18n()
 const saving = ref(false)
@@ -241,7 +241,7 @@ const statusText = computed(() => getStatusText(config.bot_status))
 const loadConfig = async () => {
   loading.value = true
   try {
-    const res = await request.get('/admin/bot/config')
+    const res = await getBotConfig()
     if (res.config) {
       Object.assign(config, {
         ...res.config,
@@ -261,7 +261,7 @@ const loadConfig = async () => {
 const saveConfig = async () => {
   saving.value = true
   try {
-    await request.post('/admin/bot/config', {
+    await saveBotConfig({
       ...config,
       notification_group_id: config.notify_group_id,
       daily_send_limit: config.daily_limit,
@@ -279,7 +279,7 @@ const saveConfig = async () => {
 const restartBot = async () => {
   restarting.value = true
   try {
-    await request.post('/admin/bot/restart')
+    await restartBotApi()
     ElMessage.success(t('bot.botRestartSent'))
     // 延迟刷新状态
     setTimeout(() => loadConfig(), 3000)

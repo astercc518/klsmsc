@@ -1,5 +1,6 @@
 import sys
 import os
+from typing import Any, Optional, Tuple
 
 # 将 backend 目录添加到 path，以便可以直接引用 app 模块
 # Docker中 backend 挂载在 /backend
@@ -27,6 +28,29 @@ except ImportError as e:
 
 logger = get_logger(__name__)
 
+async def log_outgoing_message(user_id: int, content: str, chat_id: Optional[int] = None):
+    """记录发出消息异步助手"""
+    from bot.services.message_service import MessageService
+    await MessageService.log_outgoing(user_id, content, chat_id)
+
+async def send_and_log(context: Any, chat_id: int, text: str, **kwargs):
+    """发送并记录消息"""
+    message = await context.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+    # 异步记录，不阻塞发送
+    import asyncio
+    asyncio.create_task(log_outgoing_message(chat_id, text, chat_id))
+    return message
+
+async def edit_and_log(query: Any, text: str, **kwargs):
+    """编辑并记录消息"""
+    message = await query.edit_message_text(text=text, **kwargs)
+    # 异步记录
+    import asyncio
+    chat_id = query.message.chat_id if query.message else None
+    user_id = query.from_user.id
+    asyncio.create_task(log_outgoing_message(user_id, text, chat_id))
+    return message
+
 async def get_db_session():
     """获取数据库会话"""
     async with async_session_maker() as session:
@@ -46,7 +70,6 @@ async def get_session():
             await session.close()
 
 
-from typing import Any, Optional, Tuple
 
 from sqlalchemy import select
 

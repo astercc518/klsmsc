@@ -1471,15 +1471,6 @@ export default {
   exportBill: 'Export',
   exportCsvSuccess: 'Exported successfully',
   exportEmpty: 'No data to export',
-  factsTitle: 'SMS Facts - In the mobile era, SMS is one of the most direct ways to reach customers.',
-  flowDesc: 'Welcome to Kaolach. Send bulk SMS in minutes. Simple, secure, reliable. Boost your business.',
-  footerAbout: 'About',
-  footerAboutUs: 'About Kaolach',
-  footerContact: 'Contact',
-  footerDesc: 'We innovate communication solutions. Send verification codes, notifications, newsletters, reminders and marketing SMS effortlessly.',
-  footerProducts: 'Products & Solutions',
-  footerSupport: 'Support',
-  footerTerms: 'Terms of Service',
   generateCommission: 'Generate Commission',
   generateCustomerBill: 'Generate Customer Bill',
   generateFailed: 'Generate failed',
@@ -1494,110 +1485,156 @@ export default {
     systemNormal: 'System OK'
   },
   landing: {
-    advantages: {
-      coverage: {
-        ctaSupport: 'Support Center',
-        faqDesc: 'Kaolach helps you get started with bulk SMS. Whether you\'re new or experienced, find answers on features, pricing and more.',
-        industry: {
-          channel: {
-            coverageLabels: {
-            },
-            pricingDesc: 'No monthly fee, no service fee. Pay per actual usage. Transparent pricing.',
-            report: {
-            }
-          }
-        }
-      }
-    },
-    advantagesDesc: 'Quality bulk SMS solutions deliver your campaigns to target audiences via our high-quality gateway.',
-    contact: {
-      businessManagerDesc: 'Scan QR to add WeChat or contact via TG',
-      businessManagerTitle: 'Business Manager',
-      businessManagerWx: 'WeChat',
-      line1: 'Bulk SMS for all industries!',
-      line3: 'All business payments via independent backend online ordering!',
-      sectionTitle: 'Contact Us',
-      sendMessage: 'Send Message',
-      title: 'Kaolach Official Telegram',
-      username: '@kaolachbot'
-    },
-    cta: 'Get Started',
-    ctaContact: 'Contact Sales',
-    ctaOnlineConsult: 'Online Consult',
-    ctaOpenAccount: 'Open Account',
-    ctaSub: 'Create an account for a free trial, or contact us for a custom package.',
-    ctaTitle: 'Ready to get started?',
-    hero: {
-      badges: 'Free trial · No credit card · Pay as you go',
+    pageTitle: 'Kaolach - Global Bulk SMS Solution',
+    nav: {
+      home: 'Home',
+      smsProducts: 'SMS Products',
+      intlSms: 'International SMS',
+      intlSmsDesc: 'Covering 190+ countries/regions',
+      verifySms: 'Verification SMS',
+      verifySmsDesc: 'High delivery, instant reach',
+      marketingSms: 'Marketing SMS',
+      marketingSmsDesc: 'No industry limits, flexible content',
+      smsApi: 'SMS API',
+      smsApiDesc: 'HTTP / SMPP ready',
+      solutions: 'Solutions',
+      pricing: 'Coverage & Pricing',
+      support: 'Support',
+      faq: 'FAQ',
+      flow: 'Use Flow',
       contact: 'Contact',
-      desc: 'Send 10,000 to 500,000 SMS in seconds via our high-quality gateway. 95%+ of messages read within 3 minutes.',
-      freeTest: 'Free Trial',
+      about: 'About',
+      freeTest: 'Free Trial'
+    },
+    hero: {
       subtitle: 'Free Trial · Pay as You Go',
-      tag1: 'Free Trial',
-      tag2: 'No Industry Limits',
-      tag3: 'Instant · Transparent · Real-time Reports',
       title: 'Reliable',
       titleHighlight: 'International Bulk SMS',
       titleSuffix: 'Solution',
+      desc: 'Send 10,000 to 500,000 SMS in seconds via our high-quality gateway. 95%+ of messages read within 3 minutes.',
+      freeTest: 'Free Trial',
+      contact: 'Contact Us',
+      badges: 'Free trial · No credit card · Pay as you go',
       trust: 'Trusted by {n} teams'
     },
-    nav: {
-      about: 'About',
-      contact: 'Contact',
-      faq: 'FAQ',
-      flow: 'Use Flow',
-      freeTest: 'Free Trial',
-      home: 'Home',
-      intlSms: 'International SMS',
-      intlSmsDesc: '190+ countries/regions',
-      marketingSms: 'Marketing SMS',
-      marketingSmsDesc: 'No industry limits',
-      pricing: 'Coverage & Pricing',
-      smsApi: 'SMS API',
-      smsApiDesc: 'HTTP / SMPP ready',
-      smsProducts: 'SMS Products',
-      solutions: 'Solutions',
-      support: 'Support',
-      verifySms: 'Verification SMS',
-      verifySmsDesc: 'High delivery, instant reach'
+    phoneMsg1: 'Your OTP is 888888. Valid for 5 minutes.',
+    phoneMsg2: 'New Arrival! Reply START to get discount.',
+    phoneMsg3: 'Successfully sent 50,000 marketing messages.',
+    phoneMsg4: 'Logistics alert: Your package has arrived.',
+    trustedBy: 'Trusted by 20,000+ businesses globally',
+    coverageLabels: {
+      countries: 'Countries',
+      operators: 'Operators',
+      delivery: 'Delivery Rate',
+      viewTime: 'Read Time'
     },
     sections: {
+      solutions: 'SMS SOLUTION',
+      solutionsTitle: 'Diverse SMS Solutions',
+      products: 'SMS PRODUCTS',
+      productsTitle: 'Kaolach SMS Products',
       advantages: 'WHY CHOOSE US',
       advantagesTitle: 'Kaolach Advantages',
-      faq: 'FAQs',
-      faqTitle: 'SMS FAQs',
-      flow: 'Use Flow',
-      flowTitle: 'How It Works',
-      pricingLabel: 'Coverage & Pricing',
+      pricingLabel: 'COVERAGE & PRICING',
       pricingTitle: 'Coverage & Pricing',
-      products: 'SMS Products',
-      productsTitle: 'Kaolach SMS Products',
-      solutions: 'SMS Solution',
-      solutionsTitle: 'Diverse SMS Solutions'
+      faq: 'FAQS',
+      faqTitle: 'SMS FAQs',
+      flow: 'USE FLOW',
+      flowTitle: 'How It Works'
+    },
+    solutionsDesc: 'Industry solutions for internet, finance, credit, investment, gaming, e-commerce, education and more.',
+    ctaOpenAccount: 'Open Account',
+    ctaOnlineConsult: 'Online Consult',
+    solutions: {
+      finance: { title: 'Finance', desc: 'Secure and high-delivery OTP and notification SMS for financial services.' },
+      invest: { title: 'Investment', desc: 'Real-time market updates and opportunities, reaching investors precisely.' },
+      ecommerce: { title: 'E-commerce', desc: 'Promotions, order alerts, and customer care to boost conversions.' },
+      sports: { title: 'Sports', desc: 'Match reminders, score predictions, and event notifications.' },
+      entertainment: { title: 'Entertainment', desc: 'Social alerts, live notifications, and activity promotion.' },
+      game: { title: 'Gaming', desc: 'Launch alerts, gift codes, and user recall messages.' }
     },
     solLink: 'Learn More',
-    solutions: {
-      finance: {
-        invest: {
-          ecommerce: {
-            sports: {
-              entertainment: {
-                ctaLearnMore: 'Learn More',
-                ctaTryNow: 'Try Now',
-                game: {
-                },
-                productLabels: {
-                },
-                productsDesc: 'Bulk SMS via backend or API. International SMS, verification, marketing, HTTP/SMPP API services.'
-              }
-            }
-          }
-        }
-      }
+    productsDesc: 'Bulk SMS via backend or API. International SMS, verification, marketing, HTTP/SMPP API services.',
+    productLabels: {
+      intl: 'International SMS',
+      verify: 'Verification SMS',
+      api: 'SMS API'
     },
-    solutionsDesc: 'Industry solutions for internet, finance, credit, investment, gaming, e-commerce, education and more. Tailored services for every client.',
-    title: 'Kaolach International SMS Gateway - Global Bulk SMS',
-    trustedBy: 'Trusted by 20,000+ businesses globally'
+    productIntl: [
+      { title: 'Global Reach', desc: 'Coverage in 190+ countries and 800+ mobile operators.' },
+      { title: 'No Industry Limits', desc: 'Supports marketing, notifications, OTP, and more.' }
+    ],
+    productVerify: [
+      { title: 'Instant Delivery', desc: 'Direct connections, OTP reach within seconds, 99%+ rate.' },
+      { title: 'High Stability', desc: 'Multiple backup channels and smart routing for zero downtime.' },
+      { title: 'Flexible Integration', desc: 'HTTP/SMPP protocols with comprehensive documentation.' }
+    ],
+    productApi: [
+      { title: 'Developer Friendly', desc: 'SDKs & examples for various languages. Integrate in 10 mins.' },
+      { title: 'Real-time Reports', desc: 'Detailed send reports and status callbacks for transparency.' }
+    ],
+    ctaTryNow: 'Try Now',
+    ctaLearnMore: 'Learn More',
+    advantagesDesc: 'Quality bulk SMS solutions deliver your campaigns via our high-quality gateway.',
+    advantages: {
+      coverage: { title: 'Global Coverage', desc: 'Covering 190+ countries to ensure your message goes global.' },
+      industry: { title: 'Flexible Content', desc: 'No industry limits, easy content audit for all scenarios.' },
+      channel: { title: 'High Quality', desc: 'Premium direct channels with high success rates.' },
+      report: { title: 'Transparent Data', desc: 'Real-time reports to help evaluate marketing performance.' }
+    },
+    pricingDesc: 'No monthly fee, no service fee. Pay per actual usage.',
+    priceFeatures: [
+      { title: 'Pay as You Go', desc: 'No fixed costs. Only pay for successfully sent messages.' },
+      { title: 'Tiered Discounts', desc: 'Lower rates for higher volumes to support large campaigns.' },
+      { title: 'Full Transparency', desc: 'Check consumption records in real-time in the dashboard.' }
+    ],
+    faqDesc: 'Kaolach helps you get started with bulk SMS and take advantage of its benefits.',
+    ctaSupport: 'Support Center',
+    faqs: [
+      { q: 'How do I start sending?', a: 'Register and recharge, then send manually or via API.' },
+      { q: 'What payment methods?', a: 'Mainstream methods including USDT are supported.' },
+      { q: 'Charged for failures?', a: 'Only successfully sent messages (with DLR) are charged.' },
+      { q: 'How long for audit?', a: 'Most are auto-approved in seconds; some require manual review.' },
+      { q: 'Where are reports?', a: 'Detailed records and analytics are available in the dashboard.' },
+      { q: 'Can I send marketing?', a: 'Yes, we support various compliant marketing SMS.' }
+    ],
+    flowDesc: 'Welcome to Kaolach. Send bulk SMS in minutes. Simple, secure, reliable.',
+    flowSteps: [
+      { title: 'Register', desc: 'Complete registration in a few steps. Multi-language support.' },
+      { title: 'Recharge', desc: 'Recharge via TG or dashboard. Instant balance update.' },
+      { title: 'Submit', desc: 'Upload CSV or use API to trigger sending.' },
+      { title: 'Monitor', desc: 'Trace every message with real-time status reports.' }
+    ],
+    ctaViewSteps: 'View Details',
+    contact: {
+      sectionTitle: 'Contact Us',
+      title: 'Official Telegram',
+      line1: 'Bulk SMS for all industries!',
+      line2: 'Instant reply, professional support.',
+      line3: 'Online ordering via independent backend!',
+      sendMessage: 'Send Message',
+      businessManagerTitle: 'Business Manager',
+      businessManagerWx: 'WeChat',
+      businessManagerDesc: 'Scan QR to add WeChat or contact via TG'
+    },
+    factsTitle: 'Important SMS Facts',
+    facts: [
+      { val: '2/3', lbl: 'of people have phones' },
+      { val: '98%', lbl: 'of SMS are read' },
+      { val: '3s', lbl: 'Average read time' },
+      { val: '190+', lbl: 'Countries covered' }
+    ],
+    ctaTitle: 'Ready to get started?',
+    ctaSub: 'Create an account for a free trial, or contact us for a custom package.',
+    cta: 'Get Started',
+    ctaContact: 'Contact Sales',
+    footerDesc: 'We innovate communication solutions for all your SMS marketing needs.',
+    footerProducts: 'Products & Solutions',
+    footerAbout: 'About',
+    footerContact: 'Contact',
+    footerAboutUs: 'About Kaolach',
+    footerSupport: 'Support',
+    footerTerms: 'Terms of Service'
   },
   language: {
     en: 'English',
@@ -1666,7 +1703,8 @@ export default {
     botConfig: 'Bot Config',
     botInvites: 'Bot Invites',
     botMessages: 'Bot Messages',
-    businessKnowledge: 'Business Knowledge',
+    businessReport: 'Business Report',
+    businessKnowledge: 'Business Knowledge Base',
     callRecords: 'Call Records',
     channelConfig: 'Channels',
     channels: 'Channels',
@@ -1878,20 +1916,39 @@ export default {
     channelDistribution: 'Channel Distribution',
     channelName: 'Channel Name',
     channelStats: 'Channel Statistics',
-    cost: 'Cost',
-    costStats: 'Cost Statistics',
-    costTrend: 'Cost Trend',
-    count: 'Count',
-    country: 'Country',
-    countryCode: 'Country Code',
-    countryDistribution: 'Country Distribution',
     countryStats: 'Country Statistics',
     dailyStats: 'Daily Statistics',
     dailyTrend: 'Daily Trend',
     date: 'Date',
     dateRange: 'Date Range',
     delivered: 'Delivered',
-    deliveredCount: 'Delivered Count',
+    deliveredCount: 'Delivered',
+    dimension: 'Dimension',
+    dimCustomer: 'Customer',
+    dimEmployee: 'Employee',
+    dimSupplier: 'Supplier',
+    dimChannel: 'Channel',
+    dimCountry: 'Country',
+    businessType: 'Business Type',
+    timeRange: 'Time Range',
+    today: 'Today',
+    thisWeek: 'This Week',
+    thisMonth: 'This Month',
+    lastMonth: 'Last Month',
+    custom: 'Custom',
+    dataDetails: 'Data Details',
+    charts: 'Data Visualization',
+    distribution: 'Distribution Analysis',
+    trend: 'Business Trend',
+    revenue: 'Revenue',
+    cost: 'Cost',
+    profit: 'Profit',
+    count: 'Total Count',
+    successRate: 'Success Rate',
+    totalRevenue: 'Total Revenue',
+    totalCost: 'Total Cost',
+    totalProfit: 'Total Profit',
+    sendCount: 'Send Count',
     endDate: 'End Date',
     export: 'Export',
     exportCsv: 'Export CSV',
@@ -1906,29 +1963,20 @@ export default {
     loadFailed: 'Failed to load data',
     loadSuccess: 'Data loaded successfully',
     noData: 'No data',
-    pageDesc: 'View SMS sending statistics and trend analysis',
+    pageDesc: 'View business statistics and trend analysis',
     percentage: 'Percentage',
-    profit: 'Profit',
     query: 'Query',
-    revenue: 'Revenue',
     selectEndDate: 'Select end date',
     selectStartDate: 'Select start date',
-    sendCount: 'Send Count',
     sendTrend: 'Send Trend',
     sent: 'Sent',
     startDate: 'Start Date',
-    successRate: 'Success Rate',
     successRatePercent: 'Success Rate (%)',
     successRateTrend: 'Success Rate Trend',
-    thisMonth: 'This Month',
     title: 'Reports',
-    today: 'Today',
-    totalCost: 'Total Cost',
     totalDelivered: 'Delivered',
     totalFailed: 'Failed',
     totalPending: 'Pending',
-    totalProfit: 'Total Profit',
-    totalRevenue: 'Total Revenue',
     totalSent: 'Total Sent'
   },
   roles: {

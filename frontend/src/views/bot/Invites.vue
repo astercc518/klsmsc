@@ -102,6 +102,47 @@
         <el-button type="primary" @click="submitCreate" :loading="submitting">{{ $t('botAudit.generate') }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- 详情弹窗 -->
+    <el-dialog v-model="detailVisible" :title="$t('botAudit.inviteDetail')" width="500px">
+      <el-descriptions :column="1" border v-if="inviteDetail">
+        <el-descriptions-item :label="$t('botAudit.inviteCode')">
+          <el-tag size="large">{{ inviteDetail.code }}</el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item :label="$t('botAudit.sales')">
+          {{ inviteDetail.sales_name }}
+        </el-descriptions-item>
+        <el-descriptions-item :label="$t('botAudit.configDetails')">
+          <div v-if="inviteDetail.config">
+            <div>{{ $t('botAudit.countryCode') }}: {{ inviteDetail.config.country }}</div>
+            <div>{{ $t('botAudit.contractPrice') }}: ${{ inviteDetail.config.price }}</div>
+            <div>{{ $t('botAudit.businessType') }}: {{ inviteDetail.config.business_type }}</div>
+          </div>
+        </el-descriptions-item>
+        <el-descriptions-item :label="$t('common.status')">
+          <el-tag :type="getStatusType(inviteDetail.status)">
+            {{ getStatusText(inviteDetail.status) }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item :label="$t('botAudit.generateTime')">
+          {{ formatDate(inviteDetail.created_at) }}
+        </el-descriptions-item>
+        <el-descriptions-item :label="$t('botAudit.expiryTime')">
+          {{ formatDate(inviteDetail.expires_at) }}
+        </el-descriptions-item>
+        <el-descriptions-item :label="$t('botAudit.usedBy')" v-if="inviteDetail.status === 'used'">
+          <div v-if="inviteDetail.used_by_account">
+            ID: {{ inviteDetail.used_by_account.id }} ({{ inviteDetail.used_by_account.name }})
+          </div>
+          <div v-if="inviteDetail.used_at">
+            {{ $t('botAudit.usedAt') }}: {{ formatDate(inviteDetail.used_at) }}
+          </div>
+        </el-descriptions-item>
+      </el-descriptions>
+      <template #footer>
+        <el-button @click="detailVisible = false">{{ $t('common.close') }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -131,6 +172,9 @@ const form = reactive({
   valid_hours: 24
 })
 
+const detailVisible = ref(false)
+const inviteDetail = ref<any>(null)
+
 const loadData = async () => {
   loading.value = true
   try {
@@ -158,8 +202,13 @@ const copyCode = (code: string) => {
 }
 
 const viewDetail = async (code: string) => {
-  // TODO: 显示详情对话框
-  ElMessage.info(t('botAudit.detailDeveloping'))
+  try {
+    const res = await getInviteDetail(code)
+    inviteDetail.value = res
+    detailVisible.value = true
+  } catch (e) {
+    // error handled by interceptor
+  }
 }
 
 const showCreateDialog = () => {
