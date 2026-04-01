@@ -122,3 +122,17 @@ class SMSApprovalExecuteRequest(BaseModel):
     """执行审核通过后的发送：审核记录无号码时（如 Bot 仅文案）可在此补传"""
     phone_number: Optional[str] = Field(None, description="接收号码 E.164；仅当审核记录未保存号码时需要")
 
+
+class PublicSMSRate(BaseModel):
+    """公开短信费率"""
+    code: str = Field(..., description="国家/地区代码 (ISO 2-letter)")
+    name: str = Field(..., description="国家/地区名称")
+    price: float = Field(..., description="公开售价 (USD)")
+    dial_code: Optional[str] = Field(None, description="国际区号")
+
+
+class PublicSMSRateResponse(BaseModel):
+    """公开短信费率响应"""
+    success: bool
+    data: list[PublicSMSRate]
+

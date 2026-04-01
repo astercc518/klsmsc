@@ -342,8 +342,30 @@ const updateCharts = () => {
     xAxis: { type: 'category', data: barCategories, axisLabel: { interval: 0, rotate: 30 } },
     yAxis: { type: 'value' },
     series: [
-      { name: t('reports.revenue'), type: 'bar', data: revenueData, itemStyle: { color: '#409EFF' } },
-      { name: t('reports.profit'), type: 'bar', data: profitData, itemStyle: { color: '#67C23A' } }
+      { 
+        name: t('reports.revenue'), 
+        type: 'bar', 
+        data: revenueData, 
+        itemStyle: { 
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: '#3b82f6' },
+            { offset: 1, color: '#2563eb' }
+          ]),
+          borderRadius: [4, 4, 0, 0]
+        } 
+      },
+      { 
+        name: t('reports.profit'), 
+        type: 'bar', 
+        data: profitData, 
+        itemStyle: { 
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: '#2dd4bf' },
+            { offset: 1, color: '#0d9488' }
+          ]),
+          borderRadius: [4, 4, 0, 0]
+        } 
+      }
     ]
   })
 }
@@ -436,11 +458,12 @@ onUnmounted(() => {
 
 /* Glassmorphism Card Style */
 .glass-card {
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 16px;
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
 }
 
 .filter-panel {
@@ -461,19 +484,22 @@ onUnmounted(() => {
 }
 
 .stat-card {
-  background: var(--bg-card);
-  border-radius: 16px;
-  padding: 20px;
+  background: rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(10px);
+  border-radius: 20px;
+  padding: 24px;
   display: flex;
   align-items: center;
-  gap: 16px;
-  transition: transform 0.3s ease, box-shadow 0.3s ease;
-  border: 1px solid var(--border-light);
+  gap: 20px;
+  transition: all 0.3s var(--ease-default);
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .stat-card:hover {
-  transform: translateY(-5px);
-  box-shadow: 0 12px 24px rgba(0,0,0,0.1);
+  transform: translateY(-8px);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(59, 130, 246, 0.3);
+  box-shadow: 0 20px 40px rgba(0,0,0,0.2);
 }
 
 .stat-icon {
@@ -486,10 +512,10 @@ onUnmounted(() => {
   font-size: 24px;
 }
 
-.stat-card.primary .stat-icon { background: rgba(64, 158, 255, 0.1); color: #409EFF; }
-.stat-card.success .stat-icon { background: rgba(103, 194, 58, 0.1); color: #67C23A; }
-.stat-card.warning .stat-icon { background: rgba(230, 162, 70, 0.1); color: #E6A23C; }
-.stat-card.info .stat-icon { background: rgba(144, 147, 153, 0.1); color: #909399; }
+.stat-card.primary .stat-icon { background: rgba(59, 130, 246, 0.1); color: #3b82f6; }
+.stat-card.success .stat-icon { background: rgba(45, 212, 191, 0.1); color: #2dd4bf; }
+.stat-card.warning .stat-icon { background: rgba(251, 191, 36, 0.1); color: #fbbf24; }
+.stat-card.info .stat-icon { background: rgba(148, 163, 184, 0.1); color: #94a3b8; }
 
 .stat-info {
   flex: 1;
@@ -576,10 +602,10 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-.revenue { color: #409EFF; }
-.cost { color: #909399; }
-.profit { color: #67C23A; }
-.profit.negative { color: #F56C6C; }
+.revenue { color: #3b82f6; }
+.cost { color: #94a3b8; }
+.profit { color: #2dd4bf; }
+.profit.negative { color: #f87171; }
 
 .rate-indicator {
   display: flex;

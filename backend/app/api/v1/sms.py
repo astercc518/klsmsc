@@ -23,6 +23,8 @@ from app.schemas.sms import (
     BatchSMSResponse,
     SMSApprovalSubmitRequest,
     SMSApprovalExecuteRequest,
+    PublicSMSRate,
+    PublicSMSRateResponse,
 )
 from fastapi.responses import JSONResponse
 from app.utils.logger import get_logger
@@ -34,6 +36,7 @@ from decimal import Decimal
 from sqlalchemy import select, update, func, or_
 from app.modules.common.balance_log import BalanceLog
 from app.modules.common.ticket import Ticket
+from app.modules.common.account_template import AccountTemplate
 
 logger = get_logger(__name__)
 
@@ -1479,3 +1482,75 @@ async def dlr_callback_by_channel(
     except Exception as e:
         logger.error(f"处理 DLR 回调失败: {str(e)}", exc_info=True)
         return {"status": 1, "message": "internal error"}
+
+
+@router.get("/public/rates", response_model=PublicSMSRateResponse)
+async def get_public_rates(db: AsyncSession = Depends(get_db)):
+    """获取公开短信费率（基于开户模板最高价 + 50% 利润）"""
+    try:
+        # 查询激活的短信开户模板，按国家分组取最高价
+        query = (
+            select(
+                AccountTemplate.country_code,
+                AccountTemplate.country_name,
+                func.max(AccountTemplate.default_price).label("max_price")
+            )
+            .where(AccountTemplate.business_type == "sms")
+            .where(AccountTemplate.status == "active")
+            .group_by(AccountTemplate.country_code, AccountTemplate.country_name)
+            .order_by(AccountTemplate.country_name.asc())
+        )
+        
+        result = await db.execute(query)
+        rows = result.all()
+        
+        rates = []
+        for row in rows:
+            # 应用 50% 利润上浮
+            price = float(Decimal(str(row.max_price or 0)) * Decimal("1.5"))
+            rates.append(PublicSMSRate(
+                code=row.country_code,
+                name=row.country_name,
+                price=round(price, 4)
+            ))
+            
+        return PublicSMSRateResponse(success=True, data=rates)
+    except Exception as e:
+        logger.error(f"获取公开费率失败: {str(e)}", exc_info=True)
+        return PublicSMSRateResponse(success=False, data=[])
+
+
+@router.get("/public/rates", response_model=PublicSMSRateResponse)
+async def get_public_rates(db: AsyncSession = Depends(get_db)):
+    """获取公开短信费率（基于开户模板最高价 + 50% 利润）"""
+    try:
+        # 查询激活的短信开户模板，按国家分组取最高价
+        query = (
+            select(
+                AccountTemplate.country_code,
+                AccountTemplate.country_name,
+                func.max(AccountTemplate.default_price).label("max_price")
+            )
+            .where(AccountTemplate.business_type == "sms")
+            .where(AccountTemplate.status == "active")
+            .group_by(AccountTemplate.country_code, AccountTemplate.country_name)
+            .order_by(AccountTemplate.country_name.asc())
+        )
+        
+        result = await db.execute(query)
+        rows = result.all()
+        
+        rates = []
+        for row in rows:
+            # 应用 50% 利润上浮
+            price = float(Decimal(str(row.max_price or 0)) * Decimal("1.5"))
+            rates.append(PublicSMSRate(
+                code=row.country_code,
+                name=row.country_name,
+                price=round(price, 4)
+            ))
+            
+        return PublicSMSRateResponse(success=True, data=rates)
+    except Exception as e:
+        logger.error(f"获取公开费率失败: {str(e)}", exc_info=True)
+        return PublicSMSRateResponse(success=False, data=[])

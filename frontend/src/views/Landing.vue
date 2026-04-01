@@ -54,7 +54,7 @@
       </div>
     </header>
 
-    <!-- ===== Hero Banner（Stripe 风格） ===== -->
+    <!-- ===== Hero Banner (Portal-Centric) ===== -->
     <section class="hero">
       <div class="hero-bg">
         <div class="hero-glow g1"></div>
@@ -62,28 +62,46 @@
         <div class="hero-mesh" v-if="!isDark"></div>
       </div>
       <div class="w hero-inner">
-        <div class="hero-left hero-animate">
-          <p class="hero-badge">{{ $t('landing.hero.subtitle') }}</p>
-          <h1 class="hero-title">{{ $t('landing.hero.title') }}<em>{{ $t('landing.hero.titleHighlight') }}</em>{{ $t('landing.hero.titleSuffix') }}</h1>
-          <p class="hero-desc">{{ $t('landing.hero.desc') }}</p>
-          <div class="hero-btns">
-            <router-link to="/login" class="btn-main">{{ $t('landing.hero.freeTest') }}</router-link>
-            <a href="#contact" class="btn-outline">{{ $t('landing.hero.contact') }}</a>
+        <div class="hero-left animate-fade-left">
+          <div class="hero-tag animate-slide-up">{{ $t('landing.hero.subtitle') }}</div>
+          <h1 class="hero-title animate-slide-up" style="animation-delay: 0.1s">
+            <span class="text-gradient tactile-text">{{ $t('brand.name') }}</span>
+            <br />
+            <span class="text-secondary">{{ $t('landing.hero.titleHighlight') }}</span>
+          </h1>
+          <p class="hero-desc animate-slide-up" style="animation-delay: 0.2s">
+            {{ $t('landing.hero.desc') }}
+            <br /><br />
+            <span class="text-tertiary font-sm">{{ $t('landing.hero.portalDesc') || 'Automated Voice, SMS & DID Management in one single interface.' }}</span>
+          </p>
+          <div class="hero-btns animate-slide-up" style="animation-delay: 0.3s">
+            <router-link to="/login" class="btn-main-lg soft-button">
+              <span>{{ $t('landing.hero.freeTest') }}</span>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" class="mg-l-xs"><path d="M5 12h14m-7-7 7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </router-link>
+            <a href="#solutions" class="btn-glass soft-button">{{ $t('landing.hero.explore') || 'Explore Solutions' }}</a>
           </div>
-          <p class="hero-badges">{{ $t('landing.hero.badges') }}</p>
-          <p class="hero-trust">{{ $t('landing.hero.trust', { n: '20,000+' }) }}</p>
-        </div>
-        <div class="hero-right hero-animate">
-          <div class="hero-phone phone-float">
-            <div class="phone-frame">
-              <div class="phone-notch"></div>
-              <div class="phone-screen">
-                <div class="phone-msg phone-msg-in">{{ $t('landing.phoneMsg1') }}</div>
-                <div class="phone-msg phone-msg-in">{{ $t('landing.phoneMsg2') }}</div>
-                <div class="phone-msg phone-msg-out">{{ $t('landing.phoneMsg3') }}</div>
-                <div class="phone-msg phone-msg-in">{{ $t('landing.phoneMsg4') }}</div>
-              </div>
+          
+          <div class="hero-stats-mini animate-slide-up" style="animation-delay: 0.4s">
+            <div class="hstat-mini">
+              <strong>99.9%</strong>
+              <span>{{ $t('landing.hero.stats.uptime') }}</span>
             </div>
+            <div class="hstat-divider"></div>
+            <div class="hstat-mini">
+              <strong>1ms</strong>
+              <span>{{ $t('landing.hero.stats.latency') }}</span>
+            </div>
+          </div>
+        </div>
+        
+        <div class="hero-right animate-fade-right">
+          <div class="portal-preview-wrapper portal-card">
+            <div class="portal-header">
+              <div class="portal-dots"><span></span><span></span><span></span></div>
+              <div class="portal-title">Rates Explorer</div>
+            </div>
+            <RateSearch />
           </div>
         </div>
       </div>
@@ -114,54 +132,112 @@
       </div>
     </section>
 
-    <!-- ===== SMS 解决方案 ===== -->
-    <section id="solutions" class="sec">
+    <!-- ===== Industry Solutions (illyvoip style) ===== -->
+    <section id="solutions" class="sec sec-solutions">
       <div class="w">
-        <p class="sec-label">{{ $t('landing.sections.solutions') }}</p>
-        <h2 class="sec-title">{{ $t('landing.sections.solutionsTitle') }}</h2>
-        <p class="sec-desc">{{ $t('landing.solutionsDesc') }}</p>
-        <div class="sec-actions">
-          <router-link to="/login" class="btn-main">{{ $t('landing.ctaOpenAccount') }}</router-link>
-          <a href="#faq" class="btn-outline">{{ $t('landing.ctaOnlineConsult') }}</a>
+        <div class="sec-header animate-slide-up">
+          <p class="sec-tag">{{ $t('landing.sections.solutions') }}</p>
+          <h2 class="sec-title">{{ $t('landing.sections.solutionsTitle') || 'Tailored Solutions for Industry Leaders' }}</h2>
+          <p class="sec-desc">{{ $t('landing.solutionsDesc') }}</p>
         </div>
-        <div class="sol-grid">
-          <div class="sol-card" v-for="s in solutions" :key="s.title">
-            <h4>{{ s.title }}</h4>
-            <p>{{ s.desc }}</p>
-            <a href="#products" class="sol-link">{{ $t('landing.solLink') }} →</a>
+        
+        <div class="industry-grid">
+          <div class="industry-card soft-card soft-card-hover animate-scale" style="animation-delay: 0.1s">
+            <div class="industry-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
+            <h3>{{ $t('landing.industries.finance.title') }}</h3>
+            <p>{{ $t('landing.industries.finance.desc') }}</p>
+            <ul class="industry-list">
+              <li v-for="f in $tm('landing.industries.finance.features')" :key="f"><span class="dot"></span> {{ f }}</li>
+            </ul>
           </div>
+          
+          <div class="industry-card soft-card soft-card-hover animate-scale" style="animation-delay: 0.2s">
+            <div class="industry-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4H6zM3 6h18M16 10a4 4 0 0 1-8 0"/></svg></div>
+            <h3>{{ $t('landing.industries.retail.title') }}</h3>
+            <p>{{ $t('landing.industries.retail.desc') }}</p>
+            <ul class="industry-list">
+              <li v-for="f in $tm('landing.industries.retail.features')" :key="f"><span class="dot"></span> {{ f }}</li>
+            </ul>
+          </div>
+          
+          <div class="industry-card soft-card soft-card-hover animate-scale" style="animation-delay: 0.3s">
+            <div class="industry-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 3h15v13H1zM16 8h4l3 3v5h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg></div>
+            <h3>{{ $t('landing.industries.logistics.title') }}</h3>
+            <p>{{ $t('landing.industries.logistics.desc') }}</p>
+            <ul class="industry-list">
+              <li v-for="f in $tm('landing.industries.logistics.features')" :key="f"><span class="dot"></span> {{ f }}</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="sec-footer-actions animate-slide-up">
+          <router-link to="/login" class="btn-main-lg soft-button">
+            <span>{{ $t('landing.ctaOpenAccount') }}</span>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M13 7l5 5m0 0l-5 5m5-5H6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </router-link>
+          <a href="#contact" class="btn-glass soft-button">{{ $t('landing.ctaOnlineConsult') }}</a>
         </div>
       </div>
     </section>
 
-    <!-- ===== SMS 产品 ===== -->
-    <section id="products" class="sec sec-dark">
+    <!-- ===== DID / Virtual Number Showcase (illyvoip style) ===== -->
+    <section id="numbers" class="sec sec-did">
+      <div class="did-bg-image">
+        <img src="/global_comm.png" alt="Global Communication" />
+      </div>
       <div class="w">
-        <p class="sec-label">{{ $t('landing.sections.products') }}</p>
-        <h2 class="sec-title">{{ $t('landing.sections.productsTitle') }}</h2>
-        <p class="sec-desc">{{ $t('landing.productsDesc') }}</p>
-        <div class="prod-tabs">
-          <button v-for="(p,i) in products" :key="i" :class="['ptab', {active: prodIdx===i}]" @click="prodIdx=i" type="button">
-            <span class="ptab-icon" aria-hidden="true"><component :is="p.icon" /></span>
-            <span class="ptab-text">{{ p.label }}</span>
-          </button>
+        <div class="sec-header animate-slide-up">
+          <p class="sec-tag">{{ $t('landing.sections.did') || 'VIRTUAL NUMBERS' }}</p>
+          <h2 class="sec-title">{{ $t('landing.sections.didTitle') || 'Establish Your Presence Worldwide' }}</h2>
         </div>
-        <div class="prod-body">
-          <div class="prod-info">
-            <div class="prod-item" v-for="(item,j) in products[prodIdx].items" :key="j">
-              <h4>{{ item.title }}</h4>
-              <p>{{ item.desc }}</p>
-            </div>
-            <div class="prod-btns">
-              <router-link to="/login" class="btn-main btn-sm">{{ $t('landing.ctaTryNow') }}</router-link>
-              <a href="#pricing" class="btn-outline btn-sm">{{ $t('landing.ctaLearnMore') }}</a>
-            </div>
+        <DIDShowcase />
+      </div>
+    </section>
+
+    <!-- ===== SMS 产品 ===== -->
+    <section id="products" class="sec sec-dark-gradient">
+      <div class="w">
+        <div class="sec-header animate-slide-up">
+          <p class="sec-tag">{{ $t('landing.sections.products') }}</p>
+          <h2 class="sec-title">{{ $t('landing.sections.productsTitle') }}</h2>
+          <p class="sec-desc">{{ $t('landing.productsDesc') }}</p>
+        </div>
+
+        <div class="prod-container animate-slide-up">
+          <div class="prod-tabs-modern">
+            <button v-for="(p,i) in products" :key="i" :class="['ptab-modern', {active: prodIdx===i}]" @click="prodIdx=i" type="button">
+              <span class="ptab-icon"><component :is="p.icon" /></span>
+              <span class="ptab-text">{{ p.label }}</span>
+            </button>
           </div>
-          <div class="prod-visual">
-            <div class="prod-card-visual">
-              <div class="pcv-item" v-for="(item,j) in products[prodIdx].items" :key="j">
-                <span class="pcv-dot"></span>
-                {{ item.title }}
+          
+          <div class="prod-content-modern glass-card">
+            <div class="prod-info-modern">
+              <div class="prod-item-modern" v-for="(item,j) in products[prodIdx].items" :key="j">
+                <div class="prod-item-header">
+                  <span class="prod-item-dot"></span>
+                  <h4>{{ item.title }}</h4>
+                </div>
+                <p>{{ item.desc }}</p>
+              </div>
+              <div class="prod-btns-modern">
+                <router-link to="/login" class="btn-main-lg">{{ $t('landing.ctaTryNow') }}</router-link>
+                <a href="#pricing" class="btn-glass">{{ $t('landing.ctaLearnMore') }}</a>
+              </div>
+            </div>
+            <div class="prod-visual-modern">
+              <div class="visual-mockup">
+                <div class="mockup-header">
+                  <span class="dot-r"></span><span class="dot-y"></span><span class="dot-g"></span>
+                  <div class="mockup-url">api.kaolach.com/v1/sms/send</div>
+                </div>
+                <div class="mockup-body">
+                  <pre><code>{
+  "to": "+1234567890",
+  "message": "Hello from Kaolach!",
+  "type": "marketing"
+}</code></pre>
+                </div>
               </div>
             </div>
           </div>
@@ -172,12 +248,16 @@
     <!-- ===== 优势 ===== -->
     <section id="advantages" class="sec">
       <div class="w">
-        <p class="sec-label">{{ $t('landing.sections.advantages') }}</p>
-        <h2 class="sec-title">{{ $t('landing.sections.advantagesTitle') }}</h2>
-        <p class="sec-desc">{{ $t('landing.advantagesDesc') }}</p>
+        <div class="sec-header animate-slide-up">
+          <p class="sec-tag">{{ $t('landing.sections.advantages') }}</p>
+          <h2 class="sec-title">{{ $t('landing.sections.advantagesTitle') }}</h2>
+          <p class="sec-desc">{{ $t('landing.advantagesDesc') }}</p>
+        </div>
         <div class="adv-grid">
-          <div class="adv-card" v-for="a in advantages" :key="a.title">
-            <div class="adv-icon" aria-hidden="true"><component :is="a.icon" /></div>
+          <div class="adv-card soft-card soft-card-hover animate-slide-up" v-for="(a, index) in advantages" :key="a.title" :style="{ animationDelay: (index * 0.1) + 's' }">
+            <div class="adv-icon-wrapper">
+              <component :is="a.icon" />
+            </div>
             <h4>{{ a.title }}</h4>
             <p>{{ a.desc }}</p>
           </div>
@@ -186,20 +266,27 @@
     </section>
 
     <!-- ===== 覆盖范围 & 定价 ===== -->
-    <section id="pricing" class="sec sec-dark">
+    <section id="pricing" class="sec sec-dark-gradient">
       <div class="w">
-        <p class="sec-label">{{ $t('landing.sections.pricingLabel') }}</p>
-        <h2 class="sec-title">{{ $t('landing.sections.pricingTitle') }}</h2>
-        <p class="sec-desc">{{ $t('landing.pricingDesc') }}</p>
-        <div class="coverage-nums">
-          <div class="cn"><span class="cn-val">190+</span><span class="cn-label">{{ $t('landing.coverageLabels.countries') }}</span></div>
-          <div class="cn"><span class="cn-val">800+</span><span class="cn-label">{{ $t('landing.coverageLabels.operators') }}</span></div>
-          <div class="cn"><span class="cn-val">95%+</span><span class="cn-label">{{ $t('landing.coverageLabels.delivery') }}</span></div>
-          <div class="cn"><span class="cn-val">3min</span><span class="cn-label">{{ $t('landing.coverageLabels.viewTime') }}</span></div>
+        <div class="sec-header animate-slide-up">
+          <p class="sec-tag">{{ $t('landing.sections.pricingLabel') }}</p>
+          <h2 class="sec-title">{{ $t('landing.sections.pricingTitle') }}</h2>
+          <p class="sec-desc">{{ $t('landing.pricingDesc') }}</p>
         </div>
-        <div class="price-cards">
-          <div class="price-card" v-for="p in priceFeatures" :key="p.title">
-            <h4>{{ p.title }}</h4>
+        
+        <div class="pricing-stats animate-slide-up">
+          <div class="pstat-item"><span class="pstat-val">190+</span><span class="pstat-lbl">{{ $t('landing.coverageLabels.countries') }}</span></div>
+          <div class="pstat-item"><span class="pstat-val">800+</span><span class="pstat-lbl">{{ $t('landing.coverageLabels.operators') }}</span></div>
+          <div class="pstat-item"><span class="pstat-val">95%+</span><span class="pstat-lbl">{{ $t('landing.coverageLabels.delivery') }}</span></div>
+          <div class="pstat-item"><span class="pstat-val">3min</span><span class="pstat-lbl">{{ $t('landing.coverageLabels.viewTime') }}</span></div>
+        </div>
+
+        <div class="price-cards-modern animate-slide-up">
+          <div class="price-card-glass soft-card soft-card-hover" v-for="p in priceFeatures" :key="p.title">
+            <div class="pcard-header">
+              <div class="pcard-dot"></div>
+              <h4>{{ p.title }}</h4>
+            </div>
             <p>{{ p.desc }}</p>
           </div>
         </div>
@@ -209,122 +296,117 @@
     <!-- ===== FAQ ===== -->
     <section id="faq" class="sec">
       <div class="w">
-        <p class="sec-label">{{ $t('landing.sections.faq') }}</p>
-        <h2 class="sec-title">{{ $t('landing.sections.faqTitle') }}</h2>
-        <p class="sec-desc">{{ $t('landing.faqDesc') }}</p>
-        <div class="sec-actions">
-          <router-link to="/login" class="btn-main btn-sm">{{ $t('landing.ctaSupport') }}</router-link>
-          <a href="#contact" class="btn-outline btn-sm">{{ $t('landing.nav.contact') }}</a>
+        <div class="sec-header animate-slide-up">
+          <p class="sec-tag">{{ $t('landing.sections.faq') }}</p>
+          <h2 class="sec-title">{{ $t('landing.sections.faqTitle') }}</h2>
+          <p class="sec-desc">{{ $t('landing.faqDesc') }}</p>
         </div>
-        <div class="faq-list">
-          <details class="faq-item" v-for="f in faqs" :key="f.q">
-            <summary>{{ f.q }}</summary>
-            <p>{{ f.a }}</p>
+        
+        <div class="faq-list-modern animate-slide-up">
+          <details class="faq-item-modern glass-card" v-for="f in faqs" :key="f.q">
+            <summary>
+              <span>{{ f.q }}</span>
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" class="faq-arrow">
+                <path d="M6 8L10 12L14 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </summary>
+            <div class="faq-ans">
+              <p>{{ f.a }}</p>
+            </div>
           </details>
         </div>
       </div>
     </section>
 
-    <!-- ===== 使用流程 ===== -->
-    <section id="flow" class="sec sec-dark">
+    <!-- ===== 联系我们 ===== -->
+    <section id="contact" class="sec sec-dark-gradient">
       <div class="w">
-        <p class="sec-label">{{ $t('landing.sections.flow') }}</p>
-        <h2 class="sec-title">{{ $t('landing.sections.flowTitle') }}</h2>
-        <p class="sec-desc">{{ $t('landing.flowDesc') }}</p>
-        <div class="flow-row">
-          <div class="flow-step" v-for="(s,i) in flowSteps" :key="i">
-            <span class="flow-badge">step {{ i+1 }}</span>
-            <h4>{{ s.title }}</h4>
-            <p>{{ s.desc }}</p>
-          </div>
+        <div class="sec-header animate-slide-up">
+          <p class="sec-tag">{{ $t('landing.nav.contact') }}</p>
+          <h2 class="sec-title">{{ $t('landing.contact.sectionTitle') }}</h2>
         </div>
-        <div class="sec-actions">
-          <router-link to="/login" class="btn-main">{{ $t('landing.ctaTryNow') }}</router-link>
-          <a href="#products" class="btn-outline">{{ $t('landing.ctaViewSteps') }}</a>
-        </div>
-      </div>
-    </section>
-
-    <!-- ===== 联系我们 - 官方 TG + 商务经理 ===== -->
-    <section id="contact" class="sec sec-contact">
-      <div class="w">
-        <p class="sec-label">{{ $t('landing.nav.contact') }}</p>
-        <h2 class="sec-title">{{ $t('landing.contact.sectionTitle') }}</h2>
-        <div class="contact-cards">
-          <!-- 官方 TG 卡片 -->
-          <div class="contact-card">
-            <div class="contact-logo">
-              <img src="/logo.svg" alt="考拉出海" class="contact-logo-img" />
+        
+        <div class="contact-grid-modern animate-slide-up">
+          <!-- Official Bot -->
+          <div class="contact-card-modern glass-card">
+            <div class="contact-icon-box bot">
+              <img src="/logo.svg" alt="Kaolach" />
             </div>
-            <h3 class="contact-title">{{ $t('landing.contact.title') }}</h3>
-            <p class="contact-username">@kaolachbot</p>
-            <p class="contact-desc">{{ $t('landing.contact.line1') }}</p>
-            <p class="contact-desc">{{ $t('landing.contact.line2') }}</p>
-            <p class="contact-desc">{{ $t('landing.contact.line3') }}</p>
-            <a href="https://t.me/kaolachbot" target="_blank" rel="noopener noreferrer" class="contact-btn">{{ $t('landing.contact.sendMessage') }}</a>
-          </div>
-          <!-- 商务经理卡片 -->
-          <div class="contact-card">
-            <div class="contact-logo">
-              <img src="/wechat-qr-business.png" alt="商务经理微信" class="contact-qr-img" />
+            <h3>{{ $t('landing.contact.title') }}</h3>
+            <p class="contact-handle">@kaolachbot</p>
+            <div class="contact-features">
+              <span>{{ $t('landing.contact.line1') }}</span>
+              <span>{{ $t('landing.contact.line2') }}</span>
+              <span>{{ $t('landing.contact.line3') }}</span>
             </div>
-            <h3 class="contact-title">{{ $t('landing.contact.businessManagerTitle') }}</h3>
-            <p class="contact-username">{{ $t('landing.contact.businessManagerWx') }} / TG @jack9967</p>
-            <p class="contact-desc">{{ $t('landing.contact.businessManagerDesc') }}</p>
-            <a href="https://t.me/jack9967" target="_blank" rel="noopener noreferrer" class="contact-btn">{{ $t('landing.contact.sendMessage') }}</a>
+            <a href="https://t.me/kaolachbot" target="_blank" class="btn-main-lg w-full">
+              {{ $t('landing.contact.sendMessage') }}
+            </a>
+          </div>
+
+          <!-- Business Manager -->
+          <div class="contact-card-modern glass-card">
+            <div class="contact-icon-box manager">
+              <img src="/wechat-qr-business.png" alt="Manager" />
+            </div>
+            <h3>{{ $t('landing.contact.businessManagerTitle') }}</h3>
+            <p class="contact-handle">TG @jack9967</p>
+            <div class="contact-features">
+              <span>{{ $t('landing.contact.businessManagerWx') }}: JackSMS</span>
+              <span>{{ $t('landing.contact.businessManagerDesc') }}</span>
+            </div>
+            <a href="https://t.me/jack9967" target="_blank" class="btn-glass w-full">
+              {{ $t('landing.contact.sendMessage') }}
+            </a>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ===== 数字事实 ===== -->
-    <section class="sec sec-facts">
+    <!-- ===== CTA ===== -->
+    <section class="sec sec-cta-modern">
       <div class="w">
-        <h3 class="sec-title" style="font-size:1.4rem">{{ $t('landing.factsTitle') }}</h3>
-        <div class="facts-grid">
-          <div class="fact-item" v-for="(f, i) in $tm('landing.facts')" :key="i"><span class="fact-val">{{ f.val }}</span><span class="fact-lbl">{{ f.lbl }}</span></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ===== CTA（Stripe 风格双 CTA） ===== -->
-    <section id="about" class="sec sec-cta">
-      <div class="w cta-box">
-        <h2>{{ $t('landing.ctaTitle') }}</h2>
-        <p class="cta-sub">{{ $t('landing.ctaSub') }}</p>
-        <div class="cta-btns">
-          <router-link to="/login" class="btn-main btn-lg">{{ $t('landing.cta') }}</router-link>
-          <a href="#contact" class="btn-outline btn-lg">{{ $t('landing.ctaContact') }}</a>
+        <div class="cta-banner glass-card animate-slide-up">
+          <div class="cta-content">
+            <h2>{{ $t('landing.ctaTitle') }}</h2>
+            <p>{{ $t('landing.ctaSub') }}</p>
+            <div class="cta-actions">
+              <router-link to="/login" class="btn-main-lg">{{ $t('landing.cta') }}</router-link>
+              <a href="#contact" class="btn-glass">{{ $t('landing.ctaContact') }}</a>
+            </div>
+          </div>
+          <div class="cta-visual">
+            <div class="visual-orb"></div>
+          </div>
         </div>
       </div>
     </section>
 
     <!-- ===== Footer ===== -->
-    <footer class="ft">
-      <div class="w ft-inner">
-        <div class="ft-brand">
-          <span class="hd-logo-text" style="font-size:1.5rem">Kao<em>lach</em></span>
+    <footer class="footer-modern">
+      <div class="w footer-inner">
+        <div class="footer-brand">
+          <div class="f-logo">Kao<span>lach</span></div>
           <p>{{ $t('landing.footerDesc') }}</p>
         </div>
-        <div class="ft-col">
-          <h5>{{ $t('landing.footerProducts') }}</h5>
-          <a href="#products">{{ $t('landing.nav.intlSms') }}</a>
-          <a href="#products">{{ $t('landing.nav.verifySms') }}</a>
-          <a href="#products">{{ $t('landing.nav.marketingSms') }}</a>
-          <a href="#products">{{ $t('landing.nav.smsApi') }}</a>
-          <a href="#pricing">{{ $t('landing.nav.pricing') }}</a>
-          <a href="#flow">{{ $t('landing.nav.flow') }}</a>
-          <a href="#faq">{{ $t('landing.nav.faq') }}</a>
-        </div>
-        <div class="ft-col">
-          <h5>{{ $t('landing.footerAbout') }}</h5>
-          <a href="#contact">{{ $t('landing.footerContact') }}</a>
-          <a href="#about">{{ $t('landing.footerAboutUs') }}</a>
+        
+        <div class="footer-links-grid">
+          <div class="f-col">
+            <h5>{{ $t('landing.footerProducts') }}</h5>
+            <a href="#products">{{ $t('landing.nav.intlSms') }}</a>
+            <a href="#products">{{ $t('landing.nav.verifySms') }}</a>
+            <a href="#pricing">{{ $t('landing.nav.pricing') }}</a>
+          </div>
+          <div class="f-col">
+            <h5>{{ $t('landing.footerAbout') }}</h5>
+            <a href="#contact">{{ $t('landing.footerContact') }}</a>
+            <a href="#about">{{ $t('landing.footerAboutUs') }}</a>
+          </div>
         </div>
       </div>
-      <div class="w ft-bottom">
-        <p>© 2024 - {{ new Date().getFullYear() }} {{ $t('brand.name') }}. All Rights Reserved.</p>
-        <div class="ft-links">
+      <div class="w footer-bottom">
+        <p>© {{ new Date().getFullYear() }} {{ $t('brand.name') }}. All Rights Reserved.</p>
+        <div class="f-bottom-links">
           <a href="#faq">{{ $t('landing.footerSupport') }}</a>
           <a href="#about">{{ $t('landing.footerTerms') }}</a>
         </div>
@@ -337,6 +419,8 @@
 import { ref, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { setLocale, getLocale } from '@/i18n'
+import RateSearch from '@/components/landing/RateSearch.vue'
+import DIDShowcase from '@/components/landing/DIDShowcase.vue'
 
 const { t, locale } = useI18n()
 const isDark = ref(true)
@@ -470,6 +554,10 @@ const flowSteps = computed(() => [
   --shadow-sm: 0 1px 2px rgba(15,23,42,.04);
   --shadow-md: 0 4px 12px rgba(15,23,42,.06);
   --shadow-lg: 0 12px 40px rgba(15,23,42,.08);
+  --gradient-primary: linear-gradient(135deg, #3B82F6 0%, #2DD4BF 100%);
+  --ease-out: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-normal: 0.3s;
   background: var(--bg);
   color: var(--t1);
   font-family: 'Inter', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -477,6 +565,7 @@ const flowSteps = computed(() => [
   scroll-behavior: smooth;
   overflow-x: hidden;
   min-height: 100vh;
+  scroll-behavior: smooth !important;
 }
 /* 浅色模式（默认 B2B SaaS 风格） */
 .landing-site.is-light {
@@ -612,377 +701,440 @@ const flowSteps = computed(() => [
 .landing-site .hd-burger span { display: block; height: 2px; background: var(--t2); border-radius: 2px; }
 
 /* ===== Buttons ===== */
-.landing-site .btn-main { display: inline-flex; align-items: center; justify-content: center; padding: 14px 28px; background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%); color: #fff; font-weight: 600; font-size: .95rem; border-radius: 10px; border: none; cursor: pointer; transition: opacity .2s, transform .15s, box-shadow .2s; box-shadow: 0 4px 14px rgba(37,99,235,.4); }
-.landing-site .btn-main:hover { opacity: .95; transform: translateY(-2px); box-shadow: 0 6px 20px rgba(37,99,235,.45); }
-.landing-site .btn-main:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-.landing-site .btn-main.btn-sm { padding: 9px 20px; font-size: .85rem; }
-.landing-site .btn-main.btn-lg { padding: 16px 36px; font-size: 1rem; }
-.landing-site .btn-outline { display: inline-flex; align-items: center; justify-content: center; padding: 14px 28px; background: transparent; color: var(--t2); border: 1px solid var(--border); font-weight: 600; font-size: .95rem; border-radius: 8px; cursor: pointer; transition: color .2s, border-color .2s, background .2s; }
-.landing-site .btn-outline:hover { color: var(--t1); border-color: var(--border-hover); background: var(--primary-muted); }
-.landing-site .btn-outline:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-.landing-site .btn-outline.btn-sm { padding: 9px 20px; font-size: .85rem; }
+.landing-site .btn-main-lg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 36px;
+  background: var(--gradient-primary);
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.1rem;
+  border-radius: var(--radius-lg);
+  border: none;
+  cursor: pointer;
+  transition: all var(--duration-normal) var(--ease-default);
+  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.4);
+}
 
-/* ===== Hero（Stripe 风格） ===== */
-.landing-site .hero { position: relative; min-height: 85vh; display: flex; align-items: center; padding: 120px 0 80px; overflow: hidden; }
-.landing-site .hero-bg { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.landing-site .btn-main-lg:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 32px rgba(59, 130, 246, 0.5);
+  filter: brightness(1.1);
+}
+
+.landing-site .btn-glass {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 36px;
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--t1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-weight: 600;
+  font-size: 1.1rem;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--duration-normal) var(--ease-default);
+}
+
+.landing-site .btn-glass:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-2px);
+}
+
+/* ===== Hero（Modernized） ===== */
+.landing-site .hero {
+  position: relative;
+  min-height: 90vh;
+  display: flex;
+  align-items: center;
+  padding: 140px 0 100px;
+  overflow: hidden;
+}
+
+.landing-site .hero-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+}
+
 .landing-site .hero-mesh {
-  position: absolute; inset: 0;
+  position: absolute;
+  inset: 0;
   background: 
-    radial-gradient(ellipse 100% 80% at 50% -30%, rgba(37,99,235,.22) 0%, rgba(99,102,241,.1) 40%, transparent 65%),
-    radial-gradient(ellipse 70% 50% at 110% 60%, rgba(59,130,246,.14) 0%, transparent 50%),
-    radial-gradient(ellipse 60% 40% at -10% 80%, rgba(34,197,94,.1) 0%, transparent 50%);
+    radial-gradient(ellipse 100% 80% at 50% -30%, rgba(59, 130, 246, 0.15) 0%, transparent 70%),
+    radial-gradient(ellipse 60% 40% at 100% 60%, rgba(45, 212, 191, 0.1) 0%, transparent 60%);
 }
-.landing-site .hero-glow { position: absolute; border-radius: 50%; filter: blur(100px); opacity: 0.85; }
-.landing-site .g1 { width:  min(80vw, 720px); height: min(80vw, 720px); background: radial-gradient(circle, rgba(52,120,246,.28) 0%, rgba(52,120,246,.08) 50%, transparent 70%); top: -25%; left: -15%; }
-.landing-site .g2 { width:  min(60vw, 520px); height: min(60vw, 520px); background: radial-gradient(circle, rgba(34,197,94,.12) 0%, rgba(34,197,94,.04) 50%, transparent 70%); bottom: -15%; right: -10%; }
-.landing-site .g3 { width:  min(50vw, 400px); height: min(50vw, 400px); background: radial-gradient(circle, rgba(56,189,248,.15) 0%, transparent 60%); top: 40%; right: 10%; }
 
-.landing-site .hero-inner { position: relative; display: grid; grid-template-columns: 1fr 340px; gap: 64px; align-items: center; }
-.landing-site .hero-badge {
-  display: inline-block; padding: 8px 16px; margin-bottom: 20px;
-  background: linear-gradient(135deg, rgba(37,99,235,.12) 0%, rgba(79,70,229,.08) 100%);
-  color: var(--primary); font-size: .8rem; font-weight: 600;
-  border-radius: 999px; letter-spacing: .04em;
-  border: 1px solid rgba(37,99,235,.15);
+.landing-site .hero-glow {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(120px);
+  opacity: 0.6;
 }
+
+.landing-site .g1 {
+  width: 600px;
+  height: 600px;
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.2) 0%, transparent 70%);
+  top: -100px;
+  left: -100px;
+}
+
+.landing-site .g2 {
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, rgba(45, 212, 191, 0.15) 0%, transparent 70%);
+  bottom: -50px;
+  right: -50px;
+}
+
+.landing-site .hero-inner {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 80px;
+  align-items: center;
+  z-index: 1;
+}
+
+.landing-site .hero-tag {
+  display: inline-block;
+  padding: 6px 14px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  color: var(--primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  border-radius: 100px;
+  margin-bottom: 24px;
+  letter-spacing: 0.02em;
+}
+
 .landing-site .hero-title {
-  font-family: 'Inter', 'Plus Jakarta Sans', sans-serif;
-  font-size: clamp(2.25rem, 5vw, 3.25rem); font-weight: 800; line-height: 1.15;
-  margin-bottom: 20px; letter-spacing: -0.04em;
+  font-size: clamp(2.5rem, 5vw, 4.5rem);
+  line-height: 1.1;
+  font-weight: 800;
+  margin-bottom: 24px;
+  letter-spacing: -0.03em;
   color: var(--t1);
 }
-.landing-site .hero-title em { font-style: normal; background: linear-gradient(135deg, #2563eb 0%, #4f46e5 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-.landing-site.is-dark .hero-title em { background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-.landing-site .hero-desc { font-size: 1.1rem; color: var(--t2); line-height: 1.75; margin-bottom: 32px; max-width: 540px; }
-.landing-site .hero-btns { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
-.landing-site .hero-badges { font-size: .82rem; color: var(--t3); margin-bottom: 20px; display: flex; align-items: center; gap: 8px; }
-.landing-site .hero-trust { font-size: .9rem; color: var(--t3); }
-.landing-site .hero-trust b { color: var(--primary); }
 
-/* Stripe 风格信任指标 */
-.landing-site .sec-stats { padding: 56px 0; background: var(--card); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.landing-site .stats-wrapper { text-align: center; }
-.landing-site .stats-trusted { font-size: .8rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--t3); margin-bottom: 32px; }
-.landing-site .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; }
-.landing-site .stat-item { text-align: center; }
-.landing-site .stat-val { display: block; font-size: 2.5rem; font-weight: 800; color: var(--primary); letter-spacing: -0.03em; margin-bottom: 8px; line-height: 1.1; }
-.landing-site .stat-label { font-size: .88rem; color: var(--t3); font-weight: 500; }
-@media (max-width: 768px) {
-  .landing-site .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 24px; }
-  .landing-site .stat-val { font-size: 1.85rem; }
+.landing-site .hero-desc {
+  font-size: 1.25rem;
+  color: var(--t2);
+  max-width: 540px;
+  margin-bottom: 40px;
+  line-height: 1.6;
 }
 
-/* 手机模型 */
-.landing-site .hero-phone { display: flex; justify-content: center; }
-.landing-site .phone-frame { 
-  width: 280px; background: linear-gradient(160deg,#1a1d35,#0f1125); 
-  border: 2px solid rgba(255,255,255,.12); border-radius: 32px; padding: 12px; position: relative; 
-  box-shadow: 0 25px 50px -12px rgba(0,0,0,.35), 0 0 0 1px rgba(0,0,0,.1), inset 0 1px 0 rgba(255,255,255,.08);
+.landing-site .hero-btns {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 48px;
 }
-.landing-site .phone-notch { width: 100px; height: 24px; background: #0b0d1a; border-radius: 0 0 14px 14px; margin: 0 auto 12px; }
-.landing-site .phone-screen { display: flex; flex-direction: column; gap: 10px; padding: 8px; min-height: 340px; }
-.landing-site .phone-msg { padding: 10px 14px; border-radius: 14px; font-size: .82rem; line-height: 1.5; max-width: 88%; animation: landingMsgIn .6s ease both; }
-.landing-site .phone-msg-in { background: rgba(52,120,246,.15); border: 1px solid rgba(52,120,246,.2); color: var(--t1); align-self: flex-start; }
-.landing-site .phone-msg-out { background: rgba(255,255,255,.08); border: 1px solid var(--border); color: var(--t2); align-self: flex-end; }
-.landing-site .phone-msg:nth-child(2) { animation-delay: .2s; }
-.landing-site .phone-msg:nth-child(3) { animation-delay: .4s; }
-.landing-site .phone-msg:nth-child(4) { animation-delay: .6s; }
-@keyframes landingMsgIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes phoneFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
-.landing-site .phone-float { animation: phoneFloat 4s ease-in-out infinite; }
 
-/* ===== Section 通用 ===== */
-.landing-site .sec { padding: 88px 0; position: relative; }
-.landing-site .sec-dark { background: var(--bg-alt); }
-.landing-site .sec-label { text-align: center; font-size: .75rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--primary); margin-bottom: 12px; }
-.landing-site .sec-title { text-align: center; font-size: 1.9rem; font-weight: 700; margin-bottom: 16px; line-height: 1.3; letter-spacing: -0.02em; color: var(--t1); }
-.landing-site .sec-desc { text-align: center; color: var(--t2); max-width: 620px; margin: 0 auto 40px; line-height: 1.75; font-size: .95rem; }
-.landing-site .sec-actions { display: flex; justify-content: center; gap: 14px; margin-bottom: 40px; flex-wrap: wrap; }
+.landing-site .hero-trust-mini {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: var(--t3);
+  font-size: 0.9375rem;
+}
+
+.landing-site .trust-avatars {
+  display: flex;
+  align-items: center;
+}
+
+.landing-site .trust-avatars img {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  margin-left: -12px;
+}
+
+.landing-site .trust-avatars img:first-child {
+  margin-left: 0;
+}
+
+/* Animations */
+.animate-slide-up {
+  opacity: 0;
+  transform: translateY(20px);
+  animation: slideUp 0.6s var(--ease-out) forwards;
+}
+
+/* New Hero Styles (illyvoip style) */
+.hero-stats-mini {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-top: 48px;
+}
+.hstat-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.hstat-mini strong { font-size: 1.5rem; font-weight: 800; color: var(--primary); letter-spacing: -0.02em; }
+.hstat-mini span { font-size: 0.8rem; color: var(--t3); font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; }
+.hstat-divider { width: 1px; height: 32px; background: rgba(255,255,255,0.1); }
+
+.portal-preview-wrapper {
+  padding: 1px;
+  overflow: hidden;
+  transition: all 0.5s var(--ease-default);
+}
+.portal-header {
+  padding: 12px 20px;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.portal-dots { display: flex; gap: 6px; }
+.portal-dots span { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,0.1); }
+.portal-dots span:nth-child(1) { background: #ff5f56; }
+.portal-dots span:nth-child(2) { background: #ffbd2e; }
+.portal-dots span:nth-child(3) { background: #27c93f; }
+.portal-title { font-size: 0.75rem; font-weight: 600; color: var(--t3); text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* Industry Grid Styles (illyvoip style) */
+.sec-solutions { background: linear-gradient(to bottom, transparent, rgba(59, 130, 246, 0.03)); }
+.industry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 32px;
+  margin-top: 60px;
+}
+.industry-card {
+  padding: 40px 32px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.industry-icon {
+  width: 64px;
+  height: 64px;
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-soft-in);
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
+  margin-bottom: 24px;
+}
+.industry-card h3 { font-size: 1.5rem; font-weight: 700; color: #fff; margin-bottom: 16px; }
+.industry-card p { font-size: 0.95rem; color: var(--t2); line-height: 1.6; margin-bottom: 24px; flex-grow: 1; }
+
+.industry-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  padding-top: 24px;
+}
+.industry-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--t3);
+}
+.industry-list .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 10px var(--primary);
+}
+
+/* DID Showcase Styles (illyvoip style) */
+.sec-did {
+  position: relative;
+  overflow: hidden;
+  background: #05070a;
+  padding: 120px 0;
+}
+.did-bg-image {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100%;
+  height: 100%;
+  opacity: 0.15;
+  filter: blur(2px) grayscale(100%) contrast(1.5);
+  pointer-events: none;
+}
+.did-bg-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.sec-did .w {
+  position: relative;
+  z-index: 2;
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(30px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeInLeft {
+  from { opacity: 0; transform: translateX(-40px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes fadeInRight {
+  from { opacity: 0; transform: translateX(40px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fade-left { opacity: 0; animation: fadeInLeft 0.8s var(--ease-soft) forwards; }
+.animate-fade-right { opacity: 0; animation: fadeInRight 0.8s var(--ease-soft) forwards; }
+.animate-scale { opacity: 0; animation: scaleIn 0.8s var(--ease-soft) forwards; }
+.landing-site .hero-title em { font-style: normal; background: var(--gradient-primary); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.landing-site .hero-desc { font-size: 1.25rem; color: var(--t2); max-width: 540px; margin-bottom: 40px; line-height: 1.6; }
+/* ===== Section Universal ===== */
+.landing-site .sec { padding: 120px 0; position: relative; }
+.landing-site .sec-dark-gradient { 
+  background: radial-gradient(circle at 100% 100%, rgba(59, 130, 246, 0.03) 0%, transparent 40%),
+              radial-gradient(circle at 0% 0%, rgba(45, 212, 191, 0.03) 0%, transparent 40%);
+}
+
+.landing-site .sec-header { text-align: center; margin-bottom: 80px; }
+.landing-site .sec-tag {
+  display: inline-block; padding: 6px 14px; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.2);
+  color: var(--primary); font-size: 0.8125rem; font-weight: 700; border-radius: 100px; margin-bottom: 20px; letter-spacing: 0.05em; text-transform: uppercase;
+}
+.landing-site .sec-title { font-size: 2.75rem; font-weight: 800; margin-bottom: 20px; letter-spacing: -0.03em; color: var(--t1); }
+.landing-site .sec-desc { font-size: 1.125rem; color: var(--t2); max-width: 640px; margin: 0 auto; line-height: 1.6; }
 
 /* ===== Solutions ===== */
-.landing-site .sol-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 24px; }
-.landing-site .sol-card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 32px 28px;
-  transition: border-color .2s, box-shadow .2s;
-  box-shadow: 0 1px 3px rgba(15,23,42,.06);
-}
-.landing-site .sol-card:hover { border-color: var(--border-hover); box-shadow: 0 4px 12px rgba(15,23,42,.08); }
-.landing-site .sol-card h4 { font-size: 1.08rem; font-weight: 700; margin-bottom: 12px; }
-.landing-site .sol-card p { font-size: .88rem; color: var(--t2); line-height: 1.65; margin-bottom: 16px; }
-.landing-site .sol-link { font-size: .85rem; font-weight: 600; color: var(--primary); cursor: pointer; transition: color .2s; }
-.landing-site .sol-link:hover { text-decoration: underline; color: #60a5fa; }
-.landing-site .sol-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+.landing-site .sol-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; }
+.landing-site .sol-card { padding: 40px; }
+.landing-site .sol-icon-wrapper { width: 44px; height: 12px; margin-bottom: 24px; position: relative; }
+.landing-site .sol-dot { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--gradient-primary); box-shadow: 0 0 12px var(--primary); }
+.landing-site .sol-card h4 { font-size: 1.25rem; font-weight: 700; margin-bottom: 16px; color: var(--t1); }
+.landing-site .sol-card p { font-size: 1rem; color: var(--t2); line-height: 1.6; margin-bottom: 24px; }
+.landing-site .sol-link { display: inline-flex; align-items: center; gap: 8px; color: var(--primary); font-weight: 600; text-decoration: none; transition: gap 0.3s; }
+.landing-site .sol-link:hover { gap: 12px; }
 
 /* ===== Products ===== */
-.landing-site .prod-tabs { display: flex; justify-content: center; gap: 16px; margin-bottom: 48px; flex-wrap: wrap; }
-.landing-site .ptab {
-  display: flex; align-items: center; gap: 12px; padding: 18px 28px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  color: var(--t2); font-size: .9rem; font-weight: 600; cursor: pointer;
-  transition: border-color .2s, color .2s, background .2s, box-shadow .2s;
-  box-shadow: 0 1px 3px rgba(15,23,42,.04);
+.landing-site .prod-container { max-width: 1100px; margin: 0 auto; }
+.landing-site .prod-tabs-modern { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 40px; }
+.landing-site .ptab-modern {
+  display: flex; align-items: center; justify-content: center; gap: 12px; padding: 20px;
+  background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: var(--radius-lg);
+  color: var(--t2); font-weight: 600; cursor: pointer; transition: all 0.3s;
 }
-.landing-site .ptab:hover { border-color: var(--border-hover); color: var(--t1); box-shadow: 0 2px 8px rgba(15,23,42,.06); }
-.landing-site .ptab.active { background: var(--primary-muted); border-color: var(--primary); color: var(--primary); box-shadow: 0 2px 8px rgba(37,99,235,.12); }
-.landing-site .ptab.active .ptab-icon { color: var(--primary); }
-.landing-site .ptab:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
-.landing-site .ptab-icon { display: inline-flex; width: 28px; height: 28px; align-items: center; justify-content: center; flex-shrink: 0; color: var(--t3); transition: color .2s; }
-.landing-site .ptab-icon .landing-svg-icon { width: 24px; height: 24px; }
+.landing-site .ptab-modern.active { background: rgba(59, 130, 246, 0.1); border-color: var(--primary); color: var(--primary); }
+.landing-site .prod-content-modern { display: grid; grid-template-columns: 1.2fr 1fr; gap: 60px; padding: 60px; align-items: center; }
+.landing-site .prod-item-modern { margin-bottom: 32px; }
+.landing-site .prod-item-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.landing-site .prod-item-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--primary); }
+.landing-site .prod-item-modern h4 { font-size: 1.125rem; font-weight: 700; color: var(--t1); }
+.landing-site .prod-item-modern p { color: var(--t2); line-height: 1.6; font-size: 0.9375rem; }
+.landing-site .prod-btns-modern { display: flex; gap: 20px; margin-top: 40px; }
 
-.landing-site .prod-body { display: grid; grid-template-columns: 1fr 320px; gap: 40px; align-items: start; }
-.landing-site .prod-item { margin-bottom: 24px; }
-.landing-site .prod-item h4 { font-size: 1.05rem; font-weight: 600; margin-bottom: 8px; }
-.landing-site .prod-item p { font-size: .9rem; color: var(--t2); line-height: 1.7; }
-.landing-site .prod-btns { display: flex; gap: 12px; margin-top: 8px; }
+.landing-site .visual-mockup {
+  background: #0f111a; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.1); overflow: hidden;
+  box-shadow: 0 30px 60px rgba(0,0,0,0.3);
+}
+.landing-site .mockup-header { padding: 12px 16px; background: rgba(255, 255, 255, 0.03); display: flex; align-items: center; gap: 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+.landing-site .dot-r { width: 8px; height: 8px; border-radius: 50%; background: #ff5f56; }
+.landing-site .dot-y { width: 8px; height: 8px; border-radius: 50%; background: #ffbd2e; }
+.landing-site .dot-g { width: 8px; height: 8px; border-radius: 50%; background: #27c93f; }
+.landing-site .mockup-url { font-family: monospace; font-size: 11px; color: var(--t3); margin-left: 10px; background: rgba(255, 255, 255, 0.05); padding: 2px 10px; border-radius: 4px; }
+.landing-site .mockup-body { padding: 20px; }
+.landing-site .mockup-body pre { margin: 0; color: #a5b4fc; font-size: 13px; font-family: 'Fira Code', 'Roboto Mono', monospace; }
 
-.landing-site .prod-visual { position: sticky; top: 100px; }
-.landing-site .prod-card-visual {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 28px 24px; display: flex; flex-direction: column; gap: 14px;
-  box-shadow: 0 1px 3px rgba(15,23,42,.06);
-}
-.landing-site .pcv-item { display: flex; align-items: center; gap: 12px; padding: 16px 18px; background: var(--primary-muted); border-radius: var(--radius); font-size: .88rem; font-weight: 500; color: var(--t1); transition: background .2s; }
-.landing-site .pcv-item:hover { background: rgba(37,99,235,.12); }
-.landing-site .pcv-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); flex-shrink: 0; }
-.landing-site.is-dark .hero-title { color: #fff; }
+/* ===== Advantages & Pricing ===== */
+.landing-site .adv-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
+.landing-site .adv-card { padding: 40px 32px; }
+.landing-site .adv-icon-wrapper { width: 44px; height: 44px; border-radius: 12px; background: rgba(59, 130, 246, 0.1); display: flex; align-items: center; justify-content: center; color: var(--primary); margin-bottom: 24px; }
+.landing-site .adv-icon-wrapper :deep(svg) { width: 24px; height: 24px; }
+.landing-site .pricing-stats { display: flex; justify-content: center; gap: 80px; margin-bottom: 80px; flex-wrap: wrap; }
+.landing-site .pstat-item { text-align: center; }
+.landing-site .pstat-val { display: block; font-size: 3rem; font-weight: 800; color: var(--primary); letter-spacing: -0.05em; }
+.landing-site .pstat-lbl { font-size: 0.875rem; color: var(--t3); font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; }
+.landing-site .price-cards-modern { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; }
+.landing-site .pcard-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.landing-site .pcard-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gradient-primary); }
 
-/* ===== Advantages ===== */
-.landing-site .adv-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 24px; }
-.landing-site .adv-card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 36px 32px;
-  transition: border-color .2s, box-shadow .2s;
-  box-shadow: 0 1px 3px rgba(15,23,42,.06);
-}
-.landing-site .adv-card:hover { border-color: var(--border-hover); box-shadow: 0 4px 12px rgba(15,23,42,.08); }
-.landing-site .adv-icon { display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; margin-bottom: 18px; color: var(--primary); background: var(--primary-muted); border-radius: 12px; }
-.landing-site .adv-icon .landing-svg-icon { width: 28px; height: 28px; }
-.landing-site .adv-card h4 { font-size: 1.12rem; font-weight: 700; margin-bottom: 12px; }
-.landing-site .adv-card p { font-size: .9rem; color: var(--t2); line-height: 1.7; }
+/* ===== Flow & FAQ ===== */
+.landing-site .flow-steps-modern { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; margin-bottom: 60px; }
+.landing-site .fstep-card { padding: 40px 32px; position: relative; }
+.landing-site .fstep-num { font-size: 3rem; font-weight: 900; color: rgba(59, 130, 246, 0.1); position: absolute; top: 10px; right: 20px; }
+.landing-site .faq-list-modern { max-width: 800px; margin: 0 auto; }
+.landing-site .faq-item-modern { margin-bottom: 16px; padding: 0; overflow: hidden; }
+.landing-site .faq-item-modern summary { padding: 24px 32px; display: flex; align-items: center; justify-content: space-between; font-weight: 700; font-size: 1.125rem; cursor: pointer; list-style: none; }
+.landing-site .faq-ans { padding: 0 32px 24px; color: var(--t2); line-height: 1.6; }
+.landing-site .faq-arrow { transition: transform 0.3s; }
+.landing-site .faq-item-modern[open] .faq-arrow { transform: rotate(180deg); }
 
-/* ===== Coverage & Pricing ===== */
-.landing-site .coverage-nums { display: flex; justify-content: center; gap: 48px; flex-wrap: wrap; margin-bottom: 56px; }
-.landing-site .cn {
-  text-align: center; padding: 28px 36px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  min-width: 140px; transition: border-color .2s, box-shadow .2s;
-  box-shadow: 0 1px 3px rgba(15,23,42,.06);
-}
-.landing-site .cn:hover { border-color: var(--border-hover); box-shadow: 0 4px 12px rgba(15,23,42,.08); }
-.landing-site .cn-val { display: block; font-size: 2.25rem; font-weight: 700; color: var(--primary); letter-spacing: -0.02em; }
-.landing-site .cn-label { font-size: .82rem; color: var(--t3); margin-top: 6px; }
-.landing-site .price-cards { display: grid; grid-template-columns: repeat(3,1fr); gap: 24px; }
-.landing-site .price-card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 32px 28px;
-  transition: border-color .2s, box-shadow .2s;
-  box-shadow: 0 1px 3px rgba(15,23,42,.06);
-}
-.landing-site .price-card:hover { border-color: var(--border-hover); box-shadow: 0 4px 12px rgba(15,23,42,.08); }
-.landing-site .price-card h4 { font-size: 1.08rem; font-weight: 700; margin-bottom: 12px; }
-.landing-site .price-card p { font-size: .88rem; color: var(--t2); line-height: 1.65; }
+/* ===== Contact & CTA ===== */
+.landing-site .contact-grid-modern { display: grid; grid-template-columns: repeat(2, 1fr); gap: 40px; max-width: 1000px; margin: 0 auto; }
+.landing-site .contact-card-modern { padding: 60px 48px; text-align: center; }
+.landing-site .contact-icon-box { width: 100px; height: 100px; border-radius: 50%; margin: 0 auto 32px; display: flex; align-items: center; justify-content: center; background: rgba(59, 130, 246, 0.1); }
+.landing-site .contact-icon-box.manager { background: rgba(45, 212, 191, 0.1); }
+.landing-site .contact-icon-box img { width: 60%; height: auto; border-radius: 8px; }
+.landing-site .contact-handle { font-size: 1.25rem; font-weight: 700; color: var(--primary); margin-bottom: 24px; }
+.landing-site .contact-features { display: flex; flex-direction: column; gap: 12px; margin-bottom: 40px; color: var(--t2); }
+.landing-site .w-full { width: 100%; box-sizing: border-box; }
 
-/* ===== FAQ ===== */
-.landing-site .faq-list { max-width: 760px; margin: 0 auto; }
-.landing-site .faq-item {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  margin-bottom: 12px;
-  overflow: hidden;
-  transition: border-color .2s, background .2s, box-shadow .2s;
-  box-shadow: 0 1px 3px rgba(15,23,42,.06);
-}
-.landing-site .faq-item:hover { border-color: var(--border-hover); }
-.landing-site .faq-item[open] { border-color: var(--primary); background: var(--primary-muted); box-shadow: 0 2px 8px rgba(37,99,235,.08); }
-.landing-site .faq-item summary { padding: 20px 24px; font-size: .95rem; font-weight: 600; cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; color: var(--t1); transition: color .2s; }
-.landing-site .faq-item summary:hover { color: var(--primary); }
-.landing-site .faq-item summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 8px; }
-.landing-site .faq-item summary::after { content: '+'; font-size: 1.2rem; color: var(--t3); transition: color .2s; }
-.landing-site .faq-item[open] summary::after { content: '−'; color: var(--primary); }
-.landing-site .faq-item p { padding: 0 24px 20px; font-size: .9rem; color: var(--t2); line-height: 1.7; }
+.landing-site .sec-cta-modern { padding: 120px 0; }
+.landing-site .cta-banner { padding: 80px 100px; display: grid; grid-template-columns: 1.5fr 1fr; align-items: center; overflow: hidden; position: relative; }
+.landing-site .cta-content h2 { font-size: 3rem; font-weight: 800; margin-bottom: 20px; line-height: 1.1; }
+.landing-site .cta-content p { font-size: 1.25rem; color: var(--t2); margin-bottom: 40px; }
+.landing-site .cta-actions { display: flex; gap: 20px; }
+.landing-site .visual-orb { position: absolute; right: -100px; top: -100px; width: 400px; height: 400px; background: radial-gradient(circle, rgba(59, 130, 246, 0.15) 0%, transparent 70%); border-radius: 50%; }
 
-/* ===== Flow ===== */
-.landing-site .flow-row { display: grid; grid-template-columns: repeat(4,1fr); gap: 24px; margin-bottom: 48px; }
-.landing-site .flow-step {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 32px 24px;
-  text-align: center;
-  transition: border-color .2s, box-shadow .2s;
-  box-shadow: 0 1px 3px rgba(15,23,42,.06);
-}
-.landing-site .flow-step:hover { border-color: var(--border-hover); box-shadow: 0 4px 12px rgba(15,23,42,.08); }
-.landing-site .flow-badge { display: inline-block; padding: 6px 16px; background: var(--primary-muted); border-radius: 999px; font-size: .7rem; font-weight: 700; color: var(--primary); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 16px; }
-.landing-site .flow-step h4 { font-size: 1.08rem; font-weight: 700; margin-bottom: 8px; }
-.landing-site .flow-step p { font-size: .82rem; color: var(--t3); line-height: 1.55; }
+/* ===== Footer ===== */
+.landing-site .footer-modern { padding: 100px 0 40px; border-top: 1px solid rgba(255, 255, 255, 0.05); }
+.landing-site .footer-inner { display: flex; justify-content: space-between; margin-bottom: 80px; }
+.landing-site .f-logo { font-size: 2rem; font-weight: 800; color: var(--t1); margin-bottom: 24px; letter-spacing: -0.04em; }
+.landing-site .f-logo span { color: var(--primary); }
+.landing-site .footer-brand p { color: var(--t3); max-width: 320px; line-height: 1.6; }
+.landing-site .footer-links-grid { display: flex; gap: 100px; }
+.landing-site .f-col h5 { font-size: 1rem; font-weight: 700; color: var(--t1); margin-bottom: 24px; }
+.landing-site .f-col a { display: block; color: var(--t3); text-decoration: none; margin-bottom: 16px; transition: color 0.3s; }
+.landing-site .f-col a:hover { color: var(--primary); }
+.landing-site .footer-bottom { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid rgba(255, 255, 255, 0.05); padding-top: 40px; color: var(--t3); font-size: 0.875rem; }
+.landing-site .f-bottom-links { display: flex; gap: 32px; }
+.landing-site .f-bottom-links a { color: var(--t3); text-decoration: none; }
 
-/* ===== 联系我们 - 官方 TG + 商务经理 ===== */
-.landing-site .sec-contact { padding: 72px 0; }
-.landing-site .contact-cards {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 32px;
-  max-width: 900px;
-  margin: 0 auto;
+/* ===== Media Queries ===== */
+@media (max-width: 1024px) {
+  .landing-site .hero-inner, .landing-site .prod-content-modern, .landing-site .cta-banner { grid-template-columns: 1fr; text-align: center; }
+  .landing-site .hero-desc, .landing-site .sec-desc, .landing-site .footer-brand p { margin-left: auto; margin-right: auto; }
+  .landing-site .hero-btns, .landing-site .hero-trust-mini, .landing-site .prod-btns-modern, .landing-site .cta-actions { justify-content: center; }
+  .landing-site .sol-grid, .landing-site .adv-grid, .landing-site .price-cards-modern, .landing-site .flow-steps-modern { grid-template-columns: repeat(2, 1fr); }
+  .landing-site .footer-inner { flex-direction: column; gap: 60px; }
+  .landing-site .footer-links-grid { gap: 40px; }
 }
-@media (max-width: 768px) {
-  .landing-site .contact-cards { grid-template-columns: 1fr; }
-}
-.landing-site .contact-card {
-  max-width: 420px; margin: 0 auto;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 48px 40px;
-  text-align: center;
-  transition: border-color .2s, box-shadow .2s;
-  box-shadow: 0 1px 3px rgba(15,23,42,.06);
-}
-.landing-site .contact-card:hover { border-color: var(--border-hover); box-shadow: 0 4px 12px rgba(15,23,42,.08); }
-.landing-site.is-dark .contact-card {
-  background: rgba(255,255,255,.06);
-  border-color: rgba(255,255,255,.1);
-  box-shadow: 0 1px 3px rgba(0,0,0,.2);
-}
-.landing-site.is-dark .contact-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,.3); }
-.landing-site .contact-logo { margin-bottom: 24px; }
-.landing-site .contact-logo-img {
-  width: 140px; height: auto; display: block; margin: 0 auto;
-  border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.2);
-}
-.landing-site .contact-qr-img {
-  width: 140px; height: 140px; object-fit: contain; display: block; margin: 0 auto;
-  border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.2);
-}
-.landing-site .contact-logo-ring {
-  display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
-  width: 88px; height: 88px;
-  background: linear-gradient(135deg, #4c1d95, #7c3aed);
-  border-radius: 50%;
-  box-shadow: 0 8px 24px rgba(124,58,237,.4);
-}
-.landing-site .contact-logo-icon { font-size: .7rem; font-weight: 800; color: rgba(255,255,255,.95); letter-spacing: .05em; }
-.landing-site .contact-logo-label { font-size: .55rem; font-weight: 600; color: rgba(255,255,255,.8); letter-spacing: .1em; margin-top: 2px; }
-.landing-site .contact-title { font-size: 1.35rem; font-weight: 700; color: var(--t1); margin-bottom: 8px; }
-.landing-site.is-dark .contact-title { color: #fff; }
-.landing-site .contact-username { font-size: .95rem; color: var(--t3); margin-bottom: 20px; }
-.landing-site.is-dark .contact-username { color: rgba(255,255,255,.6); }
-.landing-site .contact-desc { font-size: .88rem; color: var(--t2); line-height: 1.6; margin-bottom: 8px; }
-.landing-site.is-dark .contact-desc { color: rgba(255,255,255,.75); }
-.landing-site .contact-btn {
-  display: inline-block; margin-top: 28px; padding: 14px 40px;
-  background: #0088cc; color: #fff; font-size: .95rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
-  border-radius: 12px; text-decoration: none; transition: background .2s, transform .15s;
-}
-.landing-site .contact-btn:hover { background: #0099dd; transform: translateY(-1px); }
-.landing-site .contact-btn:focus-visible { outline: 2px solid #0088cc; outline-offset: 3px; }
 
-/* ===== Facts ===== */
-.landing-site .sec-facts { background: var(--bg-alt); padding: 72px 0; }
-.landing-site .sec-facts .sec-title { font-size: 1.35rem; font-weight: 700; max-width: 800px; margin-left: auto; margin-right: auto; }
-.landing-site .facts-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 24px; margin-top: 48px; }
-.landing-site .fact-item {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 32px 24px;
-  text-align: center;
-  transition: border-color .2s, box-shadow .2s;
-  box-shadow: 0 1px 3px rgba(15,23,42,.06);
-}
-.landing-site .fact-item:hover { border-color: var(--border-hover); box-shadow: 0 4px 12px rgba(15,23,42,.08); }
-.landing-site .fact-val { display: block; font-size: 2.2rem; font-weight: 700; color: var(--primary); margin-bottom: 8px; letter-spacing: -0.02em; }
-.landing-site .fact-lbl { font-size: .85rem; color: var(--t3); line-height: 1.5; }
-
-/* ===== CTA ===== */
-.landing-site .sec-cta { padding: 96px 0; background: var(--bg-alt); position: relative; }
-.landing-site .cta-box {
-  position: relative;
-  text-align: center;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 56px 48px;
-  box-shadow: var(--shadow-md);
-}
-.landing-site .cta-box h2 { font-size: 1.85rem; font-weight: 800; margin-bottom: 12px; line-height: 1.35; letter-spacing: -0.02em; }
-.landing-site .cta-sub { font-size: 1rem; color: var(--t2); margin-bottom: 32px; max-width: 480px; margin-left: auto; margin-right: auto; line-height: 1.6; }
-.landing-site .cta-btns { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; }
-
-/* ===== Footer（Stripe 风格精简） ===== */
-.landing-site .ft { background: var(--bg-alt); border-top: 1px solid var(--border); padding: 48px 0 24px; }
-.landing-site .ft-inner { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 40px; padding-bottom: 40px; }
-.landing-site .ft-brand .hd-logo-text { font-size: 1.35rem; font-weight: 700; }
-.landing-site .ft-brand p { color: var(--t3); font-size: .85rem; line-height: 1.6; margin-top: 12px; max-width: 320px; }
-.landing-site .ft-col { display: flex; flex-direction: column; gap: 12px; }
-.landing-site .ft-col h5 { font-size: .9rem; font-weight: 700; margin-bottom: 8px; color: var(--t1); }
-.landing-site .ft-col a { color: var(--t3); font-size: .85rem; transition: color .2s; cursor: pointer; }
-.landing-site .ft-col a:hover { color: var(--primary); }
-.landing-site .ft-col a:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
-.landing-site .ft-bottom { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; border-top: 1px solid var(--border); padding: 16px 24px; }
-.landing-site .ft-bottom p { font-size: .82rem; color: var(--t3); }
-.landing-site .ft-links { display: flex; gap: 20px; }
-.landing-site .ft-links a { font-size: .82rem; color: var(--t3); cursor: pointer; transition: color .2s; }
-.landing-site .ft-links a:hover { color: var(--t2); }
-.landing-site .ft-links a:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
-
-/* ===== 响应式 ===== */
-@media(max-width:1024px) {
-  .landing-site .hero-inner { grid-template-columns: 1fr; }
-  .landing-site .hero-right { display: none; }
-  .landing-site .sol-grid { grid-template-columns: repeat(2,1fr); }
-  .landing-site .prod-body { grid-template-columns: 1fr; }
-  .landing-site .prod-visual { display: none; }
-  .landing-site .adv-grid { grid-template-columns: 1fr; }
-  .landing-site .price-cards { grid-template-columns: 1fr; }
-  .landing-site .flow-row { grid-template-columns: repeat(2,1fr); }
-  .landing-site .contact-card { padding: 36px 28px; }
-  .landing-site .facts-grid { grid-template-columns: repeat(2,1fr); }
-  .landing-site .ft-inner { grid-template-columns: 1fr; }
-  .landing-site .coverage-nums { gap: 20px; }
-  .landing-site .cn { min-width: 120px; padding: 20px 24px; }
-}
-@media(max-width:768px) {
-  .landing-site .hd-nav { display: none; position: fixed; top: 68px; left: 0; right: 0; bottom: 0; background: rgba(11,13,26,.98); backdrop-filter: blur(16px); flex-direction: column; padding: 24px; gap: 0; overflow-y: auto; z-index: 200; }
-  .landing-site .hd-nav.show { display: flex; }
-  .landing-site .hd-nav-item { padding: 14px 0; border-bottom: 1px solid var(--border); }
-  .landing-site .hd-drop-menu { position: static; display: block; background: none; border: none; box-shadow: none; padding: 0 0 0 16px; }
-  .landing-site .hd-drop-menu-grid { grid-template-columns: 1fr; }
-  .landing-site .hd-burger { display: flex; }
-  .landing-site .sec { padding: 64px 0; }
-  .landing-site .hero-inner { padding: 0 16px; }
-  .landing-site .hero-title { font-size: 1.75rem; }
-  .landing-site .hero-subtitle { font-size: 1rem; }
-  .landing-site .stats-trusted { margin-bottom: 24px; font-size: .75rem; }
-  .landing-site .stat-val { font-size: 2rem; }
-  .landing-site .sol-grid { grid-template-columns: 1fr; }
-  .landing-site .prod-tabs { gap: 10px; margin-bottom: 32px; }
-  .landing-site .ptab { padding: 14px 20px; font-size: .85rem; }
-  .landing-site .flow-row { grid-template-columns: 1fr; }
-  .landing-site .contact-card { padding: 32px 24px; max-width: 100%; }
-  .landing-site .contact-title { font-size: 1.15rem; }
-  .landing-site .facts-grid { grid-template-columns: repeat(2,1fr); }
-  .landing-site .coverage-nums { gap: 16px; }
-  .landing-site .cn { min-width: 100px; padding: 16px 20px; }
-  .landing-site .cn-val { font-size: 2rem; }
-  .landing-site .cta-box { padding: 40px 24px; }
-  .landing-site .cta-box h2 { font-size: 1.45rem; }
-  .landing-site .cta-sub { font-size: .9rem; margin-bottom: 24px; }
-  .landing-site .cta-btns { flex-direction: column; }
+@media (max-width: 640px) {
+  .landing-site .sol-grid, .landing-site .adv-grid, .landing-site .price-cards-modern, .landing-site .flow-steps-modern, .landing-site .contact-grid-modern { grid-template-columns: 1fr; }
+  .landing-site .prod-tabs-modern { grid-template-columns: 1fr; }
+  .landing-site .pricing-stats { gap: 40px; }
+  .landing-site .cta-banner { padding: 60px 40px; }
 }
 </style>

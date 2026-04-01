@@ -926,7 +926,7 @@ watch(() => route.path, () => {
 .orb-1 {
   width: 600px;
   height: 600px;
-  background: radial-gradient(circle, rgba(102, 126, 234, 0.2) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(59, 130, 246, 0.2) 0%, transparent 70%);
   top: -200px;
   right: -100px;
 }
@@ -934,7 +934,7 @@ watch(() => route.path, () => {
 .orb-2 {
   width: 500px;
   height: 500px;
-  background: radial-gradient(circle, rgba(118, 75, 162, 0.15) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(45, 212, 191, 0.15) 0%, transparent 70%);
   bottom: -150px;
   left: 20%;
 }
@@ -960,11 +960,13 @@ watch(() => route.path, () => {
 
 /* 侧边栏 */
 .sidebar {
-  background: rgba(15, 18, 33, 0.98);
+  background: rgba(10, 12, 16, 0.95);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border-right: 1px solid var(--border-default);
   display: flex;
   flex-direction: column;
-  transition: width 0.25s ease, background-color 0.3s ease;
+  transition: width 0.25s var(--ease-default), background-color 0.3s ease;
   position: relative;
   z-index: 100;
 }
@@ -1046,39 +1048,43 @@ watch(() => route.path, () => {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
-  margin: 2px 0;
-  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 4px 6px;
+  border-radius: 12px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.2s var(--ease-default);
   color: var(--text-tertiary);
   position: relative;
 }
 
 .nav-item:hover {
   background: var(--bg-hover);
-  color: var(--text-secondary);
+  color: var(--text-primary);
+  box-shadow: 4px 4px 10px rgba(0, 0, 0, 0.3), -2px -2px 6px rgba(255, 255, 255, 0.01);
+  transform: translateY(-1px);
 }
 
 .nav-item.active {
-  background: rgba(102, 126, 234, 0.12);
+  background: rgba(59, 130, 246, 0.1);
   color: var(--primary);
+  box-shadow: var(--shadow-soft-in);
 }
 
 .light-mode .nav-item.active {
-  background: rgba(88, 86, 214, 0.1);
+  background: rgba(59, 130, 246, 0.08);
 }
 
 .nav-item.active::before {
   content: '';
   position: absolute;
-  left: 4px;
+  left: -12px;
   top: 50%;
   transform: translateY(-50%);
-  width: 3px;
-  height: 18px;
-  border-radius: 6px;
+  width: 6px;
+  height: 24px;
+  border-radius: 0 4px 4px 0;
   background: var(--gradient-primary);
+  box-shadow: 0 0 15px rgba(59, 130, 246, 0.5);
 }
 
 .nav-icon {
@@ -1265,16 +1271,17 @@ watch(() => route.path, () => {
 
 /* 头部 */
 .header {
-  height: 64px;
+  height: 72px;
   padding: 0 32px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: rgba(15, 18, 33, 0.8);
+  background: rgba(10, 12, 16, 0.6);
   backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border-default);
   flex-shrink: 0;
-  transition: background-color 0.3s ease;
+  transition: all 0.3s var(--ease-default);
 }
 
 .light-mode .header {
@@ -1294,12 +1301,13 @@ watch(() => route.path, () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: none;
-  background: var(--bg-input);
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: var(--bg-secondary);
   border-radius: 10px;
   color: var(--text-tertiary);
+  box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
   cursor: pointer;
   transition: all 0.2s;
 }
@@ -1307,6 +1315,8 @@ watch(() => route.path, () => {
 .menu-toggle:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+  box-shadow: 4px 4px 8px rgba(0,0,0,0.4);
+  transform: translateY(-1px);
 }
 
 .page-title {

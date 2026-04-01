@@ -25,7 +25,7 @@
       <!-- 核心指标卡片 - 管理员 -->
       <div class="metrics-grid" :class="{ 'metrics-6': permissions.view_finance }">
         <!-- 今日发送 -->
-        <div class="metric-card">
+        <div class="metric-card soft-card soft-card-hover animate-scale" style="animation-delay: 0.1s">
           <div class="metric-header">
             <div class="metric-icon sent">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -42,7 +42,7 @@
         </div>
 
         <!-- 送达成功 -->
-        <div class="metric-card">
+        <div class="metric-card soft-card soft-card-hover animate-scale" style="animation-delay: 0.2s">
           <div class="metric-header">
             <div class="metric-icon success">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -62,7 +62,7 @@
         </div>
 
         <!-- 发送失败 -->
-        <div class="metric-card">
+        <div class="metric-card soft-card soft-card-hover animate-scale" style="animation-delay: 0.3s">
           <div class="metric-header">
             <div class="metric-icon failed">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -82,7 +82,7 @@
         </div>
 
         <!-- 活跃客户 (销售/管理员) -->
-        <div class="metric-card" v-if="permissions.view_customers">
+        <div class="metric-card soft-card soft-card-hover animate-scale" v-if="permissions.view_customers" style="animation-delay: 0.4s">
           <div class="metric-header">
             <div class="metric-icon customers">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -99,7 +99,7 @@
         </div>
 
         <!-- 今日收入 (财务可见) -->
-        <div class="metric-card" v-if="permissions.view_finance">
+        <div class="metric-card soft-card soft-card-hover animate-scale" v-if="permissions.view_finance" style="animation-delay: 0.5s">
           <div class="metric-header">
             <div class="metric-icon revenue">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -115,7 +115,7 @@
         </div>
 
         <!-- 今日利润 (财务可见) -->
-        <div class="metric-card profit" v-if="permissions.view_finance">
+        <div class="metric-card profit soft-card soft-card-hover animate-scale" v-if="permissions.view_finance" style="animation-delay: 0.6s">
           <div class="metric-header">
             <div class="metric-icon profit">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -150,7 +150,7 @@
               </h2>
             </div>
             <div class="actions-grid admin-actions">
-              <div class="action-btn primary" @click="$router.push('/admin/accounts')" v-if="permissions.view_customers">
+              <div class="action-btn primary soft-button" @click="$router.push('/admin/accounts')" v-if="permissions.view_customers">
                 <div class="action-icon">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                     <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="2"/>
@@ -159,7 +159,7 @@
                 </div>
                 <span class="action-label">{{ $t('menu.customerManage') }}</span>
               </div>
-              <div class="action-btn warning" @click="$router.push('/channels')" v-if="permissions.view_channels">
+              <div class="action-btn warning soft-button" @click="$router.push('/channels')" v-if="permissions.view_channels">
                 <div class="action-icon">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                     <circle cx="6" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
@@ -170,7 +170,7 @@
                 </div>
                 <span class="action-label">{{ $t('menu.channelConfig') }}</span>
               </div>
-              <div class="action-btn info" @click="$router.push('/reports')" v-if="permissions.view_finance">
+              <div class="action-btn info soft-button" @click="$router.push('/reports')" v-if="permissions.view_finance">
                 <div class="action-icon">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                     <path d="M3 20H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -179,7 +179,7 @@
                 </div>
                 <span class="action-label">{{ $t('menu.dataReport') }}</span>
               </div>
-              <div class="action-btn success" @click="$router.push('/admin/settlements')" v-if="permissions.view_finance">
+              <div class="action-btn success soft-button" @click="$router.push('/admin/settlements')" v-if="permissions.view_finance">
                 <div class="action-icon">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                     <rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" stroke-width="2"/>
@@ -220,6 +220,12 @@
                   <span class="channel-protocol">{{ channel.protocol }}</span>
                 </div>
                 <div :class="['channel-status', channel.status]">
+                  <div class="channel-activity" v-if="channel.status === 'active'">
+                    <span class="activity-bar" style="height: 12px; animation-delay: 0.1s"></span>
+                    <span class="activity-bar" style="height: 18px; animation-delay: 0.3s"></span>
+                    <span class="activity-bar" style="height: 14px; animation-delay: 0.2s"></span>
+                    <span class="activity-bar" style="height: 10px; animation-delay: 0.4s"></span>
+                  </div>
                   <span class="status-dot"></span>
                   {{ getChannelStatusText(channel.status) }}
                 </div>
@@ -335,7 +341,7 @@
       <!-- 核心指标卡片 - 客户 -->
       <div class="metrics-grid metrics-4">
         <!-- 今日发送 -->
-        <div class="metric-card">
+        <div class="metric-card soft-card soft-card-hover animate-scale" style="animation-delay: 0.1s">
           <div class="metric-header">
             <div class="metric-icon sent">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -352,7 +358,7 @@
         </div>
 
         <!-- 本周发送 -->
-        <div class="metric-card">
+        <div class="metric-card soft-card soft-card-hover animate-scale" style="animation-delay: 0.2s">
           <div class="metric-header">
             <div class="metric-icon success">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -369,7 +375,7 @@
         </div>
 
         <!-- 本月发送 -->
-        <div class="metric-card">
+        <div class="metric-card soft-card soft-card-hover animate-scale" style="animation-delay: 0.3s">
           <div class="metric-header">
             <div class="metric-icon failed">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -386,7 +392,7 @@
         </div>
 
         <!-- 账户余额 -->
-        <div class="metric-card clickable" @click="$router.push('/account/balance')">
+        <div class="metric-card clickable soft-card soft-card-hover animate-scale" @click="$router.push('/account/balance')" style="animation-delay: 0.4s">
           <div class="metric-header">
             <div class="metric-icon balance">
               <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -424,7 +430,7 @@
               </h2>
             </div>
             <div class="actions-grid">
-              <div class="action-btn primary" @click="$router.push('/sms/send')">
+              <div class="action-btn primary soft-button" @click="$router.push('/sms/send')">
                 <div class="action-icon">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                     <path d="M22 2L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -433,7 +439,7 @@
                 </div>
                 <span class="action-label">{{ $t('menu.sendSms') }}</span>
               </div>
-              <div class="action-btn success" @click="$router.push('/sms/tasks')">
+              <div class="action-btn success soft-button" @click="$router.push('/sms/tasks')">
                 <div class="action-icon">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                     <rect x="4" y="3" width="16" height="18" rx="2" stroke="currentColor" stroke-width="2"/>
@@ -442,7 +448,7 @@
                 </div>
                 <span class="action-label">{{ $t('menu.sendTasks') }}</span>
               </div>
-              <div class="action-btn warning" @click="$router.push('/sms/records')">
+              <div class="action-btn warning soft-button" @click="$router.push('/sms/records')">
                 <div class="action-icon">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                     <path d="M14 2H6C5.44772 2 5 2.44772 5 3V21C5 21.5523 5.44772 22 6 22H18C18.5523 22 19 21.5523 19 21V7L14 2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
@@ -452,7 +458,7 @@
                 </div>
                 <span class="action-label">{{ $t('menu.sendRecords') }}</span>
               </div>
-              <div class="action-btn info" @click="$router.push('/sms/approvals')">
+              <div class="action-btn info soft-button" @click="$router.push('/sms/approvals')">
                 <div class="action-icon">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                     <path d="M9 12L11 14L15 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -543,6 +549,12 @@
                   <span class="channel-protocol">{{ channel.protocol }}</span>
                 </div>
                 <div :class="['channel-status', channel.status]">
+                  <div class="channel-activity" v-if="channel.status === 'active'">
+                    <span class="activity-bar" style="height: 12px; animation-delay: 0.1s"></span>
+                    <span class="activity-bar" style="height: 18px; animation-delay: 0.3s"></span>
+                    <span class="activity-bar" style="height: 14px; animation-delay: 0.2s"></span>
+                    <span class="activity-bar" style="height: 10px; animation-delay: 0.4s"></span>
+                  </div>
                   <span class="status-dot"></span>
                   {{ getChannelStatusText(channel.status) }}
                 </div>
@@ -1077,8 +1089,8 @@ onUnmounted(() => {
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-  margin-bottom: 24px;
+  gap: 24px;
+  margin-bottom: 32px;
 }
 
 .metrics-grid.metrics-4 {
@@ -1101,10 +1113,6 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
-.metric-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-}
 
 .metric-header {
   display: flex;
@@ -1215,10 +1223,9 @@ onUnmounted(() => {
 
 /* 卡片通用 */
 .card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   overflow: hidden;
+  height: 100%;
 }
 
 .card-header {
@@ -1368,13 +1375,26 @@ onUnmounted(() => {
 }
 
 .channel-status .status-dot {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
+  animation: status-pulse 2s infinite ease-in-out;
+}
+
+@keyframes status-pulse {
+  0% { transform: scale(1); opacity: 1; box-shadow: 0 0 0px currentColor; }
+  50% { transform: scale(1.2); opacity: 0.8; box-shadow: 0 0 12px currentColor; }
+  100% { transform: scale(1); opacity: 1; box-shadow: 0 0 0px currentColor; }
 }
 
 .channel-status.active { color: var(--success); }
-.channel-status.active .status-dot { background: var(--success); box-shadow: 0 0 8px var(--success); }
+.channel-activity { display: flex; align-items: flex-end; gap: 2px; margin-right: 8px; height: 20px; }
+.activity-bar { width: 2px; background: var(--success); border-radius: 1px; animation: activity-pulse 1.2s infinite ease-in-out; opacity: 0.6; }
+@keyframes activity-pulse {
+  0%, 100% { transform: scaleY(1); opacity: 0.4; }
+  50% { transform: scaleY(1.5); opacity: 1; }
+}
+.channel-status.active .status-dot { background: var(--success); }
 .channel-status.inactive { color: var(--text-quaternary); }
 .channel-status.inactive .status-dot { background: var(--text-quaternary); }
 .channel-status.maintenance { color: var(--warning); }
@@ -1614,10 +1634,18 @@ onUnmounted(() => {
 }
 
 .status-badge .status-dot {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+  animation: status-pulse 2s infinite ease-in-out;
+}
+
+@keyframes status-pulse {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.7; }
+  100% { transform: scale(1); opacity: 1; }
 }
 
 .api-key-wrapper {

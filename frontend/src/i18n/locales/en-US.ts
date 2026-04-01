@@ -1509,13 +1509,69 @@ export default {
     hero: {
       subtitle: 'Free Trial · Pay as You Go',
       title: 'Reliable',
-      titleHighlight: 'International Bulk SMS',
-      titleSuffix: 'Solution',
-      desc: 'Send 10,000 to 500,000 SMS in seconds via our high-quality gateway. 95%+ of messages read within 3 minutes.',
+      titleHighlight: 'All-in-One Communication',
+      titleSuffix: 'Platform',
+      desc: 'Connect with your customers globally through our premium high-quality gateway. Experience the power of unified messaging.',
+      portalDesc: 'Automated Voice, SMS & DID Management in one single interface.',
       freeTest: 'Free Trial',
+      explore: 'Explore Solutions',
       contact: 'Contact Us',
       badges: 'Free trial · No credit card · Pay as you go',
-      trust: 'Trusted by {n} teams'
+      trust: 'Trusted by {n} teams',
+      stats: {
+        uptime: 'Uptime',
+        latency: 'Latency',
+        destinations: 'Destinations',
+        activeChannels: 'Channels'
+      }
+    },
+    industries: {
+      finance: {
+        title: 'Finance & Banking',
+        desc: 'Secure OTP delivery, transaction alerts, and multi-factor authentication with 99.99% reliability.',
+        features: ['Real-time Fraud Alerts', 'Encrypted OTP Channels']
+      },
+      retail: {
+        title: 'Retail & E-commerce',
+        desc: 'Drive sales with personalized marketing campaigns, flash sale notifications, and order updates.',
+        features: ['High-Throughput Marketing', 'Global Delivery Tracking']
+      },
+      logistics: {
+        title: 'Logistics & Supply Chain',
+        desc: 'Manage global deliveries with automated status updates, driver coordination, and arrival alerts.',
+        features: ['Automated Status Sync', 'Two-Way Communication']
+      }
+    },
+    didShowcase: {
+      title: 'Virtual Numbers (DID)',
+      subtitle: 'Get local presence in over 100+ countries with our instant-activation DIDs.',
+      searchPlaceholder: 'Search country...',
+      rentNow: 'Rent now',
+      exploreMore: 'View all supported countries →',
+      typeSuffix: 'Numbers',
+      types: {
+        local: 'Local',
+        tollFree: 'Toll-Free',
+        national: 'National',
+        mobile: 'Mobile'
+      },
+      countries: {
+        US: 'United States',
+        GB: 'United Kingdom',
+        TH: 'Thailand',
+        VN: 'Vietnam',
+        ID: 'Indonesia',
+        PH: 'Philippines',
+        KH: 'Cambodia',
+        MY: 'Malaysia'
+      }
+    },
+    rateSearch: {
+      title: 'Real-time SMS Rates',
+      subtitle: 'Search by country or region',
+      placeholder: 'Enter country name...',
+      cta: 'Start Sending Now',
+      popular: 'Popular Destinations'
     },
     phoneMsg1: 'Your OTP is 888888. Valid for 5 minutes.',
     phoneMsg2: 'New Arrival! Reply START to get discount.',
@@ -1529,8 +1585,10 @@ export default {
       viewTime: 'Read Time'
     },
     sections: {
-      solutions: 'SMS SOLUTION',
-      solutionsTitle: 'Diverse SMS Solutions',
+      solutions: 'SOLUTIONS',
+      solutionsTitle: 'Tailored Solutions for Industry Leaders',
+      did: 'VIRTUAL NUMBERS',
+      didTitle: 'Establish Your Presence Worldwide',
       products: 'SMS PRODUCTS',
       productsTitle: 'Kaolach SMS Products',
       advantages: 'WHY CHOOSE US',

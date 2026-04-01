@@ -1509,13 +1509,69 @@ export default {
     hero: {
       subtitle: '免费测试 · 即充即用',
       title: '可靠的',
-      titleHighlight: '国际短信群发',
-      titleSuffix: '解决方案',
-      desc: '在几秒内发送 10000～500000 条短信，通过高质量 SMS 网关送达至目标受众，95%+ 短信 3 分钟内被阅读。',
+      titleHighlight: '全方位通信云平台',
+      titleSuffix: '一站式服务',
+      desc: '通过我们的全球高质量网关，实现与客户的无缝连接。体验统一消息平台的强大功能。',
+      portalDesc: '在统一的界面中全自动管理语音、短信和全球虚拟号码 (DID)。',
       freeTest: '免费测试',
+      explore: '探索解决方案',
       contact: '联系客服',
       badges: '免费测试 · 无需信用卡 · 按量付费',
-      trust: '全球 {n} 企业信赖'
+      trust: '全球 {n} 企业信赖',
+      stats: {
+        uptime: '可用性',
+        latency: '延迟',
+        destinations: '覆盖目的地',
+        activeChannels: '活跃通道'
+      }
+    },
+    industries: {
+      finance: {
+        title: '金融 & 银行',
+        desc: '安全稳定的 OTP 交付、交易提醒和多重身份验证，具备 99.99% 的可靠性。',
+        features: ['实时欺诈预防', '全程加密 OTP 通道']
+      },
+      retail: {
+        title: '零售 & 跨境电商',
+        desc: '通过个性化的营销活动、秒杀通知和订单更新来推动销售。',
+        features: ['高吞吐量营销', '全球包裹追踪']
+      },
+      logistics: {
+        title: '物流 & 供应链',
+        desc: '通过自动状态更新、司机协调和到达提醒来管理全球配送。',
+        features: ['自动化状态同步', '双向通讯能力']
+      }
+    },
+    didShowcase: {
+      title: '全球虚拟号码 (DID)',
+      subtitle: '在 100+ 国家建立本地业务存在，即时激活。',
+      searchPlaceholder: '搜索国家...',
+      rentNow: '立即租赁',
+      exploreMore: '查看所有支持的国家 →',
+      typeSuffix: '号码',
+      types: {
+        local: '本地',
+        tollFree: '免费',
+        national: '国家',
+        mobile: '移动'
+      },
+      countries: {
+        US: '美国',
+        GB: '英国',
+        TH: '泰国',
+        VN: '越南',
+        ID: '印度尼西亚',
+        PH: '菲律宾',
+        KH: '柬埔寨',
+        MY: '马来西亚'
+      }
+    },
+    rateSearch: {
+      title: '实时短信费率',
+      subtitle: '按国家或地区搜索',
+      placeholder: '输入国家名称...',
+      cta: '立即开始发送',
+      popular: '热门目的地'
     },
     phoneMsg1: '您的验证码是 888888，5分钟内有效。',
     phoneMsg2: '新品上市！回复 START 获取优惠。',
@@ -1529,8 +1585,10 @@ export default {
       viewTime: '查阅时间'
     },
     sections: {
-      solutions: 'SMS SOLUTION',
-      solutionsTitle: '提供多元化的 SMS 解决方案',
+      solutions: 'SOLUTIONS',
+      solutionsTitle: '量身定制的行业解决方案',
+      did: 'VIRTUAL NUMBERS',
+      didTitle: '建立您的全球业务存在',
       products: 'SMS PRODUCTS',
       productsTitle: '考拉出海 短信产品',
       advantages: 'WHY CHOOSE US',

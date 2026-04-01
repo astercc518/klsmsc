@@ -44,21 +44,21 @@
   --el-text-color-disabled: var(--text-quaternary) !important;
   /* bordered 描述列表标签底来自该变量，缺省时易呈浅紫块+对比度崩坏 */
   --el-descriptions-item-bordered-label-background: var(--bg-input) !important;
-  --bg-primary: #0D0F14;
-  --bg-secondary: #12151C;
-  --bg-tertiary: #171B24;
-  --bg-elevated: #1C212D;
-  --bg-surface: #1F2533;
-  --bg-card: rgba(28, 33, 45, 0.95);
-  --bg-input: rgba(255, 255, 255, 0.04);
-  --bg-input-hover: rgba(255, 255, 255, 0.06);
-  --bg-hover: rgba(255, 255, 255, 0.04);
+  --bg-primary: #0A0C10;
+  --bg-secondary: #0F1219;
+  --bg-tertiary: #141822;
+  --bg-elevated: #1A1F2C;
+  --bg-surface: #1E2433;
+  --bg-card: rgba(22, 28, 41, 0.85);
+  --bg-input: rgba(255, 255, 255, 0.03);
+  --bg-input-hover: rgba(255, 255, 255, 0.05);
+  --bg-hover: rgba(255, 255, 255, 0.03);
   
-  --primary: #667EEA;
-  --primary-hover: #7A8FF0;
-  --gradient-primary: linear-gradient(135deg, #667EEA 0%, #764BA2 100%);
-  --gradient-emerald: linear-gradient(135deg, #38EF7D 0%, #11998E 100%);
-  --gradient-gold: linear-gradient(135deg, #F7971E 0%, #FFD200 100%);
+  --primary: #3B82F6;
+  --primary-hover: #60A5FA;
+  --gradient-primary: linear-gradient(135deg, #3B82F6 0%, #2DD4BF 100%);
+  --gradient-emerald: linear-gradient(135deg, #10B981 0%, #059669 100%);
+  --gradient-gold: linear-gradient(135deg, #F59E0B 0%, #D97706 100%);
   
   --success: #38EF7D;
   --warning: #FFD200;
@@ -97,6 +97,16 @@
   --bg-input: rgba(118, 118, 128, 0.08);
   --bg-input-hover: rgba(118, 118, 128, 0.12);
   --bg-hover: rgba(0, 0, 0, 0.04);
+
+  /* Soft UI / Neumorphic - Refined for Light Mode */
+  --shadow-soft-out: 8px 8px 20px rgba(0, 0, 0, 0.06), -8px -8px 20px rgba(255, 255, 255, 0.95);
+  --shadow-soft-in: inset 6px 6px 12px rgba(0, 0, 0, 0.04), inset -6px -6px 12px rgba(255, 255, 255, 0.9);
+  --shadow-tactile: 0 10px 30px rgba(0, 0, 0, 0.04), 0 0 1px rgba(0, 0, 0, 0.08);
+  --shadow-glow-blue: 0 0 20px rgba(0, 122, 255, 0.15);
+
+  --t1: #1D1D1F;
+  --t2: #424245;
+  --t3: #86868B;
   
   /* Apple 系统蓝 */
   --primary: #007AFF;
@@ -128,24 +138,182 @@
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06);
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.04), 0 0 1px rgba(0, 0, 0, 0.08);
   
+  /* Component Refinements for Light Mode */
+  --portal-bg: linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(245, 245, 247, 0.95));
+  --mockup-bg: #f5f5f7;
+  --mockup-border: rgba(0, 0, 0, 0.08);
+  
   --scrollbar-bg: transparent;
-  --scrollbar-thumb: rgba(0, 0, 0, 0.2);
-  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.35);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.15);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.25);
   
   color-scheme: light;
+}
+
+/* Specific component overrides for Light Theme */
+[data-theme="light"] .portal-card {
+  background: var(--portal-bg) !important;
+  border: 1px solid rgba(0, 0, 0, 0.06) !important;
+  box-shadow: var(--shadow-soft-out), inset 0 0 0 1px rgba(255, 255, 255, 0.8) !important;
+}
+
+[data-theme="light"] .visual-mockup {
+  background: #ffffff !important;
+  border: 1px solid var(--mockup-border) !important;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.05) !important;
+}
+
+[data-theme="light"] .dot-r, [data-theme="light"] .dot-y, [data-theme="light"] .dot-g {
+  opacity: 0.8;
+}
+
+[data-theme="light"] .mockup-header {
+  background: #fbfbfd !important;
+  border-bottom: 1px solid var(--mockup-border) !important;
+}
+
+[data-theme="light"] .mockup-url {
+  background: rgba(0, 0, 0, 0.04) !important;
+  color: var(--t2) !important;
+}
+
+[data-theme="light"] .mockup-body code {
+  color: #475569 !important;
+}
+
+[data-theme="light"] .sec-did {
+  background: var(--bg-primary) !important;
+}
+
+[data-theme="light"] .did-bg-image {
+  opacity: 0.04 !important;
+  filter: grayscale(100%) invert(1) brightness(0.8);
 }
 
 /* 圆角 */
 :root {
   --radius-sm: 8px;
   --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
-  --radius-2xl: 24px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-2xl: 36px;
   
   --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-soft: cubic-bezier(0.25, 1, 0.5, 1);
   --duration-fast: 0.15s;
   --duration-normal: 0.25s;
+  --duration-slow: 0.6s;
+  
+  /* Soft UI / Neumorphic Variables - Refined for "illyvoip" High-Fidelity */
+  --shadow-soft-out: 8px 8px 16px rgba(0, 0, 0, 0.45), -4px -4px 12px rgba(255, 255, 255, 0.02);
+  --shadow-soft-in: inset 6px 6px 12px rgba(0, 0, 0, 0.5), inset -3px -3px 8px rgba(255, 255, 255, 0.015);
+  --shadow-tactile: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 1px rgba(255, 255, 255, 0.15);
+  --shadow-glow-blue: 0 0 20px rgba(59, 130, 246, 0.3);
+  
+  --t1: #FFFFFF;
+  --t2: #E2E8F0;
+  --t3: #94A3B8;
+}
+
+/* Glassmorphism Utilities */
+.glass-card {
+  background: rgba(255, 255, 255, 0.035);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+}
+
+.glass-card-hover:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.18);
+  transform: translateY(-4px);
+  box-shadow: 0 16px 48px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Soft UI / Skeuomorphic Utilities */
+.soft-card {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-xl);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  box-shadow: var(--shadow-soft-out);
+  transition: all var(--duration-normal) var(--ease-soft);
+  position: relative;
+  overflow: hidden;
+}
+
+.soft-card::after {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.025) 0%, transparent 50%);
+  pointer-events: none;
+}
+
+.soft-card-hover:hover {
+  transform: translateY(-10px) scale(1.02);
+  box-shadow: 16px 24px 40px rgba(0, 0, 0, 0.6), -6px -6px 16px rgba(255, 255, 255, 0.03);
+  background: var(--bg-tertiary);
+}
+
+/* Portal Hybrid Utility - illyvoip style */
+.portal-card {
+  background: linear-gradient(145deg, rgba(20, 24, 34, 0.9), rgba(10, 12, 16, 0.95));
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: var(--shadow-soft-out), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius-2xl);
+}
+
+.soft-inset {
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-soft-in);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(0,0,0,0.15);
+}
+
+.soft-button {
+  background: var(--bg-secondary);
+  box-shadow: 4px 4px 10px rgba(0, 0, 0, 0.45), -4px -4px 10px rgba(255, 255, 255, 0.01);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  transition: all 0.2s var(--ease-default);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.soft-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 8px 8px 16px rgba(0, 0, 0, 0.55), -4px -4px 12px rgba(255, 255, 255, 0.02);
+  filter: brightness(1.15);
+}
+
+.soft-button:active {
+  transform: translateY(1px);
+  box-shadow: var(--shadow-soft-in);
+}
+
+.soft-button.active {
+  background: var(--bg-tertiary);
+  box-shadow: var(--shadow-soft-in), var(--shadow-glow-blue);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.tactile-text {
+  text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+  letter-spacing: 0.02em;
+}
+
+.text-gradient {
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  display: inline-block;
 }
 
 /* 基础样式 */
