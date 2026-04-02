@@ -136,7 +136,8 @@ export function getProductRatings(productId: number) {
 
 /** max_batches: 0 = 全量（较慢，短信发送页私库分组）；省略则后端默认仅最近若干批次卡片 */
 export function getMyNumbersSummary(params?: { max_batches?: number }) {
-  const timeout = params?.max_batches === 0 ? 120000 : 60000
+  // 与全局 axios 超时一致：大账户首次汇总可能超过 60s，避免误报「网络超时」
+  const timeout = 180000
   return request({
     url: '/data/my-numbers/summary',
     method: 'get',

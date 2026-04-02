@@ -63,12 +63,12 @@ from app.utils.cache import get_cache_manager
 logger = get_logger(__name__)
 router = APIRouter()
 
-# 私库汇总接口缓存（减轻大表 GROUP BY 压力）
-_MY_NUMBERS_SUMMARY_CACHE_TTL = 180
+# 私库汇总接口缓存（大账户 GROUP BY 可能需要 30s+，用长 TTL + stale-while-revalidate 应对）
+_MY_NUMBERS_SUMMARY_CACHE_TTL = 3600
 # 默认仅统计「最近 N 个批次」维度，避免单账号数百万行时全表聚合过慢；短信发送页传 max_batches=0 拉全量
 _DEFAULT_MY_NUMBERS_SUMMARY_MAX_BATCHES = 400
-# 私库号码总数缓存（COUNT(*) 在大表上仍可能较慢）
-_MY_NUMBERS_COUNT_CACHE_TTL = 600
+# 私库号码总数缓存
+_MY_NUMBERS_COUNT_CACHE_TTL = 3600
 
 
 def _my_numbers_summary_cache_key(account_id: int, max_batches: int) -> str:
@@ -76,13 +76,53 @@ def _my_numbers_summary_cache_key(account_id: int, max_batches: int) -> str:
 
 
 async def _invalidate_my_numbers_summary_cache(account_id: int) -> None:
-    """私库汇总数据变更后失效缓存（含不同 max_batches 的键）"""
+    """
+    Stale-while-revalidate：不删除汇总缓存，用递增版本号标记脏数据。
+    后台刷新仅在版本未变时清除标记，解决并发上传的竞态。
+    count 缓存直接删除（查询仅 ~2s，重算成本可接受）。
+    """
     try:
         cm = await get_cache_manager()
-        await cm.delete_pattern(f"data:my_numbers:summary:{account_id}*")
-        await cm.delete(f"data:my_numbers:count:{account_id}")
+        stale_key = f"data:my_numbers:stale:{account_id}"
+        redis_client = await cm.redis
+        await redis_client.incr(stale_key)
+        await redis_client.expire(stale_key, _MY_NUMBERS_SUMMARY_CACHE_TTL)
+        await cm.delete(_my_numbers_count_cache_key(account_id))
     except Exception:
         pass
+
+
+# 后台刷新锁（防止同一账户的多个并发刷新任务）
+_refresh_locks: Dict[int, bool] = {}
+
+
+async def _background_refresh_summary(account_id: int, max_batches: int) -> None:
+    """后台独立会话重新计算汇总并更新缓存。仅在版本号未变时清除 stale 标记。"""
+    if _refresh_locks.get(account_id):
+        return
+    _refresh_locks[account_id] = True
+    try:
+        stale_key = f"data:my_numbers:stale:{account_id}"
+        cm = await get_cache_manager()
+        redis_client = await cm.redis
+        version_before = await redis_client.get(stale_key)
+
+        from app.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            payload = await _compute_summary(db, account_id, max_batches)
+            cache_key = _my_numbers_summary_cache_key(account_id, max_batches)
+            await cm.set(cache_key, payload, ttl=_MY_NUMBERS_SUMMARY_CACHE_TTL)
+
+            version_after = await redis_client.get(stale_key)
+            if version_after == version_before:
+                await redis_client.delete(stale_key)
+                logger.info(f"后台刷新私库汇总完成: account={account_id}")
+            else:
+                logger.info(f"后台刷新私库汇总完成但有新变更，保留 stale: account={account_id}")
+    except Exception as e:
+        logger.warning(f"后台刷新私库汇总失败: account={account_id}, {e}")
+    finally:
+        _refresh_locks.pop(account_id, None)
 
 
 def _my_numbers_union_subquery(
@@ -1170,34 +1210,54 @@ async def get_my_numbers_summary(
 ):
     """私库号码按来源+用途+国家聚合统计（卡片展示用）"""
     cache_key = _my_numbers_summary_cache_key(account.id, max_batches)
+    stale_key = f"data:my_numbers:stale:{account.id}"
     try:
         cm = await get_cache_manager()
         cached = await cm.get(cache_key)
+        is_stale = await cm.get(stale_key) if cached is not None else None
         if cached is not None:
+            if not is_stale:
+                return cached
+            asyncio.ensure_future(
+                _background_refresh_summary(account.id, max_batches)
+            )
             return cached
     except Exception:
         pass
 
-    # 总数 = 私库分表 private_library_numbers + 公海购入后绑定在 data_numbers 的号码
+    payload = await _compute_summary(db, account.id, max_batches)
+    try:
+        cm = await get_cache_manager()
+        await cm.set(cache_key, payload, ttl=_MY_NUMBERS_SUMMARY_CACHE_TTL)
+        await cm.delete(f"data:my_numbers:stale:{account.id}")
+    except Exception:
+        pass
+    return payload
+
+
+async def _compute_summary(db: AsyncSession, account_id: int, max_batches: int) -> dict:
+    """实际执行汇总计算（可能耗时数十秒），由接口同步调用或后台刷新复用"""
+    # 总数（始终实时查询，~2s，count 缓存在上传/删除时已被清除）
     cnt_pln = (
         await db.execute(
             select(func.count())
             .select_from(PrivateLibraryNumber)
-            .where(PrivateLibraryNumber.account_id == account.id)
+            .where(PrivateLibraryNumber.account_id == account_id)
         )
     ).scalar() or 0
     cnt_dn = (
         await db.execute(
             select(func.count())
             .select_from(DataNumber)
-            .where(DataNumber.account_id == account.id)
+            .where(DataNumber.account_id == account_id)
         )
     ).scalar() or 0
     total_count_all = cnt_pln + cnt_dn
     try:
         cm_count = await get_cache_manager()
-        ckey = _my_numbers_count_cache_key(account.id)
-        await cm_count.set(ckey, total_count_all, ttl=_MY_NUMBERS_COUNT_CACHE_TTL)
+        await cm_count.set(
+            _my_numbers_count_cache_key(account_id), total_count_all, ttl=_MY_NUMBERS_COUNT_CACHE_TTL
+        )
     except Exception:
         pass
 
@@ -1205,73 +1265,49 @@ async def get_my_numbers_summary(
     truncated_hint = False
     if max_batches > 0:
 
-        def _batch_groups_stmt(model, lim: int):
-            cc = func.coalesce(model.country_code, "")
-            sc = func.coalesce(model.source, "")
-            pc = func.coalesce(model.purpose, "")
-            bid_group = func.coalesce(model.batch_id, "")
+        def _batch_ids_stmt(model, lim: int):
             return (
-                select(
-                    func.max(cc).label("c0"),
-                    func.max(sc).label("c1"),
-                    func.max(pc).label("c2"),
-                    bid_group.label("c3"),
-                    func.max(model.created_at).label("mx"),
-                )
-                .where(model.account_id == account.id)
-                .group_by(bid_group)
+                select(model.batch_id.label("bid"), func.max(model.created_at).label("mx"))
+                .where(model.account_id == account_id)
+                .group_by(model.batch_id)
                 .order_by(func.max(model.created_at).desc())
                 .limit(lim)
             )
 
         lim = max(max_batches * 2, max_batches)
-        rp = (await db.execute(_batch_groups_stmt(PrivateLibraryNumber, lim))).fetchall()
-        rd = (await db.execute(_batch_groups_stmt(DataNumber, lim))).fetchall()
-        merged_keys: List[tuple] = []
-        seen_k = set()
+        rp = (await db.execute(_batch_ids_stmt(PrivateLibraryNumber, lim))).fetchall()
+        rd = (await db.execute(_batch_ids_stmt(DataNumber, lim))).fetchall()
+        all_bids: list = []
+        seen_bid: set = set()
         for row in sorted(
             list(rp) + list(rd),
             key=lambda x: x.mx if x.mx is not None else datetime.min,
             reverse=True,
         ):
-            tkey = (row.c0, row.c1, row.c2, row.c3)
-            if tkey in seen_k:
+            bid_val = row.bid
+            if bid_val in seen_bid:
                 continue
-            seen_k.add(tkey)
-            merged_keys.append(tkey)
-            if len(merged_keys) >= max_batches:
+            seen_bid.add(bid_val)
+            all_bids.append(bid_val)
+            if len(all_bids) >= max_batches:
                 break
-        batch_keys = merged_keys
+        batch_keys = all_bids
         truncated_hint = len(batch_keys) >= max_batches
         if not batch_keys:
-            payload = {
+            return {
                 "success": True,
                 "items": [],
                 "total": total_count_all,
-                "meta": {
-                    "max_batches": max_batches,
-                    "truncated": False,
-                    "batch_card_limit": max_batches,
-                },
+                "meta": {"max_batches": max_batches, "truncated": False, "batch_card_limit": max_batches},
             }
-            try:
-                cm = await get_cache_manager()
-                await cm.set(cache_key, payload, ttl=_MY_NUMBERS_SUMMARY_CACHE_TTL)
-            except Exception:
-                pass
-            return payload
 
-    def _summary_carrier_stmt(model, keys):
-        cc = func.coalesce(model.country_code, "")
-        sc = func.coalesce(model.source, "")
-        pc = func.coalesce(model.purpose, "")
-        bc = func.coalesce(model.batch_id, "")
+    def _summary_carrier_stmt(model, bid_list):
         sq = (
             select(
-                cc.label("country_code"),
-                sc.label("source"),
-                pc.label("purpose"),
-                bc.label("batch_id"),
+                func.coalesce(model.country_code, "").label("country_code"),
+                func.coalesce(model.source, "").label("source"),
+                func.coalesce(model.purpose, "").label("purpose"),
+                func.coalesce(model.batch_id, "").label("batch_id"),
                 func.max(model.remarks).label("remarks"),
                 model.carrier,
                 func.count().label("group_count"),
@@ -1279,18 +1315,17 @@ async def get_my_numbers_summary(
                 func.min(model.created_at).label("first_at"),
                 func.max(model.created_at).label("last_at"),
             )
-            .where(model.account_id == account.id)
+            .where(model.account_id == account_id)
         )
-        if keys is not None:
-            sq = sq.where(tuple_(cc, sc, pc, bc).in_(keys))
-        return sq.group_by(cc, sc, pc, bc, model.carrier)
+        if bid_list is not None:
+            sq = sq.where(model.batch_id.in_(bid_list))
+        return sq.group_by(model.country_code, model.source, model.purpose, model.batch_id, model.carrier)
 
     summary_map: Dict[tuple, dict] = {}
     rows_pln = (await db.execute(_summary_carrier_stmt(PrivateLibraryNumber, batch_keys))).fetchall()
     rows_dn = (await db.execute(_summary_carrier_stmt(DataNumber, batch_keys))).fetchall()
 
-    def _merge_summary_carrier_rows(rows, origin: str):
-        """将按运营商拆分的汇总行并入 summary_map，并记录该分组是否含私库表/公海购入数据"""
+    def _merge(rows, origin: str):
         for r in rows:
             key = (r.country_code, r.source, r.purpose, r.batch_id)
             if key not in summary_map:
@@ -1310,29 +1345,23 @@ async def get_my_numbers_summary(
                     "last_at": r.last_at,
                     "_origin_sources": set(),
                 }
-
             group = summary_map[key]
             group["_origin_sources"].add(origin)
             group["count"] += r.group_count
             group["used_count"] += int(r.used_count or 0)
             group["unused_count"] = group["count"] - group["used_count"]
-
             if r.remarks:
                 cur = group["remarks"]
                 if cur is None or len(str(r.remarks)) > len(str(cur)):
                     group["remarks"] = r.remarks
-
             if r.first_at and (not group["first_at"] or r.first_at < group["first_at"]):
                 group["first_at"] = r.first_at
             if r.last_at and (not group["last_at"] or r.last_at > group["last_at"]):
                 group["last_at"] = r.last_at
+            group["carriers"].append({"name": r.carrier or "Unknown", "count": r.group_count})
 
-            group["carriers"].append(
-                {"name": r.carrier or "Unknown", "count": r.group_count}
-            )
-
-    _merge_summary_carrier_rows(rows_pln, "manual")
-    _merge_summary_carrier_rows(rows_dn, "purchased")
+    _merge(rows_pln, "manual")
+    _merge(rows_dn, "purchased")
 
     items = list(summary_map.values())
     for item in items:
@@ -1350,7 +1379,7 @@ async def get_my_numbers_summary(
 
     items.sort(key=lambda x: x["last_at"] or "", reverse=True)
 
-    payload = {
+    return {
         "success": True,
         "items": items,
         "total": total_count_all,
@@ -1360,12 +1389,6 @@ async def get_my_numbers_summary(
             "batch_card_limit": max_batches if max_batches > 0 else None,
         },
     }
-    try:
-        cm = await get_cache_manager()
-        await cm.set(cache_key, payload, ttl=_MY_NUMBERS_SUMMARY_CACHE_TTL)
-    except Exception:
-        pass
-    return payload
 
 
 
