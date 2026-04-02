@@ -17,7 +17,6 @@
         <el-form-item :label="$t('accountTemplates.businessType')">
           <el-select v-model="filters.business_type" :placeholder="$t('accountTemplates.allTypes')" clearable>
             <el-option :label="$t('accountTemplates.sms')" value="sms" />
-            <el-option :label="$t('accountTemplates.voice')" value="voice" />
             <el-option :label="$t('accountTemplates.data')" value="data" />
           </el-select>
         </el-form-item>
@@ -148,7 +147,6 @@
             <el-form-item :label="$t('accountTemplates.businessType')" prop="business_type">
               <el-select v-model="form.business_type" :placeholder="$t('accountTemplates.selectBusinessType')" :disabled="isEdit">
                 <el-option :label="$t('accountTemplates.sms')" value="sms" />
-                <el-option :label="$t('accountTemplates.voice')" value="voice" />
                 <el-option :label="$t('accountTemplates.data')" value="data" />
               </el-select>
             </el-form-item>
@@ -325,7 +323,6 @@ const rules = computed(() => ({
 const getBusinessTypeLabel = (type: string) => {
   const map: Record<string, string> = {
     sms: t('accountTemplates.sms'),
-    voice: t('accountTemplates.voice'),
     data: t('accountTemplates.data')
   }
   return map[type] || type
@@ -334,7 +331,6 @@ const getBusinessTypeLabel = (type: string) => {
 const getBusinessTypeColor = (type: string) => {
   const map: Record<string, string> = {
     sms: 'primary',
-    voice: 'success',
     data: 'warning'
   }
   return map[type] || 'info'

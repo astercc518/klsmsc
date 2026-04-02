@@ -137,7 +137,7 @@ export function getMyNumbers(params?: { page?: number; page_size?: number; count
   return request({ url: '/data/my-numbers', method: 'get', params })
 }
 
-export function exportMyNumbers(params?: { fmt?: string; country?: string; source?: string; purpose?: string }) {
+export function exportMyNumbers(params?: { fmt?: string; country?: string; source?: string; purpose?: string; batch_id?: string }) {
   return request({
     url: '/data/my-numbers/export',
     method: 'get',
@@ -155,6 +155,6 @@ export function uploadMyNumbers(data: FormData) {
   })
 }
 
-export function deleteMyNumbers(params: { country?: string; source?: string; purpose?: string; carrier?: string }) {
+export function deleteMyNumbers(params: { country?: string; source?: string; purpose?: string; carrier?: string; batch_id?: string }) {
   return request({ url: '/data/my-numbers', method: 'delete', params })
 }

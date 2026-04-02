@@ -375,7 +375,8 @@ async def remove_supplier_from_business(
     result = await db.execute(stmt)
     await db.commit()
     n = result.rowcount
-    return {"success": True, "message": f"已从{['短信','语音','数据'][['sms','voice','data'].index(business_type)]}业务移除，停用 {n} 条报价", "deactivated": n}
+    label_map = {"sms": "短信", "voice": "语音", "data": "数据"}
+    return {"success": True, "message": f"已从{label_map.get(business_type, business_type)}业务移除，停用 {n} 条报价", "deactivated": n}
 
 
 @router.post("/{supplier_id}/sync-from-data-pricing")
@@ -584,7 +585,6 @@ async def import_from_voice_pricing(
 
         channel_code = info.get("channel_code", "")
 
-        # 查找或创建语音供应商
         result = await db.execute(
             select(Supplier).where(
                 Supplier.supplier_name == supplier_name,
@@ -594,7 +594,7 @@ async def import_from_voice_pricing(
         supplier = result.scalar_one_or_none()
 
         if not supplier:
-            safe = supplier_name.replace(" ", "_").replace("语音", "")[:10] or "VOICE"
+            safe = supplier_name.replace(" ", "_")[:10] or "VOICE"
             code = channel_code or f"VOICE_{safe}_{int(time.time() % 100000)}"
             supplier = Supplier(
                 supplier_code=code,
@@ -621,11 +621,9 @@ async def import_from_voice_pricing(
             if not country_code or cost is None or float(cost) <= 0:
                 continue
 
-            # 语音报价用 resource_type 存计费模式，remark 存网关名
             resource_type = billing_model
             remark = gateway_name or full_desc
 
-            # 避免重复：供应商+国家+业务类型+计费模式 已存在则跳过
             exist_result = await db.execute(
                 select(SupplierRate.id).where(
                     SupplierRate.supplier_id == supplier_id,

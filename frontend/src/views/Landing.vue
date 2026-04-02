@@ -72,7 +72,7 @@
           <p class="hero-desc animate-slide-up" style="animation-delay: 0.2s">
             {{ $t('landing.hero.desc') }}
             <br /><br />
-            <span class="text-tertiary font-sm">{{ $t('landing.hero.portalDesc') || 'Automated Voice, SMS & DID Management in one single interface.' }}</span>
+            <span class="text-tertiary font-sm">{{ $t('landing.hero.portalDesc') || 'Automated SMS & Data Management in one single interface.' }}</span>
           </p>
           <div class="hero-btns animate-slide-up" style="animation-delay: 0.3s">
             <router-link to="/login" class="btn-main-lg soft-button">

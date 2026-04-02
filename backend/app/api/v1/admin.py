@@ -140,7 +140,7 @@ class AdminAccountCreateRequest(BaseModel):
     password: str
     tg_username: Optional[str] = None
     country_code: Optional[str] = None  # 国家代码
-    business_type: str = "sms"  # sms/voice/data
+    business_type: str = "sms"  # sms/data
     # 接入协议
     protocol: str = "HTTP"  # HTTP/SMPP
     smpp_password: Optional[str] = None  # SMPP密码(仅SMPP模式)
@@ -161,8 +161,8 @@ class AdminAccountUpdateRequest(BaseModel):
     account_name: Optional[str] = None
     tg_username: Optional[str] = None
     country_code: Optional[str] = None  # 国家代码
-    business_type: Optional[str] = None  # sms/voice/data（旧字段）
-    services: Optional[str] = None  # 开通业务：sms,voice,data 逗号分隔
+    business_type: Optional[str] = None  # sms/data（旧字段）
+    services: Optional[str] = None  # 开通业务：sms,data 逗号分隔
     # 接入协议
     protocol: Optional[str] = None  # HTTP/SMPP
     smpp_password: Optional[str] = None  # SMPP密码

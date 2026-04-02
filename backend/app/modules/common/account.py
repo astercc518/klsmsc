@@ -37,13 +37,12 @@ class Account(Base):
     tg_id = Column(BigInteger, comment="Telegram ID")
     country_code = Column(String(10), comment="国家代码")
     business_type = Column(
-        Enum("sms", "voice", "data", name="account_business_type"),
+        Enum("sms", "data", name="account_business_type"),
         nullable=False,
         default="sms",
-        comment="业务类型：sms短信/voice语音/data数据（旧字段，保留兼容）"
+        comment="业务类型：sms短信/data数据（旧字段，保留兼容）"
     )
-    # 新增：支持多业务类型，逗号分隔，如 "sms,voice,data"
-    services = Column(String(100), nullable=False, default="sms", comment="开通业务：sms,voice,data 逗号分隔")
+    services = Column(String(100), nullable=False, default="sms", comment="开通业务：sms,data 逗号分隔")
     # 接入协议配置
     protocol = Column(
         Enum("HTTP", "SMPP", name="account_protocol"),

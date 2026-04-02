@@ -11,10 +11,6 @@
           <el-icon><Upload /></el-icon>
           {{ $t('suppliers.importFromCost') }}
         </el-button>
-        <el-button type="success" plain @click="handleImportFromVoice" :loading="importingVoice">
-          <el-icon><Upload /></el-icon>
-          {{ $t('suppliers.importFromVoice') }}
-        </el-button>
         <el-button type="primary" @click="showCreateDialog">
           <el-icon><Plus /></el-icon>
           {{ $t('suppliers.addSupplier') }}
@@ -31,15 +27,6 @@
         <div class="stat-info">
           <div class="stat-value">{{ stats.sms_count }}</div>
           <div class="stat-label">{{ $t('suppliers.smsBusiness') }}</div>
-        </div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-icon voice">
-          <el-icon><Phone /></el-icon>
-        </div>
-        <div class="stat-info">
-          <div class="stat-value">{{ stats.voice_count }}</div>
-          <div class="stat-label">{{ $t('suppliers.voiceBusiness') }}</div>
         </div>
       </div>
       <div class="stat-card">
@@ -123,90 +110,6 @@
         </el-table-column>
       </el-table>
         </div>
-      </el-tab-pane>
-      <el-tab-pane :label="`${$t('suppliers.voiceBusiness')} (${stats.voice_count})`" name="voice">
-        <div class="table-card">
-          <el-table :data="byBusiness.voice" v-loading="loading" class="data-table">
-        <el-table-column prop="supplier_name" :label="$t('suppliers.supplierName')" min-width="150">
-          <template #default="{ row }">
-            <div class="supplier-cell">
-              <span class="supplier-name">{{ row.supplier_name }}</span>
-              <el-tag v-if="row.status === 'active'" type="success" size="small" effect="plain">{{ $t('suppliers.active') }}</el-tag>
-              <el-tag v-else type="info" size="small" effect="plain">{{ $t('suppliers.inactive') }}</el-tag>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column prop="supplier_group" :label="$t('suppliers.supplierGroup')" width="130">
-          <template #default="{ row }"><span>{{ row.supplier_group || '-' }}</span></template>
-        </el-table-column>
-        <el-table-column prop="rate_count" :label="$t('suppliers.rateCount')" width="100" align="center">
-          <template #default="{ row }">
-            <el-tag v-if="row.rate_count > 0" type="success" size="small">{{ row.rate_count }} {{ $t('suppliers.items') }}</el-tag>
-            <span v-else class="no-rate">{{ $t('suppliers.notConfigured') }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="country_count" :label="$t('suppliers.coveredCountries')" width="100" align="center">
-          <template #default="{ row }">
-            <span v-if="row.country_count > 0">{{ row.country_count }} {{ $t('suppliers.units') }}</span>
-            <span v-else>-</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="notes" :label="$t('suppliers.notes')" min-width="150" show-overflow-tooltip>
-          <template #default="{ row }"><span class="notes-text">{{ row.notes || '-' }}</span></template>
-        </el-table-column>
-        <el-table-column :label="$t('common.action')" width="260" fixed="right" align="center">
-          <template #default="{ row }">
-            <el-button type="success" link size="small" @click="showRatesDialog(row)">{{ $t('suppliers.rateTable') }}</el-button>
-            <el-button type="primary" link size="small" @click="editSupplier(row)">{{ $t('common.edit') }}</el-button>
-            <el-popconfirm
-              v-if="row.rate_count > 0"
-              :title="$t('suppliers.confirmRemoveFromBusiness')"
-              @confirm="removeFromBusiness(row, 'voice')"
-            >
-              <template #reference>
-                <el-button type="warning" link size="small">{{ $t('suppliers.removeFromBusiness') }}</el-button>
-              </template>
-            </el-popconfirm>
-            <el-popconfirm :title="$t('suppliers.confirmDelete')" @confirm="deleteSupplier(row)">
-              <template #reference>
-                <el-button type="danger" link size="small">{{ $t('common.delete') }}</el-button>
-              </template>
-            </el-popconfirm>
-          </template>
-        </el-table-column>
-      </el-table>
-        </div>
-        <!-- 语音报价参考 -->
-        <el-card class="voice-pricing-ref-card" shadow="never">
-          <template #header>
-            <div class="card-header-row">
-              <span>{{ $t('suppliers.voicePricingRef') }}</span>
-              <el-button link size="small" @click="loadVoicePricingRef" :loading="voicePricingLoading">
-                <el-icon><Refresh /></el-icon> {{ $t('common.refresh') }}
-              </el-button>
-            </div>
-          </template>
-          <el-table :data="voicePricingList" v-loading="voicePricingLoading" size="small" max-height="400" stripe>
-            <el-table-column prop="gateway_name" :label="$t('suppliers.gatewayName')" min-width="200" show-overflow-tooltip />
-            <el-table-column prop="supplier" :label="$t('suppliers.supplierName')" width="100" />
-            <el-table-column prop="country" :label="$t('suppliers.country')" width="90" />
-            <el-table-column prop="country_code" label="ISO" width="70" />
-            <el-table-column prop="description" :label="$t('suppliers.remark')" width="90" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.description || '-' }}</template>
-            </el-table-column>
-            <el-table-column prop="billing_desc" :label="$t('suppliers.billingDesc')" width="140" />
-            <el-table-column prop="cost_usd" :label="$t('suppliers.costPrice')" width="120" align="right">
-              <template #default="{ row }">{{ formatVoicePrice(row.cost_usd, row.billing_model) }}</template>
-            </el-table-column>
-            <el-table-column prop="sale_usd" :label="$t('suppliers.sellPrice')" width="120" align="right">
-              <template #default="{ row }">{{ formatVoicePrice(row.sale_usd ?? row.price_usd, row.billing_model) }}</template>
-            </el-table-column>
-            <el-table-column prop="full_desc" :label="$t('suppliers.fullDesc')" min-width="220" show-overflow-tooltip />
-          </el-table>
-          <div v-if="voicePricingList.length" class="voice-pricing-summary">
-            {{ $t('suppliers.voicePricingSummary', { total: voicePricingList.length, suppliers: voicePricingSuppliers, countries: voicePricingCountries }) }}
-          </div>
-        </el-card>
       </el-tab-pane>
       <el-tab-pane :label="`${$t('suppliers.dataBusiness')} (${stats.data_count})`" name="data">
         <div class="table-card">

@@ -13,12 +13,14 @@ DATA_PURPOSES = ('bc', 'part_time', 'dating', 'finance', 'stock')
 FRESHNESS_TIERS = ('3day', '7day', '30day', 'history')
 
 SOURCE_LABELS = {
-    'credential': '撞库', 'penetration': '渗透', 'social_eng': '社工库',
     'telemarketing': '电销', 'otp': 'OTP',
+    'Exhibition': '展会采集', 'social_eng': '社工库', 'Manual Upload': '手工上传',
+    'Customer Registry': '客户提供', 'credential': '撞库',
 }
 PURPOSE_LABELS = {
-    'bc': 'BC', 'part_time': '兼职', 'dating': '交友',
-    'finance': '金融', 'stock': '股票',
+    'bc': 'BC/兼职', 'part_time': '兼职', 'dating': '交友',
+    'finance': '金融互金', 'stock': '股票', 'Marketing': '营销推广',
+    'Social': '社交通知',
 }
 FRESHNESS_LABELS = {
     '3day': '3日内', '7day': '7日内', '30day': '30日内', 'history': '历史',
@@ -29,9 +31,9 @@ class DataNumber(Base):
     """号码资源池 - 存储清洗后的手机号码数据"""
     __tablename__ = 'data_numbers'
 
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    phone_number = Column(String(20), nullable=False, comment='手机号码(E.164格式)')
-    country_code = Column(String(10), nullable=False, comment='国家代码(如CN,US)')
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    phone_number = Column(String(20), nullable=False, index=True, comment='手机号码(E.164格式)')
+    country_code = Column(String(10), nullable=False, index=True, comment='国家代码(如CN,US)')
 
     # 标签系统
     tags = Column(JSON, comment='标签列表(JSON数组)')
@@ -68,7 +70,7 @@ class DataNumber(Base):
     __table_args__ = (
         Index('idx_phone_number', 'phone_number', unique=True),
         Index('idx_country_code', 'country_code'),
-        Index('idx_status', 'status'),
+        Index('idx_data_number_status', 'status'),
         Index('idx_account_id', 'account_id'),
         Index('idx_carrier', 'carrier'),
         Index('idx_last_used', 'last_used_at'),

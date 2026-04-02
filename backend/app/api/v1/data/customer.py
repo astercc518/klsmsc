@@ -5,11 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, case, text as sa_text, update as sa_update, insert
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import joinedload
-from typing import Optional
+from typing import Optional, List, Dict
 from datetime import datetime, date, timedelta
 import uuid
 import csv
 import io
+import asyncio
 from decimal import Decimal
 
 from app.database import get_db
@@ -35,6 +36,43 @@ router = APIRouter()
 
 def _gen_order_no():
     return f"DO-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+
+
+def _extract_phone_numbers_from_upload_text(filename: str, text_content: str) -> List[str]:
+    """从上传文本中解析号码（同步，可在线程池中执行以避免阻塞事件循环）"""
+    numbers_to_add: List[str] = []
+    lower_name = (filename or "").lower()
+    if lower_name.endswith(".csv"):
+        f = io.StringIO(text_content)
+        reader = csv.reader(f)
+        for row in reader:
+            if not row or not row[0].strip():
+                continue
+            num = row[0].strip().lstrip("+")
+            if num.isdigit() and 7 <= len(num) <= 15:
+                numbers_to_add.append(num)
+    else:
+        for line in text_content.splitlines():
+            num = line.strip().lstrip("+")
+            if num.isdigit() and 7 <= len(num) <= 15:
+                numbers_to_add.append(num)
+    return numbers_to_add
+
+
+def _batch_lookup_carriers(nums: List[str]) -> Dict[str, Optional[str]]:
+    """批量运营商识别（在线程中执行，避免阻塞事件循环）"""
+    import phonenumbers
+    from phonenumbers import carrier as pn_carrier
+
+    out: Dict[str, Optional[str]] = {}
+    for num in nums:
+        try:
+            phone_with_plus = num if num.startswith("+") else "+" + num
+            parse_obj = phonenumbers.parse(phone_with_plus, None)
+            out[num] = pn_carrier.name_for_number(parse_obj, "en")
+        except Exception:
+            out[num] = None
+    return out
 
 
 # ============ 商品浏览 ============
@@ -834,7 +872,6 @@ async def customer_list_orders(
         "success": True,
         "items": items,
         "total": total,
-        "page": page,
         "page_size": page_size,
     }
 
@@ -892,65 +929,83 @@ async def get_my_numbers_summary(
 ):
     """私库号码按来源+用途+国家聚合统计（卡片展示用）"""
     from app.modules.data.models import SOURCE_LABELS, PURPOSE_LABELS
-    # 1. 基础聚合 (Country, Source, Purpose)
-    result = await db.execute(
+    # 1. 统一聚合查询 (显著减少全表扫描次数)
+    summary_query = (
         select(
             func.coalesce(DataNumber.country_code, '').label("country_code"),
             func.coalesce(DataNumber.source, '').label("source"),
             func.coalesce(DataNumber.purpose, '').label("purpose"),
-            func.count().label("total_count"),
+            func.coalesce(DataNumber.batch_id, '').label("batch_id"),
+            func.coalesce(DataNumber.remarks, '').label("remarks"),
+            DataNumber.carrier,
+            func.count().label("group_count"),
             func.sum(case((DataNumber.use_count > 0, 1), else_=0)).label("used_count"),
             func.min(DataNumber.created_at).label("first_at"),
             func.max(DataNumber.created_at).label("last_at"),
         )
         .where(DataNumber.account_id == account.id)
-        .group_by(func.coalesce(DataNumber.country_code, ''), func.coalesce(DataNumber.source, ''), func.coalesce(DataNumber.purpose, ''))
-        .order_by(func.count().desc())
+        .group_by(
+            func.coalesce(DataNumber.country_code, ''), 
+            func.coalesce(DataNumber.source, ''), 
+            func.coalesce(DataNumber.purpose, ''),
+            func.coalesce(DataNumber.batch_id, ''),
+            func.coalesce(DataNumber.remarks, ''),
+            DataNumber.carrier
+        )
     )
+    result = await db.execute(summary_query)
     rows = result.fetchall()
 
-    # 2. 获取每个分组下的运营商分布
-    carrier_result = await db.execute(
-        select(
-            func.coalesce(DataNumber.country_code, '').label("country_code"),
-            func.coalesce(DataNumber.source, '').label("source"),
-            func.coalesce(DataNumber.purpose, '').label("purpose"),
-            DataNumber.carrier,
-            func.count().label("count")
-        )
-        .where(DataNumber.account_id == account.id)
-        .group_by(func.coalesce(DataNumber.country_code, ''), func.coalesce(DataNumber.source, ''), func.coalesce(DataNumber.purpose, ''), DataNumber.carrier)
-    )
-    carrier_rows = carrier_result.fetchall()
-
-    carrier_map = {}  # (country, source, purpose) -> list of carriers
-    for cr in carrier_rows:
-        map_key = (cr.country_code, cr.source, cr.purpose)
-        if map_key not in carrier_map:
-            carrier_map[map_key] = []
-        carrier_map[map_key].append({"name": cr.carrier or "Unknown", "count": cr.count})
-
-    total_count_all = sum(r.total_count for r in rows)
-    items = []
+    # 2. 在 Python 中进行二次聚合（内存中合并运营商分布，比数据库做两次 Group By 更高效）
+    summary_map = {} # key -> group_data
     for r in rows:
-        map_key = (r.country_code, r.source, r.purpose)
-        total_val = r.total_count
-        used_val = int(r.used_count or 0)
-        items.append({
-            "country_code": r.country_code or "",
-            "source": r.source or "",
-            "source_label": SOURCE_LABELS.get(r.source, r.source or ""),
-            "purpose": r.purpose or "",
-            "purpose_label": PURPOSE_LABELS.get(r.purpose, r.purpose or ""),
-            "count": total_val,
-            "used_count": used_val,
-            "unused_count": total_val - used_val,
-            "carriers": carrier_map.get(map_key, []),
-            "first_at": r.first_at.isoformat() if r.first_at else None,
-            "last_at": r.last_at.isoformat() if r.last_at else None,
+        key = (r.country_code, r.source, r.purpose, r.batch_id, r.remarks)
+        if key not in summary_map:
+            summary_map[key] = {
+                "country_code": r.country_code,
+                "source": r.source,
+                "source_label": SOURCE_LABELS.get(r.source, r.source or ""),
+                "purpose": r.purpose,
+                "purpose_label": PURPOSE_LABELS.get(r.purpose, r.purpose or ""),
+                "batch_id": r.batch_id,
+                "remarks": r.remarks,
+                "count": 0,
+                "used_count": 0,
+                "unused_count": 0,
+                "carriers": [],
+                "first_at": r.first_at,
+                "last_at": r.last_at
+            }
+        
+        group = summary_map[key]
+        group["count"] += r.group_count
+        group["used_count"] += int(r.used_count or 0)
+        group["unused_count"] = group["count"] - group["used_count"]
+        
+        # 更新最早/最晚时间
+        if r.first_at and (not group["first_at"] or r.first_at < group["first_at"]):
+            group["first_at"] = r.first_at
+        if r.last_at and (not group["last_at"] or r.last_at > group["last_at"]):
+            group["last_at"] = r.last_at
+            
+        group["carriers"].append({
+            "name": r.carrier or "Unknown",
+            "count": r.group_count
         })
 
+    # 3. 构造最终返回列表
+    items = list(summary_map.values())
+    # 转换为 ISO 字符串
+    for item in items:
+        if item["first_at"]: item["first_at"] = item["first_at"].isoformat()
+        if item["last_at"]: item["last_at"] = item["last_at"].isoformat()
+    
+    # 按时间降序排序
+    items.sort(key=lambda x: x["last_at"] or "", reverse=True)
+    total_count_all = sum(item["count"] for item in items)
+
     return {"success": True, "items": items, "total": total_count_all}
+
 
 
 @router.get("/my-numbers")
@@ -992,6 +1047,8 @@ async def delete_my_numbers_batch(
     country: Optional[str] = Query(None),
     source: Optional[str] = Query(None),
     purpose: Optional[str] = Query(None),
+    batch_id: Optional[str] = Query(None),
+    remarks: Optional[str] = Query(None),
     carrier: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     account: Account = Depends(get_current_account),
@@ -1005,6 +1062,8 @@ async def delete_my_numbers_batch(
         stmt = stmt.where(DataNumber.source == source)
     if purpose:
         stmt = stmt.where(DataNumber.purpose == purpose)
+    if batch_id:
+        stmt = stmt.where(DataNumber.batch_id == batch_id)
     
     # 针对 carrier 的特殊处理：前端可能传空字符串表示 Unknown
     if carrier:
@@ -1025,6 +1084,7 @@ async def export_my_numbers(
     country: Optional[str] = None,
     source: Optional[str] = None,
     purpose: Optional[str] = None,
+    batch_id: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     account: Account = Depends(get_current_account),
 ):
@@ -1036,6 +1096,8 @@ async def export_my_numbers(
         query = query.where(DataNumber.source == source)
     if purpose:
         query = query.where(DataNumber.purpose == purpose)
+    if batch_id:
+        query = query.where(DataNumber.batch_id == batch_id)
 
     # 增加排序确保导出顺序一致
     query = query.order_by(DataNumber.id.asc())
@@ -1083,34 +1145,26 @@ async def my_numbers_upload(
     source: Optional[str] = Form("Manual Upload"),
     purpose: Optional[str] = Form("Social"),
     remarks: Optional[str] = Form(None),
+    detect_carrier: bool = Form(False),
     db: AsyncSession = Depends(get_db),
     account: Account = Depends(get_current_account),
 ):
     """上传数据到私有库"""
-    if not file.filename.endswith(('.csv', '.txt')):
+    fname = file.filename or ""
+    if not fname.lower().endswith((".csv", ".txt")):
         raise HTTPException(400, "仅支持 CSV 或 TXT 文件")
 
     content = await file.read()
-    text_content = content.decode('utf-8', errors='ignore')
-    
-    # 提取号码
-    numbers_to_add = []
-    if file.filename.endswith('.csv'):
-        # 简单 CSV 解析 (第一列为号码)
-        f = io.StringIO(text_content)
-        reader = csv.reader(f)
-        for row in reader:
-            if not row or not row[0].strip(): continue
-            num = row[0].strip().lstrip('+')
-            if num.isdigit() and 7 <= len(num) <= 15:
-                numbers_to_add.append(num)
+    text_content = content.decode("utf-8", errors="ignore")
+
+    # 大文件解析放到线程池，避免长时间占用 asyncio 事件循环
+    parse_threshold = 200_000
+    if len(content) > parse_threshold:
+        numbers_to_add = await asyncio.to_thread(
+            _extract_phone_numbers_from_upload_text, fname, text_content
+        )
     else:
-        # TXT 按行解析
-        lines = text_content.splitlines()
-        for line in lines:
-            num = line.strip().lstrip('+')
-            if num.isdigit() and 7 <= len(num) <= 15:
-                numbers_to_add.append(num)
+        numbers_to_add = _extract_phone_numbers_from_upload_text(fname, text_content)
 
     if not numbers_to_add:
         raise HTTPException(400, "未检测到有效手机号码")
@@ -1118,71 +1172,104 @@ async def my_numbers_upload(
     # 去重
     unique_numbers = sorted(list(set(numbers_to_add)))
     
-    # 批量检查是否存在 (简单逻辑：检查号码是否已在库中且属于该用户或公共库)
-    # 这里的业务逻辑通常是：如果号码已在当前用户的库中，则跳过
-    # 如果号码在公共库，可以导入一份私有的副本 (或标记为该用户私有)
-    # 根据 models.py，data_numbers.phone_number 有唯一索引 idx_phone_number
-    # 所以全局唯一。如果号码已存在，我们可能无法重新插入。
-    # 
-    # 批量准备 (直接使用 INSERT IGNORE，不再单独查重以节约 2 分钟的 SELECT IN 时间)
-    to_insert = unique_numbers
-    
-    if not to_insert:
-        return {
-            "success": True,
-            "message": "上传完成，但所有号码均已在库中",
-            "total": len(unique_numbers),
-            "added": 0,
-            "duplicates": len(unique_numbers)
-        }
+    # 批量检查是否存在 (精简内存占用版)
+    existing_numbers_map = {}
+    from sqlalchemy import select
+    for i in range(0, len(unique_numbers), 2000):
+        chunk = unique_numbers[i:i + 2000]
+        q = select(DataNumber.id, DataNumber.phone_number, DataNumber.account_id, DataNumber.remarks).where(
+            DataNumber.phone_number.in_(chunk)
+        )
+        res = await db.execute(q)
+        for row in res.all():
+            existing_numbers_map[row.phone_number] = {
+                "id": row.id,
+                "account_id": row.account_id,
+                "remarks": row.remarks
+            }
 
-    # 批量插入 (使用 Core insert 以提高性能)
-    batch_id = f"UP-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
-    
-    import phonenumbers
-    from phonenumbers import carrier as pn_carrier
-    
+    # 准备插入和更新的数据
     insert_dicts = []
-    for num in to_insert:
-        # 自动识别运营商
-        detected_carrier = None
-        try:
-            phone_with_plus = num if num.startswith('+') else '+' + num
-            parse_obj = phonenumbers.parse(phone_with_plus, None)
-            detected_carrier = pn_carrier.name_for_number(parse_obj, "en")
-        except:
-            pass
+    update_ids = []
 
-        insert_dicts.append({
-            "phone_number": num,
-            "country_code": country_code,
-            "source": source,
-            "purpose": purpose,
-            "remarks": remarks,
-            "account_id": account.id,
-            "status": 'active',
-            "batch_id": batch_id,
-            "carrier": detected_carrier,
-            "tags": ['private_upload'],
-            "created_at": datetime.now(),
-            "updated_at": datetime.now()
-        })
+    batch_id = f"UP-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
+    now = datetime.now()
+
+    # 默认不做运营商识别：phonenumbers 为纯 CPU 同步调用，十万级循环会拖死整个 API 进程
+    if detect_carrier and len(unique_numbers) > 5_000:
+        raise HTTPException(
+            400,
+            "号码超过 5000 条时请勿开启运营商识别；请取消勾选后重试，或分批上传。",
+        )
+
+    new_for_carrier: List[str] = [
+        n for n in unique_numbers if n not in existing_numbers_map
+    ]
+    carrier_map: Dict[str, Optional[str]] = {}
+    if detect_carrier and new_for_carrier:
+        carrier_map = await asyncio.to_thread(_batch_lookup_carriers, new_for_carrier)
+
+    for num in unique_numbers:
+        info = existing_numbers_map.get(num)
+        if not info:
+            detected_carrier = carrier_map.get(num) if detect_carrier else None
+
+            insert_dicts.append(
+                {
+                    "phone_number": num,
+                    "country_code": country_code,
+                    "source": source,
+                    "purpose": purpose,
+                    "remarks": remarks,
+                    "account_id": account.id,
+                    "status": "active",
+                    "batch_id": batch_id,
+                    "carrier": detected_carrier,
+                    "tags": ["private_upload"],
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        else:
+            # 已存在号码，检查是否可以“激活”或“重新分配”
+            if info["account_id"] is None or info["account_id"] == account.id:
+                update_ids.append(info["id"])
+
+    # 分片执行插入
+    if insert_dicts:
+        from sqlalchemy import insert
+        chunk_size = 5000
+        for i in range(0, len(insert_dicts), chunk_size):
+            await db.execute(insert(DataNumber), insert_dicts[i:i + chunk_size])
     
-    # 分片插入，使用 mysql_insert + IGNORE
-    chunk_size = 5000
-    for i in range(0, len(insert_dicts), chunk_size):
-        chunk = insert_dicts[i:i + chunk_size]
-        stmt = mysql_insert(DataNumber).values(chunk).prefix_with('IGNORE')
-        await db.execute(stmt)
+    # 分片执行更新 (使用批量更新提速)
+    if update_ids:
+        from sqlalchemy import update
+        chunk_size = 5000
+        for i in range(0, len(update_ids), chunk_size):
+            chunk_ids = update_ids[i:i + chunk_size]
+            stmt = (
+                update(DataNumber)
+                .where(DataNumber.id.in_(chunk_ids))
+                .values(
+                    account_id=account.id,
+                    status='active',
+                    batch_id=batch_id,
+                    updated_at=now
+                )
+            )
+            if remarks:
+                stmt = stmt.values(remarks=remarks)
+            await db.execute(stmt)
     
     await db.commit()
 
     return {
         "success": True,
-        "message": f"成功上传 {len(to_insert)} 条数据",
+        "message": f"成功上传 {len(insert_dicts)} 条新数据，激活/更新 {len(update_ids)} 条数据",
         "total": len(unique_numbers),
-        "added": len(to_insert),
-        "duplicates": len(unique_numbers) - len(to_insert)
+        "added": len(insert_dicts) + len(update_ids),
+        "duplicates": len(unique_numbers) - len(insert_dicts) - len(update_ids)
     }
 
 

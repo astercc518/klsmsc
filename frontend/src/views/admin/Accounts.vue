@@ -68,7 +68,6 @@
           />
           <el-select v-if="!props.defaultBusinessType" v-model="businessTypeFilter" :placeholder="$t('customers.allBusiness')" clearable style="width: 130px" @change="loadAccounts">
             <el-option :label="$t('customers.smsBusiness')" value="sms" />
-            <el-option :label="$t('customers.voiceBusiness')" value="voice" />
             <el-option :label="$t('customers.dataBusiness')" value="data" />
           </el-select>
           <el-select v-model="statusFilter" :placeholder="$t('customers.allStatus')" clearable style="width: 130px" @change="loadAccounts">
@@ -505,7 +504,6 @@ const route = useRoute()
 // 页面标题
 const pageTitle = computed(() => {
   if (props.defaultBusinessType === 'sms') return t('menu.smsAccounts')
-  if (props.defaultBusinessType === 'voice') return t('menu.voiceAccounts')
   if (props.defaultBusinessType === 'data') return t('menu.dataAccounts')
   return t('customers.title')
 })
@@ -572,13 +570,12 @@ const statusText = (s: string) => {
 const businessTypeText = (type: string) => {
   const map: Record<string, string> = { 
     sms: t('customers.smsBusiness'), 
-    voice: t('customers.voiceBusiness'), 
     data: t('customers.dataBusiness') 
   }
   return map[type] || type || t('customers.smsBusiness')
 }
 const businessTypeTag = (t: string) => {
-  const map: Record<string, any> = { sms: 'primary', voice: 'success', data: 'warning' }
+  const map: Record<string, any> = { sms: 'primary', data: 'warning' }
   return map[t] || 'primary'
 }
 

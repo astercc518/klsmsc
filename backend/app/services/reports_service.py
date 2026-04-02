@@ -136,9 +136,10 @@ class ReportsService:
     async def _get_data_stats(db: AsyncSession, dimension: str, start_dt: datetime, end_dt: datetime) -> List[Dict[str, Any]]:
         """数据业务聚合查询"""
         # 数据业务主要在 DataOrder 中体现
+        from sqlalchemy import Numeric
         columns = [
             func.sum(DataOrder.quantity).label("total_count"),
-            func.sum(func.cast(DataOrder.total_price, text("DECIMAL(14,4)"))).label("revenue")
+            func.sum(func.cast(DataOrder.total_price, Numeric(14, 4))).label("revenue")
         ]
         
         group_by = []

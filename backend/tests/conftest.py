@@ -1,6 +1,11 @@
 """
 Pytest配置和共享fixtures
 """
+import os
+# 设置测试环境变量，必须在导入 app 前完成
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+os.environ["APP_ENV"] = "testing"
+
 import pytest
 import asyncio
 from typing import AsyncGenerator

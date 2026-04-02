@@ -20,7 +20,7 @@ router = APIRouter(prefix="/admin/account-templates", tags=["AccountTemplates"])
 class TemplateCreateRequest(BaseModel):
     template_code: Optional[str] = None  # 可选，为空时自动生成
     template_name: str = Field(..., max_length=100)
-    business_type: str = Field(..., pattern="^(sms|voice|data)$")
+    business_type: str = Field(..., pattern="^(sms|data)$")
     country_code: str = Field(..., max_length=10)
     country_name: Optional[str] = None
     supplier_group_id: Optional[int] = None

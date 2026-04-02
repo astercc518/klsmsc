@@ -9,7 +9,7 @@
     </div>
 
     <!-- 上传对话框 -->
-    <el-dialog v-model="showUpload" title="上传私有号码数据" width="500px">
+    <el-dialog v-model="showUpload" title="上传私有号码数据" width="500px" @closed="resetForm">
       <el-form :model="uploadForm" label-width="100px">
         <el-form-item label="国家/地区">
           <el-select v-model="uploadForm.country_code" placeholder="请选择国家" filterable style="width: 100%">
@@ -51,6 +51,7 @@
             :on-change="handleFileChange"
             :limit="1"
             :on-exceed="handleExceed"
+            ref="uploadRef"
           >
             <el-icon class="el-icon--upload"><upload-filled /></el-icon>
             <div class="el-upload__text">
@@ -128,6 +129,10 @@
                     <span class="info-label">用途</span>
                     <el-tag size="small" type="warning">{{ g.purpose_label || g.purpose }}</el-tag>
                   </div>
+                  <div class="info-row" v-if="g.remarks">
+                    <span class="info-label">备注</span>
+                    <span class="info-remarks" :title="g.remarks">{{ g.remarks }}</span>
+                  </div>
                   <div class="carrier-distribution">
                     <div class="info-label" style="margin-bottom: 4px">运营商分布</div>
                     <div class="carrier-tags-mini">
@@ -194,6 +199,8 @@ interface NumberGroup {
   used_count: number
   unused_count: number
   carriers: { name: string, count: number }[]
+  batch_id: string
+  remarks: string
   first_at: string | null
   last_at: string | null
 }
@@ -230,12 +237,23 @@ function formatCount(count: number): string {
 function getGroupName(group: any) {
   const country = findCountryByIso(group.country_code)
   const countryName = country ? country.name : (group.country_code || '未知')
-  return `${countryName}-${group.source_label || group.source}-${group.purpose_label || group.purpose}`
+  const sourceName = group.source_label || group.source || '未知来源'
+  const purposeName = group.purpose_label || group.purpose || '未知用途'
+  const baseName = `${countryName}-${sourceName}-${purposeName}`
+  
+  if (group.remarks && group.remarks !== '') {
+    return `${baseName} (${group.remarks})`
+  }
+  if (group.last_at) {
+    return `${baseName} [${fmtDate(group.last_at)}]`
+  }
+  return baseName
 }
 
 // 上传控制
 const showUpload = ref(false)
 const uploading = ref(false)
+const uploadRef = ref<any>(null)
 const uploadFile = ref<File | null>(null)
 const uploadForm = ref({
   country_code: '',
@@ -243,6 +261,19 @@ const uploadForm = ref({
   purpose: 'Marketing',
   remarks: ''
 })
+
+function resetForm() {
+  uploadForm.value = {
+    country_code: '',
+    source: 'Manual Upload',
+    purpose: 'Marketing',
+    remarks: ''
+  }
+  uploadFile.value = null
+  if (uploadRef.value) {
+    uploadRef.value.clearFiles()
+  }
+}
 
 function handleFileChange(file: any) {
   uploadFile.value = file.raw
@@ -273,6 +304,7 @@ async function submitUpload() {
     if (res.success) {
        ElMessage.success(res.message || '上传成功')
        showUpload.value = false
+       resetForm()
        loadData()
     }
   } catch (e: any) {
@@ -324,6 +356,7 @@ async function handleExport(g: NumberGroup, fmt: string) {
     country: g.country_code || '',
     source: g.source || '',
     purpose: g.purpose || '',
+    batch_id: g.batch_id || '',
     api_key: apiKey
   })
   
@@ -363,6 +396,7 @@ async function handleDelete(g: NumberGroup) {
       country: g.country_code,
       source: g.source,
       purpose: g.purpose,
+      batch_id: g.batch_id,
     })
     
     if (res.success) {
@@ -473,5 +507,13 @@ onMounted(loadData)
   gap: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--el-border-color-lighter);
+}
+.info-remarks {
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
 }
 </style>

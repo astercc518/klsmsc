@@ -38,13 +38,17 @@ class Settings(BaseSettings):
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 10
     
+    # 数据库连接 URL (如果设置了环境变量 DATABASE_URL，则优先使用)
+    DATABASE_URL: str = ""
+    
+    # 最终使用的数据库连接 URL（内部属性）
     @property
-    def DATABASE_URL(self) -> str:
-        """生成数据库连接URL"""
+    def SQLALCHEMY_DATABASE_URL(self) -> str:
+        if self.DATABASE_URL:
+            return self.DATABASE_URL
         return (
             f"mysql+asyncmy://{self.DATABASE_USER}:{self.DATABASE_PASSWORD}"
-            f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
-            f"?charset=utf8mb4"
+            f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}?charset=utf8mb4"
         )
     
     # Redis配置
@@ -142,43 +146,10 @@ class Settings(BaseSettings):
     # 定时拉取上游 DLR 报告的 HTTP 超时（秒）
     DLR_PULL_HTTP_TIMEOUT_SECONDS: float = Field(default=60.0, ge=10.0, le=300.0)
 
-    # ========== 自建语音（SIP / CDR / 外呼网关）==========
-    # okcc：沿用 OKCC HTTP 客户端；self_hosted：自建栈 + VoiceProvider
-    VOICE_PROVIDER: str = Field(default="self_hosted", description="okcc | self_hosted")
-    VOICE_SIP_DOMAIN: str = ""
-    VOICE_SIP_PORT: int = 5060
-    VOICE_SIP_TRANSPORT: str = "udp"  # udp | tcp | tls
-    # CDR Webhook HMAC（空则仅开发环境建议配合 APP_DEBUG 使用）
-    VOICE_CDR_WEBHOOK_SECRET: str = ""
-    # 可选：仅允许这些 IP 访问 CDR Webhook（逗号分隔）；空表示不限制
-    VOICE_CDR_WEBHOOK_IP_WHITELIST: str = ""
-    # 外呼 HTTP 网关（FreeSWITCH ESL 封装服务）
-    VOICE_GATEWAY_BASE_URL: Optional[str] = None
-    VOICE_ORIGINATE_TOKEN: str = ""
-    # CDR Webhook 按源 IP 每分钟最大请求数（0 表示不单独限制，仍走全局限流中间件）
-    VOICE_CDR_WEBHOOK_IP_RATE_PER_MINUTE: int = Field(default=300, ge=0, le=100000)
-    # CDR 失败重试（Celery 定时任务重放 raw_payload）
-    VOICE_CDR_MAX_RETRIES: int = Field(default=10, ge=1, le=100)
-    # 挂机短信：同一被叫每日上限（Redis 计数，失败则仅记日志不拦截）
-    VOICE_HANGUP_SMS_MAX_PER_CALLEE_PER_DAY: int = Field(default=20, ge=1, le=500)
-    # 外呼前语音余额下限（低于则跳过拨打，0 表示不校验）
-    VOICE_MIN_BALANCE_FOR_ORIGINATE: float = Field(default=0.0, ge=0.0)
-
-    # VOS（如 VOS3000）可选：管理地址，用于管理端连通性探测；业务出局仍走语音路由 + 外呼网关
-    VOS_HTTP_BASE: Optional[str] = Field(default=None, description="VOS Web 管理根 URL，如 https://vos.example.com:8080")
-    VOS_HTTP_USERNAME: Optional[str] = None
-    VOS_HTTP_PASSWORD: Optional[str] = None
-    VOS_HTTP_VERIFY_SSL: bool = Field(default=True, description="探测 VOS 管理地址时是否校验 TLS 证书")
-
-    @property
-    def voice_cdr_webhook_ip_list(self) -> List[str]:
-        if not self.VOICE_CDR_WEBHOOK_IP_WHITELIST:
-            return []
-        return [ip.strip() for ip in self.VOICE_CDR_WEBHOOK_IP_WHITELIST.split(",") if ip.strip()]
-
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"
 
 
 # 全局配置实例

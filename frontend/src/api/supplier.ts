@@ -91,7 +91,7 @@ export function getSuppliers(params?: {
   return request.get('/admin/suppliers', { params })
 }
 
-// 按业务类型分组获取供应商（短信/语音/数据）
+// 按业务类型分组获取供应商（短信/数据）
 export function getSuppliersByBusinessType(params?: {
   keyword?: string
   status?: string

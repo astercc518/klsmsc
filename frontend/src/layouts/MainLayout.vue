@@ -749,9 +749,6 @@ const customerSidebarName = ref('')
 // 是否开通短信业务
 const hasSmsService = computed(() => customerServices.value.includes('sms'))
 
-// 是否开通语音业务
-const hasVoiceService = computed(() => customerServices.value.includes('voice'))
-
 // 是否开通数据业务
 const hasDataService = computed(() => customerServices.value.includes('data'))
 

@@ -79,7 +79,6 @@
         <el-form-item :label="$t('botAudit.businessType')">
           <el-radio-group v-model="form.business_type">
             <el-radio label="sms">{{ $t('botAudit.sms') }}</el-radio>
-            <el-radio label="voice">{{ $t('botAudit.voice') }}</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item :label="$t('botAudit.countryCode')">

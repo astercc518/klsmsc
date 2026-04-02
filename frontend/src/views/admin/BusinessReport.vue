@@ -3,7 +3,7 @@
     <!-- 顶部标题与背景装饰 -->
     <div class="report-header">
       <div class="header-content">
-        <h1 class="page-title">{{ $t('reports.title') }}</h1>
+        <h1 class="page-title text-gradient">{{ $t('reports.title') }}</h1>
         <p class="page-desc">{{ $t('reports.pageDesc') }}</p>
       </div>
       <div class="header-actions">
@@ -16,51 +16,78 @@
       </div>
     </div>
 
-    <!-- 筛选面板 - Glassmorphism 风格 -->
-    <el-card class="glass-card filter-panel">
-      <el-form :inline="true" :model="filterForm" class="filter-form">
-        <el-form-item :label="$t('reports.dimension')">
-          <el-select v-model="filterForm.dimension" @change="fetchData" class="premium-select">
-            <el-option :label="$t('reports.dimCustomer')" value="customer" />
-            <el-option :label="$t('reports.dimEmployee')" value="employee" />
-            <el-option :label="$t('reports.dimSupplier')" value="supplier" />
-            <el-option :label="$t('reports.dimChannel')" value="channel" />
-            <el-option :label="$t('reports.dimCountry')" value="country" />
-          </el-select>
-        </el-form-item>
+    <!-- 筛选面板 - Soft UI 风格 -->
+    <div class="soft-card filter-panel">
+      <div class="filter-header">
+        <el-icon class="filter-main-icon"><Search /></el-icon>
+        <span>{{ $t('common.filter') }}</span>
+      </div>
+      
+      <div class="filter-content">
+        <!-- 聚合维度 - 触感选择器 -->
+        <div class="filter-group">
+          <label class="filter-label">{{ $t('reports.dimension') }}</label>
+          <div class="soft-inset selector-group">
+            <button 
+              v-for="opt in dimensionOptions" 
+              :key="opt.value"
+              class="soft-button selector-item"
+              :class="{ active: filterForm.dimension === opt.value }"
+              @click="handleDimensionChange(opt.value)"
+            >
+              <el-icon><component :is="opt.icon" /></el-icon>
+              <span>{{ opt.label }}</span>
+            </button>
+          </div>
+        </div>
         
-        <el-form-item :label="$t('reports.businessType')">
-          <el-radio-group v-model="filterForm.businessType" @change="fetchData" size="default">
-            <el-radio-button label="all">{{ $t('common.all') }}</el-radio-button>
-            <el-radio-button label="sms">SMS</el-radio-button>
-            <el-radio-button label="data">Data</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
+        <!-- 业务类型 - 触感切换器 -->
+        <div class="filter-group">
+          <label class="filter-label">{{ $t('reports.businessType') }}</label>
+          <div class="soft-inset selector-group">
+            <button 
+              v-for="opt in typeOptions" 
+              :key="opt.value"
+              class="soft-button selector-item"
+              :class="{ active: filterForm.businessType === opt.value }"
+              @click="handleTypeChange(opt.value)"
+            >
+              <el-icon><component :is="opt.icon" /></el-icon>
+              <span>{{ opt.label }}</span>
+            </button>
+          </div>
+        </div>
 
-        <el-form-item :label="$t('reports.timeRange')">
-          <el-select v-model="filterForm.timeRange" @change="handleTimeRangeChange" class="premium-select">
-            <el-option :label="$t('reports.today')" value="today" />
-            <el-option :label="$t('reports.thisWeek')" value="this_week" />
-            <el-option :label="$t('reports.thisMonth')" value="this_month" />
-            <el-option :label="$t('reports.lastMonth')" value="last_month" />
-            <el-option :label="$t('reports.custom')" value="custom" />
-          </el-select>
-        </el-form-item>
+        <!-- 时间范围 - 触感排布 -->
+        <div class="filter-group">
+          <label class="filter-label">{{ $t('reports.timeRange') }}</label>
+          <div class="time-range-row">
+            <el-select v-model="filterForm.timeRange" @change="handleTimeRangeChange" class="soft-select-refined" style="width: 140px">
+              <el-option :label="$t('reports.today')" value="today" />
+              <el-option :label="$t('reports.thisWeek')" value="this_week" />
+              <el-option :label="$t('reports.thisMonth')" value="this_month" />
+              <el-option :label="$t('reports.lastMonth')" value="last_month" />
+              <el-option :label="$t('reports.custom')" value="custom" />
+            </el-select>
 
-        <el-form-item v-if="filterForm.timeRange === 'custom'">
-          <el-date-picker
-            v-model="filterForm.dateRange"
-            type="daterange"
-            range-separator="-"
-            :start-placeholder="$t('reports.startDate')"
-            :end-placeholder="$t('reports.endDate')"
-            value-format="YYYY-MM-DD"
-            @change="fetchData"
-            class="premium-date-picker"
-          />
-        </el-form-item>
-      </el-form>
-    </el-card>
+            <transition name="fade-slide">
+              <div v-if="filterForm.timeRange === 'custom'" class="custom-date-wrapper">
+                <el-date-picker
+                  v-model="filterForm.dateRange"
+                  type="daterange"
+                  range-separator="-"
+                  :start-placeholder="$t('reports.startDate')"
+                  :end-placeholder="$t('reports.endDate')"
+                  value-format="YYYY-MM-DD"
+                  @change="fetchData"
+                  class="premium-date-picker-mini"
+                />
+              </div>
+            </transition>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- 汇总数据卡片 -->
     <div class="summary-grid">
@@ -187,7 +214,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { 
   Refresh, Download, Search, User, UserFilled, Shop, Connection, Location, 
-  PieChart, TrendCharts, List, Money, Wallet, Checked
+  PieChart, TrendCharts, List, Money, Wallet, Checked, ChatDotRound, Coin, Grid
 } from '@element-plus/icons-vue'
 const ProfitIcon = TrendCharts
 import { getBusinessReport } from '@/api/reports'
@@ -211,6 +238,30 @@ const filterForm = ref({
   timeRange: 'today',
   dateRange: [] as string[]
 })
+
+const dimensionOptions = computed(() => [
+  { label: t('reports.dimCustomer'), value: 'customer', icon: User },
+  { label: t('reports.dimEmployee'), value: 'employee', icon: UserFilled },
+  { label: t('reports.dimSupplier'), value: 'supplier', icon: Shop },
+  { label: t('reports.dimChannel'), value: 'channel', icon: Connection },
+  { label: t('reports.dimCountry'), value: 'country', icon: Location }
+])
+
+const typeOptions = computed(() => [
+  { label: t('common.all'), value: 'all', icon: PieChart },
+  { label: 'SMS', value: 'sms', icon: ChatDotRound },
+  { label: 'Data', value: 'data', icon: Coin }
+])
+
+const handleDimensionChange = (val: string) => {
+  filterForm.value.dimension = val
+  fetchData()
+}
+
+const handleTypeChange = (val: string) => {
+  filterForm.value.businessType = val
+  fetchData()
+}
 
 const dimLabel = computed(() => {
   const map: any = {
@@ -426,7 +477,7 @@ onUnmounted(() => {
 
 <style scoped>
 .business-report-container {
-  padding: 20px;
+  padding: 24px;
   background: var(--bg-body);
   min-height: 100%;
 }
@@ -435,20 +486,20 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
+  margin-bottom: 28px;
 }
 
 .page-title {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
+  font-size: 26px;
+  font-weight: 800;
   margin: 0;
+  letter-spacing: -0.02em;
 }
 
 .page-desc {
   font-size: 14px;
   color: var(--text-tertiary);
-  margin: 4px 0 0;
+  margin: 6px 0 0;
 }
 
 .header-actions {
@@ -456,23 +507,80 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-/* Glassmorphism Card Style */
-.glass-card {
-  background: rgba(255, 255, 255, 0.03);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 20px;
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
-}
-
+/* Filter Panel Optimization */
 .filter-panel {
-  margin-bottom: 24px;
-  padding: 10px;
+  padding: 24px;
+  margin-bottom: 30px;
 }
 
-.premium-select :deep(.el-input__wrapper) {
-  border-radius: 8px;
+.filter-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+.filter-main-icon {
+  color: var(--primary);
+  font-size: 18px;
+}
+
+.filter-content {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 32px;
+  align-items: flex-start;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.filter-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-left: 4px;
+}
+
+.selector-group {
+  display: flex;
+  padding: 4px;
+  gap: 4px;
+}
+
+.selector-item {
+  height: 36px;
+  padding: 0 16px;
+  font-size: 13px;
+  gap: 8px;
+  border-radius: 10px;
+}
+
+.selector-item el-icon {
+  font-size: 16px;
+}
+
+.time-range-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.custom-date-wrapper {
+  animation: slideInRight 0.3s var(--ease-soft);
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 /* Summary Grid */
@@ -480,152 +588,116 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 20px;
-  margin-bottom: 24px;
+  margin-bottom: 30px;
 }
 
 .stat-card {
-  background: rgba(255, 255, 255, 0.02);
-  backdrop-filter: blur(10px);
+  background: var(--bg-secondary);
   border-radius: 20px;
   padding: 24px;
   display: flex;
   align-items: center;
   gap: 20px;
-  transition: all 0.3s var(--ease-default);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: all 0.3s var(--ease-soft);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  box-shadow: var(--shadow-soft-out);
 }
 
 .stat-card:hover {
   transform: translateY(-8px);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--bg-tertiary);
   border-color: rgba(59, 130, 246, 0.3);
-  box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+  box-shadow: 16px 24px 40px rgba(0,0,0,0.4);
 }
 
 .stat-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 24px;
+  font-size: 26px;
 }
 
-.stat-card.primary .stat-icon { background: rgba(59, 130, 246, 0.1); color: #3b82f6; }
-.stat-card.success .stat-icon { background: rgba(45, 212, 191, 0.1); color: #2dd4bf; }
-.stat-card.warning .stat-icon { background: rgba(251, 191, 36, 0.1); color: #fbbf24; }
-.stat-card.info .stat-icon { background: rgba(148, 163, 184, 0.1); color: #94a3b8; }
+.stat-card.primary .stat-icon { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+.stat-card.success .stat-icon { background: rgba(45, 212, 191, 0.15); color: #2dd4bf; }
+.stat-card.warning .stat-icon { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+.stat-card.info .stat-icon { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
 
-.stat-info {
-  flex: 1;
-}
+.stat-info { flex: 1; }
+.stat-label { font-size: 13px; color: var(--text-tertiary); margin-bottom: 6px; }
+.stat-value { font-size: 24px; font-weight: 800; color: var(--text-primary); margin-bottom: 4px; }
+.stat-footer { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 
-.stat-label {
-  font-size: 13px;
-  color: var(--text-tertiary);
-  margin-bottom: 4px;
-}
-
-.stat-value {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 4px;
-}
-
-.stat-footer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.trend {
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-.trend.up { background: rgba(103, 194, 58, 0.1); color: #67C23A; }
-.trend.down { background: rgba(245, 108, 108, 0.1); color: #F56C6C; }
-
-.subtext {
-  color: var(--text-quaternary);
-}
+.trend { font-weight: 700; padding: 2px 8px; border-radius: 6px; font-size: 11px; }
+.trend.up { background: rgba(52, 199, 89, 0.15); color: #34C759; }
+.trend.down { background: rgba(255, 59, 48, 0.15); color: #FF3B30; }
+.subtext { color: var(--text-quaternary); }
 
 /* Charts */
-.chart-row {
-  margin-bottom: 24px;
-}
-
-.chart-card {
-  border-radius: 16px;
-  height: 380px;
-}
-
-.chart-div {
-  height: 300px;
-  width: 100%;
-}
+.chart-row { margin-bottom: 24px; }
+.chart-card { border-radius: 20px; overflow: hidden; height: 400px; box-shadow: var(--shadow-sm); }
+.chart-div { height: 320px; width: 100%; }
 
 .card-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 600;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 15px;
 }
 
-/* Table */
+/* Table Refinement */
 .data-card {
-  border-radius: 16px;
-  overflow: hidden;
+  border-radius: 20px;
+  box-shadow: var(--shadow-sm);
 }
 
-.dim-identifier {
-  display: flex;
-  flex-direction: column;
-}
+.dim-identifier { display: flex; flex-direction: column; }
+.name-cell { font-weight: 700; color: var(--text-primary); font-size: 14px; }
+.id-tag { font-size: 11px; color: var(--text-quaternary); margin-top: 2px; }
 
-.name-cell {
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.id-tag {
-  font-size: 11px;
-  color: var(--text-quaternary);
-}
-
-.currency-text {
-  font-family: 'Monaco', 'Consolas', monospace;
-  font-weight: 600;
-}
-
+.currency-text { font-family: 'Inter', monospace; font-weight: 700; font-size: 14px; }
 .revenue { color: #3b82f6; }
-.cost { color: #94a3b8; }
+.cost { color: var(--text-tertiary); font-weight: 500; }
 .profit { color: #2dd4bf; }
 .profit.negative { color: #f87171; }
 
-.rate-indicator {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
+.rate-indicator { display: flex; flex-direction: column; align-items: flex-end; }
+.text-success { color: #34C759; font-weight: 700; }
+.text-warning { color: #FF9500; font-weight: 700; }
+.text-danger { color: #FF3B30; font-weight: 700; }
+
+.premium-date-picker-mini :deep(.el-input__wrapper) {
+  height: 36px;
+  padding: 0 10px;
+  background: var(--bg-input) !important;
+  box-shadow: inset 0 0 0 1px var(--border-default) !important;
 }
 
-.text-success { color: #67C23A; }
-.text-warning { color: #E6A23C; }
-.text-danger { color: #F56C6C; }
+.soft-select-refined :deep(.el-input__wrapper) {
+  height: 36px;
+  border-radius: 10px;
+  background: var(--bg-input) !important;
+  box-shadow: inset 0 0 0 1px var(--border-default) !important;
+}
+
+@media (max-width: 1400px) {
+  .filter-content { gap: 20px; }
+}
 
 @media (max-width: 1200px) {
-  .summary-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
+  .summary-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
-@media (max-width: 768px) {
-  .summary-grid {
-    grid-template-columns: 1fr;
-  }
+@media (max-width: 900px) {
+  .filter-content { flex-direction: column; gap: 24px; }
+  .selector-group { width: 100%; overflow-x: auto; }
+}
+
+@media (max-width: 600px) {
+  .summary-grid { grid-template-columns: 1fr; }
+  .report-header { flex-direction: column; align-items: flex-start; gap: 16px; }
 }
 </style>

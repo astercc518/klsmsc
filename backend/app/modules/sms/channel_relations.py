@@ -73,5 +73,5 @@ class ChannelCountrySenderId(Base):
     __table_args__ = (
         Index('idx_channel_country_sid', 'channel_id', 'country_code', 'sender_id', unique=True),
         Index('idx_country_sid', 'country_code', 'sender_id'),
-        Index('idx_status', 'status'),
+        Index('idx_channel_sid_status', 'status'),
     )

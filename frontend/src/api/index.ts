@@ -41,7 +41,6 @@ function shouldAttachCustomerApiKey(url: string | undefined): boolean {
     '/tickets',
     '/data/',
     '/reports/',
-    '/voice/',
   ]
   return prefixes.some((p) => path === p || path.startsWith(`${p}/`) || path.startsWith(`${p}?`))
 }
