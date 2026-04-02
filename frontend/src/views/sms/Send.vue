@@ -176,6 +176,14 @@
 
               <!-- 私有库模式 -->
               <template v-if="numberSource === 'private'">
+                <el-alert
+                  type="info"
+                  :closable="false"
+                  show-icon
+                  style="margin-bottom: 12px"
+                >
+                  {{ $t('smsSend.privateLibraryHint') }}
+                </el-alert>
                 <div class="store-section">
                   <div class="carrier-filter" style="margin-bottom: 16px;">
                     <label class="carrier-label">运营商 / 数据状态筛选:</label>
@@ -220,6 +228,7 @@
                           库存: {{ (unusedOnlyPrivate ? group.unused_count : (carrierFilterPrivate ? (group.carriers?.find((c: any) => (c.name || 'Unknown') === carrierFilterPrivate)?.count || 0) : group.count)).toLocaleString() }} 
                           · $0.00/条
                           <span v-if="carrierFilterPrivate" class="sp-carrier-badge">{{ carrierFilterPrivate }}</span>
+                          <el-tag v-if="group.library_origin" size="small" type="info" effect="plain" style="margin-left: 6px">{{ privateLibraryOriginLabel(group.library_origin) }}</el-tag>
                           <el-tag v-if="unusedOnlyPrivate" size="small" type="success" effect="dark" style="margin-left: 8px">仅未使用</el-tag>
                         </div>
                       </div>
@@ -238,7 +247,8 @@
                       style="width: 200px"
                     />
                     <span class="store-cost">
-                      费用: 数据 $0.00 = 合计 <strong>$0.00</strong>
+                      费用: 数据 ${{ formatUsdEstimate(privateDataCost) }} + 短信 ${{ formatUsdEstimate(privateSmsCost) }}
+                      = 合计 <strong>${{ privateCostStr }}</strong>
                       <span style="margin-left: 12px; font-size: 13px; color: var(--text-tertiary); font-weight: normal;">
                         (可用库存: {{ (unusedOnlyPrivate ? selectedPrivateGroup.unused_count : selectedPrivateGroup.count).toLocaleString() }})
                       </span>
@@ -247,7 +257,8 @@
 
                   <div class="store-footer" v-if="selectedPrivateGroup">
                     <div class="store-summary">
-                      费用: 数据 $0.00 = 合计 <span class="total-price">$0.00</span>
+                      费用: 数据 ${{ formatUsdEstimate(privateDataCost) }} + 短信 ${{ formatUsdEstimate(privateSmsCost) }}
+                      = 合计 <span class="total-price">${{ privateCostStr }}</span>
                     </div>
                   </div>
                 </div>
@@ -341,8 +352,8 @@
                       style="width: 200px"
                     />
                     <span class="store-cost">
-                      费用: 数据 ${{ storeDataCost.toFixed(2) }}
-                      <template v-if="storeSmsCost > 0"> + 短信 ${{ storeSmsCost.toFixed(2) }}</template>
+                      费用: 数据 ${{ formatUsdEstimate(storeDataCost) }}
+                      <template v-if="storeSmsCost > 0"> + 短信 ${{ formatUsdEstimate(storeSmsCost) }}</template>
                       = 合计 <strong>${{ storeCost }}</strong>
                     </span>
                   </div>
@@ -1325,7 +1336,7 @@ watch([selectedPrivateGroup, carrierFilterPrivate, unusedOnlyPrivate], () => {
 async function fetchPrivateGroups() {
   loadingPrivate.value = true
   try {
-    const res = await getMyNumbersSummary()
+    const res = await getMyNumbersSummary({ max_batches: 0 })
     if (res.success) {
       privateGroups.value = res.items || []
     }
@@ -1429,6 +1440,17 @@ const storeSmsParts = computed(() =>
 const numberCount = computed(() => parseNumbers().length)
 const totalEstimatedSegments = computed(() => numberCount.value * estimatedParts.value)
 
+/**
+ * 美金费用展示：金额绝对值小于 1 时保留最多 4 位小数，避免 0.0065 被 toFixed(2) 显示成 0.01
+ */
+function formatUsdEstimate(n: number): string {
+  if (!Number.isFinite(n)) return '0.00'
+  const a = Math.abs(n)
+  if (a === 0) return '0.00'
+  if (a < 1) return String(Number(n.toFixed(4)))
+  return n.toFixed(2)
+}
+
 // 数据商店：数据费（仅数据包单价×数量）
 const storeDataCost = computed(() => {
   if (!selectedProduct.value) return 0
@@ -1442,8 +1464,18 @@ const storeSmsCost = computed(() => {
 })
 // 数据商店：合计费用（数据 + 短信）
 const storeTotalCost = computed(() => storeDataCost.value + storeSmsCost.value)
-// 展示用字符串
-const storeCost = computed(() => storeTotalCost.value.toFixed(2))
+// 展示用字符串（与小额单价兼容）
+const storeCost = computed(() => formatUsdEstimate(storeTotalCost.value))
+
+// 私有库：数据费为 0（自有号码），短信费与商店相同逻辑（条数 × 段数 × 账户短信单价）
+const privateDataCost = computed(() => 0)
+const privateSmsCost = computed(() => {
+  const price = accountUnitPrice.value ?? 0
+  if (price <= 0) return 0
+  return privateQuantity.value * storeSmsParts.value * price
+})
+const privateTotalCost = computed(() => privateDataCost.value + privateSmsCost.value)
+const privateCostStr = computed(() => formatUsdEstimate(privateTotalCost.value))
 
 const hasVariables = computed(() => {
   if (/\{(序号|国家|日期|随机码|号码|index|country|date|code|phone)\}/.test(form.value.message)) return true
@@ -2017,7 +2049,7 @@ const handleStoreSend = async () => {
   try {
     await ElMessageBox.confirm(
       storeSmsCost.value > 0
-        ? `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n数据费: $${storeDataCost.value.toFixed(2)} + 短信费: $${storeSmsCost.value.toFixed(2)} = 合计: $${storeCost.value}`
+        ? `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n数据费: $${formatUsdEstimate(storeDataCost.value)} + 短信费: $${formatUsdEstimate(storeSmsCost.value)} = 合计: $${storeCost.value}`
         : `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n费用: $${storeCost.value}`,
       '确认购买发送', { type: 'warning' },
     )
@@ -2097,6 +2129,13 @@ function getGroupName(group: any) {
   const country = findCountryByIso(group.country_code)
   const countryName = country ? country.name : group.country_code
   return `${countryName}-${group.source_label || group.source}-${group.purpose_label || group.purpose}`
+}
+
+function privateLibraryOriginLabel(o: string) {
+  if (o === 'manual') return t('dataMyNumbers.libraryOriginManual')
+  if (o === 'purchased') return t('dataMyNumbers.libraryOriginPurchased')
+  if (o === 'mixed') return t('dataMyNumbers.libraryOriginMixed')
+  return o
 }
 
 const checkServices = async () => {

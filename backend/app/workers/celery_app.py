@@ -14,6 +14,8 @@ celery_app = Celery(
         'app.workers.sms_worker',
         'app.workers.data_worker',
         'app.workers.settlement_worker',
+        'app.workers.batch_worker',
+        'app.workers.webhook_worker',
     ]
 )
 
@@ -71,6 +73,11 @@ celery_app.conf.task_routes.update({
     'data_expire_pending_orders': {'queue': 'data_tasks'},
     'data_import_numbers': {'queue': 'data_tasks'},
 })
+# 任务路由 - 批量发送 & Webhook 回调
+celery_app.conf.task_routes.update({
+    'process_batch': {'queue': 'celery'},
+    'send_webhook': {'queue': 'celery'},
+})
 
 # 定时任务配置（Celery Beat）
 celery_app.conf.beat_schedule = {
@@ -111,32 +118,7 @@ celery_app.conf.beat_schedule = {
     },
 }
 
-# 各 Worker 子进程启动时补齐 ORM 所需列（与 API 一致，避免任务内加载 Channel 失败）
-from celery.signals import worker_process_init
 
-from app.utils.logger import get_logger as _schema_get_logger
-
-_schema_logger = _schema_get_logger(__name__)
-
-
-@worker_process_init.connect
-def _ensure_channel_dlr_columns_on_worker(**_kwargs):
-    import asyncio
-
-    try:
-        from app.database import (
-            ensure_channel_dlr_preference_columns,
-            ensure_sales_commission_total_cost_columns,
-        )
-
-        async def _ensure_schema():
-            await ensure_channel_dlr_preference_columns()
-            await ensure_sales_commission_total_cost_columns()
-
-        asyncio.run(_ensure_schema())
-    except Exception as e:
-        _schema_logger.warning(
-            "Celery Worker 启动时补齐 channels DLR 列失败（可手动执行 scripts/add_channel_dlr_columns.sql）: %s",
-            e,
-        )
+# Schema 变更已统一由 Alembic 管理，部署前运行 alembic upgrade head 即可。
+# Worker 启动时不再执行 ALTER TABLE。
 

@@ -8,15 +8,9 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.ip_whitelist import IPWhitelistMiddleware
-from sqlalchemy import text
 
 from app.config import settings
-from app.database import (
-    init_db,
-    close_db,
-    ensure_channel_dlr_preference_columns,
-    ensure_sales_commission_total_cost_columns,
-)
+from app.database import init_db, close_db
 from app.utils.logger import setup_logging, get_logger
 from app.utils.errors import SMSGatewayException, error_response
 from app.utils.cache import get_redis_client, close_redis
@@ -42,11 +36,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"环境: {settings.APP_ENV}")
     logger.info(f"调试模式: {settings.APP_DEBUG}")
     
-    # 初始化数据库
+    # 验证数据库连接（Schema 变更由 Alembic 管理）
     await init_db()
-    await ensure_channel_dlr_preference_columns()
-    await ensure_sales_commission_total_cost_columns()
-    logger.info("✅ 数据库初始化完成")
+    logger.info("✅ 数据库连接就绪")
     
     # 初始化Redis连接
     try:

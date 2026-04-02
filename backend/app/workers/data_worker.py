@@ -100,7 +100,7 @@ def _make_session():
     from app.config import settings
 
     eng = create_async_engine(
-        settings.DATABASE_URL, echo=False,
+        settings.SQLALCHEMY_DATABASE_URL, echo=False,
         pool_size=2, max_overflow=3,
         pool_pre_ping=True, pool_recycle=600,
     )

@@ -20,7 +20,7 @@ from app.config import settings
 def _get_worker_session():
     """为 worker 创建独立的数据库会话，避免与父进程共享连接池"""
     eng = create_async_engine(
-        settings.DATABASE_URL,
+        settings.SQLALCHEMY_DATABASE_URL,
         echo=False,
         pool_size=5,
         max_overflow=5,

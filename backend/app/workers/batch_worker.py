@@ -30,7 +30,7 @@ logger = get_logger(__name__)
 def _get_worker_session():
     """为 worker 创建独立的数据库会话"""
     eng = create_async_engine(
-        settings.DATABASE_URL,
+        settings.SQLALCHEMY_DATABASE_URL,
         echo=False,
         pool_size=2,
         max_overflow=3,

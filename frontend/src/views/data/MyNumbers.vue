@@ -8,6 +8,10 @@
       </div>
     </div>
 
+    <el-alert type="info" :closable="false" show-icon class="my-numbers-hint">
+      {{ t('dataMyNumbers.ownershipHint') }}
+    </el-alert>
+
     <!-- 上传对话框 -->
     <el-dialog v-model="showUpload" title="上传私有号码数据" width="500px" @closed="resetForm">
       <el-form :model="uploadForm" label-width="100px">
@@ -59,7 +63,8 @@
             </div>
             <template #tip>
               <div class="el-upload__tip">
-                支持 CSV 或 TXT 文件，每行一个号码
+                支持 CSV 或 TXT。请先选择正确的国家/地区；号码列可为 + 区号或本地号（与所选国家一致）。
+                若为「图文」混排，请导出为仅含号码的文本或 CSV，或使用 UTF-8 / GBK 保存。
               </div>
             </template>
           </el-upload>
@@ -74,6 +79,14 @@
     </el-dialog>
 
     <!-- 运营商统计与筛选 -->
+    <el-alert
+      v-if="summaryTruncated"
+      type="info"
+      :closable="false"
+      show-icon
+      class="summary-truncate-tip"
+      title="为加快加载，当前仅展示最近批次分组卡片；号码总数以上方统计为准。短信发送「私有库」仍会加载全部分组。"
+    />
     <div class="carrier-filter-section" v-if="totalCount > 0">
       <div class="filter-label">运营商筛选:</div>
       <div class="carrier-tags">
@@ -111,6 +124,12 @@
             </template>
             <div class="card-body">
                 <div class="card-info">
+                  <div class="info-row" v-if="g.library_origin">
+                    <span class="info-label">{{ t('dataMyNumbers.libraryOriginLabel') }}</span>
+                    <el-tag size="small" :type="libraryOriginTagType(g.library_origin)">
+                      {{ libraryOriginText(g.library_origin) }}
+                    </el-tag>
+                  </div>
                   <div class="usage-stats">
                     <div class="usage-item">
                       <span class="usage-label">未使用</span>
@@ -182,12 +201,14 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { ArrowDown, UploadFilled } from '@element-plus/icons-vue'
 import { getMyNumbersSummary, exportMyNumbers, uploadMyNumbers, deleteMyNumbers } from '@/api/data'
 import { ElMessage, ElMessageBox, genFileId, UploadRawFile, UploadProps } from 'element-plus'
 import { findCountryByIso, COUNTRY_LIST } from '@/constants/countries'
 
 const router = useRouter()
+const { t } = useI18n()
 
 interface NumberGroup {
   country_code: string
@@ -203,11 +224,14 @@ interface NumberGroup {
   remarks: string
   first_at: string | null
   last_at: string | null
+  /** 后端：manual | purchased | mixed */
+  library_origin?: string
 }
 
 const groups = ref<NumberGroup[]>([])
 const carrierFilter = ref('')
 const totalCount = ref(0)
+const summaryTruncated = ref(false)
 const loading = ref(false)
 
 const availableCarriers = computed(() => {
@@ -232,6 +256,19 @@ function formatCount(count: number): string {
   if (count >= 10000) return (count / 10000).toFixed(1) + 'w'
   if (count >= 1000) return (count / 1000).toFixed(1) + 'k'
   return count.toString()
+}
+
+function libraryOriginText(origin: string) {
+  if (origin === 'manual') return t('dataMyNumbers.libraryOriginManual')
+  if (origin === 'purchased') return t('dataMyNumbers.libraryOriginPurchased')
+  if (origin === 'mixed') return t('dataMyNumbers.libraryOriginMixed')
+  return origin
+}
+
+function libraryOriginTagType(origin: string): 'success' | 'warning' | 'info' {
+  if (origin === 'manual') return 'success'
+  if (origin === 'purchased') return 'warning'
+  return 'info'
 }
 
 function getGroupName(group: any) {
@@ -300,13 +337,20 @@ async function submitUpload() {
   }
 
   try {
-    const res = await uploadMyNumbers(formData)
-    if (res.success) {
-       ElMessage.success(res.message || '上传成功')
-       showUpload.value = false
-       resetForm()
-       loadData()
+    const res = (await uploadMyNumbers(formData)) as {
+      success?: boolean
+      message?: string
+      added?: number
     }
+    if (res.success !== false) {
+      ElMessage.success(res.message || '上传成功')
+      showUpload.value = false
+      resetForm()
+    } else {
+      // 后端在「解析到号码但 0 写入」时返回 success:false（多为号码已归属其他客户）
+      ElMessage.warning(res.message || '未写入任何数据，请查看说明或联系管理员')
+    }
+    loadData()
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail || e.message || '上传失败')
   } finally {
@@ -332,6 +376,7 @@ async function loadData() {
     if (res.success) {
       groups.value = res.items || []
       totalCount.value = res.total || 0
+      summaryTruncated.value = Boolean((res as { meta?: { truncated?: boolean } }).meta?.truncated)
     }
   } catch (e: any) {
     ElMessage.error(e.message || '加载失败')
@@ -416,6 +461,7 @@ onMounted(loadData)
 </script>
 
 <style scoped>
+.summary-truncate-tip { margin-bottom: 16px; }
 .page-container { width: 100%; padding: 0 4px; }
 .page-header {
   display: flex;
@@ -515,5 +561,8 @@ onMounted(loadData)
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 180px;
+}
+.my-numbers-hint {
+  margin-bottom: 16px;
 }
 </style>

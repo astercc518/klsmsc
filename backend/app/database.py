@@ -1,5 +1,8 @@
 """
 数据库连接管理
+
+Schema 变更统一通过 Alembic 迁移管理，应用启动时不再执行 create_all 或 ALTER TABLE。
+部署流程：docker-compose up 前先执行 alembic upgrade head。
 """
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
@@ -7,7 +10,7 @@ from sqlalchemy.orm import declarative_base
 from app.config import settings
 from app.utils.logger import get_logger
 
-_schema_logger = get_logger(__name__)
+_logger = get_logger(__name__)
 
 # 创建异步引擎参数
 engine_kwargs = {
@@ -15,7 +18,7 @@ engine_kwargs = {
 }
 
 # SQLite 不支持 pool_size 和 max_overflow
-if "sqlite" not in settings.DATABASE_URL:
+if "sqlite" not in settings.SQLALCHEMY_DATABASE_URL:
     engine_kwargs.update({
         "pool_size": settings.DATABASE_POOL_SIZE,
         "max_overflow": settings.DATABASE_MAX_OVERFLOW,
@@ -55,107 +58,17 @@ async def get_db() -> AsyncSession:
 
 
 async def init_db():
-    """初始化数据库"""
-    if "sqlite" in str(engine.url):
-        return
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
-async def ensure_channel_dlr_preference_columns():
     """
-    与 Channel ORM 对齐：补齐 channels 表 DLR 相关列。
-    未执行手工迁移时，SELECT Channel 会因 Unknown column 导致整站 500；启动时自动 ALTER。
-    仅处理 MySQL / MariaDB。
+    应用启动时的数据库连通性验证。
+    Schema 变更已统一由 Alembic 管理，不再执行 create_all / ALTER TABLE。
     """
-    url = str(engine.url).lower()
-    if "mysql" not in url and "mariadb" not in url:
-        return
-    col_defs = [
-        (
-            "smpp_dlr_socket_hold_seconds",
-            "INT NULL DEFAULT NULL COMMENT 'SMPP发送成功后保持TCP秒数以接收deliver_sm'",
-        ),
-        (
-            "dlr_sent_timeout_hours",
-            "INT NULL DEFAULT NULL COMMENT 'sent状态最长等待终态DLR小时数'",
-        ),
-    ]
     try:
-        async with engine.begin() as conn:
-            for col_name, col_sql in col_defs:
-                r = await conn.execute(
-                    text(
-                        "SELECT COUNT(*) AS c FROM information_schema.COLUMNS "
-                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'channels' "
-                        "AND COLUMN_NAME = :col"
-                    ),
-                    {"col": col_name},
-                )
-                row = r.first()
-                if row and (row[0] or 0) > 0:
-                    continue
-                await conn.execute(
-                    text(f"ALTER TABLE channels ADD COLUMN `{col_name}` {col_sql}")
-                )
-                _schema_logger.info("已自动补齐 channels 列: %s", col_name)
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        _logger.info("数据库连接验证成功")
     except Exception as e:
-        _schema_logger.warning(
-            "自动补齐 channels DLR 列失败（请手动执行 scripts/add_channel_dlr_columns.sql）: %s",
-            e,
-        )
-
-
-async def ensure_sales_commission_total_cost_columns():
-    """
-    与 SalesCommissionSettlement / SalesCommissionDetail ORM 对齐：补齐 total_cost。
-    未执行 alembic 时查询会因 Unknown column 导致员工结算接口 500；启动时自动 ALTER。
-    仅处理 MySQL / MariaDB。
-    """
-    url = str(engine.url).lower()
-    if "mysql" not in url and "mariadb" not in url:
-        return
-    specs = [
-        ("sales_commission_settlements", "名下客户短信成本汇总"),
-        ("sales_commission_details", "该客户周期内成本"),
-    ]
-    try:
-        async with engine.begin() as conn:
-            for table_name, col_comment in specs:
-                t = await conn.execute(
-                    text(
-                        "SELECT COUNT(*) AS c FROM information_schema.TABLES "
-                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tbl"
-                    ),
-                    {"tbl": table_name},
-                )
-                tr = t.first()
-                if not tr or (tr[0] or 0) == 0:
-                    continue
-                r = await conn.execute(
-                    text(
-                        "SELECT COUNT(*) AS c FROM information_schema.COLUMNS "
-                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :tbl "
-                        "AND COLUMN_NAME = 'total_cost'"
-                    ),
-                    {"tbl": table_name},
-                )
-                row = r.first()
-                if row and (row[0] or 0) > 0:
-                    continue
-                # 与 alembic 004：Numeric(14,4) NOT NULL DEFAULT 0 一致
-                await conn.execute(
-                    text(
-                        f"ALTER TABLE `{table_name}` ADD COLUMN `total_cost` "
-                        f"DECIMAL(14,4) NOT NULL DEFAULT 0 COMMENT '{col_comment}'"
-                    )
-                )
-                _schema_logger.info("已自动补齐 %s.total_cost", table_name)
-    except Exception as e:
-        _schema_logger.warning(
-            "自动补齐 sales_commission total_cost 列失败（请执行 alembic upgrade 或手工 ALTER）: %s",
-            e,
-        )
+        _logger.error("数据库连接验证失败: %s", e)
+        raise
 
 
 async def close_db():

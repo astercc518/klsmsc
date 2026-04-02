@@ -6,11 +6,27 @@ Alembic 迁移环境配置
   - alembic -x async=true upgrade head （异步）
 """
 import asyncio
+import os
+from pathlib import Path
 from logging.config import fileConfig
 
+from dotenv import load_dotenv
 from sqlalchemy import pool, engine_from_config, create_engine
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
+
+# 在 backend/ 下执行 alembic 时 cwd 可能没有 .env，从仓库根目录加载
+_repo_root = Path(__file__).resolve().parents[2]
+load_dotenv(_repo_root / ".env", override=False)
+
+# 根目录 .env 常用 MYSQL_*，与 Settings 的 DATABASE_* 对齐
+if not (os.getenv("DATABASE_URL") or "").strip():
+    if os.getenv("MYSQL_USER"):
+        os.environ.setdefault("DATABASE_USER", os.environ["MYSQL_USER"])
+    if os.getenv("MYSQL_PASSWORD"):
+        os.environ.setdefault("DATABASE_PASSWORD", os.environ["MYSQL_PASSWORD"])
+    if os.getenv("MYSQL_DATABASE"):
+        os.environ.setdefault("DATABASE_NAME", os.environ["MYSQL_DATABASE"])
 
 from app.config import settings
 from app.database import Base
@@ -53,8 +69,11 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# 同步 URL（将 asyncmy 驱动替换为 pymysql）
-SYNC_DB_URL = settings.DATABASE_URL.replace("+asyncmy", "+pymysql")
+# 同步 URL（将 asyncmy 驱动替换为 pymysql）；未显式设置 DATABASE_URL 时用应用拼接串
+_db_url = (settings.DATABASE_URL or "").strip()
+if not _db_url:
+    _db_url = settings.SQLALCHEMY_DATABASE_URL or ""
+SYNC_DB_URL = _db_url.replace("+asyncmy", "+pymysql")
 
 
 def run_migrations_offline() -> None:

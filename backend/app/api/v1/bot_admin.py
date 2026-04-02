@@ -984,11 +984,11 @@ async def restart_bot(
     import threading
 
     def _restart_sync():
+        proxy_url = os.getenv("DOCKER_PROXY_URL", "http://docker-proxy:2375")
         try:
-            import docker as docker_lib
-            client = docker_lib.from_env()
-            container = client.containers.get("smsc-bot")
-            container.restart(timeout=10)
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.post(f"{proxy_url}/containers/smsc-bot/restart", params={"t": 10})
+                resp.raise_for_status()
             logger.info(f"Bot 容器重启成功 (by {admin.username})")
         except Exception as e:
             logger.error(f"Bot 容器重启失败: {e}")

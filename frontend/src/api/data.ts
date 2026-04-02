@@ -21,6 +21,9 @@ export interface DataProduct {
   created_at: string
 }
 
+/** 私库号码来源：manual=手工上传分表；purchased=公海购入绑定；mixed=同维度分组内两者兼有 */
+export type LibraryOrigin = 'manual' | 'purchased' | 'mixed'
+
 export interface DataNumber {
   id: number
   phone_number: string
@@ -38,6 +41,8 @@ export interface DataNumber {
   use_count: number
   last_used_at: string | null
   created_at: string | null
+  /** 分页列表 / 导出 CSV 等接口返回 */
+  library_origin?: LibraryOrigin
 }
 
 export interface DataOrder {
@@ -129,8 +134,15 @@ export function getProductRatings(productId: number) {
 
 // ============ 私库 ============
 
-export function getMyNumbersSummary() {
-  return request({ url: '/data/my-numbers/summary', method: 'get' })
+/** max_batches: 0 = 全量（较慢，短信发送页私库分组）；省略则后端默认仅最近若干批次卡片 */
+export function getMyNumbersSummary(params?: { max_batches?: number }) {
+  const timeout = params?.max_batches === 0 ? 120000 : 60000
+  return request({
+    url: '/data/my-numbers/summary',
+    method: 'get',
+    params,
+    timeout,
+  })
 }
 
 export function getMyNumbers(params?: { page?: number; page_size?: number; country?: string; tag?: string }) {

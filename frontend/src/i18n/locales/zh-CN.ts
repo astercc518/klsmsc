@@ -1084,7 +1084,30 @@ export default {
     unitPrice: '单价',
     units: '个',
     viewAll: '查看全部',
-    weekSent: '本周发送'
+    weekSent: '本周发送',
+    serverPerformance: '服务器性能',
+    backendServiceStatus: '依赖服务状态',
+    hostName: '主机名',
+    cpuUsage: 'CPU 使用率',
+    memoryUsage: '内存使用率',
+    diskUsage: '磁盘使用率',
+    diskFree: '可用空间',
+    loadAvg: '系统负载 (1/5/15 分钟)',
+    serviceMysql: '数据库 (MySQL)',
+    serviceRedis: 'Redis 缓存',
+    serviceRabbitmq: '消息队列 (RabbitMQ)',
+    serviceOk: '正常',
+    serviceError: '异常',
+    systemMonitorNoBackend:
+      '未获取到监控数据。请确认已部署最新后端、已安装 psutil，并重新构建前端；部署后刷新本页。'
+  },
+  dataMyNumbers: {
+    ownershipHint:
+      '上传到私有库的号码仅归当前账户使用。在「发送短信」选择从私有库载入时，默认可对同一号码多次发送；仅当勾选「仅限未使用号码」时，才会排除曾为发送拉取过的号码。若上传时大量提示已绑定其他客户，说明该号码在平台中已归属他人，需管理员退回公池或换用新号。',
+    libraryOriginLabel: '号码来源',
+    libraryOriginManual: '手工私库',
+    libraryOriginPurchased: '公海购入',
+    libraryOriginMixed: '混合（手工+购入）',
   },
   dataPool: {
     accountIdPlaceholder: '账户ID',
@@ -2421,7 +2444,9 @@ export default {
     totalItemsDistribute: '共 {n} 条文案，发送时将均匀分配号码',
     totalNumbers: '共计',
     viewAllRecords: '查看全部记录',
-    viewSendTask: '查看发送任务'
+    viewSendTask: '查看发送任务',
+    privateLibraryHint:
+      '私有库号码归您个人使用。默认不勾选「仅限未使用」时，可对同一号码多次群发短信；勾选后仅拉取从未被发送任务使用过的号码。',
   },
   smsStatus: {
     delivered: '已送达',

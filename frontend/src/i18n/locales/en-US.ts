@@ -1084,7 +1084,30 @@ export default {
     unitPrice: 'Unit Price',
     units: '',
     viewAll: 'View All',
-    weekSent: 'Sent This Week'
+    weekSent: 'Sent This Week',
+    serverPerformance: 'Server performance',
+    backendServiceStatus: 'Backend services',
+    hostName: 'Hostname',
+    cpuUsage: 'CPU usage',
+    memoryUsage: 'Memory usage',
+    diskUsage: 'Disk usage',
+    diskFree: 'Free space',
+    loadAvg: 'Load average (1/5/15 min)',
+    serviceMysql: 'Database (MySQL)',
+    serviceRedis: 'Redis',
+    serviceRabbitmq: 'Message queue (RabbitMQ)',
+    serviceOk: 'OK',
+    serviceError: 'Error',
+    systemMonitorNoBackend:
+      'No monitoring data yet. Deploy the latest backend (with psutil), rebuild the frontend, then refresh.'
+  },
+  dataMyNumbers: {
+    ownershipHint:
+      'Numbers uploaded to your private library belong to your account only. On Send SMS → Load from private library, you can send to the same numbers multiple times by default; enable “Fresh data only” to exclude numbers already pulled for a send. If upload says many numbers are bound to another customer, those rows already belong to someone else in the platform—ask an admin to release them or use new numbers.',
+    libraryOriginLabel: 'Origin',
+    libraryOriginManual: 'Manual upload',
+    libraryOriginPurchased: 'Purchased (public pool)',
+    libraryOriginMixed: 'Mixed (manual + purchased)',
   },
   dataPool: {
     accountIdPlaceholder: 'Account ID',
@@ -2421,7 +2444,9 @@ export default {
     totalItemsDistribute: '{n} items, will distribute evenly when sending',
     totalNumbers: 'Total',
     viewAllRecords: 'View All Records',
-    viewSendTask: 'View send task'
+    viewSendTask: 'View send task',
+    privateLibraryHint:
+      'Private library numbers are yours. Leave “Fresh data only” unchecked to send to the same numbers multiple times; when checked, only numbers never pulled for a send are used.',
   },
   smsStatus: {
     delivered: 'Delivered',

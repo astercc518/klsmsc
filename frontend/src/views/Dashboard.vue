@@ -132,6 +132,107 @@
         </div>
       </div>
 
+      <!-- 服务器性能与服务状态（超级管理员 / 管理员 / 运维） -->
+      <div class="system-monitor-row" v-if="showSystemMonitor">
+        <div class="card server-health-card soft-card">
+          <div class="card-header">
+            <h2 class="card-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <rect x="2" y="3" width="14" height="11" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M5 14H13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M7 6H11M7 9H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              {{ $t('dashboard.serverPerformance') }}
+            </h2>
+          </div>
+          <div class="server-health-body">
+            <template v-if="serverMetrics && !serverMetrics.error">
+              <p v-if="serverMetrics.hostname" class="host-line">
+                <span class="host-label">{{ $t('dashboard.hostName') }}</span>
+                <span class="host-value">{{ serverMetrics.hostname }}</span>
+              </p>
+              <div class="perf-row">
+                <div class="perf-label-row">
+                  <span>{{ $t('dashboard.cpuUsage') }}</span>
+                  <span class="perf-pct">{{ formatRate(Number(serverMetrics.cpu_percent) || 0) }}%</span>
+                </div>
+                <div class="perf-bar-track">
+                  <div
+                    class="perf-bar-fill cpu"
+                    :style="{ width: `${Math.min(100, Number(serverMetrics.cpu_percent) || 0)}%` }"
+                  />
+                </div>
+              </div>
+              <div class="perf-row">
+                <div class="perf-label-row">
+                  <span>{{ $t('dashboard.memoryUsage') }}</span>
+                  <span class="perf-pct">{{ formatRate(Number(serverMetrics.memory_percent) || 0) }}%</span>
+                </div>
+                <div class="perf-bar-track">
+                  <div
+                    class="perf-bar-fill memory"
+                    :style="{ width: `${Math.min(100, Number(serverMetrics.memory_percent) || 0)}%` }"
+                  />
+                </div>
+                <p class="perf-sub">
+                  {{ formatNumber(Number(serverMetrics.memory_used_gb) || 0) }} / {{ formatNumber(Number(serverMetrics.memory_total_gb) || 0) }} GB
+                </p>
+              </div>
+              <div class="perf-row">
+                <div class="perf-label-row">
+                  <span>{{ $t('dashboard.diskUsage') }}</span>
+                  <span class="perf-pct">{{ formatRate(Number(serverMetrics.disk_percent) || 0) }}%</span>
+                </div>
+                <div class="perf-bar-track">
+                  <div
+                    class="perf-bar-fill disk"
+                    :style="{ width: `${Math.min(100, Number(serverMetrics.disk_percent) || 0)}%` }"
+                  />
+                </div>
+                <p class="perf-sub">
+                  {{ $t('dashboard.diskFree') }}: {{ formatNumber(Number(serverMetrics.disk_free_gb) || 0) }} GB
+                  / {{ formatNumber(Number(serverMetrics.disk_total_gb) || 0) }} GB
+                </p>
+              </div>
+              <p v-if="serverMetrics.load_avg && serverMetrics.load_avg.length" class="load-line">
+                {{ $t('dashboard.loadAvg') }}: {{ serverMetrics.load_avg.map((n) => Number(n).toFixed(2)).join(' / ') }}
+              </p>
+            </template>
+            <div v-else-if="serverMetrics && serverMetrics.error" class="metrics-error">{{ serverMetrics.error }}</div>
+            <div v-else-if="dashboardLoading" class="empty-state subtle">{{ $t('common.loading') }}</div>
+            <div v-else class="empty-state subtle">{{ $t('dashboard.systemMonitorNoBackend') }}</div>
+          </div>
+        </div>
+        <div class="card service-health-card soft-card">
+          <div class="card-header">
+            <h2 class="card-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M9 5V9L12 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              {{ $t('dashboard.backendServiceStatus') }}
+            </h2>
+          </div>
+          <div class="service-health-body">
+            <div v-if="dashboardLoading && !serviceStatus.length" class="empty-state subtle">{{ $t('common.loading') }}</div>
+            <div v-else-if="!serviceStatus.length" class="empty-state subtle">{{ $t('dashboard.systemMonitorNoBackend') }}</div>
+            <div
+              v-else
+              v-for="svc in serviceStatus"
+              :key="svc.id"
+              class="service-row"
+            >
+              <span class="service-name">{{ serviceLabel(svc.id) }}</span>
+              <span :class="['service-badge', svc.status === 'ok' ? 'ok' : 'err']">
+                <span class="status-dot"></span>
+                {{ svc.status === 'ok' ? $t('dashboard.serviceOk') : $t('dashboard.serviceError') }}
+              </span>
+              <p v-if="svc.message" class="service-msg">{{ svc.message }}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- 主内容区 - 管理员 -->
       <div class="content-grid admin-grid">
         <!-- 左侧 -->
@@ -590,7 +691,7 @@
                 <span class="account-label">{{ $t('dashboard.unitPrice') }}</span>
                 <span class="account-value">
                   <template v-if="customerAccountInfo?.unit_price != null && customerAccountInfo.unit_price > 0">
-                    {{ customerAccountInfo.currency }} {{ formatNumber(customerAccountInfo.unit_price) }} / {{ $t('dashboard.perSms') }}
+                    {{ customerAccountInfo.currency }} {{ formatUnitPrice(customerAccountInfo.unit_price) }} / {{ $t('dashboard.perSms') }}
                   </template>
                   <template v-else>—</template>
                 </span>
@@ -646,7 +747,7 @@ import { ElMessage } from 'element-plus'
 import { getAccountInfo, type AccountInfo } from '@/api/account'
 import { getChannels } from '@/api/channel'
 import { getStatistics } from '@/api/reports'
-import { getAdminDashboard } from '@/api/admin'
+import { getAdminDashboard, type AdminServerMetrics, type AdminServiceStatusItem } from '@/api/admin'
 import { getSMSRecords } from '@/api/sms'
 import { useI18n } from 'vue-i18n'
 
@@ -681,8 +782,18 @@ const permissions = ref({
   view_global: false,
   view_finance: false,
   view_channels: false,
-  view_customers: false
+  view_customers: false,
+  view_system_monitor: false
 })
+
+const serverMetrics = ref<AdminServerMetrics | null>(null)
+const serviceStatus = ref<AdminServiceStatusItem[]>([])
+
+/** 是否展示服务器监控区（与权限同步，供模板使用） */
+const showSystemMonitor = computed(() => permissions.value.view_system_monitor)
+
+/** 员工仪表盘加载中（用于监控卡片内占位，避免误判为「无数据」） */
+const dashboardLoading = computed(() => loading.value && isStaff.value)
 
 const accountName = ref(localStorage.getItem('account_name') || 'User')
 const apiKey = ref(localStorage.getItem('api_key') || '')
@@ -777,9 +888,26 @@ const formatNumber = (num: number) => {
   return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 }
 
+/** 短信单价：与账户设置页 AccountOverviewPanel.fmtNum 一致，最多 4 位小数，避免仪表盘误显示为 0.01 */
+const formatUnitPrice = (num: number) => {
+  const n = Number(num) || 0
+  return n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 4 })
+}
+
 const formatRate = (rate: number) => {
   const r = Number(rate) || 0
   return r.toFixed(1)
+}
+
+/** 依赖服务展示名称 */
+const serviceLabel = (id: string) => {
+  const keys: Record<string, string> = {
+    mysql: 'dashboard.serviceMysql',
+    redis: 'dashboard.serviceRedis',
+    rabbitmq: 'dashboard.serviceRabbitmq'
+  }
+  const k = keys[id]
+  return k ? t(k) : id
 }
 
 const getCountryFlag = (code: string) => {
@@ -828,6 +956,37 @@ const updateLastTime = () => {
   lastUpdateTime.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
+/** 统一仪表盘监控字段（兼容 snake_case / camelCase） */
+function normalizeServerMetrics(raw: unknown): AdminServerMetrics | null {
+  if (raw == null || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (typeof o.error === 'string') return { error: o.error }
+  const arr = o.load_avg ?? o.loadAvg
+  return {
+    hostname: typeof o.hostname === 'string' ? o.hostname : undefined,
+    cpu_percent: Number(o.cpu_percent ?? o.cpuPercent) || 0,
+    memory_percent: Number(o.memory_percent ?? o.memoryPercent) || 0,
+    memory_used_gb: Number(o.memory_used_gb ?? o.memoryUsedGb) || 0,
+    memory_total_gb: Number(o.memory_total_gb ?? o.memoryTotalGb) || 0,
+    disk_percent: Number(o.disk_percent ?? o.diskPercent) || 0,
+    disk_free_gb: Number(o.disk_free_gb ?? o.diskFreeGb) || 0,
+    disk_total_gb: Number(o.disk_total_gb ?? o.diskTotalGb) || 0,
+    load_avg: Array.isArray(arr) ? (arr as number[]) : null
+  }
+}
+
+function normalizeServiceStatus(raw: unknown): AdminServiceStatusItem[] {
+  if (!Array.isArray(raw)) return []
+  return raw.map((item) => {
+    const o = item as Record<string, unknown>
+    return {
+      id: String(o.id ?? ''),
+      status: o.status === 'ok' ? 'ok' : 'error',
+      message: typeof o.message === 'string' ? o.message : undefined
+    }
+  })
+}
+
 const loadStaffData = async () => {
   try {
     const res = await getAdminDashboard()
@@ -848,8 +1007,35 @@ const loadStaffData = async () => {
       activeAccounts.value = Number(res.statistics.active_accounts) || 0
       totalBalance.value = Number(res.statistics.total_balance) || 0
       
-      permissions.value = res.permissions || {}
+      const perm = (res.permissions || {}) as Record<string, unknown>
+      const roleMonitors = ['super_admin', 'admin', 'tech'].includes(res.admin_role || '')
+      let viewSystemMonitor: boolean
+      if (typeof perm.view_system_monitor === 'boolean') {
+        viewSystemMonitor = perm.view_system_monitor
+      } else if (typeof perm.viewSystemMonitor === 'boolean') {
+        viewSystemMonitor = perm.viewSystemMonitor
+      } else {
+        // 旧版后端未返回该字段时，超级管理员 / 管理员 / 运维仍展示监控区（数据可能为空，见文案提示）
+        viewSystemMonitor = roleMonitors
+      }
+      permissions.value = {
+        view_global: false,
+        view_finance: false,
+        view_channels: false,
+        view_customers: false,
+        view_system_monitor: false,
+        ...(res.permissions || {}),
+        view_system_monitor: viewSystemMonitor
+      }
       recentCustomers.value = res.recent_customers || []
+      if (viewSystemMonitor) {
+        const r = res as Record<string, unknown>
+        serverMetrics.value = normalizeServerMetrics(r.server_metrics ?? r.serverMetrics)
+        serviceStatus.value = normalizeServiceStatus(r.service_status ?? r.serviceStatus)
+      } else {
+        serverMetrics.value = null
+        serviceStatus.value = []
+      }
       
       // 加载通道
       if (permissions.value.view_channels) {
@@ -1099,6 +1285,162 @@ onUnmounted(() => {
 
 .metrics-grid.metrics-6 {
   grid-template-columns: repeat(6, 1fr);
+}
+
+/* 服务器性能与服务状态 */
+.system-monitor-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 32px;
+}
+
+.server-health-card,
+.service-health-card {
+  height: auto;
+}
+
+.server-health-body,
+.service-health-body {
+  padding: 16px 20px 20px;
+}
+
+.host-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin: 0 0 16px;
+}
+
+.host-label {
+  opacity: 0.85;
+}
+
+.host-value {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.perf-row {
+  margin-bottom: 14px;
+}
+
+.perf-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.perf-pct {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.perf-bar-track {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.perf-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.35s ease;
+}
+
+.perf-bar-fill.cpu {
+  background: linear-gradient(90deg, #667eea, #764ba2);
+}
+
+.perf-bar-fill.memory {
+  background: linear-gradient(90deg, #4facfe, #00f2fe);
+}
+
+.perf-bar-fill.disk {
+  background: linear-gradient(90deg, #56ab2f, #a8e063);
+}
+
+.perf-sub {
+  font-size: 11px;
+  color: var(--text-quaternary);
+  margin: 6px 0 0;
+}
+
+.load-line {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin: 12px 0 0;
+}
+
+.metrics-error {
+  font-size: 13px;
+  color: var(--error);
+  line-height: 1.5;
+}
+
+.service-row {
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.service-row:last-child {
+  border-bottom: none;
+}
+
+.service-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  display: block;
+}
+
+.service-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+.service-badge.ok {
+  color: var(--success);
+}
+
+.service-badge.err {
+  color: var(--error);
+}
+
+.service-badge .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.service-msg {
+  font-size: 11px;
+  color: var(--text-quaternary);
+  margin: 6px 0 0;
+  word-break: break-all;
+}
+
+.empty-state.subtle {
+  text-align: left;
+  color: var(--text-quaternary);
+  font-size: 13px;
+}
+
+@media (max-width: 960px) {
+  .system-monitor-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .metric-card {

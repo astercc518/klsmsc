@@ -1,7 +1,7 @@
 """add_webhook_fields_to_account
 
 Revision ID: 5cd1450f675e
-Revises: 010
+Revises: 004
 Create Date: 2026-04-01 05:27:40.519782
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '5cd1450f675e'
-down_revision: Union[str, None] = '010'
+down_revision: Union[str, None] = '004'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

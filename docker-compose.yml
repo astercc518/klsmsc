@@ -63,6 +63,20 @@ services:
     networks:
       - smsc-network
 
+  # Docker Socket 代理（仅开放容器重启权限，避免 API 容器直挂宿主机 Docker socket）
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: smsc-docker-proxy
+    environment:
+      CONTAINERS: 1
+      POST: 1
+      # 其余权限默认关闭（IMAGES/NETWORKS/VOLUMES/EXEC 等均为 0）
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
   # API服务
   api:
     build:
@@ -93,6 +107,7 @@ services:
       DLR_CALLBACK_IP_WHITELIST: ${DLR_CALLBACK_IP_WHITELIST:-}
       TELEGRAM_STAFF_API_SECRET: ${TELEGRAM_STAFF_API_SECRET:-}
       PUBLIC_WEB_BASE_URL: ${PUBLIC_WEB_BASE_URL:-https://www.kaolach.com}
+      DOCKER_PROXY_URL: http://docker-proxy:2375
     ports:
       - "8000:8000"
     volumes:
@@ -101,7 +116,6 @@ services:
       - ./data/knowledge:/app/data/knowledge
       - ./logs:/app/logs
       - import_uploads:/tmp/smsc_imports
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./.env:/app/.env.host
     depends_on:
       mysql:
@@ -110,6 +124,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      docker-proxy:
+        condition: service_started
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     networks:

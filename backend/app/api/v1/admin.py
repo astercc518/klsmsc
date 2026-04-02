@@ -1,9 +1,10 @@
 """
 管理员API路由
 """
+import asyncio
 from fastapi import APIRouter, Depends, Header, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select, update as sa_update
+from sqlalchemy import delete, select, text, update as sa_update
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
 from urllib.parse import quote
@@ -2623,7 +2624,43 @@ async def get_admin_dashboard(
             })
     
     logger.info(f"仪表板查询: admin={admin.username}, role={admin.role}")
-    
+
+    view_system_monitor = admin.role in ("super_admin", "admin", "tech")
+    server_metrics = None
+    service_status = None
+    if view_system_monitor:
+        service_status = []
+        try:
+            await db.execute(text("SELECT 1"))
+            service_status.append({"id": "mysql", "status": "ok"})
+        except Exception as e:
+            service_status.append({"id": "mysql", "status": "error", "message": str(e)[:160]})
+        try:
+            import redis.asyncio as aioredis
+
+            r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+            try:
+                await r.ping()
+                service_status.append({"id": "redis", "status": "ok"})
+            finally:
+                await r.aclose()
+        except Exception as e:
+            service_status.append({"id": "redis", "status": "error", "message": str(e)[:160]})
+        try:
+            from app.utils.server_metrics import check_rabbitmq_sync
+
+            await asyncio.to_thread(check_rabbitmq_sync)
+            service_status.append({"id": "rabbitmq", "status": "ok"})
+        except Exception as e:
+            service_status.append({"id": "rabbitmq", "status": "error", "message": str(e)[:160]})
+        try:
+            from app.utils.server_metrics import collect_host_metrics_sync
+
+            server_metrics = await asyncio.to_thread(collect_host_metrics_sync)
+        except Exception as e:
+            logger.warning("采集主机指标失败: %s", e)
+            server_metrics = {"error": str(e)[:200]}
+
     return {
         "success": True,
         "admin_name": admin.username,
@@ -2645,8 +2682,11 @@ async def get_admin_dashboard(
             "view_global": is_global_admin,
             "view_finance": admin.role in ['super_admin', 'admin', 'finance'],
             "view_channels": admin.role in ['super_admin', 'admin', 'tech'],
-            "view_customers": is_sales or is_global_admin
-        }
+            "view_customers": is_sales or is_global_admin,
+            "view_system_monitor": view_system_monitor,
+        },
+        "server_metrics": server_metrics,
+        "service_status": service_status,
     }
 
 

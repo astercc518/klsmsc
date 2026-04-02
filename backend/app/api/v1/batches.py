@@ -5,7 +5,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, update
+from sqlalchemy import select, func, and_, or_, update
 from typing import Optional, List
 from datetime import datetime
 import csv
@@ -613,6 +613,81 @@ async def retry_batch_failed(
     msg = f"已重发 {retried} 条"
     if skipped:
         msg += f"，{skipped} 条未重发"
+    return BatchRetryFailedResponse(
+        retried=retried,
+        skipped=skipped,
+        errors=err_lines,
+        message=msg,
+    )
+
+
+@router.post(
+    "/batches/{batch_id}/requeue-queued",
+    response_model=BatchRetryFailedResponse,
+    summary="排队中记录重新入队",
+)
+async def requeue_batch_queued(
+    batch_id: int,
+    current_account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    将批次内仍为 queued / pending 的短信再次投递到 Celery（不重复扣费）。
+
+    用于 Worker 曾无法连接数据库等异常：任务已从 RabbitMQ 消费但库未更新，
+    修复部署后可通过本接口补投递。
+    """
+    from app.workers.sms_worker import _update_batch_progress
+
+    q_batch = select(SmsBatch).where(
+        SmsBatch.id == batch_id,
+        SmsBatch.account_id == current_account.id,
+        SmsBatch.is_deleted == False,
+    )
+    result = await db.execute(q_batch)
+    batch = result.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="批次不存在")
+    if batch.status == BatchStatus.CANCELLED:
+        raise HTTPException(status_code=400, detail="已取消的批次无法操作")
+
+    q_logs = (
+        select(SMSLog)
+        .where(
+            SMSLog.batch_id == batch_id,
+            SMSLog.account_id == current_account.id,
+            or_(SMSLog.status == "queued", SMSLog.status == "pending"),
+        )
+        .order_by(SMSLog.id)
+    )
+    logs_result = await db.execute(q_logs)
+    stuck_logs: List[SMSLog] = list(logs_result.scalars().all())
+    if not stuck_logs:
+        raise HTTPException(status_code=400, detail="没有处于排队中的记录")
+
+    retried = 0
+    skipped = 0
+    err_lines: List[str] = []
+    max_err_show = 12
+
+    for sms_log in stuck_logs:
+        if not sms_log.message_id:
+            skipped += 1
+            if len(err_lines) < max_err_show:
+                err_lines.append("存在无 message_id 的记录，已跳过")
+            continue
+        if QueueManager.queue_sms(sms_log.message_id):
+            retried += 1
+        else:
+            skipped += 1
+            if len(err_lines) < max_err_show:
+                err_lines.append(f"{sms_log.message_id}: 加入发送队列失败")
+
+    await _update_batch_progress(db, batch_id)
+
+    msg = f"已重新入队 {retried} 条"
+    if skipped:
+        msg += f"，{skipped} 条未入队"
     return BatchRetryFailedResponse(
         retried=retried,
         skipped=skipped,

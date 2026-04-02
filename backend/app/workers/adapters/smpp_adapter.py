@@ -462,7 +462,7 @@ class SMPPAdapter:
 
         async def _do():
             eng = _cae(
-                settings.DATABASE_URL,
+                settings.SQLALCHEMY_DATABASE_URL,
                 echo=False,
                 pool_size=2,
                 max_overflow=2,

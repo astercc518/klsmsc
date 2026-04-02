@@ -1,5 +1,5 @@
 """数据业务模块 - 号码资源池模型"""
-from sqlalchemy import Column, Integer, String, Enum, Text, DateTime, Boolean, ForeignKey, JSON, BigInteger, Index, Date, DECIMAL
+from sqlalchemy import Column, Integer, String, Enum, Text, DateTime, Boolean, ForeignKey, JSON, BigInteger, Index, Date, DECIMAL, UniqueConstraint
 from sqlalchemy.dialects.mysql import INTEGER
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -72,11 +72,64 @@ class DataNumber(Base):
         Index('idx_country_code', 'country_code'),
         Index('idx_data_number_status', 'status'),
         Index('idx_account_id', 'account_id'),
+        # 私库汇总按账号+维度分组时辅助定位行（需在生产库执行迁移后生效）
+        Index(
+            'idx_dn_account_summary_dims',
+            'account_id',
+            'country_code',
+            'source',
+            'purpose',
+            'batch_id',
+        ),
+        # 私库「最近批次」扫描：WHERE account_id=? ORDER BY created_at DESC LIMIT N
+        Index('idx_dn_account_created_at', 'account_id', 'created_at'),
+        # 私库按 batch_id 聚合最近上传批次
+        Index('idx_dn_account_batch_id', 'account_id', 'batch_id'),
         Index('idx_carrier', 'carrier'),
         Index('idx_last_used', 'last_used_at'),
         Index('idx_source', 'source'),
         Index('idx_purpose', 'purpose'),
         Index('idx_data_date', 'data_date'),
+    )
+
+
+class PrivateLibraryNumber(Base):
+    """
+    客户私有库号码（与公海 data_numbers 分表存储）。
+    手工上传等仅写入本表；(account_id, phone_number) 唯一，与公海全局 phone 唯一互不冲突。
+    从公海购买的号码仍保留在 data_numbers.account_id 上。
+    """
+
+    __tablename__ = "private_library_numbers"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    account_id = Column(INTEGER(unsigned=True), ForeignKey("accounts.id"), nullable=False, index=True)
+    phone_number = Column(String(30), nullable=False, comment="手机号码(E.164)")
+    country_code = Column(String(10), nullable=False, index=True)
+    tags = Column(JSON, comment="标签(JSON)")
+    status = Column(String(20), default="active", comment="active/inactive")
+    carrier = Column(String(50))
+    source = Column(String(50))
+    purpose = Column(String(50))
+    batch_id = Column(String(50))
+    use_count = Column(Integer, default=0)
+    last_used_at = Column(DateTime)
+    remarks = Column(Text)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "phone_number", name="uq_pln_account_phone"),
+        Index("idx_pln_account_batch", "account_id", "batch_id"),
+        Index("idx_pln_account_created", "account_id", "created_at"),
+        Index(
+            "idx_pln_account_summary_dims",
+            "account_id",
+            "country_code",
+            "source",
+            "purpose",
+            "batch_id",
+        ),
     )
 
 

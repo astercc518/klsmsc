@@ -268,6 +268,26 @@ export async function deletePricing(pricingId: number): Promise<any> {
 /**
  * 管理员仪表板数据
  */
+/** 仪表盘主机性能（API 进程所在机器） */
+export interface AdminServerMetrics {
+  hostname?: string;
+  cpu_percent?: number;
+  memory_percent?: number;
+  memory_used_gb?: number;
+  memory_total_gb?: number;
+  disk_percent?: number;
+  disk_free_gb?: number;
+  disk_total_gb?: number;
+  load_avg?: number[] | null;
+  error?: string;
+}
+
+export interface AdminServiceStatusItem {
+  id: string;
+  status: 'ok' | 'error';
+  message?: string;
+}
+
 export interface AdminDashboardResponse {
   success: boolean;
   admin_name: string;
@@ -281,6 +301,15 @@ export interface AdminDashboardResponse {
     active_accounts: number;
     total_balance: number;
   };
+  permissions?: {
+    view_global?: boolean;
+    view_finance?: boolean;
+    view_channels?: boolean;
+    view_customers?: boolean;
+    view_system_monitor?: boolean;
+  };
+  server_metrics?: AdminServerMetrics | null;
+  service_status?: AdminServiceStatusItem[] | null;
 }
 
 export async function getAdminDashboard(): Promise<AdminDashboardResponse> {

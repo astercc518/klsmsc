@@ -33,7 +33,7 @@ from app.utils.errors import (
     InsufficientBalanceError, PricingNotFoundError, ChannelNotAvailableError
 )
 from decimal import Decimal
-from sqlalchemy import select, update, func, or_
+from sqlalchemy import select, update, func, or_, union_all
 from app.modules.common.balance_log import BalanceLog
 from app.modules.common.ticket import Ticket
 from app.modules.common.account_template import AccountTemplate
@@ -424,34 +424,71 @@ async def send_batch_sms(
     succeeded = 0
     failed = 0
 
-    # 1. 如果提供了私有库过滤条件，从中展开号码
+    # 1. 如果提供了私有库过滤条件，从中展开号码（私库表 + 公海购入绑定到本账户的 data_numbers）
     if request.private_library_filters:
-        from app.modules.data.models import DataNumber
-        f = request.private_library_filters
-        q = select(DataNumber.phone_number).where(DataNumber.account_id == account.id)
-        if f.get("country_code"):
-            q = q.where(DataNumber.country_code == f["country_code"])
-        if f.get("source"):
-            q = q.where(DataNumber.source == f["source"])
-        if f.get("purpose"):
-            q = q.where(DataNumber.purpose == f["purpose"])
-        if f.get("carrier"):
-            q = q.where(DataNumber.carrier == f["carrier"])
-        if f.get("unused_only"):
-            q = q.where(DataNumber.use_count == 0)
+        from app.modules.data.models import DataNumber, PrivateLibraryNumber
 
-        # 限制一次批量发送的数量
+        f = request.private_library_filters
+
+        def _apply_private_filters_pln(q):
+            if f.get("country_code"):
+                q = q.where(PrivateLibraryNumber.country_code == f["country_code"])
+            if f.get("source"):
+                q = q.where(PrivateLibraryNumber.source == f["source"])
+            if f.get("purpose"):
+                q = q.where(PrivateLibraryNumber.purpose == f["purpose"])
+            if f.get("carrier"):
+                q = q.where(PrivateLibraryNumber.carrier == f["carrier"])
+            if f.get("unused_only"):
+                q = q.where(PrivateLibraryNumber.use_count == 0)
+            return q
+
+        def _apply_private_filters_dn(q):
+            if f.get("country_code"):
+                q = q.where(DataNumber.country_code == f["country_code"])
+            if f.get("source"):
+                q = q.where(DataNumber.source == f["source"])
+            if f.get("purpose"):
+                q = q.where(DataNumber.purpose == f["purpose"])
+            if f.get("carrier"):
+                q = q.where(DataNumber.carrier == f["carrier"])
+            if f.get("unused_only"):
+                q = q.where(DataNumber.use_count == 0)
+            return q
+
+        q_pln = _apply_private_filters_pln(
+            select(PrivateLibraryNumber.phone_number).where(PrivateLibraryNumber.account_id == account.id)
+        )
+        q_dn = _apply_private_filters_dn(
+            select(DataNumber.phone_number).where(DataNumber.account_id == account.id)
+        )
+        u = union_all(q_pln, q_dn).subquery()
         limit = int(f.get("limit", 50000))
-        q = q.limit(limit)
-        res = await db.execute(q)
+        res = await db.execute(select(u.c.phone_number).distinct().limit(limit))
         db_nums = [r[0] for r in res.all()]
         if db_nums:
-            # 标记为已使用
-            from sqlalchemy import update as sa_update
+            now = datetime.now()
             await db.execute(
-                sa_update(DataNumber)
-                .where(DataNumber.phone_number.in_(db_nums), DataNumber.account_id == account.id)
-                .values(use_count=DataNumber.use_count + 1, last_used_at=datetime.now())
+                update(PrivateLibraryNumber)
+                .where(
+                    PrivateLibraryNumber.account_id == account.id,
+                    PrivateLibraryNumber.phone_number.in_(db_nums),
+                )
+                .values(
+                    use_count=PrivateLibraryNumber.use_count + 1,
+                    last_used_at=now,
+                )
+            )
+            await db.execute(
+                update(DataNumber)
+                .where(
+                    DataNumber.account_id == account.id,
+                    DataNumber.phone_number.in_(db_nums),
+                )
+                .values(
+                    use_count=DataNumber.use_count + 1,
+                    last_used_at=now,
+                )
             )
             await db.flush()
 
