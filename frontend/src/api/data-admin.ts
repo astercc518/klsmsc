@@ -282,6 +282,48 @@ export function deleteRating(ratingId: number) {
   return request({ url: `/admin/data/products/ratings/${ratingId}`, method: 'delete' })
 }
 
+// ============ 客户私库管理 ============
+
+export function getAdminPrivateLibraryNumbers(params?: {
+  page?: number;
+  page_size?: number;
+  account_id?: number;
+  is_deleted?: boolean;
+  country_code?: string;
+  batch_id?: string;
+  phone?: string;
+}) {
+  // 使用 main.py 显式挂载的短路径，与 /admin/data/private-library-numbers 等价
+  return request({ url: '/admin/private-library-numbers', method: 'get', params })
+}
+
+/** 管理端私库卡片汇总（与客户「我的私有库」卡片结构一致，含 account_id/account_name） */
+export function getAdminPrivateLibrarySummary(params?: {
+  max_batches?: number;
+  account_id?: number;
+  /** 单国码（兼容旧参数） */
+  country_code?: string;
+  /** 逗号分隔多国码，通常由前端从国家名称解析得到 */
+  country_codes?: string;
+  batch_id?: string;
+  min_card_count?: number;
+  max_card_count?: number;
+}) {
+  return request({ url: '/admin/private-library-summary', method: 'get', params })
+}
+
+export function exportAdminPrivateLibraryNumbersUrl(params?: any) {
+  const query = new URLSearchParams()
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') {
+        query.append(k, String(v))
+      }
+    })
+  }
+  return `/admin/private-library-numbers/export?${query.toString()}`
+}
+
 // ============ 订单管理 ============
 
 export function getOrders(params?: {

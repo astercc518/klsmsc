@@ -128,6 +128,12 @@ export const adminRoutes: RouteRecordRaw[] = [
     meta: { titleKey: 'menu.dataOrders', icon: 'ShoppingCart' },
   },
   {
+    path: '/admin/data/private-library',
+    name: 'AdminPrivateLibrary',
+    component: () => import('@/views/admin/data/PrivateLibrary.vue'),
+    meta: { titleKey: 'menu.adminCustomerData', icon: 'Box' },
+  },
+  {
     path: '/admin/data/pricing',
     name: 'DataPricing',
     component: () => import('@/views/admin/data/Pricing.vue'),

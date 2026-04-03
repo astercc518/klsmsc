@@ -374,7 +374,17 @@
                   </div>
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.dataAccounts') }}</span>
                 </div>
-                
+
+                <div class="nav-item" :class="{ active: isActive('/admin/data/private-library') }" @click="navigate('/admin/data/private-library')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <rect x="3" y="4" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M7 8H13M7 11H13M7 14H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.adminCustomerData') }}</span>
+                </div>
+
                 <div class="nav-item" :class="{ active: isActive('/admin/data/upload') }" @click="navigate('/admin/data/upload')">
                   <div class="nav-icon">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">

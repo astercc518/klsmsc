@@ -1023,9 +1023,8 @@ const loadStaffData = async () => {
         view_finance: false,
         view_channels: false,
         view_customers: false,
-        view_system_monitor: false,
         ...(res.permissions || {}),
-        view_system_monitor: viewSystemMonitor
+        view_system_monitor: viewSystemMonitor,
       }
       recentCustomers.value = res.recent_customers || []
       if (viewSystemMonitor) {

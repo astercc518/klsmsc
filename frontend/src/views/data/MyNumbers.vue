@@ -4,26 +4,27 @@
       <h2 class="page-title">我的私有库</h2>
       <div class="header-actions">
         <el-button type="success" @click="showUpload = true">上传数据</el-button>
+        <el-button @click="openUploadTasksDialog">{{ t('dataMyNumbers.uploadTasksBtn') }}</el-button>
         <el-button type="primary" @click="$router.push('/data/store')">前往商店选购</el-button>
       </div>
     </div>
 
-    <el-alert type="info" :closable="false" show-icon class="my-numbers-hint">
-      {{ t('dataMyNumbers.ownershipHint') }}
-    </el-alert>
-
     <!-- 上传对话框 -->
     <el-dialog v-model="showUpload" title="上传私有号码数据" width="500px" @closed="resetForm">
       <el-form :model="uploadForm" label-width="100px">
-        <el-form-item label="国家/地区">
-          <el-select v-model="uploadForm.country_code" placeholder="请选择国家" filterable style="width: 100%">
-            <el-option
-              v-for="c in COUNTRY_LIST"
-              :key="c.iso"
-              :label="c.name + ' (+' + c.dial + ')'"
-              :value="c.iso"
-            />
-          </el-select>
+        <el-form-item :label="t('dataMyNumbers.uploadCountryLabel')">
+          <el-skeleton v-if="accountCountryLoading" :rows="1" animated />
+          <el-alert
+            v-else-if="!accountCountryLocked"
+            type="warning"
+            :closable="false"
+            :title="t('dataMyNumbers.uploadNoAccountCountryHint')"
+          />
+          <el-input
+            v-else
+            :model-value="`${countryName(accountCountryLocked)} (${accountCountryLocked})`"
+            disabled
+          />
         </el-form-item>
         <el-form-item label="数据来源">
           <el-select v-model="uploadForm.source" placeholder="请选择来源" style="width: 100%">
@@ -46,6 +47,9 @@
         <el-form-item label="备注">
           <el-input v-model="uploadForm.remarks" type="textarea" placeholder="请输入备注信息（可选）" />
         </el-form-item>
+        <el-form-item :label="t('dataMyNumbers.uploadCarrierDetect')">
+          <el-switch v-model="uploadDetectCarrier" />
+        </el-form-item>
         <el-form-item label="选择文件">
           <el-upload
             class="upload-demo"
@@ -63,8 +67,9 @@
             </div>
             <template #tip>
               <div class="el-upload__tip">
-                支持 CSV 或 TXT。请先选择正确的国家/地区；号码列可为 + 区号或本地号（与所选国家一致）。
+                支持 CSV 或 TXT。国家与短信账户一致，不可更改；号码列可为 + 区号或本地号。
                 若为「图文」混排，请导出为仅含号码的文本或 CSV，或使用 UTF-8 / GBK 保存。
+                {{ t('dataMyNumbers.uploadUseAsyncHint') }}
               </div>
             </template>
           </el-upload>
@@ -73,10 +78,95 @@
       <template #footer>
         <el-button @click="showUpload = false">取消</el-button>
         <el-button type="primary" :loading="uploading" @click="submitUpload">
-          立即上传
+          {{ t('dataMyNumbers.uploadSubmitTask') }}
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 上传任务（弹窗查看） -->
+    <el-dialog
+      v-model="showUploadTasksDialog"
+      :title="t('dataMyNumbers.uploadTasksTitle')"
+      width="min(960px, 96vw)"
+      class="upload-tasks-dialog"
+      destroy-on-close
+      @opened="onUploadTasksDialogOpened"
+    >
+      <div class="upload-tasks-toolbar">
+        <span class="upload-tasks-hint">{{ t('dataMyNumbers.uploadTasksDialogHint') }}</span>
+        <el-button type="primary" link @click="loadUploadTasks" :loading="uploadTasksLoading">
+          {{ t('dataMyNumbers.uploadTasksRefresh') }}
+        </el-button>
+      </div>
+      <el-table
+        v-loading="uploadTasksLoading"
+        :data="uploadTasks"
+        size="small"
+        stripe
+        max-height="420"
+        :empty-text="t('dataMyNumbers.uploadTasksEmpty')"
+      >
+        <el-table-column prop="task_id" :label="t('dataMyNumbers.uploadTasksColTask')" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="original_filename" :label="t('dataMyNumbers.uploadTasksColFile')" min-width="120" show-overflow-tooltip />
+        <el-table-column :label="t('dataMyNumbers.uploadTasksColStatus')" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" :type="uploadStatusTagType(row.status)">{{ uploadStatusLabel(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('dataMyNumbers.uploadTasksColProgress')" min-width="140">
+          <template #default="{ row }">
+            <el-progress
+              :percentage="row.progress_percent ?? 0"
+              :status="row.status === 'failed' ? 'exception' : row.status === 'completed' ? 'success' : undefined"
+            />
+            <div class="stage-text" v-if="row.stage">{{ row.stage }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('dataMyNumbers.uploadTasksColStats')" width="110">
+          <template #default="{ row }">
+            {{ row.inserted ?? 0 }} / {{ row.updated ?? 0 }}
+            <div class="muted" v-if="row.total_unique">共 {{ row.total_unique }} 条去重</div>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('dataMyNumbers.uploadTasksColTime')" width="160">
+          <template #default="{ row }">{{ fmtDateTime(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column label="说明" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.status === 'failed'" class="err-cell">{{ row.error_message }}</span>
+            <span v-else-if="row.result_batch_id" class="muted">批次 {{ row.result_batch_id }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="88" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.status === 'pending'"
+              type="danger"
+              link
+              size="small"
+              :loading="abandoningTaskId === row.task_id"
+              @click="onAbandonUploadTask(row.task_id)"
+            >
+              {{ t('dataMyNumbers.uploadTaskAbandon') }}
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div class="upload-tasks-pager" v-if="uploadTasksTotal > uploadTasksPageSize">
+        <el-pagination
+          layout="prev, pager, next, total"
+          :total="uploadTasksTotal"
+          :page-size="uploadTasksPageSize"
+          v-model:current-page="uploadTasksPage"
+          @current-change="loadUploadTasks"
+          small
+        />
+      </div>
+    </el-dialog>
+
+    <el-alert v-if="summaryMismatch" type="warning" :closable="false" show-icon class="summary-mismatch">
+      {{ t('dataMyNumbers.summaryMismatchWarn') }}
+    </el-alert>
 
     <!-- 运营商统计与筛选 -->
     <el-alert
@@ -108,8 +198,8 @@
     </div>
 
     <!-- 卡片列表 -->
-    <div v-loading="loading">
-      <el-empty v-if="!loading && filteredGroups.length === 0" :description="carrierFilter ? '该运营商下暂无数据' : '暂无私有库数据，请前往商店购买'" />
+    <div v-loading="loading" class="groups-wrap">
+      <el-empty v-if="!loading && filteredGroups.length === 0" :description="carrierFilter ? '该运营商下暂无数据' : '暂无私有库数据，请前往商店购买或等待上传任务完成'" />
 
       <el-row :gutter="16">
         <el-col :xs="24" :sm="12" :lg="8" v-for="(g, idx) in filteredGroups" :key="idx">
@@ -199,13 +289,23 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ArrowDown, UploadFilled } from '@element-plus/icons-vue'
-import { getMyNumbersSummary, exportMyNumbers, uploadMyNumbers, deleteMyNumbers } from '@/api/data'
+import {
+  getMyNumbersSummary,
+  exportMyNumbers,
+  deleteMyNumbers,
+  createMyNumbersUploadTask,
+  getMyNumbersUploadTask,
+  listMyNumbersUploadTasks,
+  abandonMyNumbersUploadTask,
+  type PrivateLibraryUploadTaskDTO,
+} from '@/api/data'
+import { getAccountInfo } from '@/api/account'
 import { ElMessage, ElMessageBox, genFileId, UploadRawFile, UploadProps } from 'element-plus'
-import { findCountryByIso, COUNTRY_LIST } from '@/constants/countries'
+import { findCountryByIso } from '@/constants/countries'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -232,7 +332,9 @@ const groups = ref<NumberGroup[]>([])
 const carrierFilter = ref('')
 const totalCount = ref(0)
 const summaryTruncated = ref(false)
+const summaryMismatch = ref(false)
 const loading = ref(false)
+const abandoningTaskId = ref<string | null>(null)
 
 const availableCarriers = computed(() => {
   const map: Record<string, number> = {}
@@ -296,38 +398,73 @@ const uploadForm = ref({
   country_code: '',
   source: 'Manual Upload',
   purpose: 'Marketing',
-  remarks: ''
+  remarks: '',
 })
+const uploadDetectCarrier = ref(true)
+const showUploadTasksDialog = ref(false)
+/** 与账户 country_code 一致（大写 ISO），打开上传弹窗时拉取 */
+const accountCountryLocked = ref('')
+const accountCountryLoading = ref(false)
+
+const uploadTasks = ref<PrivateLibraryUploadTaskDTO[]>([])
+const uploadTasksLoading = ref(false)
+const uploadTasksPage = ref(1)
+const uploadTasksPageSize = ref(10)
+const uploadTasksTotal = ref(0)
+let uploadPollTimer: ReturnType<typeof setInterval> | null = null
 
 function resetForm() {
   uploadForm.value = {
-    country_code: '',
+    country_code: accountCountryLocked.value || '',
     source: 'Manual Upload',
     purpose: 'Marketing',
-    remarks: ''
+    remarks: '',
   }
+  uploadDetectCarrier.value = true
   uploadFile.value = null
   if (uploadRef.value) {
     uploadRef.value.clearFiles()
   }
 }
 
+async function loadAccountCountryForUpload() {
+  accountCountryLoading.value = true
+  try {
+    const info = await getAccountInfo()
+    const cc = (info.country_code || '').trim().toUpperCase()
+    accountCountryLocked.value = cc
+    uploadForm.value.country_code = cc
+    if (!cc) {
+      ElMessage.warning(t('dataMyNumbers.uploadNoAccountCountry'))
+    }
+  } catch {
+    accountCountryLocked.value = ''
+    uploadForm.value.country_code = ''
+    ElMessage.error(t('dataMyNumbers.uploadAccountCountryLoadFailed'))
+  } finally {
+    accountCountryLoading.value = false
+  }
+}
+
+watch(showUpload, (open) => {
+  if (open) void loadAccountCountryForUpload()
+})
+
 function handleFileChange(file: any) {
   uploadFile.value = file.raw
 }
 
 const handleExceed: UploadProps['onExceed'] = (files) => {
-  // 覆盖旧文件
-  // @ts-ignore
-  uploadFile.value = files[0]
+  uploadRef.value?.clearFiles()
+  const raw = files[0] as UploadRawFile
+  raw.uid = genFileId()
+  uploadRef.value?.handleStart(raw)
+  uploadFile.value = raw
 }
 
-async function submitUpload() {
-  if (!uploadFile.value) return ElMessage.warning('请选择文件')
-  if (!uploadForm.value.country_code) return ElMessage.warning('请选择国家')
-
-  uploading.value = true
+function buildUploadFormData(): FormData {
   const formData = new FormData()
+  if (!uploadFile.value) return formData
   formData.append('file', uploadFile.value)
   formData.append('country_code', uploadForm.value.country_code)
   formData.append('source', uploadForm.value.source)
@@ -335,22 +472,122 @@ async function submitUpload() {
   if (uploadForm.value.remarks) {
     formData.append('remarks', uploadForm.value.remarks)
   }
+  formData.append('detect_carrier', uploadDetectCarrier.value ? 'true' : 'false')
+  return formData
+}
+
+function mergeTaskRow(updated: PrivateLibraryUploadTaskDTO) {
+  const i = uploadTasks.value.findIndex((x) => x.task_id === updated.task_id)
+  if (i >= 0) {
+    uploadTasks.value[i] = { ...uploadTasks.value[i], ...updated }
+  } else {
+    uploadTasks.value = [updated, ...uploadTasks.value]
+  }
+}
+
+function stopUploadPoll() {
+  if (uploadPollTimer) {
+    clearInterval(uploadPollTimer)
+    uploadPollTimer = null
+  }
+}
+
+function startUploadTaskPoll(taskId: string) {
+  stopUploadPoll()
+  const tick = async () => {
+    try {
+      const res = await getMyNumbersUploadTask(taskId)
+      if (!res.success || !res.task) return
+      mergeTaskRow(res.task)
+      const st = res.task.status
+      if (st === 'completed') {
+        stopUploadPoll()
+        ElMessage.success(t('dataMyNumbers.uploadAsyncDone'))
+        loadData()
+        loadUploadTasks()
+      } else if (st === 'failed') {
+        stopUploadPoll()
+        ElMessage.error((t('dataMyNumbers.uploadAsyncFailed') + ': ') + (res.task.error_message || ''))
+        loadUploadTasks()
+      }
+    } catch {
+      /* 轮询失败时保留定时器，下一拍重试 */
+    }
+  }
+  void tick()
+  uploadPollTimer = setInterval(() => void tick(), 2000)
+}
+
+async function loadUploadTasks() {
+  uploadTasksLoading.value = true
+  try {
+    const res = await listMyNumbersUploadTasks({
+      page: uploadTasksPage.value,
+      page_size: uploadTasksPageSize.value,
+    })
+    if (res.success) {
+      uploadTasks.value = res.items || []
+      uploadTasksTotal.value = res.total ?? 0
+    }
+  } catch {
+    /* 列表失败静默，避免打断主流程 */
+  } finally {
+    uploadTasksLoading.value = false
+  }
+}
+
+function openUploadTasksDialog() {
+  uploadTasksPage.value = 1
+  showUploadTasksDialog.value = true
+}
+
+function onUploadTasksDialogOpened() {
+  void loadUploadTasks()
+}
+
+function uploadStatusLabel(status: string) {
+  if (status === 'pending') return '排队中'
+  if (status === 'processing') return '处理中'
+  if (status === 'completed') return '已完成'
+  if (status === 'failed') return '失败'
+  return status
+}
+
+function uploadStatusTagType(status: string): 'info' | 'warning' | 'success' | 'danger' {
+  if (status === 'pending') return 'info'
+  if (status === 'processing') return 'warning'
+  if (status === 'completed') return 'success'
+  if (status === 'failed') return 'danger'
+  return 'info'
+}
+
+function fmtDateTime(d: string | null | undefined): string {
+  if (!d) return '-'
+  return new Date(d).toLocaleString('zh-CN')
+}
+
+async function submitUpload() {
+  if (!uploadFile.value) return ElMessage.warning('请选择文件')
+  if (!accountCountryLocked.value) {
+    return ElMessage.warning(t('dataMyNumbers.uploadNoAccountCountry'))
+  }
+  uploadForm.value.country_code = accountCountryLocked.value
+
+  uploading.value = true
+  const formData = buildUploadFormData()
 
   try {
-    const res = (await uploadMyNumbers(formData)) as {
-      success?: boolean
-      message?: string
-      added?: number
-    }
-    if (res.success !== false) {
-      ElMessage.success(res.message || '上传成功')
+    const res = await createMyNumbersUploadTask(formData)
+    if (res.task_id) {
       showUpload.value = false
       resetForm()
+      uploadTasksPage.value = 1
+      showUploadTasksDialog.value = true
+      ElMessage.success(t('dataMyNumbers.uploadAsyncStartedWithHint'))
+      startUploadTaskPoll(res.task_id)
     } else {
-      // 后端在「解析到号码但 0 写入」时返回 success:false（多为号码已归属其他客户）
-      ElMessage.warning(res.message || '未写入任何数据，请查看说明或联系管理员')
+      ElMessage.warning(res.message || '创建任务失败')
     }
-    loadData()
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail || e.message || '上传失败')
   } finally {
@@ -371,17 +608,56 @@ function fmtDate(d: string | null): string {
 
 async function loadData() {
   loading.value = true
+  summaryMismatch.value = false
   try {
-    const res = await getMyNumbersSummary()
+    // max_batches=0：展示全部分组卡片；默认 400 时批次极多时新上传可能不在「最近批次」内
+    const res = (await getMyNumbersSummary({ max_batches: 0 })) as {
+      success?: boolean
+      items?: NumberGroup[]
+      total?: number
+      meta?: { truncated?: boolean }
+    }
     if (res.success) {
       groups.value = res.items || []
-      totalCount.value = res.total || 0
-      summaryTruncated.value = Boolean((res as { meta?: { truncated?: boolean } }).meta?.truncated)
+      totalCount.value = res.total ?? 0
+      summaryTruncated.value = Boolean(res.meta?.truncated)
+      const t = totalCount.value
+      const n = groups.value.length
+      if (t > 0 && n === 0 && !carrierFilter.value) {
+        summaryMismatch.value = true
+        ElMessage.warning(t('dataMyNumbers.summaryMismatchWarn'))
+      }
+    } else {
+      ElMessage.error('私库汇总加载失败，请稍后重试')
     }
   } catch (e: any) {
     ElMessage.error(e.message || '加载失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function onAbandonUploadTask(taskId: string) {
+  try {
+    await ElMessageBox.confirm(t('dataMyNumbers.uploadTaskAbandonConfirm'), '提示', {
+      type: 'warning',
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  abandoningTaskId.value = taskId
+  try {
+    const res = await abandonMyNumbersUploadTask(taskId)
+    if (res.success !== false) {
+      ElMessage.success(res.message || '已放弃')
+      await loadUploadTasks()
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || '操作失败')
+  } finally {
+    abandoningTaskId.value = null
   }
 }
 
@@ -437,16 +713,19 @@ async function handleDelete(g: NumberGroup) {
     )
     
     loading.value = true
+    // 必须显式传齐维度；batch_id 为空串时匹配库内 NULL/空批次（避免 axios 省略参数导致条件错位）
     const res = await deleteMyNumbers({
-      country: g.country_code,
-      source: g.source,
-      purpose: g.purpose,
-      batch_id: g.batch_id,
+      country: String(g.country_code ?? ''),
+      source: String(g.source ?? ''),
+      purpose: String(g.purpose ?? ''),
+      batch_id: g.batch_id == null || g.batch_id === undefined ? '' : String(g.batch_id),
     })
-    
+
     if (res.success) {
       ElMessage.success(res.message || '删除成功')
       loadData()
+    } else {
+      ElMessage.warning(res.message || '未能删除数据')
     }
   } catch (e: any) {
     if (e !== 'cancel') {
@@ -457,7 +736,13 @@ async function handleDelete(g: NumberGroup) {
   }
 }
 
-onMounted(loadData)
+onMounted(() => {
+  loadData()
+})
+
+onUnmounted(() => {
+  stopUploadPoll()
+})
 </script>
 
 <style scoped>
@@ -468,6 +753,24 @@ onMounted(loadData)
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
+}
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.upload-tasks-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.upload-tasks-hint {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
 }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
 
@@ -562,7 +865,27 @@ onMounted(loadData)
   text-overflow: ellipsis;
   max-width: 180px;
 }
-.my-numbers-hint {
-  margin-bottom: 16px;
+.summary-mismatch {
+  margin-bottom: 12px;
+}
+.groups-wrap {
+  min-height: 200px;
+}
+.err-cell {
+  color: var(--el-color-danger);
+}
+.muted {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.stage-text {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
+}
+.upload-tasks-pager {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

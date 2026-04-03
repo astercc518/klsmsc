@@ -19,12 +19,13 @@ RUN pip install --no-cache-dir -r requirements.txt && pip install --no-cache-dir
 # 复制应用代码
 COPY . .
 
-# 创建日志目录
+# 创建日志目录（开发环境 bind mount 会覆盖 /app，入口用 sh 执行以免丢失可执行位）
 RUN mkdir -p logs
 
 # 暴露端口
 EXPOSE 8000
 
-# 默认命令
+ENTRYPOINT ["sh", "/app/docker-entrypoint.sh"]
+# 默认命令（可被 docker-compose command 覆盖，参数会传给 entrypoint）
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 

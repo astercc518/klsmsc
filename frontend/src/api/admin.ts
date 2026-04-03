@@ -384,6 +384,9 @@ export async function getAccountsAdmin(params?: {
   status?: string;
   business_type?: string;
   sales_id?: number;
+  tg_username?: string;
+  country_codes?: string;
+  channel_keyword?: string;
   limit?: number;
   offset?: number;
 }): Promise<AdminAccountListResponse> {

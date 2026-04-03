@@ -72,6 +72,7 @@ celery_app.conf.task_routes.update({
     'data_recycle_expired_numbers': {'queue': 'data_tasks'},
     'data_expire_pending_orders': {'queue': 'data_tasks'},
     'data_import_numbers': {'queue': 'data_tasks'},
+    'private_library_upload': {'queue': 'data_tasks'},
 })
 # 任务路由 - 批量发送 & Webhook 回调
 celery_app.conf.task_routes.update({

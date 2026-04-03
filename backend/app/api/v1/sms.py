@@ -457,7 +457,10 @@ async def send_batch_sms(
             return q
 
         q_pln = _apply_private_filters_pln(
-            select(PrivateLibraryNumber.phone_number).where(PrivateLibraryNumber.account_id == account.id)
+            select(PrivateLibraryNumber.phone_number).where(
+                PrivateLibraryNumber.account_id == account.id,
+                PrivateLibraryNumber.is_deleted == False,  # noqa: E712
+            )
         )
         q_dn = _apply_private_filters_dn(
             select(DataNumber.phone_number).where(DataNumber.account_id == account.id)
@@ -468,11 +471,71 @@ async def send_batch_sms(
         db_nums = [r[0] for r in res.all()]
         if db_nums:
             now = datetime.now()
+            from app.modules.data.private_library_summary_sync import (
+                ORIGIN_MANUAL,
+                ORIGIN_PURCHASED,
+                norm_dim,
+                pls_apply_deltas_bulk,
+            )
+
+            # 首次使用（更新前 use_count==0）时汇总表 used_count +1
+            res_pln0 = await db.execute(
+                select(PrivateLibraryNumber).where(
+                    PrivateLibraryNumber.account_id == account.id,
+                    PrivateLibraryNumber.phone_number.in_(db_nums),
+                    PrivateLibraryNumber.use_count == 0,
+                    PrivateLibraryNumber.is_deleted == False,  # noqa: E712
+                )
+            )
+            res_dn0 = await db.execute(
+                select(DataNumber).where(
+                    DataNumber.account_id == account.id,
+                    DataNumber.phone_number.in_(db_nums),
+                    DataNumber.use_count == 0,
+                )
+            )
+            pls_deltas = []
+            for row in res_pln0.scalars():
+                pls_deltas.append(
+                    (
+                        ORIGIN_MANUAL,
+                        norm_dim(row.country_code),
+                        norm_dim(row.source),
+                        norm_dim(row.purpose),
+                        norm_dim(row.batch_id),
+                        norm_dim(row.carrier),
+                        0,
+                        1,
+                        row.remarks,
+                        row.created_at,
+                        now,
+                    )
+                )
+            for row in res_dn0.scalars():
+                pls_deltas.append(
+                    (
+                        ORIGIN_PURCHASED,
+                        norm_dim(row.country_code),
+                        norm_dim(row.source),
+                        norm_dim(row.purpose),
+                        norm_dim(row.batch_id),
+                        norm_dim(row.carrier),
+                        0,
+                        1,
+                        row.remarks,
+                        row.created_at,
+                        now,
+                    )
+                )
+            if pls_deltas:
+                await pls_apply_deltas_bulk(db, account.id, pls_deltas)
+
             await db.execute(
                 update(PrivateLibraryNumber)
                 .where(
                     PrivateLibraryNumber.account_id == account.id,
                     PrivateLibraryNumber.phone_number.in_(db_nums),
+                    PrivateLibraryNumber.is_deleted == False,  # noqa: E712
                 )
                 .values(
                     use_count=PrivateLibraryNumber.use_count + 1,
@@ -491,6 +554,9 @@ async def send_batch_sms(
                 )
             )
             await db.flush()
+            from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache
+
+            await invalidate_my_numbers_summary_cache(account.id)
 
             if not request.phone_numbers:
                 request.phone_numbers = []

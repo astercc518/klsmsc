@@ -1,13 +1,25 @@
 """
 数据业务定时任务 Worker
 """
+import os
 from datetime import datetime, timedelta, date
 from decimal import Decimal
 from typing import Optional
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, update as sa_update
 from app.workers.celery_app import celery_app
 import app.models  # noqa: F401 确保所有 ORM 关系模型被加载
-from app.modules.data.models import DataNumber, DataProduct, DataOrder, DataImportBatch, DataPricingTemplate, DATA_SOURCES, DATA_PURPOSES, SOURCE_LABELS, PURPOSE_LABELS
+from app.modules.data.models import (
+    DataNumber,
+    DataProduct,
+    DataOrder,
+    DataImportBatch,
+    DataPricingTemplate,
+    PrivateLibraryUploadTask,
+    DATA_SOURCES,
+    DATA_PURPOSES,
+    SOURCE_LABELS,
+    PURPOSE_LABELS,
+)
 from app.utils.logger import get_logger
 from app.api.v1.data.helpers import calculate_stock, compute_freshness
 import asyncio
@@ -734,3 +746,165 @@ async def _auto_create_product(
     logger.info(f"创建商品 {code}: {product_name}, 库存={valid_count}, 文件={file_name}")
 
     return code
+
+
+@celery_app.task(name="private_library_upload", bind=True, soft_time_limit=3600, time_limit=3660)
+def private_library_upload(self, task_id: str):
+    """客户私库异步上传（大文件），进度写入 private_library_upload_tasks"""
+    return _run_async(_do_private_library_upload_task(task_id))
+
+
+async def _do_private_library_upload_task(task_id: str):
+    from app.modules.data.private_upload_core import run_private_library_upload
+
+    eng, Session = _make_session()
+    try:
+        async with Session() as db:
+            row = (
+                await db.execute(
+                    select(PrivateLibraryUploadTask).where(PrivateLibraryUploadTask.task_id == task_id)
+                )
+            ).scalar_one_or_none()
+            if not row:
+                logger.error("私库上传任务不存在: %s", task_id)
+                return {"ok": False, "error": "not_found"}
+
+            row.status = "processing"
+            row.stage = "starting"
+            row.progress_percent = 1
+            await db.commit()
+
+            fpath = row.file_path
+            try:
+                with open(fpath, "rb") as f:
+                    content = f.read()
+            except OSError as e:
+                await db.execute(
+                    sa_update(PrivateLibraryUploadTask)
+                    .where(PrivateLibraryUploadTask.id == row.id)
+                    .values(
+                        status="failed",
+                        error_message=f"读取上传文件失败: {e}",
+                        completed_at=datetime.now(),
+                    )
+                )
+                await db.commit()
+                return {"ok": False, "error": str(e)}
+
+            tid = row.id
+
+            async def progress(**kw):
+                vals = {}
+                if "stage" in kw:
+                    vals["stage"] = kw["stage"]
+                if "progress_percent" in kw:
+                    vals["progress_percent"] = kw["progress_percent"]
+                if "total_unique" in kw:
+                    vals["total_unique"] = kw["total_unique"]
+                if "inserted" in kw:
+                    vals["inserted"] = kw["inserted"]
+                if "updated" in kw:
+                    vals["updated"] = kw["updated"]
+                if "batch_id" in kw:
+                    vals["result_batch_id"] = kw["batch_id"]
+                if vals:
+                    await db.execute(
+                        sa_update(PrivateLibraryUploadTask)
+                        .where(PrivateLibraryUploadTask.id == tid)
+                        .values(**vals)
+                    )
+                    await db.commit()
+
+            try:
+                result = await run_private_library_upload(
+                    db,
+                    row.account_id,
+                    content,
+                    row.original_filename or "upload.txt",
+                    row.country_code,
+                    row.source,
+                    row.purpose,
+                    row.remarks,
+                    bool(row.detect_carrier),
+                    progress=progress,
+                )
+            except ValueError as e:
+                logger.warning("私库上传任务校验失败: %s %s", task_id, e)
+                await db.rollback()
+                await db.execute(
+                    sa_update(PrivateLibraryUploadTask)
+                    .where(PrivateLibraryUploadTask.id == tid)
+                    .values(
+                        status="failed",
+                        error_message=str(e)[:4000],
+                        completed_at=datetime.now(),
+                    )
+                )
+                await db.commit()
+                try:
+                    os.remove(fpath)
+                except OSError:
+                    pass
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                logger.exception("私库上传任务失败: %s", task_id)
+                await db.rollback()
+                await db.execute(
+                    sa_update(PrivateLibraryUploadTask)
+                    .where(PrivateLibraryUploadTask.id == tid)
+                    .values(
+                        status="failed",
+                        error_message=str(e)[:4000],
+                        completed_at=datetime.now(),
+                    )
+                )
+                await db.commit()
+                try:
+                    os.remove(fpath)
+                except OSError:
+                    pass
+                return {"ok": False, "error": str(e)}
+
+            await db.execute(
+                sa_update(PrivateLibraryUploadTask)
+                .where(PrivateLibraryUploadTask.id == tid)
+                .values(
+                    status="completed",
+                    inserted=result.get("inserted", 0),
+                    updated=result.get("updated", 0),
+                    total_unique=result.get("total", 0),
+                    progress_percent=100,
+                    stage="completed",
+                    result_batch_id=result.get("batch_id"),
+                    completed_at=datetime.now(),
+                )
+            )
+            await db.commit()
+
+            # 与 run_private_library_upload 内失效互补：避免 Worker 连不上 Redis 时用户长期看到旧汇总
+            try:
+                from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache
+
+                await invalidate_my_numbers_summary_cache(row.account_id)
+            except Exception as ex:
+                logger.warning(
+                    "私库上传任务完成后汇总缓存失效失败 account=%s: %s",
+                    row.account_id,
+                    ex,
+                )
+
+            try:
+                os.remove(fpath)
+            except OSError:
+                pass
+
+            logger.info(
+                "私库上传任务完成: %s account=%s inserted=%s updated=%s",
+                task_id,
+                row.account_id,
+                result.get("inserted"),
+                result.get("updated"),
+            )
+            return {"ok": True, "result": result}
+    finally:
+        await eng.dispose()

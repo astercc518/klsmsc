@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update, delete, or_, and_
+from sqlalchemy.exc import DBAPIError
 from typing import Optional
 from datetime import datetime, timedelta, date
 import json
@@ -17,7 +18,20 @@ import re
 import phonenumbers
 
 from app.database import get_db
-from app.modules.data.models import DataNumber, DataImportBatch, DataOrderNumber, DataProduct, DataPricingTemplate, DATA_SOURCES, DATA_PURPOSES, SOURCE_LABELS, PURPOSE_LABELS
+from app.modules.data.models import (
+    DataNumber,
+    DataImportBatch,
+    DataOrderNumber,
+    DataProduct,
+    DataPricingTemplate,
+    PrivateLibraryNumber,
+    PrivateLibrarySummary,
+    DATA_SOURCES,
+    DATA_PURPOSES,
+    SOURCE_LABELS,
+    PURPOSE_LABELS,
+)
+from app.modules.common.account import Account
 from app.core.auth import get_current_admin
 from app.utils.logger import get_logger
 from app.schemas.data import NumberBatchTagRequest, NumberBatchStatusRequest
@@ -1143,3 +1157,329 @@ async def trigger_backfill_carriers(
     from app.workers.celery_app import celery_app as _celery
     _celery.send_task('data_backfill_carriers', args=[5000, 0], queue='data_tasks')
     return {"success": True, "message": "运营商回填任务已提交，后台处理中"}
+
+
+def _private_library_db_error_text(exc: BaseException) -> str:
+    """提取底层驱动错误文案，便于判断是否为缺列（未迁移）"""
+    if isinstance(exc, DBAPIError):
+        if exc.orig is not None:
+            return str(exc.orig)
+        return str(exc)
+    return str(exc)
+
+
+def _raise_if_private_library_schema_mismatch(exc: BaseException) -> None:
+    """私库表缺 is_deleted 等字段时给出明确提示（否则 ORM 查询会 500）"""
+    raw = _private_library_db_error_text(exc)
+    if (
+        "is_deleted" in raw
+        or "Unknown column" in raw
+        or "1054" in raw  # MySQL ER_BAD_FIELD_ERROR
+    ):
+        logger.error("私库管理接口数据库错误（多为未执行 Alembic 迁移）: %s", raw)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "数据库表结构与代码不一致：请执行迁移 revision j2k3l4m5n6o7（private_library_numbers.is_deleted）。"
+                "在 backend 目录执行: alembic upgrade head；"
+                "Docker 部署请重新构建 api 镜像，启动时会自动执行 alembic upgrade head。"
+            ),
+        ) from exc
+    raise exc
+
+
+@router.get("/private-library-summary")
+async def admin_get_private_library_summary(
+    max_batches: int = Query(
+        0,
+        ge=0,
+        le=10000,
+        description="每客户账户内保留的最近批次数；0=不限制（与客户端 max_batches=0 一致）",
+    ),
+    account_id: Optional[int] = None,
+    country_code: Optional[str] = None,
+    country_codes: Optional[str] = Query(
+        None,
+        description="逗号分隔的 ISO 国码，多选；与 country_code 二选一优先本参数",
+    ),
+    batch_id: Optional[str] = None,
+    min_card_count: Optional[int] = Query(
+        None,
+        ge=0,
+        description="卡片最小条数（按聚合后 count 过滤）",
+    ),
+    max_card_count: Optional[int] = Query(
+        None,
+        ge=0,
+        description="卡片最大条数（按聚合后 count 过滤）",
+    ),
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """
+    管理端：按 private_library_summaries 聚合卡片（与客户「我的私有库」结构一致），
+    每条带 account_id / account_name 便于区分客户。
+    """
+    from collections import defaultdict
+
+    from app.modules.data.private_library_summary_sync import build_summary_payload_from_rows
+    from app.api.v1.data.customer import _apply_summary_item_canonical_labels
+
+    try:
+        q = select(PrivateLibrarySummary)
+        if account_id is not None:
+            q = q.where(PrivateLibrarySummary.account_id == account_id)
+        codes: list[str] = []
+        if country_codes and country_codes.strip():
+            codes.extend(
+                x.strip().upper()
+                for x in country_codes.split(",")
+                if x.strip()
+            )
+        elif country_code and country_code.strip():
+            codes.append(country_code.strip().upper())
+        if codes:
+            cc_col = func.upper(func.trim(PrivateLibrarySummary.country_code))
+            q = q.where(or_(*[cc_col == c for c in codes]))
+        if batch_id is not None and batch_id != "":
+            q = q.where(PrivateLibrarySummary.batch_id == batch_id)
+
+        rows = list((await db.execute(q)).scalars().all())
+    except HTTPException:
+        raise
+    except Exception as e:
+        _raise_if_private_library_schema_mismatch(e)
+        logger.exception("管理端私库汇总查询失败")
+        raise HTTPException(status_code=500, detail="查询私库汇总失败") from e
+
+    if not rows:
+        return {
+            "success": True,
+            "items": [],
+            "total": 0,
+            "meta": {
+                "max_batches": max_batches,
+                "truncated": False,
+                "batch_card_limit": max_batches if max_batches > 0 else None,
+            },
+        }
+
+    by_acc: dict[int, list] = defaultdict(list)
+    for r in rows:
+        by_acc[r.account_id].append(r)
+
+    acc_ids = list(by_acc.keys())
+    name_rows = (
+        await db.execute(select(Account.id, Account.account_name).where(Account.id.in_(acc_ids)))
+    ).all()
+    name_map = {int(r[0]): (r[1] or "") for r in name_rows}
+
+    all_items: list = []
+    truncated_any = False
+    for aid in sorted(by_acc.keys()):
+        acc_rows = by_acc[aid]
+        payload = build_summary_payload_from_rows(
+            acc_rows,
+            max_batches=max_batches,
+            total_all_accounts_hint=None,
+        )
+        meta = payload.get("meta") or {}
+        if meta.get("truncated"):
+            truncated_any = True
+        for it in payload.get("items") or []:
+            it["account_id"] = aid
+            it["account_name"] = name_map.get(aid, "")
+            all_items.append(it)
+
+    _apply_summary_item_canonical_labels(all_items)
+    all_items.sort(key=lambda x: x.get("last_at") or "", reverse=True)
+
+    if min_card_count is not None:
+        all_items = [x for x in all_items if int(x.get("count") or 0) >= min_card_count]
+    if max_card_count is not None:
+        all_items = [x for x in all_items if int(x.get("count") or 0) <= max_card_count]
+    grand_total = sum(int(x.get("count") or 0) for x in all_items)
+
+    return {
+        "success": True,
+        "items": all_items,
+        "total": grand_total,
+        "meta": {
+            "max_batches": max_batches,
+            "truncated": truncated_any,
+            "batch_card_limit": max_batches if max_batches > 0 else None,
+        },
+    }
+
+
+def _serialize_admin_private_library_row(pln: PrivateLibraryNumber, account_name: str, email: Optional[str]) -> dict:
+    """管理端私库分表行序列化（含客户软删状态，供后台查阅）"""
+    return {
+        "id": pln.id,
+        "account_id": pln.account_id,
+        "account_name": account_name or "",
+        "email": email or "",
+        "phone_number": pln.phone_number,
+        "country_code": pln.country_code,
+        "carrier": pln.carrier,
+        "source": pln.source,
+        "purpose": pln.purpose,
+        "batch_id": pln.batch_id,
+        "status": pln.status,
+        "use_count": pln.use_count or 0,
+        "last_used_at": pln.last_used_at.isoformat() if pln.last_used_at else None,
+        "remarks": pln.remarks,
+        "tags": pln.tags or [],
+        "is_deleted": bool(pln.is_deleted),
+        "created_at": pln.created_at.isoformat() if pln.created_at else None,
+        "updated_at": pln.updated_at.isoformat() if pln.updated_at else None,
+    }
+
+
+@router.get("/private-library-numbers")
+async def admin_list_private_library_numbers(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=500),
+    account_id: Optional[int] = None,
+    is_deleted: Optional[bool] = None,
+    country_code: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    phone: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """管理端：分页查看客户私库分表明细（含客户已软删行）"""
+    try:
+        q = (
+            select(PrivateLibraryNumber, Account.account_name, Account.email)
+            .join(Account, Account.id == PrivateLibraryNumber.account_id)
+        )
+        if account_id is not None:
+            q = q.where(PrivateLibraryNumber.account_id == account_id)
+        if is_deleted is not None:
+            q = q.where(PrivateLibraryNumber.is_deleted == is_deleted)
+        if country_code:
+            q = q.where(PrivateLibraryNumber.country_code == country_code.strip())
+        if batch_id is not None and batch_id != "":
+            q = q.where(PrivateLibraryNumber.batch_id == batch_id)
+        if phone and phone.strip():
+            pat = f"%{phone.strip()}%"
+            q = q.where(PrivateLibraryNumber.phone_number.like(pat))
+
+        count_q = select(func.count(PrivateLibraryNumber.id)).select_from(PrivateLibraryNumber).join(
+            Account, Account.id == PrivateLibraryNumber.account_id
+        )
+        if account_id is not None:
+            count_q = count_q.where(PrivateLibraryNumber.account_id == account_id)
+        if is_deleted is not None:
+            count_q = count_q.where(PrivateLibraryNumber.is_deleted == is_deleted)
+        if country_code:
+            count_q = count_q.where(PrivateLibraryNumber.country_code == country_code.strip())
+        if batch_id is not None and batch_id != "":
+            count_q = count_q.where(PrivateLibraryNumber.batch_id == batch_id)
+        if phone and phone.strip():
+            pat = f"%{phone.strip()}%"
+            count_q = count_q.where(PrivateLibraryNumber.phone_number.like(pat))
+        total = (await db.execute(count_q)).scalar() or 0
+
+        q = q.order_by(PrivateLibraryNumber.created_at.desc(), PrivateLibraryNumber.id.desc())
+        q = q.offset((page - 1) * page_size).limit(page_size)
+        rows = (await db.execute(q)).all()
+
+        items = [_serialize_admin_private_library_row(r[0], r[1], r[2]) for r in rows]
+        return {"success": True, "items": items, "total": total, "page": page, "page_size": page_size}
+    except HTTPException:
+        raise
+    except Exception as e:
+        _raise_if_private_library_schema_mismatch(e)
+        logger.exception("管理端私库列表查询失败")
+        raise HTTPException(status_code=500, detail="查询私库列表失败") from e
+
+
+@router.get("/private-library-numbers/export")
+async def admin_export_private_library_numbers(
+    account_id: Optional[int] = None,
+    is_deleted: Optional[bool] = None,
+    country_code: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    source: Optional[str] = None,
+    purpose: Optional[str] = None,
+    phone: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """管理端：导出客户私库分表为 CSV（含软删行）"""
+    q = (
+        select(
+            PrivateLibraryNumber.phone_number,
+            PrivateLibraryNumber.country_code,
+            PrivateLibraryNumber.carrier,
+            PrivateLibraryNumber.source,
+            PrivateLibraryNumber.purpose,
+            PrivateLibraryNumber.batch_id,
+            PrivateLibraryNumber.account_id,
+            Account.account_name,
+            PrivateLibraryNumber.is_deleted,
+            PrivateLibraryNumber.created_at,
+        )
+        .join(Account, Account.id == PrivateLibraryNumber.account_id)
+    )
+    if account_id is not None:
+        q = q.where(PrivateLibraryNumber.account_id == account_id)
+    if is_deleted is not None:
+        q = q.where(PrivateLibraryNumber.is_deleted == is_deleted)
+    if country_code:
+        q = q.where(PrivateLibraryNumber.country_code == country_code.strip())
+    if batch_id is not None and batch_id != "":
+        q = q.where(PrivateLibraryNumber.batch_id == batch_id)
+    if source is not None and str(source).strip() != "":
+        q = q.where(PrivateLibraryNumber.source == str(source).strip())
+    if purpose is not None and str(purpose).strip() != "":
+        q = q.where(PrivateLibraryNumber.purpose == str(purpose).strip())
+    if phone and phone.strip():
+        pat = f"%{phone.strip()}%"
+        q = q.where(PrivateLibraryNumber.phone_number.like(pat))
+
+    q = q.order_by(PrivateLibraryNumber.account_id.asc(), PrivateLibraryNumber.id.asc())
+    try:
+        result = await db.stream(q)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _raise_if_private_library_schema_mismatch(e)
+        logger.exception("管理端私库导出 stream 失败")
+        raise HTTPException(status_code=500, detail="导出私库失败") from e
+
+    async def generate():
+        yield "\ufeff"
+        yield (
+            "phone_number,country_code,carrier,source,purpose,batch_id,account_id,account_name,"
+            "is_deleted,created_at\n"
+        )
+        async for row in result:
+            m = row._mapping
+            ca = m["created_at"]
+            yield ",".join(
+                [
+                    str(m["phone_number"] or ""),
+                    str(m["country_code"] or ""),
+                    str(m["carrier"] or ""),
+                    str(m["source"] or ""),
+                    str(m["purpose"] or ""),
+                    str(m["batch_id"] or ""),
+                    str(m["account_id"] or ""),
+                    str(m["account_name"] or "").replace(",", " "),
+                    "1" if m["is_deleted"] else "0",
+                    ca.isoformat() if ca else "",
+                ]
+            ) + "\n"
+
+    filename = f"private_library_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )

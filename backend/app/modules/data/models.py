@@ -115,6 +115,8 @@ class PrivateLibraryNumber(Base):
     use_count = Column(Integer, default=0)
     last_used_at = Column(DateTime)
     remarks = Column(Text)
+    # 客户侧软删除：行保留供管理端查阅，客户列表/发送/汇总中不可见
+    is_deleted = Column(Boolean, default=False, nullable=False, index=True, comment="客户软删标记")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -122,6 +124,7 @@ class PrivateLibraryNumber(Base):
         UniqueConstraint("account_id", "phone_number", name="uq_pln_account_phone"),
         Index("idx_pln_account_batch", "account_id", "batch_id"),
         Index("idx_pln_account_created", "account_id", "created_at"),
+        Index("idx_pln_account_not_deleted", "account_id", "is_deleted"),
         Index(
             "idx_pln_account_summary_dims",
             "account_id",
@@ -130,6 +133,75 @@ class PrivateLibraryNumber(Base):
             "purpose",
             "batch_id",
         ),
+    )
+
+
+class PrivateLibraryUploadTask(Base):
+    """客户私库异步上传任务（进度可查）"""
+
+    __tablename__ = "private_library_upload_tasks"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    task_id = Column(String(64), unique=True, nullable=False, index=True, comment="业务任务号 PLU-…")
+    account_id = Column(INTEGER(unsigned=True), ForeignKey("accounts.id"), nullable=False, index=True)
+    file_path = Column(String(512), nullable=False, comment="临时文件路径")
+    original_filename = Column(String(255), comment="原始文件名")
+    country_code = Column(String(10), nullable=False)
+    source = Column(String(100))
+    purpose = Column(String(100))
+    remarks = Column(Text)
+    detect_carrier = Column(Boolean, default=False, comment="是否识别运营商")
+    status = Column(String(20), nullable=False, default="pending", comment="pending/processing/completed/failed")
+    stage = Column(String(50), default="", comment="当前阶段说明")
+    progress_percent = Column(Integer, default=0)
+    total_unique = Column(Integer, default=0)
+    inserted = Column(Integer, default=0)
+    updated = Column(Integer, default=0)
+    result_batch_id = Column(String(64), comment="写入私库后的 batch_id")
+    error_message = Column(Text)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    completed_at = Column(DateTime)
+
+    __table_args__ = (Index("idx_pl_upload_account_created", "account_id", "created_at"),)
+
+
+class PrivateLibrarySummary(Base):
+    """
+    私库卡片汇总表（写时维护）：按账户+维度+运营商+来源类型聚合，
+    打开「我的私有库」时直接读本表，避免对百万级明细做 GROUP BY。
+    """
+
+    __tablename__ = "private_library_summaries"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    account_id = Column(INTEGER(unsigned=True), ForeignKey("accounts.id"), nullable=False, index=True)
+    country_code = Column(String(10), nullable=False, default="", comment="国家代码，空串表示缺省")
+    source = Column(String(50), nullable=False, default="")
+    purpose = Column(String(50), nullable=False, default="")
+    batch_id = Column(String(50), nullable=False, default="")
+    carrier = Column(String(50), nullable=False, default="", comment="空串表示未知运营商")
+    library_origin = Column(String(20), nullable=False, comment="manual=手工私库分表 purchased=公海购入绑定")
+    total_count = Column(Integer, nullable=False, default=0, comment="该桶号码总数")
+    used_count = Column(Integer, nullable=False, default=0, comment="use_count>0 的号码数")
+    remarks = Column(Text, comment="展示用备注（取长文本）")
+    first_at = Column(DateTime, comment="该桶最早入库时间")
+    last_at = Column(DateTime, comment="该桶最晚入库时间")
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "country_code",
+            "source",
+            "purpose",
+            "batch_id",
+            "carrier",
+            "library_origin",
+            name="uq_pls_account_dims",
+        ),
+        Index("idx_pls_account_last", "account_id", "last_at"),
     )
 
 

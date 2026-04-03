@@ -116,6 +116,8 @@ services:
       - ./data/knowledge:/app/data/knowledge
       - ./logs:/app/logs
       - import_uploads:/tmp/smsc_imports
+      # 私库异步上传：API 写临时文件与 Worker 读文件必须同卷，否则跨容器路径不可见
+      - private_library_uploads:/tmp/smsc_pl_uploads
       - ./.env:/app/.env.host
     depends_on:
       mysql:
@@ -158,6 +160,7 @@ services:
       - ./backend:/app
       - ./logs:/app/logs
       - import_uploads:/tmp/smsc_imports
+      - private_library_uploads:/tmp/smsc_pl_uploads
     depends_on:
       mysql:
         condition: service_healthy
@@ -349,6 +352,8 @@ volumes:
   grafana_data:
     driver: local
   import_uploads:
+    driver: local
+  private_library_uploads:
     driver: local
 
 networks:

@@ -76,6 +76,7 @@ async def test_account(db_session: AsyncSession) -> Account:
         balance=1000.0000,
         currency="USD",
         status="active",
+        country_code="CN",
         api_key="test_api_key_12345",
         api_secret="test_api_secret_12345"
     )

@@ -168,6 +168,88 @@ export function uploadMyNumbers(data: FormData) {
   })
 }
 
-export function deleteMyNumbers(params: { country?: string; source?: string; purpose?: string; carrier?: string; batch_id?: string }) {
-  return request({ url: '/data/my-numbers', method: 'delete', params })
+/** 私库异步上传任务（大文件），用于轮询进度 */
+export interface PrivateLibraryUploadTaskDTO {
+  task_id: string
+  status: string
+  stage: string
+  progress_percent: number
+  total_unique: number
+  inserted: number
+  updated: number
+  original_filename?: string | null
+  country_code?: string | null
+  detect_carrier?: boolean
+  result_batch_id?: string | null
+  error_message?: string | null
+  created_at?: string | null
+  completed_at?: string | null
+}
+
+/** 创建异步上传任务（建议大文件使用，需 Worker 消费 data_tasks 队列） */
+export function createMyNumbersUploadTask(data: FormData) {
+  return request({
+    url: '/data/my-numbers/upload-tasks',
+    method: 'post',
+    data,
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 600000,
+  }) as Promise<{ success?: boolean; task_id?: string; message?: string }>
+}
+
+export function getMyNumbersUploadTask(taskId: string) {
+  return request({
+    url: `/data/my-numbers/upload-tasks/${encodeURIComponent(taskId)}`,
+    method: 'get',
+  }) as Promise<{ success?: boolean; task?: PrivateLibraryUploadTaskDTO }>
+}
+
+export function listMyNumbersUploadTasks(params?: { page?: number; page_size?: number }) {
+  return request({
+    url: '/data/my-numbers/upload-tasks',
+    method: 'get',
+    params,
+  }) as Promise<{
+    success?: boolean
+    items?: PrivateLibraryUploadTaskDTO[]
+    total?: number
+    page?: number
+    page_size?: number
+  }>
+}
+
+/** 放弃排队中的上传任务（使用 JSON Body，避免部分网关对「…/id/abandon」路径返回 404） */
+export function abandonMyNumbersUploadTask(taskId: string) {
+  return request({
+    url: '/data/my-numbers/upload-tasks/abandon',
+    method: 'post',
+    data: { task_id: taskId },
+  }) as Promise<{ success?: boolean; message?: string }>
+}
+
+export function deleteMyNumbers(params: {
+  country?: string
+  source?: string
+  purpose?: string
+  carrier?: string
+  batch_id?: string
+  remarks?: string
+}) {
+  // POST + JSON：避免 DELETE 查询串编码/长度问题；与后端 TRIM+小写 维度匹配一致
+  return request({
+    url: '/data/my-numbers/delete-batch',
+    method: 'post',
+    data: {
+      country_code: params.country ?? '',
+      source: params.source ?? '',
+      purpose: params.purpose ?? '',
+      batch_id: params.batch_id ?? '',
+      remarks: params.remarks,
+      carrier: params.carrier,
+    },
+  }) as Promise<{
+    success?: boolean
+    message?: string
+    deleted?: number
+  }>
 }

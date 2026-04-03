@@ -61,20 +61,58 @@
           <el-input
             v-model="keyword"
             :placeholder="$t('customers.searchPlaceholder')"
-            style="width: 200px"
-            @keyup.enter="loadAccounts"
+            class="filter-input-wide"
+            @keyup.enter="runAccountSearch"
             clearable
             :prefix-icon="Search"
           />
-          <el-select v-if="!props.defaultBusinessType" v-model="businessTypeFilter" :placeholder="$t('customers.allBusiness')" clearable style="width: 130px" @change="loadAccounts">
+          <el-input
+            v-model="tgUsernameFilter"
+            :placeholder="$t('customers.searchTgUsername')"
+            class="filter-input-medium"
+            clearable
+            @keyup.enter="runAccountSearch"
+          />
+          <el-input
+            v-model="countryQueryFilter"
+            :placeholder="$t('customers.filterCountryQuery')"
+            class="filter-input-wide"
+            clearable
+            @keyup.enter="runAccountSearch"
+          />
+          <el-input
+            v-model="channelKeywordFilter"
+            :placeholder="$t('customers.searchChannelKeyword')"
+            class="filter-input-medium"
+            clearable
+            @keyup.enter="runAccountSearch"
+          />
+          <el-select
+            v-if="!isSalesRole"
+            v-model="salesIdFilter"
+            :placeholder="$t('customers.filterSalesStaff')"
+            clearable
+            filterable
+            class="filter-select-sales"
+            @change="runAccountSearch"
+          >
+            <el-option
+              v-for="s in filterSalesStaffList"
+              :key="s.id"
+              :label="`${s.real_name || s.username} (${s.username})`"
+              :value="s.id"
+            />
+          </el-select>
+          <el-select v-if="!props.defaultBusinessType" v-model="businessTypeFilter" :placeholder="$t('customers.allBusiness')" clearable style="width: 130px" @change="runAccountSearch">
             <el-option :label="$t('customers.smsBusiness')" value="sms" />
             <el-option :label="$t('customers.dataBusiness')" value="data" />
           </el-select>
-          <el-select v-model="statusFilter" :placeholder="$t('customers.allStatus')" clearable style="width: 130px" @change="loadAccounts">
+          <el-select v-model="statusFilter" :placeholder="$t('customers.allStatus')" clearable style="width: 130px" @change="runAccountSearch">
             <el-option :label="$t('common.active')" value="active" />
             <el-option :label="$t('common.inactive')" value="suspended" />
             <el-option :label="$t('common.disable')" value="closed" />
           </el-select>
+          <el-button type="primary" :icon="Search" @click="runAccountSearch">{{ $t('common.search') }}</el-button>
           <el-button @click="loadAccounts" :icon="Refresh">{{ $t('common.refresh') }}</el-button>
         </div>
       </div>
@@ -486,7 +524,7 @@ import {
   type AdminAccount,
 } from '@/api/admin'
 import request from '@/api/index'
-import { findCountryByIso } from '@/constants/countries'
+import { findCountryByIso, searchCountries } from '@/constants/countries'
 
 const { t, locale } = useI18n()
 
@@ -524,18 +562,51 @@ let page = 1
 let pageSize = 20
 
 const keyword = ref('')
+const tgUsernameFilter = ref('')
+const countryQueryFilter = ref('')
+const channelKeywordFilter = ref('')
 const statusFilter = ref('')
 const businessTypeFilter = ref(props.defaultBusinessType || '')
-const salesIdFilter = ref<number | null>(null)
-const filterSalesList = ref<any[]>([])
+const salesIdFilter = ref<number | undefined>(undefined)
+const filterSalesStaffList = ref<any[]>([])
+
+/** 国家名称/国码/区号前缀 → 逗号分隔 ISO，供列表接口 country_codes */
+function resolveCountryCodesForAccounts(raw: string): string | undefined {
+  const q = raw.trim()
+  if (!q) return undefined
+  const hits = searchCountries(q)
+  if (hits.length > 0) {
+    const seen = new Set<string>()
+    const codes: string[] = []
+    for (const c of hits) {
+      if (!seen.has(c.iso)) {
+        seen.add(c.iso)
+        codes.push(c.iso)
+      }
+    }
+    return codes.join(',')
+  }
+  if (/^[A-Za-z]{2}$/.test(q)) return q.toUpperCase()
+  return undefined
+}
+
+const runAccountSearch = () => {
+  page = 1
+  loadAccounts()
+}
 
 const loadAccounts = async () => {
   loading.value = true
   try {
+    const countryCodes = resolveCountryCodesForAccounts(countryQueryFilter.value || '')
     const res = await getAccountsAdmin({
       keyword: keyword.value || undefined,
       status: statusFilter.value || undefined,
       business_type: businessTypeFilter.value || undefined,
+      sales_id: !isSalesRole.value && salesIdFilter.value != null ? salesIdFilter.value : undefined,
+      tg_username: tgUsernameFilter.value?.trim() || undefined,
+      country_codes: countryCodes,
+      channel_keyword: channelKeywordFilter.value?.trim() || undefined,
       limit: pageSize,
       offset: (page - 1) * pageSize,
     })
@@ -1088,8 +1159,21 @@ async function submitResetPassword() {
   }
 }
 
+const loadFilterSalesStaff = async () => {
+  if (localStorage.getItem('admin_role') === 'sales') return
+  try {
+    const res = await request.get('/admin/users', { params: { role: 'sales', status: 'active' } })
+    if (res.success) {
+      filterSalesStaffList.value = res.users || res.items || []
+    }
+  } catch {
+    /* 忽略筛选条销售列表失败 */
+  }
+}
+
 onMounted(() => {
   adminRole.value = localStorage.getItem('admin_role') || ''
+  loadFilterSalesStaff()
   loadAccounts()
 })
 </script>
@@ -1223,8 +1307,21 @@ onMounted(() => {
 
 .filter-section {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
+}
+.filter-input-wide {
+  width: 200px;
+  max-width: 100%;
+}
+.filter-input-medium {
+  width: 160px;
+  max-width: 100%;
+}
+.filter-select-sales {
+  width: 200px;
+  max-width: 100%;
 }
 
 /* 表格样式 */

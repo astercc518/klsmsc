@@ -129,13 +129,21 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # 健康检查
 @app.get("/health")
-async def health_check():
-    """健康检查接口"""
+async def health_check(request: Request):
+    """健康检查接口（含客户私库管理端路由是否已注册，便于排查 404）"""
+    paths = [getattr(r, "path", "") for r in request.app.routes]
+    has_pl_data = "/api/v1/admin/data/private-library-numbers" in paths
+    has_pl_short = "/api/v1/admin/private-library-numbers" in paths
     return {
         "status": "healthy",
         "service": settings.APP_NAME,
         "version": "1.0.0",
-        "environment": settings.APP_ENV
+        "environment": settings.APP_ENV,
+        "features": {
+            "admin_private_library_routes": has_pl_data or has_pl_short,
+            "admin_private_library_via_data_prefix": has_pl_data,
+            "admin_private_library_via_admin_prefix": has_pl_short,
+        },
     }
 
 
@@ -203,6 +211,32 @@ app.include_router(account_templates.router, prefix="/api/v1", tags=["Account Te
 app.include_router(ai.router, prefix="/api/v1/ai", tags=["AI"])
 # 系统操作日志
 app.include_router(admin_logs.router, prefix="/api/v1", tags=["System Logs"])
+
+# 客户私库管理端：在 main 上显式挂载短路径，与 admin_numbers 路由并存（同一处理函数）
+from app.api.v1.data.admin_numbers import (
+    admin_export_private_library_numbers,
+    admin_get_private_library_summary,
+    admin_list_private_library_numbers,
+)
+
+app.add_api_route(
+    "/api/v1/admin/private-library-numbers",
+    admin_list_private_library_numbers,
+    methods=["GET"],
+    tags=["数据管理-号码"],
+)
+app.add_api_route(
+    "/api/v1/admin/private-library-numbers/export",
+    admin_export_private_library_numbers,
+    methods=["GET"],
+    tags=["数据管理-号码"],
+)
+app.add_api_route(
+    "/api/v1/admin/private-library-summary",
+    admin_get_private_library_summary,
+    methods=["GET"],
+    tags=["数据管理-号码"],
+)
 
 
 if __name__ == "__main__":

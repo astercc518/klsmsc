@@ -520,13 +520,22 @@ async def list_accounts_admin(
     status: Optional[str] = None,
     business_type: Optional[str] = None,
     sales_id: Optional[int] = None,
+    tg_username: Optional[str] = None,
+    country_codes: Optional[str] = Query(
+        None,
+        description="逗号分隔 ISO 国码，匹配账户 country_code",
+    ),
+    channel_keyword: Optional[str] = Query(
+        None,
+        description="通道编码或名称模糊匹配（账户已绑定的通道）",
+    ),
     limit: int = 50,
     offset: int = 0,
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """管理员：获取账户列表（支持按员工 sales_id 筛选）"""
-    from sqlalchemy import func, or_, and_
+    """管理员：获取账户列表（支持按员工、TG、国家、通道等筛选）"""
+    from sqlalchemy import func, or_, and_, exists
     import json
 
     safe_limit = max(1, min(limit, 200))
@@ -546,6 +555,30 @@ async def list_accounts_admin(
     if keyword:
         kw = f"%{keyword.strip()}%"
         where_clauses.append(or_(Account.email.like(kw), Account.account_name.like(kw)))
+    if tg_username and tg_username.strip():
+        tg = tg_username.strip().lstrip("@")
+        if tg:
+            tg_kw = f"%{tg.lower()}%"
+            where_clauses.append(func.lower(Account.tg_username).like(tg_kw))
+    if country_codes and country_codes.strip():
+        codes = [x.strip().upper() for x in country_codes.split(",") if x.strip()]
+        if codes:
+            cc_col = func.upper(func.trim(Account.country_code))
+            where_clauses.append(or_(*[cc_col == c for c in codes]))
+    if channel_keyword and channel_keyword.strip():
+        from app.modules.common.account import AccountChannel
+        from app.modules.sms.channel import Channel
+
+        ck = f"%{channel_keyword.strip().lower()}%"
+        ch_exists = exists().where(
+            AccountChannel.account_id == Account.id,
+            AccountChannel.channel_id == Channel.id,
+            or_(
+                func.lower(Channel.channel_code).like(ck),
+                func.lower(Channel.channel_name).like(ck),
+            ),
+        )
+        where_clauses.append(ch_exists)
 
     where_expr = and_(*where_clauses)
 
