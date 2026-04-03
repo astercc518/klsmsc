@@ -98,12 +98,6 @@ export const adminRoutes: RouteRecordRaw[] = [
     meta: { titleKey: 'menu.tickets', icon: 'Tickets' },
   },
   {
-    path: '/admin/settlements',
-    name: 'Settlements',
-    component: () => import('@/views/admin/Settlements.vue'),
-    meta: { titleKey: 'menu.settlements', icon: 'Money' },
-  },
-  {
     path: '/admin/data/accounts',
     name: 'DataAccounts',
     component: () => import('@/views/admin/data/Accounts.vue'),

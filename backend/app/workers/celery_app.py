@@ -13,7 +13,6 @@ celery_app = Celery(
     include=[
         'app.workers.sms_worker',
         'app.workers.data_worker',
-        'app.workers.settlement_worker',
         'app.workers.batch_worker',
         'app.workers.webhook_worker',
     ]
@@ -55,17 +54,8 @@ celery_app.conf.task_queues = {
         'exchange': 'data_tasks',
         'routing_key': 'data_tasks',
     },
-    'settlement_tasks': {
-        'exchange': 'settlement_tasks',
-        'routing_key': 'settlement_tasks',
-    },
 }
 
-# 任务路由 - 结算业务
-celery_app.conf.task_routes.update({
-    'settlement_commission_monthly_task': {'queue': 'settlement_tasks'},
-    'settlement_refresh_monthly_commission_task': {'queue': 'settlement_tasks'},
-})
 # 任务路由 - 数据业务
 celery_app.conf.task_routes.update({
     'data_refresh_all_product_stock': {'queue': 'data_tasks'},
@@ -106,16 +96,6 @@ celery_app.conf.beat_schedule = {
     'dlr-timeout-check-every-10min': {
         'task': 'dlr_timeout_check_task',
         'schedule': 600.0,
-    },
-    # 每月 1 日 02:00 生成上月销售佣金结算单
-    'settlement-commission-monthly': {
-        'task': 'settlement_commission_monthly_task',
-        'schedule': crontab(day_of_month=1, hour=2, minute=0),
-    },
-    # 每天 01:00 刷新销售本月累计佣金
-    'settlement-refresh-monthly-commission': {
-        'task': 'settlement_refresh_monthly_commission_task',
-        'schedule': crontab(hour=1, minute=0),
     },
 }
 

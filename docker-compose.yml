@@ -170,7 +170,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4 -Q celery,sms_dlr,data_tasks,settlement_tasks
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4 -Q celery,sms_dlr,data_tasks
     restart: unless-stopped
     networks:
       - smsc-network

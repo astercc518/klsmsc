@@ -65,7 +65,7 @@ class Supplier(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     is_deleted = Column(Boolean, default=False)
     
-    # 关系（不定义 settlements，避免 Bot 仅导入本模块时 Settlement 未注册导致循环导入）
+    # 关系（供应商结算模块已移除，不在此挂载反向关系）
     channels = relationship("SupplierChannel", back_populates="supplier")
     rates = relationship("SupplierRate", back_populates="supplier")
 

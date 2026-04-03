@@ -167,15 +167,6 @@
             <div class="nav-section" v-if="isFinance">
               <span class="nav-section-title" v-if="!sidebarCollapsed">{{ $t('menu.financeManage') }}</span>
 
-              <div class="nav-item" :class="{ active: isActive('/admin/settlements') }" @click="navigate('/admin/settlements')">
-                <div class="nav-icon">
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" transform="scale(0.8) translate(2,2)"/>
-                  </svg>
-                </div>
-                <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.settlement') }}</span>
-              </div>
-
               <div class="nav-item" :class="{ active: isActive('/reports') }" @click="navigate('/reports')">
                 <div class="nav-icon">
                   <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -265,15 +256,6 @@
                     </svg>
                   </div>
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.supplierQuote') }}</span>
-                </div>
-                
-                <div class="nav-item" :class="{ active: isActive('/admin/settlements') }" @click="navigate('/admin/settlements')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" transform="scale(0.8) translate(2,2)"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.settlementManage') }}</span>
                 </div>
 
                 <div class="nav-item" :class="{ active: isActive('/admin/account-templates') }" @click="navigate('/admin/account-templates')">

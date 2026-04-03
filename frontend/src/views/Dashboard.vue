@@ -280,15 +280,6 @@
                 </div>
                 <span class="action-label">{{ $t('menu.dataReport') }}</span>
               </div>
-              <div class="action-btn success soft-button" @click="$router.push('/admin/settlements')" v-if="permissions.view_finance">
-                <div class="action-icon">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                    <rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" stroke-width="2"/>
-                    <path d="M3 10H21" stroke="currentColor" stroke-width="2"/>
-                  </svg>
-                </div>
-                <span class="action-label">{{ $t('menu.settlementManage') }}</span>
-              </div>
             </div>
           </div>
 

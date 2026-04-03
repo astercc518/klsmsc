@@ -58,7 +58,6 @@ from app.modules.sms.supplier import *  # noqa: F401,F403
 from app.modules.sms.country_pricing import *  # noqa: F401,F403
 from app.modules.sms.channel_relations import *  # noqa: F401,F403
 from app.modules.data.models import *  # noqa: F401,F403
-from app.models.settlement import *  # noqa: F401,F403
 from app.models.scheduled_task import *  # noqa: F401,F403
 from app.models.sub_account import *  # noqa: F401,F403
 from app.modules.common.knowledge import *  # noqa: F401,F403

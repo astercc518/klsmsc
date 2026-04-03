@@ -36,11 +36,6 @@ from app.modules.data.data_account import DataAccount, DataExtractionLog
 from app.modules.common.account_pricing import AccountPricing
 from app.models.scheduled_task import ScheduledTask
 from app.models.sub_account import SubAccount
-from app.models.settlement import (
-    Settlement, SettlementDetail, SettlementLog,
-    CustomerBill, CustomerBillDetail, ProfitReport,
-    SalesCommissionSettlement, SalesCommissionDetail
-)
 
 __all__ = [
     "Account",
@@ -75,15 +70,6 @@ __all__ = [
     "Ticket",
     "TicketReply",
     "TicketTemplate",
-    # 结算系统
-    "Settlement",
-    "SettlementDetail",
-    "SettlementLog",
-    "CustomerBill",
-    "CustomerBillDetail",
-    "ProfitReport",
-    "SalesCommissionSettlement",
-    "SalesCommissionDetail",
     # 数据业务模块
     "DataNumber",
     "DataProduct",
