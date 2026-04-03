@@ -312,6 +312,23 @@ export function getAdminPrivateLibrarySummary(params?: {
   return request({ url: '/admin/private-library-summary', method: 'get', params })
 }
 
+/** 管理端：按卡片维度删除客户私库（与客户端 delete-batch 一致） */
+export function deleteAdminPrivateLibraryCard(data: {
+  account_id: number
+  country_code?: string
+  source?: string
+  purpose?: string
+  batch_id?: string
+  remarks?: string | null
+  carrier?: string | null
+}) {
+  return request({
+    url: '/admin/private-library-delete-card',
+    method: 'post',
+    data,
+  }) as Promise<{ success?: boolean; message?: string; deleted?: number; pruned_summary_buckets?: number }>
+}
+
 export function exportAdminPrivateLibraryNumbersUrl(params?: any) {
   const query = new URLSearchParams()
   if (params) {

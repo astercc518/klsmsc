@@ -10,7 +10,13 @@
     </div>
 
     <!-- 上传对话框 -->
-    <el-dialog v-model="showUpload" title="上传私有号码数据" width="500px" @closed="resetForm">
+    <el-dialog
+      v-model="showUpload"
+      title="上传私有号码数据"
+      width="500px"
+      class="pl-upload-dialog"
+      @closed="resetForm"
+    >
       <el-form :model="uploadForm" label-width="100px">
         <el-form-item :label="t('dataMyNumbers.uploadCountryLabel')">
           <el-skeleton v-if="accountCountryLoading" :rows="1" animated />
@@ -47,7 +53,10 @@
         <el-form-item label="备注">
           <el-input v-model="uploadForm.remarks" type="textarea" placeholder="请输入备注信息（可选）" />
         </el-form-item>
-        <el-form-item :label="t('dataMyNumbers.uploadCarrierDetect')">
+        <el-form-item
+          class="pl-upload-carrier-item"
+          :label="t('dataMyNumbers.uploadCarrierDetect')"
+        >
           <el-switch v-model="uploadDetectCarrier" />
         </el-form-item>
         <el-form-item label="选择文件">
@@ -695,6 +704,7 @@ function handleSendSms(g: NumberGroup) {
       data_country: g.country_code,
       data_source: g.source,
       data_purpose: g.purpose,
+      data_batch_id: g.batch_id == null || g.batch_id === undefined ? '' : String(g.batch_id),
       data_count: String(g.count),
     },
   })
@@ -887,5 +897,10 @@ onUnmounted(() => {
   margin-top: 12px;
   display: flex;
   justify-content: flex-end;
+}
+
+/* 上传弹窗：运营商开关标签单行展示，避免长文案折行误读为「说明小字」 */
+.pl-upload-dialog .pl-upload-carrier-item :deep(.el-form-item__label) {
+  white-space: nowrap;
 }
 </style>

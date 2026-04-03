@@ -25,8 +25,11 @@ export const sendBatchSMS = (data: {
     country_code?: string
     source?: string
     purpose?: string
+    /** 与私库卡片批次一致，避免多批次同维度时 use_count 更新错位 */
+    batch_id?: string
     carrier?: string
     limit?: number
+    unused_only?: boolean
   }
   message: string
   messages?: string[]

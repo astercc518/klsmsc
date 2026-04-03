@@ -1,6 +1,7 @@
 """
 短信发送API路由
 """
+import json
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -427,48 +428,97 @@ async def send_batch_sms(
     # 1. 如果提供了私有库过滤条件，从中展开号码（私库表 + 公海购入绑定到本账户的 data_numbers）
     if request.private_library_filters:
         from app.modules.data.models import DataNumber, PrivateLibraryNumber
+        from app.api.v1.data.customer import (
+            _sql_dim_ci_trim_eq,
+            _sql_dim_source_match,
+            _sql_dim_purpose_match,
+        )
 
         f = request.private_library_filters
-
-        def _apply_private_filters_pln(q):
-            if f.get("country_code"):
-                q = q.where(PrivateLibraryNumber.country_code == f["country_code"])
-            if f.get("source"):
-                q = q.where(PrivateLibraryNumber.source == f["source"])
-            if f.get("purpose"):
-                q = q.where(PrivateLibraryNumber.purpose == f["purpose"])
-            if f.get("carrier"):
-                q = q.where(PrivateLibraryNumber.carrier == f["carrier"])
-            if f.get("unused_only"):
-                q = q.where(PrivateLibraryNumber.use_count == 0)
-            return q
-
-        def _apply_private_filters_dn(q):
-            if f.get("country_code"):
-                q = q.where(DataNumber.country_code == f["country_code"])
-            if f.get("source"):
-                q = q.where(DataNumber.source == f["source"])
-            if f.get("purpose"):
-                q = q.where(DataNumber.purpose == f["purpose"])
-            if f.get("carrier"):
-                q = q.where(DataNumber.carrier == f["carrier"])
-            if f.get("unused_only"):
-                q = q.where(DataNumber.use_count == 0)
-            return q
-
-        q_pln = _apply_private_filters_pln(
-            select(PrivateLibraryNumber.phone_number).where(
-                PrivateLibraryNumber.account_id == account.id,
-                PrivateLibraryNumber.is_deleted == False,  # noqa: E712
+        try:
+            _lim = int(f.get("limit", 50000))
+        except (TypeError, ValueError):
+            _lim = 50000
+        if _lim <= 0:
+            return BatchSMSResponse(
+                success=False,
+                total=0,
+                succeeded=0,
+                failed=0,
+                messages=[],
+                batch_id=None,
+                error={
+                    "code": "INVALID_LIMIT",
+                    "message": "发送条数须大于 0；若勾选「仅未使用」后可用为 0，请取消筛选或更换分组。",
+                },
             )
-        )
-        q_dn = _apply_private_filters_dn(
-            select(DataNumber.phone_number).where(DataNumber.account_id == account.id)
-        )
-        u = union_all(q_pln, q_dn).subquery()
-        limit = int(f.get("limit", 50000))
+
+        def _carrier_clause(col, car_raw: str):
+            """运营商筛选条件（PLN / DN 共用）"""
+            car = str(car_raw).strip()
+            if not car:
+                return None
+            _trimmed = func.lower(func.trim(func.coalesce(col, "")))
+            if car.lower() not in ("unknown", "未知"):
+                _cl = car.lower()
+                return or_(_trimmed.like(_cl + "%"), _trimmed.like("%" + _cl + "%"))
+            return or_(
+                func.trim(func.coalesce(col, "")) == "",
+                _trimmed.in_(("unknown", "未知")),
+            )
+
+        def _apply_dims(q, model, *, include_batch: bool = True):
+            """国家/批次/来源/用途/运营商/仅未使用 公共过滤"""
+            if f.get("country_code"):
+                q = q.where(_sql_dim_ci_trim_eq(model.country_code, f["country_code"]))
+            if include_batch and f.get("batch_id") is not None:
+                bid = str(f["batch_id"]).strip()
+                if bid:
+                    q = q.where(_sql_dim_ci_trim_eq(model.batch_id, bid))
+            if f.get("source"):
+                q = q.where(_sql_dim_source_match(model.source, f["source"]))
+            if f.get("purpose"):
+                q = q.where(_sql_dim_purpose_match(model.purpose, f["purpose"]))
+            if f.get("carrier"):
+                cc = _carrier_clause(model.carrier, f["carrier"])
+                if cc is not None:
+                    q = q.where(cc)
+            if f.get("unused_only"):
+                q = q.where(model.use_count == 0)
+            return q
+
+        def _build_union(include_batch: bool = True):
+            q_pln = _apply_dims(
+                select(PrivateLibraryNumber.phone_number).where(
+                    PrivateLibraryNumber.account_id == account.id,
+                    PrivateLibraryNumber.is_deleted == False,  # noqa: E712
+                ),
+                PrivateLibraryNumber,
+                include_batch=include_batch,
+            )
+            q_dn = _apply_dims(
+                select(DataNumber.phone_number).where(
+                    DataNumber.account_id == account.id,
+                ),
+                DataNumber,
+                include_batch=include_batch,
+            )
+            return union_all(q_pln, q_dn).subquery()
+
+        limit = _lim
+        u = _build_union(include_batch=True)
         res = await db.execute(select(u.c.phone_number).distinct().limit(limit))
         db_nums = [r[0] for r in res.all()]
+
+        # 兜底：batch_id 过滤后为空（汇总表与明细不一致时），去掉 batch_id 再查一次
+        if not db_nums and f.get("batch_id"):
+            logger.warning(
+                "私库取号: batch_id=%s 无结果, 回退去掉 batch_id 重试 account=%s",
+                f.get("batch_id"), account.id,
+            )
+            u2 = _build_union(include_batch=False)
+            res2 = await db.execute(select(u2.c.phone_number).distinct().limit(limit))
+            db_nums = [r[0] for r in res2.all()]
         if db_nums:
             now = datetime.now()
             from app.modules.data.private_library_summary_sync import (
@@ -530,7 +580,7 @@ async def send_batch_sms(
             if pls_deltas:
                 await pls_apply_deltas_bulk(db, account.id, pls_deltas)
 
-            await db.execute(
+            _ur_pln = await db.execute(
                 update(PrivateLibraryNumber)
                 .where(
                     PrivateLibraryNumber.account_id == account.id,
@@ -542,7 +592,7 @@ async def send_batch_sms(
                     last_used_at=now,
                 )
             )
-            await db.execute(
+            _ur_dn = await db.execute(
                 update(DataNumber)
                 .where(
                     DataNumber.account_id == account.id,
@@ -563,6 +613,15 @@ async def send_batch_sms(
             request.phone_numbers.extend(db_nums)
 
     if not request.phone_numbers or len(request.phone_numbers) == 0:
+        _empty_err = None
+        if request.private_library_filters:
+            _empty_err = {
+                "code": "NO_NUMBERS",
+                "message": (
+                    "未找到符合条件的私有库号码。请检查：运营商筛选、「仅未使用」、批次是否与当前卡片一致；"
+                    "或刷新「我的号码」后重试。"
+                ),
+            }
         return BatchSMSResponse(
             success=False,
             total=0,
@@ -570,6 +629,7 @@ async def send_batch_sms(
             failed=0,
             messages=[],
             batch_id=None,
+            error=_empty_err,
         )
 
     rot_messages = [m for m in (request.messages or []) if m and str(m).strip()]

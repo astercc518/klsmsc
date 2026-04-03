@@ -112,6 +112,8 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      # customer.py 等写入 /var/smsc/.cursor/，挂载后日志落在工作区而非仅容器内
+      - ./.cursor:/var/smsc/.cursor
       - ./data:/app/data:ro
       - ./data/knowledge:/app/data/knowledge
       - ./logs:/app/logs

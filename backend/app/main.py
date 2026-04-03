@@ -214,9 +214,11 @@ app.include_router(admin_logs.router, prefix="/api/v1", tags=["System Logs"])
 
 # 客户私库管理端：在 main 上显式挂载短路径，与 admin_numbers 路由并存（同一处理函数）
 from app.api.v1.data.admin_numbers import (
+    admin_delete_private_library_card,
     admin_export_private_library_numbers,
     admin_get_private_library_summary,
     admin_list_private_library_numbers,
+    admin_resync_private_library_summary,
 )
 
 app.add_api_route(
@@ -235,6 +237,18 @@ app.add_api_route(
     "/api/v1/admin/private-library-summary",
     admin_get_private_library_summary,
     methods=["GET"],
+    tags=["数据管理-号码"],
+)
+app.add_api_route(
+    "/api/v1/admin/private-library-delete-card",
+    admin_delete_private_library_card,
+    methods=["POST"],
+    tags=["数据管理-号码"],
+)
+app.add_api_route(
+    "/api/v1/admin/private-library-resync-summary",
+    admin_resync_private_library_summary,
+    methods=["POST"],
     tags=["数据管理-号码"],
 )
 

@@ -131,6 +131,9 @@
               </div>
 
               <div class="card-actions">
+                <el-button type="danger" size="small" plain @click="handleDeleteGroup(g)">
+                  {{ t('dataPool.privateLibDeleteCard') }}
+                </el-button>
                 <el-button type="primary" size="small" plain @click="handleImpersonateGroup(g)">
                   {{ t('dataPool.privateLibImpersonate') }}
                 </el-button>
@@ -159,11 +162,12 @@
 import { ref, onMounted } from 'vue'
 import { Search, Refresh, ArrowDown } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getAdminPrivateLibrarySummary,
   exportAdminPrivateLibraryNumbersUrl,
   impersonateAccount,
+  deleteAdminPrivateLibraryCard,
 } from '@/api/data-admin'
 import { findCountryByIso, searchCountries } from '@/constants/countries'
 
@@ -306,6 +310,44 @@ function resetFilters() {
     max_card_count: undefined,
   }
   loadData()
+}
+
+async function handleDeleteGroup(g: AdminPrivateGroup) {
+  try {
+    await ElMessageBox.confirm(
+      t('dataPool.privateLibDeleteConfirm', {
+        account: g.account_id,
+        count: g.count.toLocaleString(),
+        name: getGroupName(g),
+      }),
+      t('dataPool.privateLibDeleteTitle'),
+      {
+        type: 'warning',
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel'),
+      },
+    )
+  } catch {
+    return
+  }
+  try {
+    const res = await deleteAdminPrivateLibraryCard({
+      account_id: g.account_id,
+      country_code: g.country_code ?? '',
+      source: g.source ?? '',
+      purpose: g.purpose ?? '',
+      batch_id: g.batch_id ?? '',
+      remarks: g.remarks || undefined,
+    })
+    if (res.success === false) {
+      ElMessage.warning(res.message || t('common.operationFailed'))
+      return
+    }
+    ElMessage.success(res.message || t('common.operationSuccess'))
+    await loadData()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || t('common.operationFailed'))
+  }
 }
 
 async function handleImpersonateGroup(g: AdminPrivateGroup) {

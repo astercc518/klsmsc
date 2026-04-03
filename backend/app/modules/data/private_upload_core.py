@@ -77,9 +77,8 @@ async def run_private_library_upload(
     total_u = len(unique_numbers)
     await _p(stage="deduped", progress_percent=15, total_unique=total_u)
 
+    # 勾选识别时对全部新增号码做运营商查询；未勾选时仅对少量号码自动识别（兼容旧行为）
     want_carrier_lookup = detect_carrier or total_u <= 5_000
-    if detect_carrier and total_u > 5_000:
-        raise ValueError("号码超过 5000 条时请勿开启运营商识别，请取消勾选或分批上传。")
 
     existing_pln: Dict[str, int] = {}
     chunk_n = 800
@@ -112,8 +111,16 @@ async def run_private_library_upload(
     ]
     carrier_map: Dict[str, Optional[str]] = {}
     if want_carrier_lookup and new_for_carrier:
-        await _p(stage="carrier_lookup", progress_percent=45, total_unique=total_u)
-        carrier_map = await asyncio.to_thread(batch_lookup_carriers, new_for_carrier)
+        # 分块在线程池中识别，避免单次任务过大；进度 44%–49% 后进入写入 50%+
+        ncar = len(new_for_carrier)
+        chunk_sz = 3000
+        n_car_chunks = max(1, (ncar + chunk_sz - 1) // chunk_sz)
+        for ci, i in enumerate(range(0, ncar, chunk_sz)):
+            sub = new_for_carrier[i : i + chunk_sz]
+            pct = 45 if n_car_chunks <= 1 else 44 + int(5 * (ci + 1) / n_car_chunks)
+            await _p(stage="carrier_lookup", progress_percent=pct, total_unique=total_u)
+            part = await asyncio.to_thread(batch_lookup_carriers, sub)
+            carrier_map.update(part)
 
     for num in unique_numbers:
         canon = num.lstrip("+")
@@ -154,6 +161,29 @@ async def run_private_library_upload(
                 inserted=min(i + chunk_size, len(insert_dicts)),
             )
 
+    # 快照旧维度值（必须在 UPDATE 之前读取，否则 batch_id 已被改为新值，旧桶永不减少）
+    _old_snapshots: List[Tuple[str, str, str, str, str, int]] = []
+    if update_ids:
+        await db.flush()
+        ch_sz = 2000
+        for j in range(0, len(update_ids), ch_sz):
+            chunk = update_ids[j : j + ch_sz]
+            res = await db.execute(
+                select(
+                    PrivateLibraryNumber.country_code,
+                    PrivateLibraryNumber.source,
+                    PrivateLibraryNumber.purpose,
+                    PrivateLibraryNumber.batch_id,
+                    PrivateLibraryNumber.carrier,
+                    PrivateLibraryNumber.use_count,
+                ).where(PrivateLibraryNumber.id.in_(chunk))
+            )
+            for r in res.all():
+                _old_snapshots.append((
+                    norm_dim(r[0]), norm_dim(r[1]), norm_dim(r[2]),
+                    norm_dim(r[3]), norm_dim(r[4]), int(r[5] or 0),
+                ))
+
     await _p(stage="updating", progress_percent=88, total_unique=total_u)
     if update_ids:
         chunk_size = 5000
@@ -180,39 +210,16 @@ async def run_private_library_upload(
     cc_n = norm_dim(country_code)
     src_n = norm_dim(source or "")
     pur_n = norm_dim(purpose or "")
+    bid_n = norm_dim(batch_id)
     for car_k, n in Counter(norm_dim(d.get("carrier")) for d in insert_dicts).items():
         deltas.append(
-            (ORIGIN_MANUAL, cc_n, src_n, pur_n, norm_dim(batch_id), car_k, n, 0, remarks, now, now)
+            (ORIGIN_MANUAL, cc_n, src_n, pur_n, bid_n, car_k, n, 0, remarks, now, now)
         )
-    if update_ids:
-        ch_sz = 2000
-        for j in range(0, len(update_ids), ch_sz):
-            chunk = update_ids[j : j + ch_sz]
-            res = await db.execute(select(PrivateLibraryNumber).where(PrivateLibraryNumber.id.in_(chunk)))
-            for row in res.scalars():
-                ouc = row.use_count or 0
-                oc = norm_dim(row.country_code)
-                osrc = norm_dim(row.source)
-                opur = norm_dim(row.purpose)
-                ob = norm_dim(row.batch_id)
-                ocar = norm_dim(row.carrier)
-                deltas.append((ORIGIN_MANUAL, oc, osrc, opur, ob, ocar, -1, -1 if ouc > 0 else 0, None, None, None))
-                nrm = remarks if remarks is not None else row.remarks
-                deltas.append(
-                    (
-                        ORIGIN_MANUAL,
-                        oc,
-                        osrc,
-                        opur,
-                        norm_dim(batch_id),
-                        ocar,
-                        1,
-                        0,
-                        nrm,
-                        now,
-                        now,
-                    )
-                )
+    for oc, osrc, opur, ob, ocar, ouc in _old_snapshots:
+        deltas.append((ORIGIN_MANUAL, oc, osrc, opur, ob, ocar, -1, -1 if ouc > 0 else 0, None, None, None))
+        deltas.append(
+            (ORIGIN_MANUAL, oc, osrc, opur, bid_n, ocar, 1, 0, remarks, now, now)
+        )
     if deltas:
         await pls_apply_deltas_bulk(db, account_id, deltas)
         await pls_prune_non_positive(db, account_id)

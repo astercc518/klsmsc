@@ -7,6 +7,7 @@ from sqlalchemy import (
     func,
     case,
     or_,
+    and_,
     text as sa_text,
     update as sa_update,
     insert,
@@ -31,6 +32,7 @@ import io
 import re
 import asyncio
 from pathlib import Path
+from collections import defaultdict
 from decimal import Decimal
 from pydantic import BaseModel, Field
 
@@ -51,6 +53,7 @@ from app.modules.data.private_library_summary_sync import (
     ORIGIN_MANUAL,
     ORIGIN_PURCHASED,
     build_summary_payload_from_rows,
+    carrier_label,
     norm_dim,
     pls_apply_bucket_delta,
     pls_prune_non_positive,
@@ -1453,15 +1456,18 @@ async def _compute_summary(db: AsyncSession, account_id: int, max_batches: int) 
                     "count": 0,
                     "used_count": 0,
                     "unused_count": 0,
-                    "carriers": [],
+                    "_carrier_map": defaultdict(int),
+                    "_carrier_unused_map": defaultdict(int),
                     "first_at": r.first_at,
                     "last_at": r.last_at,
                     "_origin_sources": set(),
                 }
             group = summary_map[key]
             group["_origin_sources"].add(origin)
-            group["count"] += r.group_count
-            group["used_count"] += int(r.used_count or 0)
+            gc = int(r.group_count or 0)
+            gu = int(r.used_count or 0)
+            group["count"] += gc
+            group["used_count"] += gu
             group["unused_count"] = group["count"] - group["used_count"]
             if r.remarks:
                 cur = group["remarks"]
@@ -1471,13 +1477,28 @@ async def _compute_summary(db: AsyncSession, account_id: int, max_batches: int) 
                 group["first_at"] = r.first_at
             if r.last_at and (not group["last_at"] or r.last_at > group["last_at"]):
                 group["last_at"] = r.last_at
-            group["carriers"].append({"name": r.carrier or "Unknown", "count": r.group_count})
+            cnm = carrier_label(r.carrier)
+            group["_carrier_map"][cnm] += gc
+            group["_carrier_unused_map"][cnm] += max(0, gc - gu)
 
     _merge(rows_pln, "manual")
     _merge(rows_dn, "purchased")
 
     items = list(summary_map.values())
     for item in items:
+        cm = item.pop("_carrier_map", None)
+        um = item.pop("_carrier_unused_map", None)
+        if cm is not None and um is not None:
+            item["carriers"] = [
+                {
+                    "name": n,
+                    "count": c,
+                    "unused_count": min(c, max(0, int(um[n]))),
+                }
+                for n, c in sorted(cm.items(), key=lambda x: -x[1])
+            ]
+        else:
+            item["carriers"] = []
         origins = item.pop("_origin_sources", set())
         if "manual" in origins and "purchased" in origins:
             item["library_origin"] = "mixed"
@@ -1553,7 +1574,7 @@ class MyNumbersDeleteBatchBody(BaseModel):
 
 async def _execute_my_numbers_batch_delete(
     db: AsyncSession,
-    account: Account,
+    account_id: int,
     *,
     country: Optional[str],
     source: Optional[str],
@@ -1561,8 +1582,19 @@ async def _execute_my_numbers_batch_delete(
     batch_id: Optional[str],
     remarks: Optional[str],
     carrier: Optional[str],
+    for_admin: bool = False,
+    hard_delete: bool = False,
 ) -> dict:
-    """私库分表客户侧软删除（行保留供管理端）；公海购入绑定行解除 account_id；同步扣减 private_library_summaries"""
+    """
+    私库删除：客户侧默认软删（is_deleted，行保留）；管理端可 hard_delete 物理删除 private_library_numbers。
+    公海购入绑定行均为解除 account_id（不删 data_numbers 池内行）。同步维护 private_library_summaries。
+    """
+
+    def _pln_scope_where():
+        # 管理端硬删：该维度下含已软删行一并清除；客户侧仅处理未软删可见行
+        if hard_delete:
+            return PrivateLibraryNumber.account_id == account_id
+        return and_(PrivateLibraryNumber.account_id == account_id, _pln_client_visible_clause())
 
     def _filters_pln(q):
         if country is not None:
@@ -1616,7 +1648,7 @@ async def _execute_my_numbers_batch_delete(
             func.count().label("cnt"),
             func.sum(case((PrivateLibraryNumber.use_count > 0, 1), else_=0)).label("used"),
         )
-        .where(PrivateLibraryNumber.account_id == account.id, _pln_client_visible_clause())
+        .where(_pln_scope_where())
         .group_by(
             PrivateLibraryNumber.country_code,
             PrivateLibraryNumber.source,
@@ -1637,7 +1669,7 @@ async def _execute_my_numbers_batch_delete(
             func.count().label("cnt"),
             func.sum(case((DataNumber.use_count > 0, 1), else_=0)).label("used"),
         )
-        .where(DataNumber.account_id == account.id)
+        .where(DataNumber.account_id == account_id)
         .group_by(
             DataNumber.country_code,
             DataNumber.source,
@@ -1649,12 +1681,10 @@ async def _execute_my_numbers_batch_delete(
     agg_dn = _filters_dn(agg_dn)
 
     cnt_pln_stmt = _filters_pln(
-        select(func.count())
-        .select_from(PrivateLibraryNumber)
-        .where(PrivateLibraryNumber.account_id == account.id, _pln_client_visible_clause())
+        select(func.count()).select_from(PrivateLibraryNumber).where(_pln_scope_where())
     )
     cnt_dn_stmt = _filters_dn(
-        select(func.count()).select_from(DataNumber).where(DataNumber.account_id == account.id)
+        select(func.count()).select_from(DataNumber).where(DataNumber.account_id == account_id)
     )
     n_pln = (await db.execute(cnt_pln_stmt)).scalar() or 0
     n_dn = (await db.execute(cnt_dn_stmt)).scalar() or 0
@@ -1663,16 +1693,25 @@ async def _execute_my_numbers_batch_delete(
         cnt_pls_stmt = _filters_pls(
             select(func.count())
             .select_from(PrivateLibrarySummary)
-            .where(PrivateLibrarySummary.account_id == account.id)
+            .where(PrivateLibrarySummary.account_id == account_id)
         )
         n_pls = (await db.execute(cnt_pls_stmt)).scalar() or 0
         if n_pls > 0:
             del_pls = _filters_pls(
-                sa_delete(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == account.id)
+                sa_delete(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == account_id)
             )
             await db.execute(del_pls)
+            cnt_left = (await db.execute(cnt_pls_stmt)).scalar() or 0
+            if cnt_left > 0 and norm_dim(batch_id) != "" and norm_dim(country or "") != "":
+                await db.execute(
+                    sa_delete(PrivateLibrarySummary).where(
+                        PrivateLibrarySummary.account_id == account_id,
+                        _sql_dim_ci_trim_eq(PrivateLibrarySummary.country_code, country),
+                        _sql_dim_ci_trim_eq(PrivateLibrarySummary.batch_id, batch_id),
+                    )
+                )
             await db.commit()
-            await _invalidate_my_numbers_summary_cache(account.id)
+            await _invalidate_my_numbers_summary_cache(account_id)
             return {
                 "success": True,
                 "message": f"明细中已无对应号码，已清除无效汇总分组 {n_pls} 个桶",
@@ -1685,52 +1724,98 @@ async def _execute_my_numbers_batch_delete(
             "deleted": 0,
         }
 
-    for row in (await db.execute(agg_pln)).all():
-        await pls_apply_bucket_delta(
-            db,
-            account_id=account.id,
-            library_origin=ORIGIN_MANUAL,
-            country_code=norm_dim(row.country_code),
-            source=norm_dim(row.source),
-            purpose=norm_dim(row.purpose),
-            batch_id=norm_dim(row.batch_id),
-            carrier=norm_dim(row.car),
-            delta_total=-int(row.cnt or 0),
-            delta_used=-int(row.used or 0),
-        )
-    for row in (await db.execute(agg_dn)).all():
-        await pls_apply_bucket_delta(
-            db,
-            account_id=account.id,
-            library_origin=ORIGIN_PURCHASED,
-            country_code=norm_dim(row.country_code),
-            source=norm_dim(row.source),
-            purpose=norm_dim(row.purpose),
-            batch_id=norm_dim(row.batch_id),
-            carrier=norm_dim(row.car),
-            delta_total=-int(row.cnt or 0),
-            delta_used=-int(row.used or 0),
-        )
+    # 未传 carrier 表示删除整张卡片：汇总层按国家/来源/用途/批次合并展示；
+    # 若仅对 manual 做 bucket 扣减，可能遗留 library_origin=purchased 且无绑定明细的脏桶。
+    carrier_specified = carrier is not None and norm_dim(carrier) != ""
 
-    stmt_pln = _filters_pln(
-        sa_update(PrivateLibraryNumber)
-        .where(PrivateLibraryNumber.account_id == account.id, _pln_client_visible_clause())
-        .values(is_deleted=True, updated_at=datetime.now())
-    )
-    await db.execute(stmt_pln)
+    if carrier_specified:
+        for row in (await db.execute(agg_pln)).all():
+            await pls_apply_bucket_delta(
+                db,
+                account_id=account_id,
+                library_origin=ORIGIN_MANUAL,
+                country_code=norm_dim(row.country_code),
+                source=norm_dim(row.source),
+                purpose=norm_dim(row.purpose),
+                batch_id=norm_dim(row.batch_id),
+                carrier=norm_dim(row.car),
+                delta_total=-int(row.cnt or 0),
+                delta_used=-int(row.used or 0),
+            )
+        for row in (await db.execute(agg_dn)).all():
+            await pls_apply_bucket_delta(
+                db,
+                account_id=account_id,
+                library_origin=ORIGIN_PURCHASED,
+                country_code=norm_dim(row.country_code),
+                source=norm_dim(row.source),
+                purpose=norm_dim(row.purpose),
+                batch_id=norm_dim(row.batch_id),
+                carrier=norm_dim(row.car),
+                delta_total=-int(row.cnt or 0),
+                delta_used=-int(row.used or 0),
+            )
 
-    stmt_dn = _filters_dn(sa_update(DataNumber).where(DataNumber.account_id == account.id)).values(
+    if hard_delete:
+        stmt_pln = _filters_pln(sa_delete(PrivateLibraryNumber).where(_pln_scope_where()))
+        await db.execute(stmt_pln)
+    else:
+        stmt_pln = _filters_pln(
+            sa_update(PrivateLibraryNumber)
+            .where(_pln_scope_where())
+            .values(is_deleted=True, updated_at=datetime.now())
+        )
+        await db.execute(stmt_pln)
+
+    stmt_dn = _filters_dn(sa_update(DataNumber).where(DataNumber.account_id == account_id)).values(
         account_id=None, status="inactive"
     )
     await db.execute(stmt_dn)
 
-    await pls_prune_non_positive(db, account.id)
+    if carrier_specified:
+        await pls_prune_non_positive(db, account_id)
+    else:
+        # 整卡：直接删除本维度下全部汇总行（各运营商 × manual/purchased），与明细移除保持一致
+        del_pls_card = _filters_pls(
+            sa_delete(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == account_id)
+        )
+        await db.execute(del_pls_card)
+        # 若汇总表 source/purpose 与请求维度不一致（历史脏数据），严格 WHERE 可能删不到行，导致删后仍见幽灵卡片
+        cnt_pls_left_stmt = _filters_pls(
+            select(func.count())
+            .select_from(PrivateLibrarySummary)
+            .where(PrivateLibrarySummary.account_id == account_id)
+        )
+        cnt_pls_left = (await db.execute(cnt_pls_left_stmt)).scalar() or 0
+        if cnt_pls_left > 0 and norm_dim(batch_id) != "" and norm_dim(country or "") != "":
+            loose_del = sa_delete(PrivateLibrarySummary).where(
+                PrivateLibrarySummary.account_id == account_id,
+                _sql_dim_ci_trim_eq(PrivateLibrarySummary.country_code, country),
+                _sql_dim_ci_trim_eq(PrivateLibrarySummary.batch_id, batch_id),
+            )
+            await db.execute(loose_del)
+
     await db.commit()
-    await _invalidate_my_numbers_summary_cache(account.id)
+    await _invalidate_my_numbers_summary_cache(account_id)
     deleted_total = n_pln + n_dn
+    if for_admin and hard_delete:
+        msg = (
+            f"已永久删除客户（ID {account_id}）手工私库 {n_pln} 条"
+            f"，并解除公海购入绑定 {n_dn} 条（号码仍在公海池，仅解除与该客户的关联）"
+        )
+    elif for_admin:
+        msg = (
+            f"已从客户账户（ID {account_id}）私有库处理 {deleted_total} 条"
+            "（手工私库为软删；公海购入号码已释放绑定）"
+        )
+    else:
+        msg = (
+            f"已从您的私有库移除 {deleted_total} 条"
+            "（手工私库为软删，管理端可查阅；公海购入号码已释放绑定）"
+        )
     return {
         "success": True,
-        "message": f"已从您的私有库移除 {deleted_total} 条（手工私库为软删，管理端可查阅；公海购入号码已释放绑定）",
+        "message": msg,
         "deleted": deleted_total,
     }
 
@@ -1744,13 +1829,15 @@ async def post_delete_my_numbers_batch(
     """推荐：JSON 体删除私库卡片对应明细（与页面卡片维度一致）"""
     return await _execute_my_numbers_batch_delete(
         db,
-        account,
+        account.id,
         country=body.country_code,
         source=body.source,
         purpose=body.purpose,
         batch_id=body.batch_id,
         remarks=body.remarks,
         carrier=body.carrier,
+        for_admin=False,
+        hard_delete=False,
     )
 
 
@@ -1768,13 +1855,15 @@ async def delete_my_numbers_batch(
     """兼容：DELETE + Query 删除私库分组"""
     return await _execute_my_numbers_batch_delete(
         db,
-        account,
+        account.id,
         country=country,
         source=source,
         purpose=purpose,
         batch_id=batch_id,
         remarks=remarks,
         carrier=carrier,
+        for_admin=False,
+        hard_delete=False,
     )
 
 

@@ -4,7 +4,7 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update, delete, or_, and_
 from sqlalchemy.exc import DBAPIError
@@ -1310,6 +1310,130 @@ async def admin_get_private_library_summary(
             "batch_card_limit": max_batches if max_batches > 0 else None,
         },
     }
+
+
+class AdminPrivateLibraryDeleteCardBody(BaseModel):
+    """管理端：按与客户私库卡片相同维度删除数据"""
+
+    account_id: int = Field(..., ge=1, description="客户账户 ID")
+    country_code: str = ""
+    source: str = ""
+    purpose: str = ""
+    batch_id: str = ""
+    remarks: Optional[str] = None
+    carrier: Optional[str] = None
+
+
+@router.post("/private-library-delete-card")
+async def admin_delete_private_library_card(
+    body: AdminPrivateLibraryDeleteCardBody,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """
+    管理端删除客户私库整张卡片维度数据：手工私库分表软删、汇总表维护、公海购入绑定释放。
+    与客户端 POST /data/my-numbers/delete-batch 逻辑一致。
+    """
+    from app.api.v1.data.customer import _execute_my_numbers_batch_delete
+
+    acc_row = (await db.execute(select(Account.id).where(Account.id == body.account_id))).scalar_one_or_none()
+    if acc_row is None:
+        raise HTTPException(status_code=404, detail="账户不存在")
+
+    return await _execute_my_numbers_batch_delete(
+        db,
+        body.account_id,
+        country=body.country_code,
+        source=body.source,
+        purpose=body.purpose,
+        batch_id=body.batch_id,
+        remarks=body.remarks,
+        carrier=body.carrier,
+        for_admin=True,
+        hard_delete=True,
+    )
+
+
+class AdminPrivateLibraryResyncBody(BaseModel):
+    account_id: int
+
+
+@router.post("/private-library-resync-summary")
+async def admin_resync_private_library_summary(
+    body: AdminPrivateLibraryResyncBody,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    """
+    管理端：从明细表重建指定账户的汇总表（修复汇总与明细不一致时使用）。
+    删除该账户旧汇总行，再按 GROUP BY 重新插入。
+    """
+    from sqlalchemy import case as sa_case
+    from app.modules.data.private_library_summary_sync import norm_dim
+
+    acc = (await db.execute(select(Account.id).where(Account.id == body.account_id))).scalar_one_or_none()
+    if acc is None:
+        raise HTTPException(status_code=404, detail="账户不存在")
+    aid = body.account_id
+
+    await db.execute(delete(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == aid))
+
+    for model, origin in [
+        (PrivateLibraryNumber, "manual"),
+        (DataNumber, "purchased"),
+    ]:
+        extra = []
+        if model is PrivateLibraryNumber:
+            extra.append(PrivateLibraryNumber.is_deleted == False)  # noqa: E712
+        stmt = (
+            select(
+                func.coalesce(model.country_code, "").label("cc"),
+                func.coalesce(model.source, "").label("src"),
+                func.coalesce(model.purpose, "").label("pur"),
+                func.coalesce(model.batch_id, "").label("bid"),
+                func.coalesce(model.carrier, "").label("car"),
+                func.count().label("cnt"),
+                func.sum(sa_case((model.use_count > 0, 1), else_=0)).label("used"),
+                func.max(model.remarks).label("rmk"),
+                func.min(model.created_at).label("fa"),
+                func.max(model.created_at).label("la"),
+            )
+            .where(model.account_id == aid, *extra)
+            .group_by("cc", "src", "pur", "bid", "car")
+        )
+        rows = (await db.execute(stmt)).all()
+        for r in rows:
+            cnt = int(r.cnt or 0)
+            if cnt <= 0:
+                continue
+            db.add(PrivateLibrarySummary(
+                account_id=aid,
+                country_code=norm_dim(r.cc),
+                source=norm_dim(r.src),
+                purpose=norm_dim(r.pur),
+                batch_id=norm_dim(r.bid),
+                carrier=norm_dim(r.car),
+                library_origin=origin,
+                total_count=cnt,
+                used_count=int(r.used or 0),
+                remarks=r.rmk,
+                first_at=r.fa,
+                last_at=r.la,
+            ))
+    await db.commit()
+
+    try:
+        from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache
+        await invalidate_my_numbers_summary_cache(aid)
+    except Exception:
+        pass
+
+    cnt_new = (await db.execute(
+        select(func.count()).select_from(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == aid)
+    )).scalar() or 0
+
+    logger.info("管理员 %s 重建账户 %s 汇总表: %s 行", getattr(admin, "id", "?"), aid, cnt_new)
+    return {"success": True, "message": f"已重建账户 {aid} 的汇总表（{cnt_new} 行）"}
 
 
 def _serialize_admin_private_library_row(pln: PrivateLibraryNumber, account_name: str, email: Optional[str]) -> dict:

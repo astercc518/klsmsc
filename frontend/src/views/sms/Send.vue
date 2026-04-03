@@ -225,7 +225,7 @@
                           {{ getGroupName(group) }}
                         </div>
                         <div class="sp-meta">
-                          库存: {{ (unusedOnlyPrivate ? group.unused_count : (carrierFilterPrivate ? (group.carriers?.find((c: any) => (c.name || 'Unknown') === carrierFilterPrivate)?.count || 0) : group.count)).toLocaleString() }} 
+                          库存: {{ privateEffectiveStock(group).toLocaleString() }} 
                           · $0.00/条
                           <span v-if="carrierFilterPrivate" class="sp-carrier-badge">{{ carrierFilterPrivate }}</span>
                           <el-tag v-if="group.library_origin" size="small" type="info" effect="plain" style="margin-left: 6px">{{ privateLibraryOriginLabel(group.library_origin) }}</el-tag>
@@ -241,8 +241,8 @@
                     <label>发送数量:</label>
                     <el-input-number
                       v-model="privateQuantity"
-                      :min="1"
-                      :max="unusedOnlyPrivate ? selectedPrivateGroup.unused_count : selectedPrivateGroup.count"
+                      :min="privateStockMax > 0 ? 1 : 0"
+                      :max="Math.min(1000, Math.max(0, privateStockMax))"
                       :step="100"
                       style="width: 200px"
                     />
@@ -250,7 +250,7 @@
                       费用: 数据 ${{ formatUsdEstimate(privateDataCost) }} + 短信 ${{ formatUsdEstimate(privateSmsCost) }}
                       = 合计 <strong>${{ privateCostStr }}</strong>
                       <span style="margin-left: 12px; font-size: 13px; color: var(--text-tertiary); font-weight: normal;">
-                        (可用库存: {{ (unusedOnlyPrivate ? selectedPrivateGroup.unused_count : selectedPrivateGroup.count).toLocaleString() }})
+                        (可用库存: {{ privateEffectiveStock(selectedPrivateGroup).toLocaleString() }})
                       </span>
                     </span>
                   </div>
@@ -440,7 +440,7 @@
                 v-if="numberSource === 'private'" 
                 type="button" 
                 class="btn-send" 
-                :disabled="privateSending || !selectedPrivateGroup || !form.message" 
+                :disabled="privateSending || !selectedPrivateGroup || !form.message || privateStockMax < 1 || privateQuantity < 1"
                 @click="handlePrivateSend"
               >
                 <template v-if="!privateSending">
@@ -841,6 +841,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import type { FormInstance } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -854,6 +855,7 @@ import { COUNTRY_LIST, findCountryByIso } from '@/constants/countries'
 import { smsCodePointLength, isGsm7Message, countSmsParts } from '@/utils/smsParts'
 
 const { t } = useI18n()
+const route = useRoute()
 
 // ============ 常量 ============
 
@@ -1278,6 +1280,28 @@ const carrierFilterPrivate = ref('')
 const unusedOnlyPrivate = ref(false)
 const privateQuantity = ref(1000)
 
+/**
+ * 与后端私库取号口径一致：勾选运营商时，「仅未使用」须用接口返回的 carriers[].unused_count，
+ * 不能用该运营商总条数（否则卡片显示可发、实际 Airtel 未使用为 0 时会查不到号）。
+ */
+function privateEffectiveStock(group: any | null): number {
+  if (!group) return 0
+  if (!carrierFilterPrivate.value) {
+    return unusedOnlyPrivate.value ? (group.unused_count ?? 0) : (group.count ?? 0)
+  }
+  const c = group.carriers?.find(
+    (i: any) => (i.name || 'Unknown') === carrierFilterPrivate.value,
+  )
+  if (!c) return 0
+  if (unusedOnlyPrivate.value) {
+    if (typeof c.unused_count === 'number') return Math.max(0, c.unused_count)
+    return Math.min(group.unused_count ?? 0, c.count ?? 0)
+  }
+  return c.count ?? 0
+}
+
+const privateStockMax = computed(() => privateEffectiveStock(selectedPrivateGroup.value))
+
 const availableCarriersPrivate = computed(() => {
   const map: Record<string, number> = {}
   privateGroups.value.forEach(g => {
@@ -1298,37 +1322,23 @@ const filteredPrivateGroups = computed(() => {
   if (!carrierFilterPrivate.value) return privateGroups.value
   return privateGroups.value.filter(g => {
     if (g.carriers && Array.isArray(g.carriers)) {
-      return g.carriers.some((c: any) => (c.name || '未知') === carrierFilterPrivate.value)
+      return g.carriers.some(
+        (c: any) => (c.name || 'Unknown') === carrierFilterPrivate.value,
+      )
     }
-    return (g.carrier || '未知') === carrierFilterPrivate.value
+    return (g.carrier || 'Unknown') === carrierFilterPrivate.value
   })
 })
 
 watch([selectedPrivateGroup, carrierFilterPrivate, unusedOnlyPrivate], () => {
-  if (selectedPrivateGroup.value) {
-    let max = selectedPrivateGroup.value.count
-    if (unusedOnlyPrivate.value) {
-      max = selectedPrivateGroup.value.unused_count || 0
-    }
-
-    if (carrierFilterPrivate.value) {
-      // 如果有运营商过滤，目前 summary 接口没有返回 carrier + unused_count 的细分，
-      // 这里暂时按比例估算或提示用户。但根据 getGroupName 逻辑，它是按 (Country, Source, Purpose) 聚合的。
-      // 实际上 getMyNumbersSummary 返回的 carriers 列表里也只有 count。
-      const c = selectedPrivateGroup.value.carriers?.find((i: any) => (i.name || '未知') === carrierFilterPrivate.value)
-      if (c) {
-        // 如果是过滤运营商，且勾选了仅未使用，目前后端返回的 carrier 分组里没有 unused_count。
-        // 为了准确，这里我们假设 carrier 比例一致，或简单返回 c.count
-        max = c.count
-      }
-    }
-    
+  const g = selectedPrivateGroup.value
+  if (g) {
+    const max = privateEffectiveStock(g)
     if (privateQuantity.value > max) {
       privateQuantity.value = max
     }
-    // 默认填满
     if (privateQuantity.value === 0 || privateQuantity.value > 1000) {
-       privateQuantity.value = max > 1000 ? 1000 : max
+      privateQuantity.value = max > 1000 ? 1000 : max
     }
   }
 }, { immediate: true })
@@ -1345,6 +1355,33 @@ async function fetchPrivateGroups() {
   } finally {
     loadingPrivate.value = false
   }
+}
+
+/** 从路由查询参数选中私库卡片（与「我的私有库」发送短信跳转一致，含 batch_id） */
+async function selectPrivateGroupFromRouteQuery() {
+  const q = route.query
+  const cc = typeof q.data_country === 'string' ? q.data_country.trim() : ''
+  const src = typeof q.data_source === 'string' ? q.data_source.trim() : ''
+  const pur = typeof q.data_purpose === 'string' ? q.data_purpose.trim() : ''
+  const bid =
+    typeof q.data_batch_id === 'string' ? q.data_batch_id.trim() : ''
+  if (!cc || !src || !pur) return
+  numberSource.value = 'private'
+  if (privateGroups.value.length === 0) {
+    await fetchPrivateGroups()
+  }
+  const items = privateGroups.value
+  const exact = items.find(
+    (g: any) =>
+      g.country_code === cc &&
+      g.source === src &&
+      g.purpose === pur &&
+      String(g.batch_id ?? '') === bid
+  )
+  const fallback = items.find(
+    (g: any) => g.country_code === cc && g.source === src && g.purpose === pur
+  )
+  selectedPrivateGroup.value = exact || fallback || null
 }
 
 watch(numberSource, (val) => {
@@ -1696,32 +1733,43 @@ const privateSending = ref(false)
 async function handlePrivateSend() {
   if (!selectedPrivateGroup.value) return ElMessage.warning('请选择要发送的号码组')
   if (!form.value.message) return ElMessage.warning('请输入短信内容')
+  if (privateStockMax.value < 1 || privateQuantity.value < 1) {
+    return ElMessage.warning('当前分组无可用号码或发送条数须至少为 1')
+  }
+
+  const qty = Math.max(1, Math.min(privateQuantity.value, privateStockMax.value, 50000))
 
   privateSending.value = true
   try {
+    const g = selectedPrivateGroup.value
+    const filters: Record<string, any> = {
+      country_code: g.country_code || undefined,
+      source: g.source || undefined,
+      purpose: g.purpose || undefined,
+      batch_id: g.batch_id != null && g.batch_id !== undefined ? String(g.batch_id) : '',
+      limit: qty,
+      unused_only: unusedOnlyPrivate.value,
+    }
+    if (carrierFilterPrivate.value) filters.carrier = carrierFilterPrivate.value
     const res = await sendBatchSMS({
-      private_library_filters: {
-        country_code: selectedPrivateGroup.value.country_code,
-        source: selectedPrivateGroup.value.source,
-        purpose: selectedPrivateGroup.value.purpose,
-        carrier: carrierFilterPrivate.value || undefined,
-        limit: privateQuantity.value,
-        unused_only: unusedOnlyPrivate.value
-      },
+      private_library_filters: filters,
       message: form.value.message,
-      // 如果有多文案，传递 messages 数组
       messages: multiMessages.value.length > 1 ? multiMessages.value : undefined,
       sender_id: form.value.sender_id || undefined,
       channel_id: form.value.channel_id,
-      batch_name: `私有库 - ${selectedPrivateGroup.value.country_code} - ${selectedPrivateGroup.value.sourceLabel || selectedPrivateGroup.value.source}`
+      batch_name: `私有库 - ${g.country_code} - ${g.sourceLabel || g.source}`
     })
 
-    if (res.success) {
+    if (res.success && (res.succeeded ?? 0) > 0) {
       ElMessage.success('批量发送任务已创建')
-      result.value = res
-      // 这里的逻辑可以像 handleStoreSend 一样，跳转到发送任务页面或显示成功状态
+      result.value = { ...res, success: true }
+    } else if (res.success && (res.total ?? 0) > 0 && (res.succeeded ?? 0) === 0) {
+      const firstErr = res.messages?.find((m: any) => !m.success)?.error?.message
+      ElMessage.error(firstErr || '任务已创建但号码均未成功入队，请检查号码格式、通道与余额')
+      result.value = { ...res, success: false }
     } else {
       ElMessage.error(res.error?.message || '发送失败')
+      result.value = { ...res, success: false }
     }
   } catch (e: any) {
     ElMessage.error('发送请求失败: ' + (e.message || ''))
@@ -1993,13 +2041,17 @@ const handleSend = async () => {
         : `发送页-${new Date().toLocaleString('zh-CN', { hour12: false })}`,
     }
     if (isPrivate) {
-      payload.private_library_filters = {
-        country_code: selectedPrivateGroup.value.country_code,
-        source: selectedPrivateGroup.value.source,
-        purpose: selectedPrivateGroup.value.purpose,
-        carrier: selectedPrivateGroup.value.carrier,
-        limit: privateQuantity.value
+      const pg = selectedPrivateGroup.value
+      const pf: Record<string, any> = {
+        country_code: pg.country_code || undefined,
+        source: pg.source || undefined,
+        purpose: pg.purpose || undefined,
+        batch_id: pg.batch_id != null && pg.batch_id !== undefined ? String(pg.batch_id) : '',
+        limit: Math.max(1, Math.min(privateQuantity.value, privateStockMax.value, 50000)),
+        unused_only: unusedOnlyPrivate.value,
       }
+      if (carrierFilterPrivate.value) pf.carrier = carrierFilterPrivate.value
+      payload.private_library_filters = pf
     } else {
       payload.phone_numbers = e164List
     }
@@ -2011,24 +2063,44 @@ const handleSend = async () => {
     const res = await sendBatchSMS(payload)
     const successCount = res?.succeeded ?? 0
     const failCount = res?.failed ?? 0
+    const apiOk = res?.success !== false
+    const totalQueued = res?.total ?? 0
     sendProgress.value = isPrivate ? privateQuantity.value : e164List.length
 
-    result.value = {
-      success: successCount > 0 || isPrivate,
-      successCount,
-      failCount,
-      batchId: res?.batch_id,
-    }
-    if (successCount > 0 || isPrivate) {
-      ElMessage.success(isPrivate ? '任务已提交，可在发送任务页查看进度' : t('smsSend.sendCompleteResult', { success: successCount, fail: failCount }))
-      if (form.value.resetOnlyNumbers) form.value.phone_numbers_text = ''; else handleReset()
-      loadStats()
-    } else {
-      const firstErr = res?.messages?.find((m: any) => !m.success)?.error?.message
-      if (firstErr?.toLowerCase().includes('balance') || firstErr?.includes('余额')) {
-        ElMessage.error(t('smsSend.insufficientBalance'))
+    if (isPrivate) {
+      if (!apiOk || totalQueued === 0) {
+        result.value = { success: false, successCount: 0, failCount: 0, batchId: res?.batch_id }
+        ElMessage.error(res?.error?.message || '未找到可发送的私库号码，请检查筛选条件或刷新私库')
+      } else if (successCount > 0) {
+        result.value = { success: true, successCount, failCount, batchId: res?.batch_id }
+        ElMessage.success('任务已提交，可在发送任务页查看进度')
+        if (form.value.resetOnlyNumbers) form.value.phone_numbers_text = ''
+        else handleReset()
+        loadStats()
       } else {
-        ElMessage.error(firstErr || t('smsSend.sendFailedCheckBalance', { count: failCount }))
+        const firstErr = res?.messages?.find((m: any) => !m.success)?.error?.message
+        result.value = { success: false, successCount, failCount, batchId: res?.batch_id }
+        ElMessage.error(firstErr || `已提交 ${totalQueued} 条均未成功入队，请检查号码、通道与余额`)
+      }
+    } else {
+      result.value = {
+        success: successCount > 0,
+        successCount,
+        failCount,
+        batchId: res?.batch_id,
+      }
+      if (successCount > 0) {
+        ElMessage.success(t('smsSend.sendCompleteResult', { success: successCount, fail: failCount }))
+        if (form.value.resetOnlyNumbers) form.value.phone_numbers_text = ''
+        else handleReset()
+        loadStats()
+      } else {
+        const firstErr = res?.messages?.find((m: any) => !m.success)?.error?.message
+        if (firstErr?.toLowerCase().includes('balance') || firstErr?.includes('余额')) {
+          ElMessage.error(t('smsSend.insufficientBalance'))
+        } else {
+          ElMessage.error(firstErr || t('smsSend.sendFailedCheckBalance', { count: failCount }))
+        }
       }
     }
   } catch (error: any) {
@@ -2190,6 +2262,7 @@ onMounted(() => {
   loadChannels(); loadStats(); updateTime(); checkAiConfig(); checkServices(); loadStoreProducts()
   timeInterval = window.setInterval(updateTime, 1000)
   consumeApprovalPrefill()
+  void selectPrivateGroupFromRouteQuery()
 })
 onUnmounted(() => clearInterval(timeInterval))
 </script>

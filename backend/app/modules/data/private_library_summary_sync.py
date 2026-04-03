@@ -131,9 +131,11 @@ async def pls_apply_deltas_bulk(
     """
     merged: Dict[Tuple, list] = defaultdict(list)
     for t in deltas:
+        if len(t) != 11:
+            continue
         org, c, s, p, b, car, dt, du, rmk, fa, la = t
-        key = (org, norm_dim(c), norm_dim(s), norm_dim(p), norm_dim(b), norm_dim(car))
-        merged[key].append((dt, du, rmk, fa, la))
+        key = (org or ORIGIN_MANUAL, norm_dim(c), norm_dim(s), norm_dim(p), norm_dim(b), norm_dim(car))
+        merged[key].append((int(dt or 0), int(du or 0), rmk, fa, la))
 
     for (org, c, s, p, b, car), parts in merged.items():
         sdt = sum(x[0] for x in parts)
@@ -226,15 +228,20 @@ def build_summary_payload_from_rows(
                 "_count": 0,
                 "_used": 0,
                 "_carrier_map": defaultdict(int),
+                # 与明细 use_count==0 一致：按展示名合并各汇总桶的未使用数（发送页「仅未使用+运营商」依赖）
+                "_carrier_unused_map": defaultdict(int),
                 "_first_at": None,
                 "_last_at": None,
             }
         g = groups[key]
         g["_origins"].add(r.library_origin)
-        g["_count"] += r.total_count or 0
-        g["_used"] += r.used_count or 0
+        _tu = max(0, int(r.total_count or 0))
+        _uu = min(_tu, max(0, int(r.used_count or 0)))
+        g["_count"] += _tu
+        g["_used"] += _uu
         cname = carrier_label(r.carrier)
-        g["_carrier_map"][cname] += r.total_count or 0
+        g["_carrier_map"][cname] += _tu
+        g["_carrier_unused_map"][cname] += _tu - _uu
         if r.remarks and (not g["remarks"] or len(r.remarks) > len(g["remarks"] or "")):
             g["remarks"] = r.remarks
         if r.first_at:
@@ -253,7 +260,15 @@ def build_summary_payload_from_rows(
             lo = "manual"
         else:
             lo = "purchased"
-        carriers = [{"name": n, "count": c} for n, c in sorted(g["_carrier_map"].items(), key=lambda x: -x[1])]
+        _umap = g["_carrier_unused_map"]
+        carriers = [
+            {
+                "name": n,
+                "count": c,
+                "unused_count": min(c, max(0, int(_umap.get(n, 0)))),
+            }
+            for n, c in sorted(g["_carrier_map"].items(), key=lambda x: -x[1])
+        ]
         unused = max(0, g["_count"] - g["_used"])
         items.append(
             {

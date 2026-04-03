@@ -11,6 +11,19 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# 私库汇总 / 总数 / stale 标记：Celery Worker 与 API 进程分离，失效时只清 Redis；
+# 若仍走进程内 _local_cache，会出现「上传任务已完成但我的私库页仍是旧卡片」。
+_MY_NUMBERS_REDIS_ONLY_PREFIXES = (
+    "data:my_numbers:summary:",
+    "data:my_numbers:stale:",
+    "data:my_numbers:count:",
+)
+
+
+def _redis_only_my_numbers_key(key: str) -> bool:
+    return bool(key) and key.startswith(_MY_NUMBERS_REDIS_ONLY_PREFIXES)
+
+
 # 全局Redis连接池
 _redis_pool: Optional[redis.ConnectionPool] = None
 _redis_client: Optional[redis.Redis] = None
@@ -80,26 +93,29 @@ class CacheManager:
             缓存值或None
         """
         try:
-            # 先查本地缓存
-            if key in self._local_cache:
+            # 私库相关键仅走 Redis，避免跨进程失效后本地仍命中旧值
+            if not _redis_only_my_numbers_key(key) and key in self._local_cache:
                 return self._local_cache[key]
-            
+
             # 查Redis
             redis_client = await self.redis
             value = await redis_client.get(key)
-            
+
             if value is None:
                 return None
-            
+
             # 反序列化
             try:
-                decoded = json.loads(value.decode('utf-8'))
-                # 存入本地缓存（短期）
-                self._local_cache[key] = decoded
+                decoded = json.loads(value.decode("utf-8"))
+                if not _redis_only_my_numbers_key(key):
+                    self._local_cache[key] = decoded
                 return decoded
             except json.JSONDecodeError:
                 # 如果不是JSON，直接返回字符串
-                return value.decode('utf-8')
+                plain = value.decode("utf-8")
+                if not _redis_only_my_numbers_key(key):
+                    self._local_cache[key] = plain
+                return plain
                 
         except Exception as e:
             logger.warning(f"缓存获取失败: {key}, 错误: {str(e)}")
@@ -127,10 +143,10 @@ class CacheManager:
             
             # 存入Redis
             await redis_client.setex(key, ttl, serialized)
-            
-            # 存入本地缓存
-            self._local_cache[key] = value
-            
+
+            if not _redis_only_my_numbers_key(key):
+                self._local_cache[key] = value
+
             logger.debug(f"缓存已设置: {key}, TTL: {ttl}s")
             
         except Exception as e:

@@ -79,7 +79,10 @@ class BatchSMSRequest(BaseModel):
     channel_id: Optional[int] = Field(None, description="指定通道ID（可选）")
     batch_name: Optional[str] = Field(None, max_length=200, description="发送任务名称（可选，用于任务列表展示）")
     messages: Optional[list[str]] = Field(None, description="多文案按号码轮发；非空时按序号取模选用")
-    private_library_filters: Optional[dict] = Field(None, description="私有库过滤条件 (country_code, source, purpose)")
+    private_library_filters: Optional[dict] = Field(
+        None,
+        description="私有库过滤条件：country_code, source, purpose, batch_id（强烈建议传，与同卡片一致）, carrier, limit, unused_only",
+    )
     
     class Config:
         json_schema_extra = {
@@ -99,6 +102,8 @@ class BatchSMSResponse(BaseModel):
     failed: int
     messages: list[dict]
     batch_id: Optional[int] = Field(None, description="关联 sms_batches.id，可在发送任务页查看进度")
+    # 无号码入队等场景下供前端展示（如私库筛选结果为空、limit≤0）
+    error: Optional[dict] = Field(None, description='{"code": "...", "message": "..."}')
 
 
 class SMSApprovalSubmitRequest(BaseModel):
