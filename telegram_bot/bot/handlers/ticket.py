@@ -19,7 +19,7 @@ from app.modules.common.account_template import AccountTemplate
 from sqlalchemy import select, func
 
 # Staff Group ID
-STAFF_GROUP_ID = os.getenv("STAFF_GROUP_ID", "")
+from bot.utils import get_group_ids
 
 # 对话状态
 TICKET_TYPE, TICKET_TITLE, TICKET_DESC = range(3)
@@ -184,8 +184,10 @@ async def ticket_desc_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
             
-            # 通知管理员群组
-            if STAFF_GROUP_ID:
+            # 通知技术群
+            gids = await get_group_ids()
+            staff_gid = gids.get('tech_group_id') or gids.get('admin_group_id')
+            if staff_gid:
                 try:
                     admin_text = (
                         f"🆕 *新工单通知*\n"
@@ -198,13 +200,13 @@ async def ticket_desc_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     keyboard = [[InlineKeyboardButton("🙋‍♂️ 接单", callback_data=f"take_ticket_{ticket.id}")]]
                     await context.bot.send_message(
-                        chat_id=STAFF_GROUP_ID,
+                        chat_id=staff_gid,
                         text=admin_text,
                         reply_markup=InlineKeyboardMarkup(keyboard),
                         parse_mode='Markdown'
                     )
                 except Exception as e:
-                    logger.error(f"通知管理员群组失败: {e}")
+                    logger.error(f"通知技术群失败: {e}")
             
     except Exception as e:
         logger.error(f"创建工单失败: {e}")

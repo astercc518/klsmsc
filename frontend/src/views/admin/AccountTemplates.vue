@@ -13,88 +13,104 @@
 
     <!-- 筛选 -->
     <div class="filter-card">
-      <el-form :inline="true" :model="filters">
-        <el-form-item :label="$t('accountTemplates.businessType')">
-          <el-select v-model="filters.business_type" :placeholder="$t('accountTemplates.allTypes')" clearable>
-            <el-option :label="$t('accountTemplates.sms')" value="sms" />
-            <el-option :label="$t('accountTemplates.data')" value="data" />
-          </el-select>
-        </el-form-item>
-        <el-form-item :label="$t('accountTemplates.country')">
-          <el-autocomplete
-            v-model="filterCountryDisplay"
-            :fetch-suggestions="countryQuerySearch"
-            :placeholder="$t('accountTemplates.filterCountryPlaceholder')"
-            value-key="name"
-            clearable
-            style="width: 180px;"
-            @select="handleFilterCountrySelect"
-            @clear="filters.country_code = ''"
-          >
-            <template #default="{ item }">
-              <span>{{ item.name }}</span>
-              <span style="float: right; color: var(--el-text-color-secondary); font-size: 12px;">
-                +{{ item.dial }} ({{ item.iso }})
-              </span>
-            </template>
-          </el-autocomplete>
-        </el-form-item>
-        <el-form-item :label="$t('common.status')">
-          <el-select v-model="filters.status" :placeholder="$t('accountTemplates.allStatus')" clearable>
-            <el-option :label="$t('common.enable')" value="active" />
-            <el-option :label="$t('common.disable')" value="inactive" />
-          </el-select>
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="loadData">{{ $t('smsRecords.query') }}</el-button>
-        </el-form-item>
-      </el-form>
+      <div class="filter-row">
+        <el-input
+          v-model="filters.keyword"
+          :placeholder="$t('accountTemplates.searchPlaceholder')"
+          clearable
+          style="width: 200px;"
+          :prefix-icon="Search"
+          @keyup.enter="applySearch"
+          @clear="applySearch"
+        />
+        <el-select v-model="filters.business_type" :placeholder="$t('accountTemplates.allTypes')" clearable @change="onFilterChange">
+          <el-option :label="$t('accountTemplates.sms')" value="sms" />
+          <el-option :label="$t('accountTemplates.voice')" value="voice" />
+          <el-option :label="$t('accountTemplates.data')" value="data" />
+        </el-select>
+        <el-autocomplete
+          v-model="filterCountryDisplay"
+          :fetch-suggestions="countryQuerySearch"
+          :placeholder="$t('accountTemplates.filterCountryShort')"
+          value-key="name"
+          clearable
+          style="width: 160px;"
+          @select="handleFilterCountrySelect"
+          @clear="handleFilterCountryClear"
+        >
+          <template #default="{ item }">
+            <span>{{ item.name }}</span>
+            <span style="float: right; color: var(--el-text-color-secondary); font-size: 12px;">
+              +{{ item.dial }} ({{ item.iso }})
+            </span>
+          </template>
+        </el-autocomplete>
+        <el-select v-model="filters.status" :placeholder="$t('accountTemplates.allStatus')" clearable @change="onFilterChange">
+          <el-option :label="$t('common.enable')" value="active" />
+          <el-option :label="$t('common.disable')" value="inactive" />
+        </el-select>
+        <el-button type="primary" @click="applySearch" :icon="Search">{{ $t('smsRecords.query') }}</el-button>
+        <el-button @click="resetFilters">{{ $t('common.reset') }}</el-button>
+      </div>
     </div>
 
     <!-- 数据表格 -->
     <div class="table-card">
       <el-table :data="templates" v-loading="loading" stripe>
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="template_code" :label="$t('accountTemplates.templateCode')" width="130" />
-        <el-table-column prop="template_name" :label="$t('accountTemplates.templateName')" min-width="150" />
-        <el-table-column prop="business_type" :label="$t('accountTemplates.businessType')" width="100">
+        <el-table-column prop="template_name" :label="$t('accountTemplates.templateName')" min-width="200">
           <template #default="{ row }">
-            <el-tag :type="getBusinessTypeColor(row.business_type)">
+            <div class="tpl-name-cell">
+              <span class="tpl-name">{{ row.template_name }}</span>
+              <span class="tpl-code">{{ row.template_code }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="business_type" :label="$t('accountTemplates.businessType')" width="80">
+          <template #default="{ row }">
+            <el-tag size="small" :type="getBusinessTypeColor(row.business_type)">
               {{ getBusinessTypeLabel(row.business_type) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="country_code" :label="$t('accountTemplates.country')" width="120">
+        <el-table-column prop="country_code" :label="$t('accountTemplates.country')" width="100">
           <template #default="{ row }">
             <span>{{ row.country_name || row.country_code }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="default_price" :label="$t('accountTemplates.defaultPrice')" width="100">
+        <el-table-column :label="$t('accountTemplates.productDetail')" min-width="220">
           <template #default="{ row }">
-            ${{ row.default_price?.toFixed(4) || '0.0000' }}
+            <div class="product-detail-cell" v-if="row.pricing_rules">
+              <template v-if="row.business_type === 'voice'">
+                <el-tag size="small" type="warning" effect="dark">{{ row.pricing_rules.billing_model }}</el-tag>
+                <el-tag v-if="row.pricing_rules.line_desc" size="small" type="info" class="detail-tag">{{ row.pricing_rules.line_desc }}</el-tag>
+              </template>
+              <template v-else-if="row.business_type === 'data'">
+                <el-tag size="small" type="danger" effect="plain" class="detail-tag">{{ getDataSourceLabel(row.pricing_rules.source) }}</el-tag>
+                <el-tag size="small" type="warning" effect="plain" class="detail-tag">{{ getDataPurposeLabel(row.pricing_rules.purpose) }}</el-tag>
+                <el-tag size="small" type="info" effect="plain" class="detail-tag">{{ getDataFreshnessLabel(row.pricing_rules.freshness) }}</el-tag>
+              </template>
+              <template v-else>
+                <span v-if="row.supplier_group_name" class="detail-text">{{ row.supplier_group_name }}</span>
+                <span v-else-if="row.channel_ids?.length" class="detail-text">{{ getChannelDisplay(row.channel_ids) }}</span>
+                <span v-else class="detail-text muted">-</span>
+              </template>
+            </div>
+            <span v-else class="detail-text muted">-</span>
           </template>
         </el-table-column>
-        <el-table-column prop="supplier_group_name" :label="$t('accountTemplates.supplierGroup')" width="140">
+        <el-table-column prop="default_price" :label="$t('accountTemplates.costPrice')" width="110" sortable>
           <template #default="{ row }">
-            {{ row.supplier_group_name || '-' }}
+            <span class="price-text">${{ row.default_price?.toFixed(4) || '0.0000' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="channel_ids" :label="$t('accountTemplates.channels')" min-width="160">
+        <el-table-column prop="status" :label="$t('common.status')" width="80">
           <template #default="{ row }">
-            {{ getChannelDisplay(row.channel_ids) || '-' }}
-          </template>
-        </el-table-column>
-        <el-table-column prop="status" :label="$t('common.status')" width="90">
-          <template #default="{ row }">
-            <el-tag :type="row.status === 'active' ? 'success' : 'danger'">
+            <el-tag size="small" :type="row.status === 'active' ? 'success' : 'danger'">
               {{ row.status === 'active' ? $t('common.enable') : $t('common.disable') }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" :label="$t('common.createdAt')" width="170">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column :label="$t('common.action')" width="200" fixed="right">
+        <el-table-column :label="$t('common.action')" width="180" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="editTemplate(row)">{{ $t('common.edit') }}</el-button>
             <el-button 
@@ -147,6 +163,7 @@
             <el-form-item :label="$t('accountTemplates.businessType')" prop="business_type">
               <el-select v-model="form.business_type" :placeholder="$t('accountTemplates.selectBusinessType')" :disabled="isEdit">
                 <el-option :label="$t('accountTemplates.sms')" value="sms" />
+                <el-option :label="$t('accountTemplates.voice')" value="voice" />
                 <el-option :label="$t('accountTemplates.data')" value="data" />
               </el-select>
             </el-form-item>
@@ -229,7 +246,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Search } from '@element-plus/icons-vue'
 import request from '@/api/index'
 import { formatDate } from '@/utils/date'
 import { searchCountries, COUNTRY_LIST, type CountryItem } from '@/constants/countries'
@@ -253,6 +270,7 @@ const filterCountryDisplay = ref('')
 const handleFilterCountrySelect = (item: CountryItem) => {
   filters.value.country_code = item.iso
   filterCountryDisplay.value = item.name
+  onFilterChange()
 }
 
 interface Template {
@@ -267,6 +285,7 @@ interface Template {
   channel_ids?: number[]
   external_product_id?: string
   default_price?: number
+  pricing_rules?: { billing_model?: string; line_desc?: string; cost_price?: number; sell_price?: number; source?: string; purpose?: string; freshness?: string }
   description?: string
   status: string
   created_at?: string
@@ -289,7 +308,8 @@ const submitting = ref(false)
 const filters = ref({
   business_type: '',
   country_code: '',
-  status: ''
+  status: '',
+  keyword: ''
 })
 
 const pagination = ref({
@@ -323,6 +343,7 @@ const rules = computed(() => ({
 const getBusinessTypeLabel = (type: string) => {
   const map: Record<string, string> = {
     sms: t('accountTemplates.sms'),
+    voice: t('accountTemplates.voice'),
     data: t('accountTemplates.data')
   }
   return map[type] || type
@@ -331,10 +352,24 @@ const getBusinessTypeLabel = (type: string) => {
 const getBusinessTypeColor = (type: string) => {
   const map: Record<string, string> = {
     sms: 'primary',
+    voice: 'success',
     data: 'warning'
   }
   return map[type] || 'info'
 }
+
+const DATA_SOURCE_MAP: Record<string, string> = {
+  social_eng: '社工库', credential: '撞库', telemarketing: '电销',
+}
+const DATA_PURPOSE_MAP: Record<string, string> = {
+  bc: 'BC', part_time: '兼职', finance: '金融', stock: '股票', dating: '交友',
+}
+const DATA_FRESHNESS_MAP: Record<string, string> = {
+  history: '历史', '30day': '30日内', '3day': '3日内', '7day': '7日内',
+}
+const getDataSourceLabel = (v?: string) => (v && DATA_SOURCE_MAP[v]) || v || '-'
+const getDataPurposeLabel = (v?: string) => (v && DATA_PURPOSE_MAP[v]) || v || '-'
+const getDataFreshnessLabel = (v?: string) => (v && DATA_FRESHNESS_MAP[v]) || v || '-'
 
 // 根据 channel_ids 显示通道名称
 const getChannelDisplay = (channelIds?: number[]) => {
@@ -372,6 +407,7 @@ const loadData = async () => {
     if (filters.value.business_type) params.append('business_type', filters.value.business_type)
     if (countryCode) params.append('country_code', countryCode)
     if (filters.value.status) params.append('status', filters.value.status)
+    if (filters.value.keyword?.trim()) params.append('keyword', filters.value.keyword.trim())
     params.append('page', String(pagination.value.page))
     params.append('page_size', String(pagination.value.pageSize))
     
@@ -385,6 +421,26 @@ const loadData = async () => {
   } finally {
     loading.value = false
   }
+}
+
+/** 条件变更或主动查询时回到第一页再拉取 */
+const applySearch = () => {
+  pagination.value.page = 1
+  loadData()
+}
+
+const onFilterChange = () => applySearch()
+
+const handleFilterCountryClear = () => {
+  filters.value.country_code = ''
+  applySearch()
+}
+
+const resetFilters = () => {
+  filters.value = { business_type: '', country_code: '', status: '', keyword: '' }
+  filterCountryDisplay.value = ''
+  pagination.value.page = 1
+  loadData()
 }
 
 const loadChannels = async () => {
@@ -565,6 +621,13 @@ onMounted(() => {
   margin-bottom: 24px;
 }
 
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .table-card {
   background: var(--bg-card);
   padding: 16px;
@@ -582,5 +645,46 @@ onMounted(() => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
   margin-top: 4px;
+}
+
+.tpl-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tpl-name {
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.tpl-code {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  font-family: monospace;
+}
+
+.product-detail-cell {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.detail-tag {
+  margin: 0 !important;
+}
+
+.detail-text {
+  font-size: 13px;
+}
+
+.detail-text.muted {
+  color: var(--el-text-color-placeholder);
+}
+
+.price-text {
+  font-family: monospace;
+  font-weight: 500;
 }
 </style>

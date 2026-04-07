@@ -3,7 +3,7 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_, cast, String
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from decimal import Decimal
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/admin/account-templates", tags=["AccountTemplates"])
 class TemplateCreateRequest(BaseModel):
     template_code: Optional[str] = None  # 可选，为空时自动生成
     template_name: str = Field(..., max_length=100)
-    business_type: str = Field(..., pattern="^(sms|data)$")
+    business_type: str = Field(..., pattern="^(sms|voice|data)$")
     country_code: str = Field(..., max_length=10)
     country_name: Optional[str] = None
     supplier_group_id: Optional[int] = None
@@ -64,8 +64,9 @@ async def list_templates(
     business_type: Optional[str] = None,
     country_code: Optional[str] = None,
     status: Optional[str] = None,
+    keyword: Optional[str] = None,
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(20, ge=1, le=500),
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -78,6 +79,18 @@ async def list_templates(
         query = query.where(AccountTemplate.country_code == country_code)
     if status:
         query = query.where(AccountTemplate.status == status)
+    if keyword and (k := keyword.strip()):
+        kw = f"%{k}%"
+        # MySQL 下 ilike 编译为 lower(col) LIKE lower(:kw)；CAST JSON 便于搜计费模式/线路等
+        pr_text = func.lower(cast(AccountTemplate.pricing_rules, String(4000)))
+        query = query.where(or_(
+            AccountTemplate.template_name.ilike(kw),
+            AccountTemplate.template_code.ilike(kw),
+            AccountTemplate.country_name.ilike(kw),
+            AccountTemplate.description.ilike(kw),
+            AccountTemplate.external_product_id.ilike(kw),
+            pr_text.like(func.lower(kw)),
+        ))
     
     # 总数
     count_query = select(func.count()).select_from(query.subquery())

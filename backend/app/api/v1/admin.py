@@ -13,6 +13,7 @@ from datetime import datetime
 from app.database import get_db
 from app.modules.common.admin_user import AdminUser
 from app.modules.common.account import Account
+from app.services.okcc_sync import OKCC_SERVERS, fetch_okcc_customers, sync_okcc_to_accounts
 from app.core.auth import AuthService
 from app.config import settings
 from app.utils.logger import get_logger
@@ -141,7 +142,7 @@ class AdminAccountCreateRequest(BaseModel):
     password: str
     tg_username: Optional[str] = None
     country_code: Optional[str] = None  # 国家代码
-    business_type: str = "sms"  # sms/data
+    business_type: str = "sms"  # sms/voice/data
     # 接入协议
     protocol: str = "HTTP"  # HTTP/SMPP
     smpp_password: Optional[str] = None  # SMPP密码(仅SMPP模式)
@@ -162,7 +163,7 @@ class AdminAccountUpdateRequest(BaseModel):
     account_name: Optional[str] = None
     tg_username: Optional[str] = None
     country_code: Optional[str] = None  # 国家代码
-    business_type: Optional[str] = None  # sms/data（旧字段）
+    business_type: Optional[str] = None  # sms/voice/data
     services: Optional[str] = None  # 开通业务：sms,data 逗号分隔
     # 接入协议
     protocol: Optional[str] = None  # HTTP/SMPP
@@ -648,6 +649,8 @@ async def list_accounts_admin(
                     for ac in (a.account_channels or [])
                     if ac.channel
                 ] if a.account_channels else [],
+                "supplier_url": a.supplier_url,
+                "supplier_credentials": a.supplier_credentials if a.supplier_credentials else None,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
                 "updated_at": a.updated_at.isoformat() if a.updated_at else None,
                 "last_login_at": a.last_login_at.isoformat() if a.last_login_at else None,
@@ -3043,11 +3046,11 @@ async def list_admin_users(
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取管理员用户列表（不包含超级管理员和管理员）"""
+    """获取管理员用户列表（不包含超级管理员）"""
     query = select(AdminUser)
     
-    # 过滤掉超级管理员和管理员，只显示员工
-    query = query.where(AdminUser.role.notin_(['super_admin', 'admin']))
+    # 只过滤掉超级管理员（id=1），其他角色均显示
+    query = query.where(AdminUser.role != 'super_admin')
     
     # 默认不显示已删除(inactive)的员工
     if status:
@@ -3580,3 +3583,233 @@ async def debug_supplier_group(
     except Exception as e:
         result["error"] = str(e)
     return result
+
+
+# ============================================================
+#  业务账户管理（语音/数据 — TG助手创建的 OKCC 等外部账户）
+# ============================================================
+
+@router.get("/business-accounts", response_model=dict)
+async def list_business_accounts(
+    business_type: Optional[str] = None,
+    country_code: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
+    keyword: Optional[str] = None,
+    sales_id: Optional[int] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取业务账户列表（语音/数据），含供应商凭据"""
+    from sqlalchemy import or_, func, cast, String
+
+    query = select(Account).where(
+        Account.is_deleted == False,
+        Account.business_type.in_(['voice', 'data']),
+    )
+
+    if business_type:
+        query = query.where(Account.business_type == business_type)
+    if country_code:
+        query = query.where(Account.country_code == country_code)
+    if status_filter:
+        query = query.where(Account.status == status_filter)
+    if sales_id:
+        query = query.where(Account.sales_id == sales_id)
+    if keyword and (k := keyword.strip()):
+        kw = f"%{k}%"
+        cred_text = func.lower(cast(Account.supplier_credentials, String(8000)))
+        query = query.where(or_(
+            Account.account_name.ilike(kw),
+            Account.company_name.ilike(kw),
+            Account.country_code.ilike(kw),
+            Account.supplier_url.ilike(kw),
+            cred_text.like(func.lower(kw)),
+        ))
+
+    # 销售只能看自己的客户
+    if admin.role == 'sales':
+        query = query.where(Account.sales_id == admin.id)
+
+    count_q = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_q)
+    total = total_result.scalar() or 0
+
+    query = query.order_by(Account.created_at.desc())
+    query = query.offset((page - 1) * page_size).limit(page_size)
+
+    result = await db.execute(query)
+    accounts = result.scalars().all()
+
+    items = []
+    for a in accounts:
+        # 获取销售名称
+        sales_name = None
+        if a.sales_id:
+            sr = await db.execute(
+                select(AdminUser.real_name, AdminUser.username)
+                .where(AdminUser.id == a.sales_id)
+            )
+            row = sr.first()
+            if row:
+                sales_name = row[0] or row[1]
+
+        creds = a.supplier_credentials or {}
+        items.append({
+            "id": a.id,
+            "account_name": a.account_name,
+            "business_type": a.business_type,
+            "country_code": a.country_code,
+            "okcc_balance": creds.get("okcc_balance"),
+            "okcc_synced_at": creds.get("okcc_synced_at"),
+            "okcc_server": creds.get("okcc_server"),
+            "status": a.status,
+            "unit_price": float(a.unit_price) if a.unit_price else 0,
+            "balance": float(a.balance) if a.balance else 0,
+            "currency": a.currency or "CNY",
+            "supplier_url": a.supplier_url,
+            "supplier_credentials": a.supplier_credentials,
+            "company_name": a.company_name,
+            "contact_person": a.contact_person,
+            "contact_phone": a.contact_phone,
+            "sales_id": a.sales_id,
+            "sales_name": sales_name,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+            "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+        })
+
+    return {"success": True, "total": total, "items": items, "page": page, "page_size": page_size}
+
+
+@router.get("/business-accounts/{account_id}", response_model=dict)
+async def get_business_account(
+    account_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取业务账户详情"""
+    account = await db.get(Account, account_id)
+    if not account or account.is_deleted:
+        raise HTTPException(status_code=404, detail="账户不存在")
+    if admin.role == 'sales' and account.sales_id != admin.id:
+        raise HTTPException(status_code=403, detail="无权查看")
+
+    sales_name = None
+    if account.sales_id:
+        sr = await db.execute(
+            select(AdminUser.real_name, AdminUser.username)
+            .where(AdminUser.id == account.sales_id)
+        )
+        row = sr.first()
+        if row:
+            sales_name = row[0] or row[1]
+
+    return {
+        "success": True,
+        "account": {
+            "id": account.id,
+            "account_name": account.account_name,
+            "business_type": account.business_type,
+            "country_code": account.country_code,
+            "status": account.status,
+            "unit_price": float(account.unit_price) if account.unit_price else 0,
+            "balance": float(account.balance) if account.balance else 0,
+            "supplier_url": account.supplier_url,
+            "supplier_credentials": account.supplier_credentials,
+            "company_name": account.company_name,
+            "contact_person": account.contact_person,
+            "contact_phone": account.contact_phone,
+            "sales_id": account.sales_id,
+            "sales_name": sales_name,
+            "api_key": account.api_key,
+            "created_at": account.created_at.isoformat() if account.created_at else None,
+            "updated_at": account.updated_at.isoformat() if account.updated_at else None,
+        }
+    }
+
+
+class BusinessAccountUpdate(BaseModel):
+    account_name: Optional[str] = None
+    status: Optional[str] = None
+    company_name: Optional[str] = None
+    contact_person: Optional[str] = None
+    contact_phone: Optional[str] = None
+    unit_price: Optional[float] = None
+    supplier_url: Optional[str] = None
+    supplier_credentials: Optional[dict] = None
+
+
+@router.put("/business-accounts/{account_id}", response_model=dict)
+async def update_business_account(
+    account_id: int,
+    data: BusinessAccountUpdate,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新业务账户"""
+    account = await db.get(Account, account_id)
+    if not account or account.is_deleted:
+        raise HTTPException(status_code=404, detail="账户不存在")
+    if admin.role not in ('super_admin', 'admin'):
+        raise HTTPException(status_code=403, detail="权限不足")
+
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(account, field, value)
+    await db.commit()
+    return {"success": True, "message": "更新成功"}
+
+
+@router.delete("/business-accounts/{account_id}", response_model=dict)
+async def delete_business_account(
+    account_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """软删除业务账户"""
+    if admin.role not in ('super_admin', 'admin'):
+        raise HTTPException(status_code=403, detail="权限不足")
+    account = await db.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="账户不存在")
+    account.is_deleted = True
+    await db.commit()
+    return {"success": True, "message": "已删除"}
+
+
+# ============================================================
+#  OKCC 余额同步（逻辑见 app.services.okcc_sync，供 Celery 定时任务复用）
+# ============================================================
+
+@router.post("/okcc/sync", response_model=dict)
+async def okcc_sync(
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """手动触发 OKCC 余额同步"""
+    if admin.role not in ('super_admin', 'admin'):
+        raise HTTPException(status_code=403, detail="权限不足")
+
+    stats = await sync_okcc_to_accounts(db)
+    return {"success": True, "message": "同步完成", "stats": stats}
+
+
+@router.get("/okcc/customers", response_model=dict)
+async def okcc_customer_list(
+    server: Optional[str] = None,
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """查看 OKCC 客户原始数据（不需要同步即可查看）"""
+    if admin.role not in ('super_admin', 'admin'):
+        raise HTTPException(status_code=403, detail="权限不足")
+
+    all_customers = []
+    servers_to_query = [server] if server and server in OKCC_SERVERS else OKCC_SERVERS.keys()
+    for sid in servers_to_query:
+        customers = await fetch_okcc_customers(sid)
+        for c in customers:
+            c["okcc_server"] = sid
+            c["okcc_label"] = OKCC_SERVERS[sid]["label"]
+        all_customers.extend(customers)
+
+    return {"success": True, "total": len(all_customers), "data": all_customers}

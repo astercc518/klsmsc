@@ -146,6 +146,10 @@ class Settings(BaseSettings):
     # 定时拉取上游 DLR 报告的 HTTP 超时（秒）
     DLR_PULL_HTTP_TIMEOUT_SECONDS: float = Field(default=60.0, ge=10.0, le=300.0)
 
+    # OKCC 语音客户全量同步：由 Celery Beat 按间隔触发（与手动「同步OKCC余额」相同逻辑）
+    OKCC_BEAT_SYNC_ENABLED: bool = True
+    OKCC_BEAT_SYNC_INTERVAL_SECONDS: int = Field(default=300, ge=60, le=86400)  # 默认 5 分钟
+
     class Config:
         env_file = ".env"
         case_sensitive = True

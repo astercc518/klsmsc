@@ -491,6 +491,68 @@ export async function getSendStatistics(params?: {
   return request.get('/admin/send-statistics', { params });
 }
 
+// --- Business Accounts (业务账户：语音/数据) ---
+
+export interface BusinessAccount {
+  id: number
+  account_name: string
+  business_type: string
+  country_code: string
+  status: string
+  unit_price: number
+  balance: number
+  supplier_url: string | null
+  supplier_credentials: Record<string, any> | null
+  company_name: string | null
+  contact_person: string | null
+  contact_phone: string | null
+  sales_id: number | null
+  sales_name: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export async function getBusinessAccounts(params?: {
+  business_type?: string
+  country_code?: string
+  status?: string
+  keyword?: string
+  sales_id?: number
+  page?: number
+  page_size?: number
+}): Promise<{ success: boolean; total: number; items: BusinessAccount[] }> {
+  return request.get('/admin/business-accounts', { params })
+}
+
+export async function getBusinessAccountDetail(accountId: number): Promise<{ success: boolean; account: BusinessAccount }> {
+  return request.get(`/admin/business-accounts/${accountId}`)
+}
+
+export async function updateBusinessAccount(accountId: number, data: {
+  account_name?: string
+  status?: string
+  company_name?: string
+  contact_person?: string
+  contact_phone?: string
+  unit_price?: number
+  supplier_url?: string
+  supplier_credentials?: Record<string, any>
+}): Promise<{ success: boolean }> {
+  return request.put(`/admin/business-accounts/${accountId}`, data)
+}
+
+export async function deleteBusinessAccount(accountId: number): Promise<{ success: boolean }> {
+  return request.delete(`/admin/business-accounts/${accountId}`)
+}
+
+export async function syncOkccBalances(): Promise<any> {
+  return request.post('/admin/okcc/sync')
+}
+
+export async function getOkccCustomers(server?: string): Promise<any> {
+  return request.get('/admin/okcc/customers', { params: server ? { server } : {} })
+}
+
 // --- Suppliers (供应商管理) ---
 
 export async function getSuppliers(params?: {

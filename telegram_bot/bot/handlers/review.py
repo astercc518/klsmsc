@@ -13,8 +13,7 @@ from app.modules.common.account import Account
 from app.modules.common.telegram_binding import TelegramBinding
 from sqlalchemy import select
 
-# 员工群ID
-STAFF_GROUP_ID = os.getenv("STAFF_GROUP_ID", "")
+from bot.utils import get_group_ids
 
 
 async def approve_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,11 +90,13 @@ async def approve_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logger.error(f"通知客户失败: {e}")
             
-            # 通知员工群
-            if STAFF_GROUP_ID:
+            # 通知技术群
+            gids = await get_group_ids()
+            staff_gid = gids.get('tech_group_id') or gids.get('admin_group_id')
+            if staff_gid:
                 try:
                     await context.bot.send_message(
-                        chat_id=STAFF_GROUP_ID,
+                        chat_id=staff_gid,
                         text=(
                             f"🟢 *测试工单已通过供应商审核*\n\n"
                             f"工单号: `{ticket.ticket_no}`\n"
@@ -106,7 +107,7 @@ async def approve_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         parse_mode='Markdown'
                     )
                 except Exception as e:
-                    logger.error(f"通知员工群失败: {e}")
+                    logger.error(f"通知技术群失败: {e}")
                     
     except Exception as e:
         logger.error(f"审批测试工单失败: {e}")
@@ -189,11 +190,13 @@ async def reject_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logger.error(f"通知客户失败: {e}")
             
-            # 通知员工群
-            if STAFF_GROUP_ID:
+            # 通知技术群
+            gids = await get_group_ids()
+            staff_gid = gids.get('tech_group_id') or gids.get('admin_group_id')
+            if staff_gid:
                 try:
                     await context.bot.send_message(
-                        chat_id=STAFF_GROUP_ID,
+                        chat_id=staff_gid,
                         text=(
                             f"🔴 *测试工单被供应商拒绝*\n\n"
                             f"工单号: `{ticket.ticket_no}`\n"

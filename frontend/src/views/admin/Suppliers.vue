@@ -11,6 +11,10 @@
           <el-icon><Upload /></el-icon>
           {{ $t('suppliers.importFromCost') }}
         </el-button>
+        <el-button type="warning" @click="handleImportFromVoice" :loading="importingVoice">
+          <el-icon><Phone /></el-icon>
+          {{ $t('suppliers.importFromVoice') }}
+        </el-button>
         <el-button type="primary" @click="showCreateDialog">
           <el-icon><Plus /></el-icon>
           {{ $t('suppliers.addSupplier') }}
@@ -27,6 +31,15 @@
         <div class="stat-info">
           <div class="stat-value">{{ stats.sms_count }}</div>
           <div class="stat-label">{{ $t('suppliers.smsBusiness') }}</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon voice">
+          <el-icon><Phone /></el-icon>
+        </div>
+        <div class="stat-info">
+          <div class="stat-value">{{ stats.voice_count }}</div>
+          <div class="stat-label">{{ $t('suppliers.voiceBusiness') }}</div>
         </div>
       </div>
       <div class="stat-card">
@@ -109,6 +122,63 @@
           </template>
         </el-table-column>
       </el-table>
+        </div>
+      </el-tab-pane>
+      <el-tab-pane :label="`${$t('suppliers.voiceBusiness')} (${stats.voice_count})`" name="voice">
+        <div class="table-card">
+          <el-table :data="byBusiness.voice" v-loading="loading" class="data-table">
+            <el-table-column prop="supplier_name" :label="$t('suppliers.supplierName')" min-width="150">
+              <template #default="{ row }">
+                <div class="supplier-cell">
+                  <span class="supplier-name">{{ row.supplier_name }}</span>
+                  <el-tag v-if="row.status === 'active'" type="success" size="small" effect="plain">{{ $t('suppliers.active') }}</el-tag>
+                  <el-tag v-else type="info" size="small" effect="plain">{{ $t('suppliers.inactive') }}</el-tag>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column prop="supplier_group" :label="$t('suppliers.supplierGroup')" width="130">
+              <template #default="{ row }">
+                <span>{{ row.supplier_group || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="rate_count" :label="$t('suppliers.rateCount')" width="100" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.rate_count > 0" type="success" size="small">{{ row.rate_count }} {{ $t('suppliers.items') }}</el-tag>
+                <span v-else class="no-rate">{{ $t('suppliers.notConfigured') }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="country_count" :label="$t('suppliers.coveredCountries')" width="100" align="center">
+              <template #default="{ row }">
+                <span v-if="row.country_count > 0">{{ row.country_count }} {{ $t('suppliers.units') }}</span>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="notes" :label="$t('suppliers.notes')" min-width="150" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="notes-text">{{ row.notes || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column :label="$t('common.action')" width="260" fixed="right" align="center">
+              <template #default="{ row }">
+                <el-button type="success" link size="small" @click="showRatesDialog(row)">{{ $t('suppliers.rateTable') }}</el-button>
+                <el-button type="primary" link size="small" @click="editSupplier(row)">{{ $t('common.edit') }}</el-button>
+                <el-popconfirm
+                  v-if="row.rate_count > 0"
+                  :title="$t('suppliers.confirmRemoveFromBusiness')"
+                  @confirm="removeFromBusiness(row, 'voice')"
+                >
+                  <template #reference>
+                    <el-button type="warning" link size="small">{{ $t('suppliers.removeFromBusiness') }}</el-button>
+                  </template>
+                </el-popconfirm>
+                <el-popconfirm :title="$t('suppliers.confirmDelete')" @confirm="deleteSupplier(row)">
+                  <template #reference>
+                    <el-button type="danger" link size="small">{{ $t('common.delete') }}</el-button>
+                  </template>
+                </el-popconfirm>
+              </template>
+            </el-table-column>
+          </el-table>
         </div>
       </el-tab-pane>
       <el-tab-pane :label="`${$t('suppliers.dataBusiness')} (${stats.data_count})`" name="data">
@@ -292,29 +362,43 @@
             {{ getCountryName(row.country_code) }}
           </template>
         </el-table-column>
-        <el-table-column prop="resource_type" :label="$t('suppliers.resourceType')" width="100">
+        <el-table-column v-if="currentSupplier?.business_type === 'voice'" prop="billing_model" :label="$t('suppliers.billingModel')" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.billing_model" size="small" :type="billingModelTagType(row.billing_model)">
+              {{ row.billing_model }}
+            </el-tag>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentSupplier?.business_type === 'voice'" prop="line_desc" :label="$t('suppliers.lineDesc')" width="100">
+          <template #default="{ row }">
+            <span v-if="row.line_desc">{{ row.line_desc }}</span>
+            <span v-else class="no-rate">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentSupplier?.business_type !== 'voice'" prop="resource_type" :label="$t('suppliers.resourceType')" width="100">
           <template #default="{ row }">
             <el-tag size="small" :type="resourceTypeTagMap[row.resource_type] || ''">
               {{ getResourceTypeLabel(row.resource_type) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="business_scope" :label="$t('suppliers.businessScope')" width="90">
+        <el-table-column v-if="currentSupplier?.business_type !== 'voice'" prop="business_scope" :label="$t('suppliers.businessScope')" width="90">
           <template #default="{ row }">
             <el-tag size="small" type="info">
               {{ getBusinessScopeLabel(row.business_scope) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="cost_price" :label="$t('suppliers.cost')" width="120" align="right">
+        <el-table-column prop="cost_price" :label="$t('suppliers.cost')" width="130" align="right">
           <template #default="{ row }">
-            <span v-if="row.business_type === 'voice'" class="cost-text">{{ formatVoicePrice(row.cost_price, row.resource_type) }}</span>
+            <span v-if="row.business_type === 'voice'" class="cost-text">{{ formatVoicePrice(row.cost_price, row.billing_model) }}</span>
             <span v-else class="cost-text">${{ formatCost(row.cost_price) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="sell_price" :label="$t('suppliers.sellPrice')" width="120" align="right">
+        <el-table-column prop="sell_price" :label="$t('suppliers.sellPrice')" width="130" align="right">
           <template #default="{ row }">
-            <span v-if="row.business_type === 'voice'" class="sell-text">{{ formatVoicePrice(row.sell_price, row.resource_type) }}</span>
+            <span v-if="row.business_type === 'voice'" class="sell-text">{{ formatVoicePrice(row.sell_price, row.billing_model) }}</span>
             <span v-else class="sell-text">${{ formatCost(row.sell_price) }}</span>
           </template>
         </el-table-column>
@@ -377,7 +461,23 @@
           </el-select>
           <div class="form-tip">{{ $t('suppliers.countryInputTip') }}</div>
         </el-form-item>
-        <el-row :gutter="16">
+        <!-- 语音：计费模式 + 线路描述 -->
+        <el-row v-if="rateForm.business_type === 'voice'" :gutter="16">
+          <el-col :span="12">
+            <el-form-item :label="$t('suppliers.billingModel')" prop="billing_model">
+              <el-select v-model="rateForm.billing_model" :placeholder="$t('suppliers.selectBillingModel')" style="width: 100%">
+                <el-option v-for="item in billingModelOptions" :key="item.value" :label="item.label" :value="item.value" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item :label="$t('suppliers.lineDesc')">
+              <el-input v-model="rateForm.line_desc" :placeholder="$t('suppliers.lineDescPlaceholder')" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <!-- 非语音：资源类型 + 业务范围 -->
+        <el-row v-else :gutter="16">
           <el-col :span="12">
             <el-form-item :label="$t('suppliers.resourceType')" prop="resource_type">
               <el-select 
@@ -445,15 +545,6 @@
       </div>
       
       <el-table :data="batchRates" class="batch-table" max-height="400">
-        <el-table-column :label="$t('suppliers.businessType')" width="90">
-          <template #default="{ row }">
-            <el-select v-model="row.business_type" size="small" style="width: 100%" @change="(val: string) => { row.resource_type = getResourceTypeOptions(val)[0]?.value || '' }">
-              <el-option :label="$t('suppliers.sms')" value="sms" />
-              <el-option :label="$t('suppliers.voice')" value="voice" />
-              <el-option :label="$t('suppliers.data')" value="data" />
-            </el-select>
-          </template>
-        </el-table-column>
         <el-table-column :label="$t('suppliers.country')" width="150">
           <template #default="{ row }">
             <el-select 
@@ -468,7 +559,19 @@
             </el-select>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('suppliers.resourceType')" width="110">
+        <el-table-column v-if="currentSupplier?.business_type === 'voice'" :label="$t('suppliers.billingModel')" width="120">
+          <template #default="{ row }">
+            <el-select v-model="row.billing_model" size="small" style="width: 100%">
+              <el-option v-for="item in billingModelOptions" :key="item.value" :label="item.value" :value="item.value" />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentSupplier?.business_type === 'voice'" :label="$t('suppliers.lineDesc')" width="110">
+          <template #default="{ row }">
+            <el-input v-model="row.line_desc" size="small" :placeholder="$t('suppliers.lineDescPlaceholder')" />
+          </template>
+        </el-table-column>
+        <el-table-column v-if="currentSupplier?.business_type !== 'voice'" :label="$t('suppliers.resourceType')" width="110">
           <template #default="{ row }">
             <el-select 
               v-model="row.resource_type" 
@@ -482,7 +585,7 @@
             </el-select>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('suppliers.businessScope')" width="100">
+        <el-table-column v-if="currentSupplier?.business_type !== 'voice'" :label="$t('suppliers.businessScope')" width="100">
           <template #default="{ row }">
             <el-select 
               v-model="row.business_scope" 
@@ -538,14 +641,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch, computed, type ComputedRef } from 'vue'
+import { ref, reactive, onMounted, computed, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Plus, Refresh, Search, CircleCheck, OfficeBuilding, Message, Phone, DocumentAdd, Download, Upload, Connection, Grid } from '@element-plus/icons-vue'
 import {
   getSuppliers, getSuppliersByBusinessType, createSupplier, updateSupplier, deleteSupplier as deleteSupplierApi,
   removeSupplierFromBusiness, syncSupplierFromDataPricing,
-  importFromResourcePricing, importFromVoicePricing, getVoicePricingReference,
+  importFromResourcePricing, importFromVoicePricing,
   type Supplier
 } from '@/api/supplier'
 
@@ -608,8 +711,6 @@ const formatCost = (value: number | undefined) => {
   return (value || 0).toFixed(4)
 }
 
-// 语音报价：根据计费模式返回带单位的格式化价格
-// 1+1=按秒，60+60=按分钟，6+1/6+6/30+6等=按计费块显示
 const formatVoicePrice = (value: number | undefined, billingModel: string | undefined) => {
   const v = (value || 0).toFixed(4)
   const model = (billingModel || '').trim()
@@ -636,11 +737,6 @@ const stats = reactive({
   voice_count: 0,
   data_count: 0
 })
-// 语音报价参考
-const voicePricingList = ref<any[]>([])
-const voicePricingLoading = ref(false)
-const voicePricingSuppliers = ref(0)
-const voicePricingCountries = ref(0)
 const filters = reactive({
   keyword: '',
   status: ''
@@ -693,20 +789,6 @@ const loadByBusinessType = async () => {
 }
 
 const loadSuppliers = loadByBusinessType
-
-const loadVoicePricingRef = async () => {
-  voicePricingLoading.value = true
-  try {
-    const res = await getVoicePricingReference()
-    voicePricingList.value = res.flat_list || []
-    voicePricingSuppliers.value = res.supplier_count || 0
-    voicePricingCountries.value = res.country_count || 0
-  } catch {
-    voicePricingList.value = []
-  } finally {
-    voicePricingLoading.value = false
-  }
-}
 
 const resetFilters = () => {
   filters.keyword = ''
@@ -818,6 +900,8 @@ interface SupplierRate {
   country_code: string
   resource_type: string
   business_scope: string
+  billing_model: string
+  line_desc: string
   cost_price: number
   sell_price: number
   remark: string
@@ -872,6 +956,25 @@ const voiceResourceTypes = computed(() => [
   { value: 'local_display', label: t('suppliers.voiceLocalDisplay') },
   { value: 'international', label: t('suppliers.voiceInternational') },
 ])
+
+const billingModelOptions = [
+  { value: '1+1', label: '1+1 (' + t('suppliers.billingPerSecond') + ')' },
+  { value: '6+6', label: '6+6 (' + t('suppliers.billing6s') + ')' },
+  { value: '30+6', label: '30+6 (' + t('suppliers.billing30s6s') + ')' },
+  { value: '60+1', label: '60+1 (' + t('suppliers.billing60s1s') + ')' },
+  { value: '60+60', label: '60+60 (' + t('suppliers.billingPerMinute') + ')' },
+]
+
+const billingModelTagType = (model: string): string => {
+  const map: Record<string, string> = {
+    '1+1': 'success',
+    '6+6': '',
+    '30+6': 'warning',
+    '60+1': 'info',
+    '60+60': 'danger',
+  }
+  return map[model] || ''
+}
 
 const dataResourceTypes = computed(() => [
   { value: 'credential_stuffing', label: t('suppliers.dataCredentialStuffing') },
@@ -933,6 +1036,8 @@ const rateForm = reactive({
   country_code: '',
   resource_type: 'card',
   business_scope: 'otp',
+  billing_model: '60+60',
+  line_desc: '',
   cost_price: 0,
   sell_price: 0,
   remark: ''
@@ -940,9 +1045,17 @@ const rateForm = reactive({
 
 // 当业务类型变化时，重置资源类型为该业务的第一个选项
 const onBusinessTypeChange = (businessType: string) => {
-  const options = getResourceTypeOptions(businessType)
-  if (options.length > 0) {
-    rateForm.resource_type = options[0].value
+  if (businessType === 'voice') {
+    rateForm.billing_model = '60+60'
+    rateForm.line_desc = ''
+    rateForm.resource_type = 'voice'
+  } else {
+    const options = getResourceTypeOptions(businessType)
+    if (options.length > 0) {
+      rateForm.resource_type = options[0].value
+    }
+    rateForm.billing_model = ''
+    rateForm.line_desc = ''
   }
 }
 
@@ -985,14 +1098,15 @@ const loadSupplierRates = async (supplierId?: number) => {
 const showAddRateDialog = () => {
   isEditRate.value = false
   currentRateId.value = null
-  // 默认使用当前筛选的业务类型
-  const defaultBusinessType = ratesBusinessType.value !== 'all' ? ratesBusinessType.value : 'sms'
-  const defaultResourceType = getResourceTypeOptions(defaultBusinessType)[0]?.value || 'card'
+  const defaultBiz = currentSupplier.value?.business_type || 'sms'
+  const defaultResourceType = defaultBiz === 'voice' ? 'voice' : (getResourceTypeOptions(defaultBiz)[0]?.value || 'card')
   Object.assign(rateForm, {
-    business_type: defaultBusinessType,
+    business_type: defaultBiz,
     country_code: '',
     resource_type: defaultResourceType,
     business_scope: 'otp',
+    billing_model: defaultBiz === 'voice' ? '60+60' : '',
+    line_desc: '',
     cost_price: 0,
     sell_price: 0,
     remark: ''
@@ -1008,6 +1122,8 @@ const editRate = (row: SupplierRate) => {
     country_code: row.country_code,
     resource_type: row.resource_type,
     business_scope: row.business_scope || 'otp',
+    billing_model: row.billing_model || '',
+    line_desc: row.line_desc || '',
     cost_price: row.cost_price,
     sell_price: row.sell_price,
     remark: row.remark || ''
@@ -1059,6 +1175,8 @@ interface BatchRateRow {
   country_code: string
   resource_type: string
   business_scope: string
+  billing_model: string
+  line_desc: string
   cost_price: number
   sell_price: number
   remark: string
@@ -1069,13 +1187,15 @@ const batchSubmitting = ref(false)
 const batchRates = ref<BatchRateRow[]>([])
 
 const createEmptyBatchRow = (): BatchRateRow => {
-  const defaultBusinessType = ratesBusinessType.value !== 'all' ? ratesBusinessType.value : 'sms'
-  const defaultResourceType = getResourceTypeOptions(defaultBusinessType)[0]?.value || 'card'
+  const biz = currentSupplier.value?.business_type || 'sms'
+  const isVoice = biz === 'voice'
   return {
-    business_type: defaultBusinessType,
+    business_type: biz,
     country_code: '',
-    resource_type: defaultResourceType,
+    resource_type: isVoice ? 'voice' : (getResourceTypeOptions(biz)[0]?.value || 'card'),
     business_scope: 'otp',
+    billing_model: isVoice ? '60+60' : '',
+    line_desc: '',
     cost_price: 0,
     sell_price: 0,
     remark: ''
@@ -1135,20 +1255,29 @@ const submitBatchRates = async () => {
 const uploadRef = ref()
 
 const downloadTemplate = () => {
-  // 生成CSV模板内容 - 增加业务类型列
-  const headers = [t('suppliers.csvBusinessType'), t('suppliers.csvCountryCode'), t('suppliers.csvResourceType'), t('suppliers.csvCost'), t('suppliers.csvSellPrice'), t('suppliers.csvRemark')]
-  const examples = [
-    ['sms', 'CN', 'otp', '0.001', '0.002', t('suppliers.csvExampleOtp')],
-    ['sms', 'US', 'marketing', '0.005', '0.008', t('suppliers.csvExampleMarketing')],
-    ['voice', 'JP', 'international', '0.010', '0.015', t('suppliers.csvExampleVoice')],
-    ['data', 'PH', 'otp', '0.002', '0.003', t('suppliers.csvExampleData')],
-  ]
-  
-  // 添加BOM以支持Excel正确识别UTF-8
+  const isVoice = currentSupplier.value?.business_type === 'voice'
+  let headers: string[]
+  let examples: string[][]
+
+  if (isVoice) {
+    headers = [t('suppliers.csvCountryCode'), t('suppliers.csvBillingModel'), t('suppliers.csvLineDesc'), t('suppliers.csvCost'), t('suppliers.csvSellPrice'), t('suppliers.csvRemark')]
+    examples = [
+      ['VN', '60+60', '电力', '0.048', '0.0624', 'BE越南电力'],
+      ['VN', '1+1', '', '0.035', '0.0455', 'BO越南'],
+      ['IN', '60+60', '', '0.035', '0.0455', 'HB印度'],
+      ['BR', '30+6', '', '0.008', '0.0104', 'QK巴西'],
+    ]
+  } else {
+    headers = [t('suppliers.csvBusinessType'), t('suppliers.csvCountryCode'), t('suppliers.csvResourceType'), t('suppliers.csvCost'), t('suppliers.csvSellPrice'), t('suppliers.csvRemark')]
+    examples = [
+      ['sms', 'CN', 'otp', '0.001', '0.002', t('suppliers.csvExampleOtp')],
+      ['sms', 'US', 'marketing', '0.005', '0.008', t('suppliers.csvExampleMarketing')],
+      ['data', 'PH', 'otp', '0.002', '0.003', t('suppliers.csvExampleData')],
+    ]
+  }
+
   const BOM = '\uFEFF'
   const csvContent = BOM + headers.join(',') + '\n' + examples.map(row => row.join(',')).join('\n')
-  
-  // 创建下载链接
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
@@ -1156,7 +1285,6 @@ const downloadTemplate = () => {
   link.download = t('suppliers.templateFileName')
   link.click()
   URL.revokeObjectURL(url)
-  
   ElMessage.success(t('suppliers.templateDownloadSuccess'))
 }
 
@@ -1209,31 +1337,49 @@ const handleFileChange = async (file: any) => {
 const parseCSV = (content: string): BatchRateRow[] => {
   const lines = content.trim().split('\n')
   if (lines.length < 2) return []
-  
+
   const rates: BatchRateRow[] = []
-  
-  // 跳过标题行
+  const isVoice = currentSupplier.value?.business_type === 'voice'
+
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim()
     if (!line) continue
-    
-    // 处理CSV格式（支持引号包裹的字段）
     const cols = line.split(',').map(col => col.trim().replace(/^"|"$/g, ''))
-    
-    // 新格式：业务类型,国家代码,资源类型,成本价,售价,备注
-    if (cols.length >= 4 && cols[1] && parseFloat(cols[3]) > 0) {
-      const businessType = cols[0].toLowerCase()
-      rates.push({
-        business_type: ['sms', 'voice', 'data'].includes(businessType) ? businessType : 'sms',
-        country_code: cols[1].toUpperCase(),
-        resource_type: cols[2] || 'otp',
-        cost_price: parseFloat(cols[3]) || 0,
-        sell_price: parseFloat(cols[4]) || 0,
-        remark: cols[5] || ''
-      })
+
+    if (isVoice) {
+      // 语音格式：国家代码,计费模式,线路描述,成本价,售价,备注
+      if (cols.length >= 4 && cols[0] && parseFloat(cols[3]) > 0) {
+        rates.push({
+          business_type: 'voice',
+          country_code: cols[0].toUpperCase(),
+          resource_type: 'voice',
+          business_scope: 'otp',
+          billing_model: cols[1] || '60+60',
+          line_desc: cols[2] || '',
+          cost_price: parseFloat(cols[3]) || 0,
+          sell_price: parseFloat(cols[4]) || 0,
+          remark: cols[5] || ''
+        })
+      }
+    } else {
+      // 通用格式：业务类型,国家代码,资源类型,成本价,售价,备注
+      if (cols.length >= 4 && cols[1] && parseFloat(cols[3]) > 0) {
+        const businessType = cols[0].toLowerCase()
+        rates.push({
+          business_type: ['sms', 'voice', 'data'].includes(businessType) ? businessType : 'sms',
+          country_code: cols[1].toUpperCase(),
+          resource_type: cols[2] || 'otp',
+          business_scope: 'otp',
+          billing_model: '',
+          line_desc: '',
+          cost_price: parseFloat(cols[3]) || 0,
+          sell_price: parseFloat(cols[4]) || 0,
+          remark: cols[5] || ''
+        })
+      }
     }
   }
-  
+
   return rates
 }
 
@@ -1277,7 +1423,6 @@ const handleImportFromVoice = async () => {
     const res: any = await importFromVoicePricing()
     ElMessage.success(res.message || t('suppliers.importFromVoiceSuccess'))
     await loadByBusinessType()
-    if (activeBizTab.value === 'voice') loadVoicePricingRef()
   } catch (error: any) {
     const msg = error.response?.data?.detail || error.message || t('suppliers.importFromVoiceFailed')
     ElMessage.error(typeof msg === 'string' ? msg : JSON.stringify(msg))
@@ -1288,10 +1433,6 @@ const handleImportFromVoice = async () => {
 
 onMounted(() => {
   loadSuppliers()
-})
-
-watch(activeBizTab, (tab) => {
-  if (tab === 'voice') loadVoicePricingRef()
 })
 </script>
 
@@ -1333,7 +1474,7 @@ watch(activeBizTab, (tab) => {
 /* 统计卡片 */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 20px;
 }
@@ -1510,20 +1651,9 @@ watch(activeBizTab, (tab) => {
   gap: 8px;
 }
 
-/* 语音报价参考 */
-.voice-pricing-ref-card {
-  margin-top: 20px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-default);
-}
 .card-header-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-}
-.voice-pricing-summary {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  margin-top: 12px;
 }
 </style>

@@ -1,7 +1,7 @@
 """
 账户数据模型
 """
-from sqlalchemy import Column, Integer, String, DECIMAL, Enum, Boolean, TIMESTAMP, Text, ForeignKey, BigInteger
+from sqlalchemy import Column, Integer, String, DECIMAL, Enum, Boolean, TIMESTAMP, Text, ForeignKey, BigInteger, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -37,12 +37,12 @@ class Account(Base):
     tg_id = Column(BigInteger, comment="Telegram ID")
     country_code = Column(String(10), comment="国家代码")
     business_type = Column(
-        Enum("sms", "data", name="account_business_type"),
+        Enum("sms", "voice", "data", name="account_business_type"),
         nullable=False,
         default="sms",
-        comment="业务类型：sms短信/data数据（旧字段，保留兼容）"
+        comment="业务类型：sms短信/voice语音/data数据"
     )
-    services = Column(String(100), nullable=False, default="sms", comment="开通业务：sms,data 逗号分隔")
+    services = Column(String(100), nullable=False, default="sms", comment="开通业务：sms,voice,data 逗号分隔")
     # 接入协议配置
     protocol = Column(
         Enum("HTTP", "SMPP", name="account_protocol"),
@@ -96,7 +96,9 @@ class Account(Base):
     activity_updated_at = Column(TIMESTAMP, nullable=True, comment="活跃度最后更新时间")
     activity_zero_since = Column(TIMESTAMP, nullable=True, comment="活跃度为0开始时间")
     is_deleted = Column(Boolean, nullable=False, default=False, comment="软删除标记")
-    
+    supplier_url = Column(String(500), nullable=True, comment="供应商系统登录地址")
+    supplier_credentials = Column(JSON, nullable=True, comment="供应商系统凭据(系统地址/客户名/坐席号/域名等)")
+
     # 关联
     sales = relationship("AdminUser", foreign_keys=[sales_id], backref="customers")
     account_channels = relationship("AccountChannel", back_populates="account", cascade="all, delete-orphan")

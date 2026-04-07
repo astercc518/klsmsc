@@ -2,6 +2,25 @@
 电话号码工具函数
 """
 
+
+def export_phone_plain_digits(raw) -> str:
+    """导出文件用号码：仅保留数字，无 +、空格、横线等（纯号码）"""
+    if raw is None:
+        return ""
+    if isinstance(raw, (bytes, bytearray)):
+        s = raw.decode("utf-8", errors="ignore")
+    elif isinstance(raw, memoryview):
+        s = raw.tobytes().decode("utf-8", errors="ignore")
+    else:
+        s = str(raw)
+    s = s.strip().strip("\ufeff")
+    if not s:
+        return ""
+    # 去掉全角加号等后再抽数字（半角 + 已由 isdigit 过滤）
+    s = s.replace("\uff0b", "").replace("\ufe62", "").replace("\u207a", "")
+    return "".join(c for c in s if c.isdigit())
+
+
 # ISO 3166-1 alpha-2 → ITU-T E.164 国家区号
 _COUNTRY_DIAL_MAP = {
     "PH": "63", "VN": "84", "ID": "62", "TH": "66", "MY": "60",

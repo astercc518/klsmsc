@@ -108,11 +108,37 @@
         </el-card>
       </el-col>
     </el-row>
+
+    <!-- TG 群组配置（管理员可见） -->
+    <el-row v-if="isAdmin" style="margin-top: 20px">
+      <el-col :span="24">
+        <el-card>
+          <template #header>
+            <div style="display:flex; justify-content:space-between; align-items:center">
+              <span>{{ $t('adminProfile.groupConfig') }}</span>
+              <el-button type="primary" size="small" @click="saveGroupConfig" :loading="groupSaving">
+                {{ $t('common.save') }}
+              </el-button>
+            </div>
+          </template>
+          <el-form label-width="120px" label-position="left">
+            <el-form-item :label="$t('adminProfile.techGroupId')">
+              <el-input v-model="groupConfig.tech_group_id" placeholder="-100xxxxxxxxxx" />
+              <div class="form-tip">{{ $t('adminProfile.techGroupTip') }}</div>
+            </el-form-item>
+            <el-form-item :label="$t('adminProfile.billingGroupId')">
+              <el-input v-model="groupConfig.billing_group_id" placeholder="-100xxxxxxxxxx" />
+              <div class="form-tip">{{ $t('adminProfile.billingGroupTip') }}</div>
+            </el-form-item>
+          </el-form>
+        </el-card>
+      </el-col>
+    </el-row>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance } from 'element-plus'
@@ -123,6 +149,7 @@ import {
   unbindTelegram,
   type AdminProfile
 } from '@/api/admin'
+import { getBotConfig, saveBotConfig } from '@/api/bot'
 
 const { t } = useI18n()
 const profile = ref<AdminProfile | null>(null)
@@ -137,6 +164,17 @@ const bindCode = ref('')
 const codeLoading = ref(false)
 const unbindLoading = ref(false)
 const tgBound = ref(false)
+
+const isAdmin = computed(() => {
+  const role = profile.value?.role
+  return role === 'super_admin' || role === 'admin'
+})
+
+const groupConfig = reactive({
+  tech_group_id: '',
+  billing_group_id: '',
+})
+const groupSaving = ref(false)
 
 const roleName = (role: string) => {
   const map: Record<string, string> = {
@@ -259,7 +297,37 @@ const handleUnbindTg = async () => {
   }
 }
 
-onMounted(() => loadProfile())
+const loadGroupConfig = async () => {
+  try {
+    const res: any = await getBotConfig()
+    if (res?.config) {
+      groupConfig.tech_group_id = res.config.tech_group_id || ''
+      groupConfig.billing_group_id = res.config.billing_group_id || ''
+    }
+  } catch { /* 非管理员可能无权限 */ }
+}
+
+const saveGroupConfig = async () => {
+  groupSaving.value = true
+  try {
+    await saveBotConfig({
+      tech_group_id: groupConfig.tech_group_id,
+      billing_group_id: groupConfig.billing_group_id,
+    })
+    ElMessage.success(t('common.saveSuccess'))
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || t('common.failed'))
+  } finally {
+    groupSaving.value = false
+  }
+}
+
+onMounted(async () => {
+  await loadProfile()
+  if (isAdmin.value) {
+    loadGroupConfig()
+  }
+})
 </script>
 
 <style scoped>
@@ -319,4 +387,10 @@ onMounted(() => loadProfile())
   letter-spacing: 2px;
 }
 .code-expire { font-size: 12px; color: var(--text-4); }
+.form-tip {
+  font-size: 12px;
+  color: var(--text-4);
+  margin-top: 4px;
+  line-height: 1.4;
+}
 </style>

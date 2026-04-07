@@ -58,6 +58,14 @@
             <el-input v-model="config.admin_group_id" :placeholder="$t('bot.adminGroupIdPlaceholder')" />
             <div class="form-tip">{{ $t('bot.adminGroupTip') }}</div>
           </el-form-item>
+          <el-form-item :label="$t('bot.techGroupId')">
+            <el-input v-model="config.tech_group_id" :placeholder="$t('bot.groupIdPlaceholder')" />
+            <div class="form-tip">{{ $t('bot.techGroupTip') }}</div>
+          </el-form-item>
+          <el-form-item :label="$t('bot.billingGroupId')">
+            <el-input v-model="config.billing_group_id" :placeholder="$t('bot.groupIdPlaceholder')" />
+            <div class="form-tip">{{ $t('bot.billingGroupTip') }}</div>
+          </el-form-item>
           <el-form-item :label="$t('bot.notifyGroupId')">
             <el-input v-model="config.notify_group_id" :placeholder="$t('bot.adminGroupIdPlaceholder')" />
             <div class="form-tip">{{ $t('bot.notifyGroupTip') }}</div>
@@ -193,6 +201,8 @@ const config = reactive({
   bot_username: '',
   bot_status: 'unknown',
   admin_group_id: '',
+  tech_group_id: '',
+  billing_group_id: '',
   notify_group_id: '',
   enable_register: true,
   enable_recharge: true,

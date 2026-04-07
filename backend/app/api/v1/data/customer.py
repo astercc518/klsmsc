@@ -57,6 +57,7 @@ from app.modules.data.private_library_summary_sync import (
     norm_dim,
     pls_apply_bucket_delta,
     pls_prune_non_positive,
+    pls_soft_prune_non_positive,
     pls_apply_deltas_bulk,
 )
 from app.modules.data.private_upload_core import run_private_library_upload
@@ -67,6 +68,7 @@ from app.modules.data.private_upload_parse import (
     phone_db_lookup_keys as _phone_db_lookup_keys,
 )
 from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache as _invalidate_my_numbers_summary_cache
+from app.utils.phone_utils import export_phone_plain_digits
 from app.modules.data.data_account import DataAccount
 from app.modules.common.account import Account
 from app.modules.common.package import AccountPackage
@@ -128,7 +130,12 @@ async def _summary_from_private_library_summaries_table(
     total_detail = cnt_pln + cnt_dn
 
     rows = (
-        await db.execute(select(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == account_id))
+        await db.execute(
+            select(PrivateLibrarySummary).where(
+                PrivateLibrarySummary.account_id == account_id,
+                PrivateLibrarySummary.is_deleted == False,  # noqa: E712
+            )
+        )
     ).scalars().all()
 
     if total_detail > 0 and len(rows) == 0:
@@ -1697,19 +1704,32 @@ async def _execute_my_numbers_batch_delete(
         )
         n_pls = (await db.execute(cnt_pls_stmt)).scalar() or 0
         if n_pls > 0:
-            del_pls = _filters_pls(
-                sa_delete(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == account_id)
-            )
-            await db.execute(del_pls)
+            if hard_delete:
+                ghost_stmt = _filters_pls(
+                    sa_delete(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == account_id)
+                )
+            else:
+                ghost_stmt = _filters_pls(
+                    sa_update(PrivateLibrarySummary)
+                    .where(PrivateLibrarySummary.account_id == account_id)
+                    .values(is_deleted=True, updated_at=datetime.now())
+                )
+            await db.execute(ghost_stmt)
             cnt_left = (await db.execute(cnt_pls_stmt)).scalar() or 0
             if cnt_left > 0 and norm_dim(batch_id) != "" and norm_dim(country or "") != "":
-                await db.execute(
-                    sa_delete(PrivateLibrarySummary).where(
+                if hard_delete:
+                    loose = sa_delete(PrivateLibrarySummary).where(
                         PrivateLibrarySummary.account_id == account_id,
                         _sql_dim_ci_trim_eq(PrivateLibrarySummary.country_code, country),
                         _sql_dim_ci_trim_eq(PrivateLibrarySummary.batch_id, batch_id),
                     )
-                )
+                else:
+                    loose = sa_update(PrivateLibrarySummary).where(
+                        PrivateLibrarySummary.account_id == account_id,
+                        _sql_dim_ci_trim_eq(PrivateLibrarySummary.country_code, country),
+                        _sql_dim_ci_trim_eq(PrivateLibrarySummary.batch_id, batch_id),
+                    ).values(is_deleted=True, updated_at=datetime.now())
+                await db.execute(loose)
             await db.commit()
             await _invalidate_my_numbers_summary_cache(account_id)
             return {
@@ -1773,27 +1793,49 @@ async def _execute_my_numbers_batch_delete(
     await db.execute(stmt_dn)
 
     if carrier_specified:
-        await pls_prune_non_positive(db, account_id)
+        if hard_delete:
+            await pls_prune_non_positive(db, account_id)
+        else:
+            await pls_soft_prune_non_positive(db, account_id)
     else:
-        # 整卡：直接删除本维度下全部汇总行（各运营商 × manual/purchased），与明细移除保持一致
-        del_pls_card = _filters_pls(
-            sa_delete(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == account_id)
-        )
-        await db.execute(del_pls_card)
-        # 若汇总表 source/purpose 与请求维度不一致（历史脏数据），严格 WHERE 可能删不到行，导致删后仍见幽灵卡片
+        if hard_delete:
+            # 管理端硬删：物理删除汇总行
+            del_pls_card = _filters_pls(
+                sa_delete(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == account_id)
+            )
+            await db.execute(del_pls_card)
+        else:
+            # 客户侧软删：标记汇总行 is_deleted=True（管理端仍可查阅）
+            mark_pls_card = _filters_pls(
+                sa_update(PrivateLibrarySummary)
+                .where(PrivateLibrarySummary.account_id == account_id)
+                .values(is_deleted=True, updated_at=datetime.now())
+            )
+            await db.execute(mark_pls_card)
+        # 若汇总表 source/purpose 与请求维度不一致（历史脏数据），严格 WHERE 可能匹配不到行
         cnt_pls_left_stmt = _filters_pls(
             select(func.count())
             .select_from(PrivateLibrarySummary)
-            .where(PrivateLibrarySummary.account_id == account_id)
+            .where(
+                PrivateLibrarySummary.account_id == account_id,
+                PrivateLibrarySummary.is_deleted == False,  # noqa: E712
+            )
         )
         cnt_pls_left = (await db.execute(cnt_pls_left_stmt)).scalar() or 0
         if cnt_pls_left > 0 and norm_dim(batch_id) != "" and norm_dim(country or "") != "":
-            loose_del = sa_delete(PrivateLibrarySummary).where(
-                PrivateLibrarySummary.account_id == account_id,
-                _sql_dim_ci_trim_eq(PrivateLibrarySummary.country_code, country),
-                _sql_dim_ci_trim_eq(PrivateLibrarySummary.batch_id, batch_id),
-            )
-            await db.execute(loose_del)
+            if hard_delete:
+                loose_stmt = sa_delete(PrivateLibrarySummary).where(
+                    PrivateLibrarySummary.account_id == account_id,
+                    _sql_dim_ci_trim_eq(PrivateLibrarySummary.country_code, country),
+                    _sql_dim_ci_trim_eq(PrivateLibrarySummary.batch_id, batch_id),
+                )
+            else:
+                loose_stmt = sa_update(PrivateLibrarySummary).where(
+                    PrivateLibrarySummary.account_id == account_id,
+                    _sql_dim_ci_trim_eq(PrivateLibrarySummary.country_code, country),
+                    _sql_dim_ci_trim_eq(PrivateLibrarySummary.batch_id, batch_id),
+                ).values(is_deleted=True, updated_at=datetime.now())
+            await db.execute(loose_stmt)
 
     await db.commit()
     await _invalidate_my_numbers_summary_cache(account_id)
@@ -1896,7 +1938,7 @@ async def export_my_numbers(
             async for row in result:
                 r = row._mapping
                 row_data = [
-                    r["phone_number"],
+                    export_phone_plain_digits(r["phone_number"]),
                     r["country_code"] or "",
                     r["carrier"] or "",
                     r["source"] or "",
@@ -1908,7 +1950,9 @@ async def export_my_numbers(
         else:
             async for row in result:
                 r = row._mapping
-                yield f"{r['phone_number']}\n"
+                line = export_phone_plain_digits(r["phone_number"])
+                if line:
+                    yield f"{line}\n"
 
     filename = f"my_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{fmt}"
     media_type = "text/csv" if fmt == "csv" else "text/plain"

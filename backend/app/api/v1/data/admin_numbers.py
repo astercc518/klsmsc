@@ -34,6 +34,7 @@ from app.modules.data.models import (
 from app.modules.common.account import Account
 from app.core.auth import get_current_admin
 from app.utils.logger import get_logger
+from app.utils.phone_utils import export_phone_plain_digits
 from app.schemas.data import NumberBatchTagRequest, NumberBatchStatusRequest
 from app.api.v1.data.helpers import serialize_number, compute_freshness
 
@@ -1038,7 +1039,7 @@ async def export_numbers(
     writer.writerow(["phone_number", "country_code", "carrier", "tags", "status", "source", "use_count"])
     for n in numbers:
         writer.writerow([
-            n.phone_number,
+            export_phone_plain_digits(n.phone_number),
             n.country_code,
             n.carrier or "",
             "|".join(n.tags) if n.tags else "",
@@ -1378,14 +1379,8 @@ async def admin_resync_private_library_summary(
 
     await db.execute(delete(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == aid))
 
-    for model, origin in [
-        (PrivateLibraryNumber, "manual"),
-        (DataNumber, "purchased"),
-    ]:
-        extra = []
-        if model is PrivateLibraryNumber:
-            extra.append(PrivateLibraryNumber.is_deleted == False)  # noqa: E712
-        stmt = (
+    def _agg_stmt(model, account_id, extra_where):
+        return (
             select(
                 func.coalesce(model.country_code, "").label("cc"),
                 func.coalesce(model.source, "").label("src"),
@@ -1398,10 +1393,19 @@ async def admin_resync_private_library_summary(
                 func.min(model.created_at).label("fa"),
                 func.max(model.created_at).label("la"),
             )
-            .where(model.account_id == aid, *extra)
+            .where(model.account_id == account_id, *extra_where)
             .group_by("cc", "src", "pur", "bid", "car")
         )
-        rows = (await db.execute(stmt)).all()
+
+    # 活跃行 → is_deleted=False
+    for model, origin in [
+        (PrivateLibraryNumber, "manual"),
+        (DataNumber, "purchased"),
+    ]:
+        extra = []
+        if model is PrivateLibraryNumber:
+            extra.append(PrivateLibraryNumber.is_deleted == False)  # noqa: E712
+        rows = (await db.execute(_agg_stmt(model, aid, extra))).all()
         for r in rows:
             cnt = int(r.cnt or 0)
             if cnt <= 0:
@@ -1416,10 +1420,56 @@ async def admin_resync_private_library_summary(
                 library_origin=origin,
                 total_count=cnt,
                 used_count=int(r.used or 0),
+                is_deleted=False,
                 remarks=r.rmk,
                 first_at=r.fa,
                 last_at=r.la,
             ))
+
+    # 已软删行 → is_deleted=True（仅 PrivateLibraryNumber 有软删状态）
+    # 由于 unique constraint 不含 is_deleted，同维度只能有一行——若活跃阶段已插入则跳过
+    await db.flush()
+    existing_keys: set = set()
+    ex_rows = (await db.execute(
+        select(
+            PrivateLibrarySummary.country_code,
+            PrivateLibrarySummary.source,
+            PrivateLibrarySummary.purpose,
+            PrivateLibrarySummary.batch_id,
+            PrivateLibrarySummary.carrier,
+            PrivateLibrarySummary.library_origin,
+        ).where(PrivateLibrarySummary.account_id == aid)
+    )).all()
+    for ek in ex_rows:
+        existing_keys.add((norm_dim(ek[0]), norm_dim(ek[1]), norm_dim(ek[2]),
+                           norm_dim(ek[3]), norm_dim(ek[4]), ek[5]))
+
+    soft_del_rows = (await db.execute(
+        _agg_stmt(PrivateLibraryNumber, aid, [PrivateLibraryNumber.is_deleted == True])  # noqa: E712
+    )).all()
+    for r in soft_del_rows:
+        cnt = int(r.cnt or 0)
+        if cnt <= 0:
+            continue
+        key = (norm_dim(r.cc), norm_dim(r.src), norm_dim(r.pur),
+               norm_dim(r.bid), norm_dim(r.car), "manual")
+        if key in existing_keys:
+            continue
+        db.add(PrivateLibrarySummary(
+            account_id=aid,
+            country_code=norm_dim(r.cc),
+            source=norm_dim(r.src),
+            purpose=norm_dim(r.pur),
+            batch_id=norm_dim(r.bid),
+            carrier=norm_dim(r.car),
+            library_origin="manual",
+            total_count=cnt,
+            used_count=int(r.used or 0),
+            is_deleted=True,
+            remarks=r.rmk,
+            first_at=r.fa,
+            last_at=r.la,
+        ))
     await db.commit()
 
     try:
@@ -1529,12 +1579,19 @@ async def admin_export_private_library_numbers(
     source: Optional[str] = None,
     purpose: Optional[str] = None,
     phone: Optional[str] = None,
+    fmt: str = Query("csv", description="导出格式：csv（含所有字段）或 txt（纯号码，每行一个）"),
     db: AsyncSession = Depends(get_db),
     admin=Depends(get_current_admin),
 ):
-    """管理端：导出客户私库分表为 CSV（含软删行）"""
-    q = (
-        select(
+    """管理端：导出客户私库分表为 CSV 或 TXT"""
+    fmt = fmt.strip().lower()
+    if fmt not in ("csv", "txt"):
+        fmt = "csv"
+
+    if fmt == "txt":
+        q = select(PrivateLibraryNumber.phone_number)
+    else:
+        q = select(
             PrivateLibraryNumber.phone_number,
             PrivateLibraryNumber.country_code,
             PrivateLibraryNumber.carrier,
@@ -1545,9 +1602,9 @@ async def admin_export_private_library_numbers(
             Account.account_name,
             PrivateLibraryNumber.is_deleted,
             PrivateLibraryNumber.created_at,
-        )
-        .join(Account, Account.id == PrivateLibraryNumber.account_id)
-    )
+        ).join(Account, Account.id == PrivateLibraryNumber.account_id)
+
+    q = q.where(True)  # noqa: base clause
     if account_id is not None:
         q = q.where(PrivateLibraryNumber.account_id == account_id)
     if is_deleted is not None:
@@ -1574,33 +1631,50 @@ async def admin_export_private_library_numbers(
         logger.exception("管理端私库导出 stream 失败")
         raise HTTPException(status_code=500, detail="导出私库失败") from e
 
-    async def generate():
+    if fmt == "txt":
+        async def generate_txt():
+            async for row in result:
+                line = export_phone_plain_digits(row[0])
+                if line:
+                    yield line + "\n"
+
+        filename = f"private_library_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        return StreamingResponse(
+            generate_txt(),
+            media_type="text/plain",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+
+    async def generate_csv():
         yield "\ufeff"
         yield (
             "phone_number,country_code,carrier,source,purpose,batch_id,account_id,account_name,"
             "is_deleted,created_at\n"
         )
         async for row in result:
-            m = row._mapping
-            ca = m["created_at"]
+            # 流式 Row 用列序取号码，避免 _mapping 键与 ORM 列名不一致时仍带 + 导出
+            ca = row[9]
             yield ",".join(
                 [
-                    str(m["phone_number"] or ""),
-                    str(m["country_code"] or ""),
-                    str(m["carrier"] or ""),
-                    str(m["source"] or ""),
-                    str(m["purpose"] or ""),
-                    str(m["batch_id"] or ""),
-                    str(m["account_id"] or ""),
-                    str(m["account_name"] or "").replace(",", " "),
-                    "1" if m["is_deleted"] else "0",
+                    export_phone_plain_digits(row[0]),
+                    str(row[1] or ""),
+                    str(row[2] or ""),
+                    str(row[3] or ""),
+                    str(row[4] or ""),
+                    str(row[5] or ""),
+                    str(row[6] or ""),
+                    str(row[7] or "").replace(",", " "),
+                    "1" if row[8] else "0",
                     ca.isoformat() if ca else "",
                 ]
             ) + "\n"
 
     filename = f"private_library_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     return StreamingResponse(
-        generate(),
+        generate_csv(),
         media_type="text/csv",
         headers={
             "Content-Disposition": f"attachment; filename={filename}",

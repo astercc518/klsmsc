@@ -254,6 +254,11 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if data.startswith("sales_login_"):
         await handle_sales_quick_login(query, context)
         return
+
+    # OKCC 刷新余额
+    if data.startswith("okcc_refresh_"):
+        await handle_okcc_refresh(query, context)
+        return
     
     # 返回主菜单（清除待填号码等状态）
     if data == "menu_main":
@@ -341,6 +346,13 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
     
+    # 语音/数据开户
+    if data in ("menu_open_voice", "menu_open_data"):
+        from bot.handlers.account_opening import opening_start
+        biz = data.replace("menu_open_", "")
+        await opening_start(update, context, biz_type=biz)
+        return
+
     # 创建邀请 - 转到sales模块的邀请流程
     if data == "menu_invite":
         # 检查是否是销售
@@ -372,6 +384,14 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # 处理业务类型选择（邀请流程）
     if data.startswith("biz_"):
         biz_type = data.replace("biz_", "")
+
+        # 语音/数据 → 走开户订单流程（发技术群+建工单）
+        if biz_type in ("voice", "data"):
+            from bot.handlers.account_opening import opening_start
+            await opening_start(update, context, biz_type=biz_type)
+            return
+
+        # 短信 → 继续走邀请码流程
         context.user_data['business_type'] = biz_type
         
         biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
@@ -420,9 +440,15 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
     
-    # 我的客户
+    # 我的客户（分类概览或全部）
     if data == "menu_my_customers":
         await show_my_customers(query, context)
+        return
+
+    # 按业务类型查看客户
+    if data.startswith("my_cust_"):
+        biz_filter = data.replace("my_cust_", "")
+        await show_my_customers(query, context, biz_filter=biz_filter)
         return
     
     # 业务知识
@@ -1013,18 +1039,172 @@ async def show_tickets(query, context):
         )
 
 
-async def handle_sales_quick_login(query, context):
-    """销售点击「快捷登录」：调用后端签发模拟登录链接"""
+# OKCC 对外 PHP 接口（与后台 admin.py 配置一致）
+_OKCC_APIS = {
+    "lcchcc": "https://www.lcchcc.com/smsc_api.php",
+    "klchcc": "https://www.klchcc.com/smsc_api.php",
+}
+_OKCC_API_KEY = "smsc_okcc_sync_8f3a2d1e"
+
+
+async def sync_okcc_balance_to_db(account_id: int) -> bool:
+    """
+    从 OKCC 拉取单个客户余额并写入本地账户（语音/数据）。
+    成功写入返回 True；未找到客户或请求失败返回 False（静默，不打断展示）。
+    """
+    import httpx
+    from datetime import datetime as dt
+    from sqlalchemy.orm.attributes import flag_modified
+
+    try:
+        async with get_session() as db:
+            acct = await db.get(Account, account_id)
+            if not acct or acct.business_type not in ("voice", "data"):
+                return False
+            if not (acct.supplier_url or acct.supplier_credentials):
+                return False
+
+            acct_name = acct.account_name
+            creds = dict(acct.supplier_credentials or {})
+            okcc_server = creds.get("okcc_server", "")
+            servers = [okcc_server] if okcc_server in _OKCC_APIS else list(_OKCC_APIS.keys())
+
+            balance_yuan = None
+            found_server = None
+            for srv in servers:
+                try:
+                    async with httpx.AsyncClient(verify=False, timeout=10) as client:
+                        resp = await client.get(
+                            _OKCC_APIS[srv],
+                            params={"key": _OKCC_API_KEY, "action": "customer_detail", "name": acct_name},
+                        )
+                        data = resp.json()
+                        if data.get("ok") and data.get("data"):
+                            balance_yuan = float(data["data"].get("balance_yuan", 0))
+                            found_server = srv
+                            break
+                except Exception:
+                    continue
+
+            if balance_yuan is None:
+                return False
+
+            creds["okcc_balance"] = balance_yuan
+            creds["okcc_server"] = found_server
+            creds["okcc_synced_at"] = dt.now().strftime("%Y-%m-%d %H:%M:%S")
+            acct.supplier_credentials = creds
+            acct.balance = balance_yuan
+            flag_modified(acct, "supplier_credentials")
+            await db.commit()
+            return True
+    except Exception:
+        logger.exception("sync_okcc_balance_to_db 失败 account_id=%s", account_id)
+        return False
+
+
+async def handle_okcc_refresh(query, context):
+    """用户点击「刷新余额」：强制再拉一次 OKCC 并刷新展示"""
+    raw = query.data or ""
+    try:
+        account_id = int(raw.replace("okcc_refresh_", ""))
+    except ValueError:
+        return
+
+    async with get_session() as db:
+        acct = await db.get(Account, account_id)
+        if not acct or not (acct.supplier_url or acct.supplier_credentials):
+            await query.edit_message_text("❌ 账户不存在或无OKCC信息", reply_markup=get_back_menu())
+            return
+
+    ok = await sync_okcc_balance_to_db(account_id)
+    await handle_sales_quick_login(query, context, override_account_id=account_id, skip_okcc_sync=True)
+    if not ok:
+        try:
+            await query.answer("未能从 OKCC 更新余额", show_alert=True)
+        except Exception:
+            pass
+
+
+async def handle_sales_quick_login(query, context, override_account_id=None, skip_okcc_sync: bool = False):
+    """销售点击「快捷登录」：语音/数据客户展示OKCC凭据（进入前自动同步余额），短信客户走模拟登录"""
     from bot.config import settings as bot_settings
 
     tg_id = query.from_user.id
-    raw = query.data or ""
-    try:
-        account_id = int(raw.replace("sales_login_", ""))
-    except ValueError:
-        await query.edit_message_text("❌ 参数无效", reply_markup=get_back_menu())
+    if override_account_id:
+        account_id = override_account_id
+    else:
+        raw = query.data or ""
+        try:
+            account_id = int(raw.replace("sales_login_", ""))
+        except ValueError:
+            await query.edit_message_text("❌ 参数无效", reply_markup=get_back_menu())
+            return
+
+    # 语音/数据：员工查看时先拉取最新 OKCC 余额（刷新按钮路径会 skip 避免重复请求）
+    if not skip_okcc_sync:
+        await sync_okcc_balance_to_db(account_id)
+
+    # 再查询账户展示
+    async with get_session() as db:
+        acct = await db.get(Account, account_id)
+
+    if not acct:
+        await query.edit_message_text("❌ 账户不存在", reply_markup=get_back_menu())
         return
 
+    # 语音/数据客户：展示完整凭据信息
+    if acct.business_type in ('voice', 'data') and (acct.supplier_url or acct.supplier_credentials):
+        creds = acct.supplier_credentials or {}
+
+        client_name = creds.get('client_name') or acct.account_name
+        username = creds.get('username') or 'admin'
+        password = creds.get('password') or '-'
+        sip_range = creds.get('sip_range') or creds.get('agent_range') or '-'
+        sip_password = creds.get('sip_password') or '-'
+        sip_domain = creds.get('sip_domain') or creds.get('domain') or '-'
+        supplier_url = acct.supplier_url or '-'
+
+        text = f"系统地址：{supplier_url}\n\n"
+        text += f"企业客户登录 ─────────\n"
+        text += f"客户名：{client_name}\n"
+        text += f"用户名：{username}\n"
+        text += f"密码：{password}\n"
+        text += f"─────────────────\n"
+        text += f"坐席注册\n"
+        text += f"坐席号：{sip_range}\n"
+        text += f"口令：{sip_password}\n"
+        text += f"域名：{sip_domain}\n"
+        text += f"─────────────────\n"
+        text += f"坐席登录\n"
+        text += f"客户名：{client_name}\n"
+        text += f"用户名：{sip_range}\n"
+        text += f"密码：{sip_range}\n"
+        text += f"\n送号规则：国码+号码，中间不加0\n"
+
+        # 附加余额和资费信息
+        billing_pkg = creds.get('billing_package', '')
+        if billing_pkg:
+            text += f"\n📋 资费套餐: {billing_pkg}"
+        okcc_balance = creds.get('okcc_balance')
+        if okcc_balance is not None:
+            synced_at = creds.get('okcc_synced_at', '')
+            text += f"\n💰 OKCC余额: ¥{okcc_balance:.2f}"
+            if synced_at:
+                text += f" (同步: {synced_at})"
+
+        keyboard = []
+        if acct.supplier_url:
+            keyboard.append([InlineKeyboardButton("🌐 打开系统登录", url=acct.supplier_url)])
+        keyboard.append([InlineKeyboardButton("🔄 刷新余额", callback_data=f"okcc_refresh_{account_id}")])
+        keyboard.append([InlineKeyboardButton("⬅️ 返回我的客户", callback_data="menu_my_customers")])
+
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
+    # 短信客户：走原有的模拟登录逻辑
     secret = (getattr(bot_settings, "TELEGRAM_STAFF_API_SECRET", None) or "").strip()
     if not secret:
         await query.edit_message_text(
@@ -1084,12 +1264,11 @@ async def handle_sales_quick_login(query, context):
     )
 
 
-async def show_my_customers(query, context):
-    """显示我的客户（基本信息 + 快捷登录）"""
+async def show_my_customers(query, context, biz_filter=None):
+    """显示我的客户 — 支持按业务类型分类"""
     tg_id = query.from_user.id
     
     async with get_session() as db:
-        # 获取销售员工信息
         admin_result = await db.execute(
             select(AdminUser).where(
                 AdminUser.tg_id == tg_id,
@@ -1105,37 +1284,78 @@ async def show_my_customers(query, context):
             )
             return
         
-        # 查询该销售名下客户（未删除、正常）；单条展示字段较多，限制条数避免超出 Telegram 4096 字
-        customers_result = await db.execute(
-            select(Account).where(
-                Account.sales_id == admin.id,
-                Account.status == 'active',
-                Account.is_deleted == False,  # noqa: E712
-            ).order_by(desc(Account.created_at)).limit(20)
+        # 统计各业务类型客户数
+        base_filter = [
+            Account.sales_id == admin.id,
+            Account.status == 'active',
+            Account.is_deleted == False,  # noqa: E712
+        ]
+        count_result = await db.execute(
+            select(Account.business_type, func.count(Account.id))
+            .where(*base_filter)
+            .group_by(Account.business_type)
         )
-        all_customers = customers_result.scalars().all()
+        type_counts = dict(count_result.all())
+        sms_count = type_counts.get('sms', 0)
+        voice_count = type_counts.get('voice', 0)
+        data_count = type_counts.get('data', 0)
+        total_count = sms_count + voice_count + data_count
 
-        if not all_customers:
+        if total_count == 0:
             await query.edit_message_text(
                 "👥 我的客户\n\n"
                 "暂无客户记录\n\n"
-                "通过「创建开户邀请」邀请新客户",
+                "通过「语音开户」「数据开户」或「创建开户邀请」添加客户",
                 reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("📞 语音开户", callback_data="menu_open_voice"),
+                        InlineKeyboardButton("📊 数据开户", callback_data="menu_open_data"),
+                    ],
                     [InlineKeyboardButton("🎯 创建邀请", callback_data="menu_invite")],
                     [InlineKeyboardButton("🔙 返回", callback_data="menu_main")]
                 ])
             )
             return
 
-        total_customers = len(all_customers)
-        total_balance = sum(float(c.balance or 0) for c in all_customers)
+        # 未指定业务类型时：显示分类概览
+        if biz_filter is None:
+            biz_labels = {
+                'sms': f"📱 短信客户 ({sms_count})",
+                'voice': f"📞 语音客户 ({voice_count})",
+                'data': f"📊 数据客户 ({data_count})",
+            }
+            keyboard = []
+            for bt, label in biz_labels.items():
+                if type_counts.get(bt, 0) > 0:
+                    keyboard.append([InlineKeyboardButton(label, callback_data=f"my_cust_{bt}")])
+            if total_count > 0:
+                keyboard.append([InlineKeyboardButton("📋 全部客户", callback_data="my_cust_all")])
+            keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_main")])
+
+            await query.edit_message_text(
+                f"👥 <b>我的客户</b>（共 {total_count} 个）\n\n"
+                f"📱 短信: {sms_count}  |  📞 语音: {voice_count}  |  📊 数据: {data_count}\n\n"
+                f"选择业务类型查看客户列表：",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='HTML'
+            )
+            return
+
+        # 指定业务类型或全部：展示客户列表
+        q = select(Account).where(*base_filter)
+        if biz_filter != 'all':
+            q = q.where(Account.business_type == biz_filter)
+        q = q.order_by(desc(Account.created_at)).limit(20)
+        customers_result = await db.execute(q)
+        all_customers = customers_result.scalars().all()
+
         display_note = ""
         customers = all_customers
         if len(all_customers) > 10:
-            display_note = f"\n（仅展示前 10 位，共 {total_customers} 位，其余请登录管理后台查看）\n"
+            display_note = f"\n（仅展示前 10 位，共 {len(all_customers)} 位）\n"
             customers = all_customers[:10]
 
-        # 批量解析各账户优先通道（默认优先，其次 priority）
+        # 批量解析各账户优先通道
         acc_ids = [c.id for c in customers]
         channel_best: dict = {}
         if acc_ids:
@@ -1164,9 +1384,11 @@ async def show_my_customers(query, context):
                 return f"{nm} ({code})"
             return nm or code or "-"
 
+        biz_title_map = {'sms': '📱 短信客户', 'voice': '📞 语音客户', 'data': '📊 数据客户', 'all': '📋 全部客户'}
+        title = biz_title_map.get(biz_filter, '我的客户')
+
         lines = [
-            f"👥 我的客户（共 {total_customers} 个）\n",
-            f"💰 总余额: ${total_balance:.2f}",
+            f"👥 {title}（{len(all_customers)} 个）\n",
             display_note,
             "────────\n",
         ]
@@ -1177,29 +1399,16 @@ async def show_my_customers(query, context):
             up = float(c.unit_price or 0)
             cc = (c.country_code or "").strip().upper()
             country_label = COUNTRY_NAMES.get(cc, cc) if cc else "-"
-            if cc and country_label != cc:
-                country_disp = f"{country_label} ({cc})"
-            elif cc:
-                country_disp = cc
-            else:
-                country_disp = "-"
-            if c.tg_username:
-                tg_disp = f"@{c.tg_username}"
-            elif c.tg_id:
-                tg_disp = str(c.tg_id)
-            else:
-                tg_disp = "-"
+            country_disp = f"{country_label} ({cc})" if (cc and country_label != cc) else (cc or "-")
+
+            biz_icon = {'sms': '📱', 'voice': '📞', 'data': '📊'}.get(c.business_type, '❓')
 
             lines.append(
-                f"名称：{c.account_name}\n"
-                f"TG：{tg_disp}\n"
+                f"{biz_icon} {c.account_name}\n"
                 f"国家：{country_disp}\n"
-                f"通道：{_channel_line(c.id)}\n"
-                f"单价：${up:.4f}/条\n"
-                f"余额：${balance:.2f}\n"
+                f"单价：${up:.4f}  |  余额：${balance:.2f}\n"
                 "────────\n"
             )
-            # 按钮文案须短；callback_data ≤64 字节
             btn_text = c.account_name.strip() if c.account_name else str(c.id)
             if len(btn_text) > 16:
                 btn_text = btn_text[:14] + "…"
@@ -1207,13 +1416,16 @@ async def show_my_customers(query, context):
                 [InlineKeyboardButton(f"🔐 {btn_text}", callback_data=f"sales_login_{c.id}")]
             )
 
-        lines.append("点击对应「🔐」生成浏览器登录链接（模拟登录客户）。")
+        lines.append("点击「🔐」生成浏览器登录链接")
         
-        keyboard.append([InlineKeyboardButton("🎯 创建新邀请", callback_data="menu_invite")])
-        keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_main")])
+        keyboard.append([InlineKeyboardButton("⬅️ 返回客户分类", callback_data="menu_my_customers")])
+        keyboard.append([InlineKeyboardButton("🔙 返回主菜单", callback_data="menu_main")])
         
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:3990] + "\n..."
         await query.edit_message_text(
-            "\n".join(lines),
+            text,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -2649,6 +2861,12 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tg_id = update.effective_user.id
 
+    # 语音开户：设置卖价（文本输入）→ 委托给 account_opening 处理
+    if waiting_for == 'opening_sell_price':
+        from bot.handlers.account_opening import handle_price_input
+        await handle_price_input(update, context)
+        return
+
     if not waiting_for and not _peek_sms_approval_pending(context, tg_id):
         return  # 没有等待输入，忽略
 
@@ -3475,7 +3693,7 @@ _sms_approval_media_filters = filters.ChatType.GROUPS & ~filters.VOICE & (
 menu_handlers = [
     CallbackQueryHandler(
         handle_menu_callback,
-        pattern=r'^(?!menu_register$|reg_)(?:sales_login_|menu_|biz_|kb_|ticket_type_|country_|tpl_|pricing_|approve_|reject_|send_approved_sms_|process_|ticket_detail_|close_ticket_|back_)'
+        pattern=r'^(?!menu_register$|reg_)(?:sales_login_|okcc_refresh_|menu_|biz_|kb_|ticket_type_|country_|tpl_|pricing_|approve_|reject_|send_approved_sms_|sms_approval_skip_|process_|ticket_detail_|close_ticket_|back_|my_cust_)'
     ),
     # 短信审核回复：图片与图片类文档需在 TEXT 之外单独处理
     MessageHandler(

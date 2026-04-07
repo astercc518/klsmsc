@@ -791,6 +791,8 @@ class BotConfigUpdate(BaseModel):
     bot_username: Optional[str] = None
     bot_status: Optional[str] = None
     admin_group_id: Optional[str] = None
+    tech_group_id: Optional[str] = None
+    billing_group_id: Optional[str] = None
     notification_group_id: Optional[str] = None
     enable_register: Optional[bool] = None
     enable_recharge: Optional[bool] = None
@@ -851,6 +853,8 @@ async def get_bot_config(
             "bot_username": bot_username,
             "bot_status": bot_status,
             "admin_group_id": configs.get('telegram_admin_group_id') or os.getenv('TELEGRAM_ADMIN_GROUP_ID', ''),
+            "tech_group_id": configs.get('telegram_tech_group_id') or os.getenv('STAFF_GROUP_ID', ''),
+            "billing_group_id": configs.get('telegram_billing_group_id', ''),
             "notification_group_id": configs.get('telegram_notification_group_id', ''),
             "enable_register": configs.get('telegram_enable_register', 'true') == 'true',
             "enable_recharge": configs.get('telegram_enable_recharge', 'true') == 'true',
@@ -888,6 +892,8 @@ async def update_bot_config(
         'bot_username': 'telegram_bot_username',
         'bot_status': 'telegram_bot_status',
         'admin_group_id': 'telegram_admin_group_id',
+        'tech_group_id': 'telegram_tech_group_id',
+        'billing_group_id': 'telegram_billing_group_id',
         'notification_group_id': 'telegram_notification_group_id',
         'enable_register': 'telegram_enable_register',
         'enable_recharge': 'telegram_enable_recharge',
@@ -926,6 +932,7 @@ async def update_bot_config(
         env_sync_map = {
             'telegram_bot_token': 'TELEGRAM_BOT_TOKEN',
             'telegram_admin_group_id': 'TELEGRAM_ADMIN_GROUP_ID',
+            'telegram_tech_group_id': 'STAFF_GROUP_ID',
         }
         env_updates = {}
         for db_key, env_key in env_sync_map.items():

@@ -78,7 +78,7 @@
 
       <el-row :gutter="16">
         <el-col :xs="24" :sm="12" :lg="8" v-for="(g, idx) in groups" :key="idx">
-          <el-card class="group-card" shadow="hover">
+          <el-card :class="['group-card', { 'group-card--deleted': g.is_deleted }]" shadow="hover">
             <template #header>
               <div class="card-header">
                 <div class="card-title">
@@ -87,6 +87,9 @@
                     <span class="card-dim-sep">·</span>
                     <span class="card-dim-name">{{ getGroupName(g) }}</span>
                   </span>
+                  <el-tag v-if="g.is_deleted" size="small" type="danger" class="deleted-tag">
+                    {{ t('dataPool.privateLibDeletedByCustomer') }}
+                  </el-tag>
                 </div>
                 <span class="card-count">
                   {{ g.count.toLocaleString() }}
@@ -191,6 +194,7 @@ interface AdminPrivateGroup {
   first_at: string | null
   last_at: string | null
   library_origin?: string
+  is_deleted?: boolean
 }
 
 const loading = ref(false)
@@ -369,7 +373,6 @@ async function handleImpersonateGroup(g: AdminPrivateGroup) {
   }
 }
 
-/** 按当前卡片维度导出私库明细（CSV）；TXT 为纯号码，复用同接口加 fmt=txt 若后端支持——当前仅 CSV，TXT 用前端说明 */
 function handleExportGroup(g: AdminPrivateGroup, fmt: string) {
   const token = localStorage.getItem('admin_token')
   const params: Record<string, string | number | boolean> = {
@@ -379,38 +382,35 @@ function handleExportGroup(g: AdminPrivateGroup, fmt: string) {
     source: g.source || '',
     purpose: g.purpose || '',
   }
-  if (fmt === 'csv') {
-    const path = exportAdminPrivateLibraryNumbersUrl(params)
-    const downloadUrl = `${apiV1Base}${path.startsWith('/') ? path : `/${path}`}`
-    fetch(downloadUrl, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+  if (fmt === 'txt') params.fmt = 'txt'
+
+  const path = exportAdminPrivateLibraryNumbersUrl(params)
+  const downloadUrl = `${apiV1Base}${path.startsWith('/') ? path : `/${path}`}`
+  fetch(downloadUrl, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+    .then((response) => {
+      if (!response.ok) throw new Error(t('common.operationFailed'))
+      return response.blob().then((blob) => ({ blob, response }))
     })
-      .then((response) => {
-        if (!response.ok) throw new Error(t('common.operationFailed'))
-        return response.blob().then((blob) => ({ blob, response }))
-      })
-      .then(({ blob, response }) => {
-        const filenameMatch = response.headers.get('content-disposition')?.match(/filename="?([^"]+)"?/)
-        const filename = filenameMatch
-          ? filenameMatch[1]
-          : `private_lib_${g.account_id}_${Date.now()}.csv`
-        const link = document.createElement('a')
-        link.href = URL.createObjectURL(blob)
-        link.download = filename
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-        URL.revokeObjectURL(link.href)
-        ElMessage.success(t('common.operationSuccess'))
-      })
-      .catch(() => {
-        ElMessage.error(t('common.operationFailed'))
-      })
-    return
-  }
-  if (fmt === 'txt') {
-    ElMessage.info(t('dataPool.privateLibTxtHint'))
-  }
+    .then(({ blob, response }) => {
+      const filenameMatch = response.headers.get('content-disposition')?.match(/filename="?([^"]+)"?/)
+      const fallbackExt = fmt === 'txt' ? 'txt' : 'csv'
+      const filename = filenameMatch
+        ? filenameMatch[1]
+        : `private_lib_${g.account_id}_${Date.now()}.${fallbackExt}`
+      const link = document.createElement('a')
+      link.href = URL.createObjectURL(blob)
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(link.href)
+      ElMessage.success(t('common.operationSuccess'))
+    })
+    .catch(() => {
+      ElMessage.error(t('common.operationFailed'))
+    })
 }
 
 onMounted(() => {
@@ -581,5 +581,13 @@ onMounted(() => {
 }
 .groups-wrap {
   min-height: 200px;
+}
+.group-card--deleted {
+  opacity: 0.65;
+  border: 1px dashed var(--el-color-danger-light-3);
+}
+.deleted-tag {
+  margin-left: 6px;
+  flex-shrink: 0;
 }
 </style>

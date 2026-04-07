@@ -15,6 +15,7 @@ celery_app = Celery(
         'app.workers.data_worker',
         'app.workers.batch_worker',
         'app.workers.webhook_worker',
+        'app.workers.okcc_worker',
     ]
 )
 
@@ -68,6 +69,7 @@ celery_app.conf.task_routes.update({
 celery_app.conf.task_routes.update({
     'process_batch': {'queue': 'celery'},
     'send_webhook': {'queue': 'celery'},
+    'okcc_sync_balances_task': {'queue': 'celery'},
 })
 
 # 定时任务配置（Celery Beat）
@@ -99,6 +101,12 @@ celery_app.conf.beat_schedule = {
     },
 }
 
+# OKCC 余额定时全量同步（可通过 OKCC_BEAT_SYNC_ENABLED=false 关闭）
+if settings.OKCC_BEAT_SYNC_ENABLED:
+    celery_app.conf.beat_schedule['okcc-sync-balances-periodic'] = {
+        'task': 'okcc_sync_balances_task',
+        'schedule': float(settings.OKCC_BEAT_SYNC_INTERVAL_SECONDS),
+    }
 
 # Schema 变更已统一由 Alembic 管理，部署前运行 alembic upgrade head 即可。
 # Worker 启动时不再执行 ALTER TABLE。

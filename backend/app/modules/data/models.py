@@ -185,6 +185,8 @@ class PrivateLibrarySummary(Base):
     total_count = Column(Integer, nullable=False, default=0, comment="该桶号码总数")
     used_count = Column(Integer, nullable=False, default=0, comment="use_count>0 的号码数")
     remarks = Column(Text, comment="展示用备注（取长文本）")
+    is_deleted = Column(Boolean, nullable=False, default=False, server_default="0",
+                        comment="客户侧软删后标记为 True，管理端仍可查阅")
     first_at = Column(DateTime, comment="该桶最早入库时间")
     last_at = Column(DateTime, comment="该桶最晚入库时间")
     created_at = Column(DateTime, server_default=func.now())

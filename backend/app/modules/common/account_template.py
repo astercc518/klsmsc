@@ -14,7 +14,7 @@ class AccountTemplate(Base):
     template_code = Column(String(50), unique=True, nullable=False, comment="模板编码")
     template_name = Column(String(100), nullable=False, comment="模板名称")
     business_type = Column(
-        Enum("sms", "data", name="business_type_enum"),
+        Enum("sms", "voice", "data", name="business_type_enum"),
         nullable=False,
         default="sms",
         comment="业务类型"

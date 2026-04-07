@@ -74,6 +74,41 @@ async def get_session():
 from sqlalchemy import select
 
 
+async def get_group_ids() -> dict:
+    """
+    从 system_config 读取各 TG 群组 ID（优先数据库，回退环境变量）
+    返回 {'tech_group_id': '...', 'billing_group_id': '...', 'admin_group_id': '...'}
+    """
+    from app.modules.common.system_config import SystemConfig
+    ids = {
+        'admin_group_id': os.getenv('TELEGRAM_ADMIN_GROUP_ID', ''),
+        'tech_group_id': os.getenv('STAFF_GROUP_ID', ''),
+        'billing_group_id': '',
+    }
+    try:
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(SystemConfig.config_key, SystemConfig.config_value).where(
+                    SystemConfig.config_key.in_([
+                        'telegram_admin_group_id',
+                        'telegram_tech_group_id',
+                        'telegram_billing_group_id',
+                    ])
+                )
+            )
+            for k, v in result.fetchall():
+                if v and v.strip():
+                    if k == 'telegram_admin_group_id':
+                        ids['admin_group_id'] = v.strip()
+                    elif k == 'telegram_tech_group_id':
+                        ids['tech_group_id'] = v.strip()
+                    elif k == 'telegram_billing_group_id':
+                        ids['billing_group_id'] = v.strip()
+    except Exception as e:
+        logger.warning(f"读取群组ID配置失败，使用环境变量: {e}")
+    return ids
+
+
 async def get_valid_customer_binding_and_account(
     db: Any, tg_id: int
 ) -> Tuple[Optional[Any], Optional[Any]]:

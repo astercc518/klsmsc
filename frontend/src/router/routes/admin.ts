@@ -16,6 +16,20 @@ export const adminRoutes: RouteRecordRaw[] = [
     meta: { titleKey: 'menu.smsAccounts', icon: 'Message' },
   },
   {
+    path: '/admin/voice-accounts',
+    name: 'VoiceAccounts',
+    component: () => import('@/views/admin/Accounts.vue'),
+    props: { defaultBusinessType: 'voice' },
+    meta: { titleKey: 'menu.voiceAccounts', icon: 'Headset' },
+  },
+  {
+    path: '/admin/data-accounts-list',
+    name: 'DataAccountsList',
+    component: () => import('@/views/admin/Accounts.vue'),
+    props: { defaultBusinessType: 'data' },
+    meta: { titleKey: 'menu.dataAccounts', icon: 'DataLine' },
+  },
+  {
     path: '/admin/staff',
     name: 'AdminStaff',
     component: () => import('@/views/admin/Staff.vue'),
@@ -96,6 +110,12 @@ export const adminRoutes: RouteRecordRaw[] = [
     name: 'AdminTickets',
     component: () => import('@/views/admin/Tickets.vue'),
     meta: { titleKey: 'menu.tickets', icon: 'Tickets' },
+  },
+  {
+    path: '/admin/business-accounts',
+    name: 'BusinessAccounts',
+    component: () => import('@/views/admin/BusinessAccounts.vue'),
+    meta: { titleKey: 'menu.businessAccounts', icon: 'Headset' },
   },
   {
     path: '/admin/data/accounts',

@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.data.models import PrivateLibrarySummary
@@ -100,6 +100,9 @@ async def pls_apply_bucket_delta(
     nu = min(nu, nt)
     row.total_count = nt
     row.used_count = nu
+    # 正增量恢复被软删的汇总行（客户重新上传数据时自动复活卡片）
+    if delta_total > 0 and getattr(row, "is_deleted", False):
+        row.is_deleted = False
     if rmk and (not row.remarks or len(rmk) > len(row.remarks or "")):
         row.remarks = rmk
     if fa is not None:
@@ -111,12 +114,24 @@ async def pls_apply_bucket_delta(
 
 
 async def pls_prune_non_positive(db: AsyncSession, account_id: int) -> None:
-    """删除 total_count<=0 的汇总行"""
+    """删除 total_count<=0 的汇总行（硬删，用于管理端物理删除场景）"""
     await db.execute(
         delete(PrivateLibrarySummary).where(
             PrivateLibrarySummary.account_id == account_id,
             PrivateLibrarySummary.total_count <= 0,
         )
+    )
+
+
+async def pls_soft_prune_non_positive(db: AsyncSession, account_id: int) -> None:
+    """标记 total_count<=0 的汇总行为 is_deleted=True（客户侧软删场景，管理端仍可查阅）"""
+    await db.execute(
+        update(PrivateLibrarySummary)
+        .where(
+            PrivateLibrarySummary.account_id == account_id,
+            PrivateLibrarySummary.total_count <= 0,
+        )
+        .values(is_deleted=True)
     )
 
 
@@ -228,13 +243,16 @@ def build_summary_payload_from_rows(
                 "_count": 0,
                 "_used": 0,
                 "_carrier_map": defaultdict(int),
-                # 与明细 use_count==0 一致：按展示名合并各汇总桶的未使用数（发送页「仅未使用+运营商」依赖）
                 "_carrier_unused_map": defaultdict(int),
                 "_first_at": None,
                 "_last_at": None,
+                "_is_deleted": True,
             }
         g = groups[key]
         g["_origins"].add(r.library_origin)
+        # 只要任一汇总行未软删，卡片即视为存活
+        if not getattr(r, "is_deleted", False):
+            g["_is_deleted"] = False
         _tu = max(0, int(r.total_count or 0))
         _uu = min(_tu, max(0, int(r.used_count or 0)))
         g["_count"] += _tu
@@ -274,9 +292,9 @@ def build_summary_payload_from_rows(
             {
                 "country_code": g["country_code"],
                 "source": g["source"],
-                "source_label": g["source"],  # 由 API 层替换为 SOURCE_LABELS
+                "source_label": g["source"],
                 "purpose": g["purpose"],
-                "purpose_label": g["purpose"],  # 由 API 层替换为 PURPOSE_LABELS
+                "purpose_label": g["purpose"],
                 "batch_id": g["batch_id"],
                 "remarks": g["remarks"],
                 "count": g["_count"],
@@ -286,6 +304,7 @@ def build_summary_payload_from_rows(
                 "first_at": g["_first_at"].isoformat() if g["_first_at"] else None,
                 "last_at": g["_last_at"].isoformat() if g["_last_at"] else None,
                 "library_origin": lo,
+                "is_deleted": g.get("_is_deleted", False),
             }
         )
 

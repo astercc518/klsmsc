@@ -110,9 +110,13 @@ class SupplierRate(Base):
     mnc = Column(String(10), comment='移动网络代码(运营商)')
     operator_name = Column(String(100), comment='运营商名称')
     
+    # 语音计费模式（仅 business_type='voice' 时有效）
+    billing_model = Column(String(20), comment='语音计费模式：1+1/6+6/30+6/60+1/60+60')
+    line_desc = Column(String(100), comment='语音线路描述（如：电力/快递/卡线）')
+
     # 价格
-    cost_price = Column(Numeric(10, 6), nullable=False, comment='成本价(每条)')
-    sell_price = Column(Numeric(10, 6), default=0, comment='售价(每条)')
+    cost_price = Column(Numeric(10, 6), nullable=False, comment='成本价(每条/每分钟)')
+    sell_price = Column(Numeric(10, 6), default=0, comment='售价(每条/每分钟)')
     remark = Column(String(255), comment='备注')
     currency = Column(String(10), default='USD', comment='币种')
     

@@ -45,6 +45,8 @@ from bot.handlers.review import review_handlers
 from bot.handlers.mass_send import get_mass_handlers
 # 数据操作处理器
 from bot.handlers.data_ops import data_handlers
+# 语音/数据开户处理器
+from bot.handlers.account_opening import opening_handlers, handle_tech_reply_in_group
 
 async def get_bot_token_from_db() -> str:
     """从数据库 system_config 读取 Bot Token"""
@@ -155,6 +157,15 @@ def main():
     # 注册数据操作处理器
     for handler in data_handlers:
         app.add_handler(handler)
+    
+    # 注册语音/数据开户处理器
+    for handler in opening_handlers:
+        app.add_handler(handler)
+    # 技术群回复检测（群内文本消息）
+    app.add_handler(MessageHandler(
+        filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
+        handle_tech_reply_in_group
+    ), group=2)
     
     logger.info("Bot is running...")
     app.run_polling()

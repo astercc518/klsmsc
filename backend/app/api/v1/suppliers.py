@@ -89,6 +89,8 @@ class SupplierRateCreate(BaseModel):
     country_code: str = Field(..., description="国家代码")
     resource_type: str = Field(default="card", description="资源类型/发送方式")
     business_scope: str = Field(default="otp", description="业务范围")
+    billing_model: Optional[str] = Field(None, max_length=20, description="语音计费模式：1+1/6+6/30+6/60+1/60+60")
+    line_desc: Optional[str] = Field(None, max_length=100, description="语音线路描述")
     mcc: Optional[str] = None
     mnc: Optional[str] = None
     operator_name: Optional[str] = None
@@ -614,23 +616,31 @@ async def import_from_voice_pricing(
             cost = item.get("cost_usd") or item.get("price_usd")
             sale = item.get("sale_usd") or item.get("price_usd")
             gateway_name = (item.get("gateway_name") or "")[:255]
-            billing_model = (item.get("billing_model") or "60+60")[:50]
+            billing_model_val = (item.get("billing_model") or "60+60")[:20]
             full_desc = (item.get("full_desc") or "")[:255]
-            description = (item.get("description") or "")
+            description = (item.get("description") or "")[:100]
 
             if not country_code or cost is None or float(cost) <= 0:
                 continue
 
-            resource_type = billing_model
             remark = gateway_name or full_desc
 
+            # 去重：同供应商 + 同国家 + 同计费模式 + 同线路描述 = 同一条报价
+            dedup_where = [
+                SupplierRate.supplier_id == supplier_id,
+                SupplierRate.country_code == country_code,
+                SupplierRate.business_type == "voice",
+                SupplierRate.billing_model == billing_model_val,
+            ]
+            if description:
+                dedup_where.append(SupplierRate.line_desc == description)
+            else:
+                dedup_where.append(
+                    or_(SupplierRate.line_desc == None, SupplierRate.line_desc == "")  # noqa: E711
+                )
+
             exist_result = await db.execute(
-                select(SupplierRate.id).where(
-                    SupplierRate.supplier_id == supplier_id,
-                    SupplierRate.country_code == country_code,
-                    SupplierRate.business_type == "voice",
-                    SupplierRate.resource_type == resource_type,
-                ).limit(1)
+                select(SupplierRate.id).where(*dedup_where).limit(1)
             )
             if exist_result.scalar_one_or_none():
                 skipped_rates += 1
@@ -640,11 +650,13 @@ async def import_from_voice_pricing(
                 supplier_id=supplier_id,
                 business_type="voice",
                 country_code=country_code,
-                resource_type=resource_type,
+                resource_type="voice",
                 business_scope="otp",
+                billing_model=billing_model_val,
+                line_desc=description or None,
                 cost_price=Decimal(str(cost)),
                 sell_price=Decimal(str(sale)) if sale else Decimal("0"),
-                remark=remark or description or None,
+                remark=remark or None,
                 currency="USD",
             )
             db.add(rate)
@@ -852,6 +864,8 @@ async def get_supplier_rates(
                 "country_code": r.country_code,
                 "resource_type": r.resource_type or 'card',
                 "business_scope": r.business_scope or 'otp',
+                "billing_model": getattr(r, 'billing_model', None) or '',
+                "line_desc": getattr(r, 'line_desc', None) or '',
                 "mcc": r.mcc,
                 "mnc": r.mnc,
                 "operator_name": r.operator_name,
@@ -916,6 +930,8 @@ class SupplierRateUpdate(BaseModel):
     country_code: Optional[str] = None
     resource_type: Optional[str] = None
     business_scope: Optional[str] = None
+    billing_model: Optional[str] = None
+    line_desc: Optional[str] = None
     cost_price: Optional[Decimal] = None
     sell_price: Optional[Decimal] = None
     remark: Optional[str] = None
