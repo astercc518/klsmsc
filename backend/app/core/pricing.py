@@ -2,7 +2,7 @@
 计费引擎模块
 """
 from decimal import Decimal
-from typing import Dict, FrozenSet, List, Optional, Tuple
+from typing import Dict, List, Optional
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.sms.country_pricing import CountryPricing
@@ -14,49 +14,12 @@ from app.modules.common.balance_log import BalanceLog
 from app.utils.errors import InsufficientBalanceError, PricingNotFoundError
 from app.utils.sms_segment import count_sms_parts as _count_sms_parts_impl
 from app.utils.sms_segment import is_gsm7_message as _is_gsm7_impl
+from app.utils.country_code import get_country_variants, normalize_country_code
 from app.utils.logger import get_logger
 from app.utils.cache import get_cache_manager
 import json
 
 logger = get_logger(__name__)
-
-# 短信日志 country_code 常见为国际区号（如 66、55），供应商费率表常见为 ISO2（TH、BR）。
-# 同一国家多种写法需视为等价，否则结算按分组查 SupplierRate 会漏匹配、单价显示为 0。
-_COUNTRY_CODE_EQUIVALENCE: Tuple[FrozenSet[str], ...] = (
-    frozenset({"TH", "66"}),
-    frozenset({"BR", "55"}),
-    frozenset({"BD", "880"}),
-    frozenset({"ID", "62"}),
-    frozenset({"MY", "60"}),
-    frozenset({"VN", "84"}),
-    frozenset({"PH", "63"}),
-    frozenset({"SG", "65"}),
-    frozenset({"JP", "81"}),
-    frozenset({"KR", "82"}),
-    frozenset({"IN", "91"}),
-    frozenset({"PK", "92"}),
-    frozenset({"MX", "52"}),
-    frozenset({"AR", "54"}),
-    frozenset({"CO", "57"}),
-    frozenset({"CL", "56"}),
-    frozenset({"PE", "51"}),
-    frozenset({"EG", "20"}),
-    frozenset({"NG", "234"}),
-    frozenset({"KE", "254"}),
-    frozenset({"ZA", "27"}),
-    frozenset({"AE", "971"}),
-    frozenset({"SA", "966"}),
-    frozenset({"TR", "90"}),
-    frozenset({"RU", "7"}),
-    frozenset({"UA", "380"}),
-    frozenset({"GB", "44"}),
-    frozenset({"DE", "49"}),
-    frozenset({"FR", "33"}),
-    frozenset({"ES", "34"}),
-    frozenset({"IT", "39"}),
-    frozenset({"AU", "61"}),
-    frozenset({"NZ", "64"}),
-)
 
 
 class PricingEngine:
@@ -65,20 +28,6 @@ class PricingEngine:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    @staticmethod
-    def _supplier_rate_country_variants(country_code: str) -> List[str]:
-        """
-        供应商费率表 country_code 可能与短信日志不一致（ISO2 如 TH 与区号 66 等）。
-        返回用于 IN 查询的等价代码列表。
-        """
-        if not country_code or not str(country_code).strip():
-            return []
-        c = str(country_code).strip().upper()
-        for group in _COUNTRY_CODE_EQUIVALENCE:
-            if c in group:
-                return list(group)
-        return [c]
-
     async def resolve_base_cost_per_sms(
         self,
         channel_id: int,
@@ -86,15 +35,15 @@ class PricingEngine:
         channel: Optional[Channel] = None,
     ) -> Decimal:
         """
-        解析上游成本单价（每条），与供应商结算、后台「供应商国家费率」一致。
-        优先级：SupplierRate（通道关联供应商 + 国家 + sms）> Channel.cost_rate。
-        按提交计费时同样写入 sms_logs.cost_price，结算侧 sum(cost_price) 即可。
+        解析上游成本单价（每条）。
+        优先级：SupplierRate（通道关联供应商 + 国家 + sms）> Channel.cost_rate > 0。
+        使用 get_country_variants() 做 ISO2/区号/中文名 全等价匹配。
         """
         if channel is None:
             ch_row = await self.db.execute(select(Channel).where(Channel.id == channel_id))
             channel = ch_row.scalar_one_or_none()
 
-        codes = self._supplier_rate_country_variants(country_code)
+        codes = get_country_variants(country_code)
         if codes:
             sc_row = await self.db.execute(
                 select(SupplierChannel.supplier_id).where(
@@ -119,9 +68,17 @@ class PricingEngine:
                 if cp is not None and float(cp) > 0:
                     return Decimal(str(cp))
 
-        if channel and channel.cost_rate is not None:
-            return Decimal(str(channel.cost_rate))
-        return Decimal('0.0000')
+        fallback = Decimal(str(channel.cost_rate)) if (channel and channel.cost_rate) else Decimal('0')
+        if fallback <= 0:
+            logger.warning(
+                "成本单价为 0: channel_id=%s, country=%s, suppliers=%s — 请检查供应商费率或通道 cost_rate 配置",
+                channel_id, country_code,
+                [r[0] for r in (await self.db.execute(
+                    select(SupplierChannel.supplier_id).where(
+                        SupplierChannel.channel_id == channel_id, SupplierChannel.status == 'active')
+                )).all()] if channel_id else [],
+            )
+        return fallback
     
     async def calculate_and_charge(
         self,

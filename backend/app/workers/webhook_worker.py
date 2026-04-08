@@ -30,12 +30,11 @@ def send_webhook_task(self, account_id: int, message_id: str, status: str, data:
         data: 额外数据
     """
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(_send_webhook_async(account_id, message_id, status, data))
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(_send_webhook_async(account_id, message_id, status, data))
+        finally:
+            loop.close()
         
         if not result['success'] and self.request.retries < self.max_retries:
             # 重试延迟: 1分钟、5分钟、15分钟
@@ -206,9 +205,8 @@ def notify_status_change(message_id: str, status: str, **kwargs):
         status: 新状态
         **kwargs: 额外数据
     """
-    loop = asyncio.get_event_loop()
-    if loop.is_closed():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    loop.run_until_complete(trigger_webhook(message_id, status, kwargs))
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(trigger_webhook(message_id, status, kwargs))
+    finally:
+        loop.close()

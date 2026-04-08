@@ -77,25 +77,53 @@
             <span>{{ row.country_name || row.country_code }}</span>
           </template>
         </el-table-column>
+        <!-- 短信：单独展示关联通道（与供应商群并存时也不互相遮挡） -->
+        <el-table-column :label="$t('accountTemplates.linkedChannels')" min-width="200">
+          <template #default="{ row }">
+            <div v-if="row.business_type === 'sms'" class="channel-tags-cell">
+              <template v-if="normalizeChannelIds(row.channel_ids).length">
+                <el-tag
+                  v-for="cid in normalizeChannelIds(row.channel_ids)"
+                  :key="cid"
+                  size="small"
+                  type="info"
+                  effect="plain"
+                  class="channel-row-tag"
+                >
+                  {{ getChannelTagLabel(cid) }}
+                </el-tag>
+              </template>
+              <span v-else class="detail-text muted">-</span>
+            </div>
+            <span v-else class="detail-text muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column :label="$t('accountTemplates.productDetail')" min-width="220">
           <template #default="{ row }">
-            <div class="product-detail-cell" v-if="row.pricing_rules">
+            <div class="product-detail-cell">
+              <!-- 语音：依赖 pricing_rules -->
               <template v-if="row.business_type === 'voice'">
-                <el-tag size="small" type="warning" effect="dark">{{ row.pricing_rules.billing_model }}</el-tag>
-                <el-tag v-if="row.pricing_rules.line_desc" size="small" type="info" class="detail-tag">{{ row.pricing_rules.line_desc }}</el-tag>
+                <template v-if="row.pricing_rules">
+                  <el-tag size="small" type="warning" effect="dark">{{ row.pricing_rules.billing_model }}</el-tag>
+                  <el-tag v-if="row.pricing_rules.line_desc" size="small" type="info" class="detail-tag">{{ row.pricing_rules.line_desc }}</el-tag>
+                </template>
+                <span v-else class="detail-text muted">-</span>
               </template>
+              <!-- 数据：依赖 pricing_rules -->
               <template v-else-if="row.business_type === 'data'">
-                <el-tag size="small" type="danger" effect="plain" class="detail-tag">{{ getDataSourceLabel(row.pricing_rules.source) }}</el-tag>
-                <el-tag size="small" type="warning" effect="plain" class="detail-tag">{{ getDataPurposeLabel(row.pricing_rules.purpose) }}</el-tag>
-                <el-tag size="small" type="info" effect="plain" class="detail-tag">{{ getDataFreshnessLabel(row.pricing_rules.freshness) }}</el-tag>
+                <template v-if="row.pricing_rules">
+                  <el-tag size="small" type="danger" effect="plain" class="detail-tag">{{ getDataSourceLabel(row.pricing_rules.source) }}</el-tag>
+                  <el-tag size="small" type="warning" effect="plain" class="detail-tag">{{ getDataPurposeLabel(row.pricing_rules.purpose) }}</el-tag>
+                  <el-tag size="small" type="info" effect="plain" class="detail-tag">{{ getDataFreshnessLabel(row.pricing_rules.freshness) }}</el-tag>
+                </template>
+                <span v-else class="detail-text muted">-</span>
               </template>
+              <!-- 短信：产品详情仅展示供应商群等；关联通道见左侧「关联通道」列 -->
               <template v-else>
                 <span v-if="row.supplier_group_name" class="detail-text">{{ row.supplier_group_name }}</span>
-                <span v-else-if="row.channel_ids?.length" class="detail-text">{{ getChannelDisplay(row.channel_ids) }}</span>
                 <span v-else class="detail-text muted">-</span>
               </template>
             </div>
-            <span v-else class="detail-text muted">-</span>
           </template>
         </el-table-column>
         <el-table-column prop="default_price" :label="$t('accountTemplates.costPrice')" width="110" sortable>
@@ -371,14 +399,30 @@ const getDataSourceLabel = (v?: string) => (v && DATA_SOURCE_MAP[v]) || v || '-'
 const getDataPurposeLabel = (v?: string) => (v && DATA_PURPOSE_MAP[v]) || v || '-'
 const getDataFreshnessLabel = (v?: string) => (v && DATA_FRESHNESS_MAP[v]) || v || '-'
 
-// 根据 channel_ids 显示通道名称
-const getChannelDisplay = (channelIds?: number[]) => {
-  if (!channelIds?.length) return ''
-  const names = channelIds
-    .map(id => channels.value.find(c => c.id === id))
-    .filter(Boolean)
-    .map(c => `${(c as Channel).channel_code} - ${(c as Channel).channel_name}`)
-  return names.join('、')
+// 将接口返回的 channel_ids 规范为数字数组（兼容 null、JSON 字符串等）
+const normalizeChannelIds = (raw: unknown): number[] => {
+  if (raw == null) return []
+  if (Array.isArray(raw)) {
+    return raw.map(id => Number(id)).filter(n => Number.isFinite(n))
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (Array.isArray(parsed)) {
+        return parsed.map(id => Number(id)).filter(n => Number.isFinite(n))
+      }
+    } catch {
+      /* 非 JSON 则忽略 */
+    }
+  }
+  return []
+}
+
+// 表格中单条通道展示（未加载到列表时回退为 ID）
+const getChannelTagLabel = (channelId: number): string => {
+  const c = channels.value.find(x => x.id === channelId)
+  if (c) return `${c.channel_code} - ${c.channel_name}`
+  return `#${channelId}`
 }
 
 const loadData = async () => {
@@ -686,5 +730,17 @@ onMounted(() => {
 .price-text {
   font-family: monospace;
   font-weight: 500;
+}
+
+.channel-tags-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  align-items: center;
+}
+
+.channel-row-tag {
+  margin: 0 !important;
+  max-width: 100%;
 }
 </style>

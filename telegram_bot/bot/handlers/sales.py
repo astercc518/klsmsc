@@ -9,12 +9,13 @@ from telegram.ext import (
     ConversationHandler, 
     CallbackQueryHandler
 )
-from bot.utils import get_session, logger
+from bot.utils import get_session, logger, dedupe_country_codes_from_templates
+from bot.handlers.menu import COUNTRY_NAMES
 from app.modules.common.admin_user import AdminUser
 from app.modules.common.account_template import AccountTemplate
 from app.core.auth import AuthService
 from app.core.invitation import InvitationService
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 
 # 对话状态
 SELECT_BIZ_TYPE, SELECT_COUNTRY, SELECT_TEMPLATE, INPUT_PRICE, CONFIRM = range(5)
@@ -127,17 +128,16 @@ async def select_biz_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 获取该业务类型下的所有国家
     async with get_session() as db:
         result = await db.execute(
-            select(AccountTemplate.country_code, AccountTemplate.country_name)
-            .where(
+            select(AccountTemplate.country_code).where(
                 AccountTemplate.business_type == biz_type,
-                AccountTemplate.status == "active"
+                AccountTemplate.status == "active",
+                AccountTemplate.country_code.isnot(None),
             )
-            .distinct()
-            .order_by(AccountTemplate.country_code)
         )
-        countries = result.all()
+        raw_codes = [r[0] for r in result.all()]
+        country_codes = dedupe_country_codes_from_templates(raw_codes)
     
-    if not countries:
+    if not country_codes:
         await query.edit_message_text(
             f"❌ 暂无 {biz_label} 业务的可用模板，请联系管理员添加"
         )
@@ -146,8 +146,8 @@ async def select_biz_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 显示国家选择
     keyboard = []
     row = []
-    for country_code, country_name in countries:
-        label = f"{country_name or country_code} ({country_code})"
+    for country_code in country_codes:
+        label = COUNTRY_NAMES.get(country_code, country_code)
         row.append(InlineKeyboardButton(label, callback_data=f"country_{country_code}"))
         if len(row) == 2:
             keyboard.append(row)
@@ -191,7 +191,7 @@ async def select_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return SELECT_BIZ_TYPE
     
-    country_code = data.replace("country_", "")
+    country_code = data.replace("country_", "").strip().upper()
     context.user_data['country_code'] = country_code
     biz_type = context.user_data['business_type']
     
@@ -201,7 +201,7 @@ async def select_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
             select(AccountTemplate)
             .where(
                 AccountTemplate.business_type == biz_type,
-                AccountTemplate.country_code == country_code,
+                func.upper(AccountTemplate.country_code) == country_code,
                 AccountTemplate.status == "active"
             )
             .order_by(AccountTemplate.template_name)
@@ -242,20 +242,19 @@ async def select_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         async with get_session() as db:
             result = await db.execute(
-                select(AccountTemplate.country_code, AccountTemplate.country_name)
-                .where(
+                select(AccountTemplate.country_code).where(
                     AccountTemplate.business_type == biz_type,
-                    AccountTemplate.status == "active"
+                    AccountTemplate.status == "active",
+                    AccountTemplate.country_code.isnot(None),
                 )
-                .distinct()
-                .order_by(AccountTemplate.country_code)
             )
-            countries = result.all()
+            raw_codes = [r[0] for r in result.all()]
+            country_codes = dedupe_country_codes_from_templates(raw_codes)
         
         keyboard = []
         row = []
-        for country_code, country_name in countries:
-            label = f"{country_name or country_code} ({country_code})"
+        for country_code in country_codes:
+            label = COUNTRY_NAMES.get(country_code, country_code)
             row.append(InlineKeyboardButton(label, callback_data=f"country_{country_code}"))
             if len(row) == 2:
                 keyboard.append(row)
@@ -327,7 +326,7 @@ async def input_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 select(AccountTemplate)
                 .where(
                     AccountTemplate.business_type == biz_type,
-                    AccountTemplate.country_code == country_code,
+                    func.upper(AccountTemplate.country_code) == country_code,
                     AccountTemplate.status == "active"
                 )
                 .order_by(AccountTemplate.template_name)

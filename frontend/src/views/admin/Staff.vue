@@ -82,7 +82,7 @@
         <el-table-column prop="username" :label="$t('staff.username')" min-width="120">
           <template #default="{ row }">
             <div class="user-cell">
-              <div class="avatar">{{ (row.real_name || row.username).charAt(0).toUpperCase() }}</div>
+              <div class="avatar">{{ (row.real_name || row.username || '?').charAt(0).toUpperCase() }}</div>
               <div class="user-info">
                 <span class="username">{{ row.username }}</span>
                 <span class="realname">{{ row.real_name || '-' }}</span>
@@ -142,6 +142,7 @@
                 <template #dropdown>
                   <el-dropdown-menu>
                     <el-dropdown-item @click="resetPassword(row)">{{ $t('staff.resetPassword') }}</el-dropdown-item>
+                    <el-dropdown-item v-if="row.tg_id" @click="unbindStaffTelegram(row)">{{ $t('staff.unbindTg') }}</el-dropdown-item>
                     <el-dropdown-item @click="toggleStatus(row)">
                       {{ row.status === 'active' ? $t('staff.disableAccount') : $t('staff.enableAccount') }}
                     </el-dropdown-item>
@@ -193,6 +194,7 @@
         </el-form-item>
         <el-form-item :label="$t('staff.telegram')" prop="tg_username">
           <el-input v-model="form.tg_username" :placeholder="$t('staff.telegramUsername')" />
+          <div class="form-hint">{{ $t('staff.telegramUsernameHint') }}</div>
         </el-form-item>
         <el-form-item :label="$t('staff.commissionRate')" prop="commission_rate">
           <el-input-number v-model="form.commission_rate" :min="0" :max="100" :precision="2" placeholder="0-100" style="width: 100%">
@@ -416,6 +418,20 @@ const syncInactiveTelegram = async (username?: string) => {
   }
 }
 
+/** 单行解除 TG 绑定（与顶部「清除员工TG绑定」同一接口） */
+const unbindStaffTelegram = async (row: Staff) => {
+  try {
+    await ElMessageBox.confirm(
+      t('staff.unbindTgConfirm', { name: row.real_name || row.username }),
+      t('staff.unbindTg'),
+      { type: 'warning', confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel') }
+    )
+    await syncInactiveTelegram(row.username)
+  } catch {
+    /* 取消 */
+  }
+}
+
 const showClearTgDialog = async () => {
   try {
     const { value } = await ElMessageBox.prompt(
@@ -443,7 +459,7 @@ const loadData = async () => {
     
     const res = await request.get(`/admin/users?${params.toString()}`)
     if (res.success) {
-      staffList.value = res.users
+      staffList.value = res.users || []
     }
   } catch (e: any) {
     ElMessage.error(e.message || t('staff.loadFailed'))
@@ -499,8 +515,8 @@ const submitForm = async () => {
       if (form.value.password?.trim()) {
         payload.password = form.value.password.trim()
       }
-      await request.put(`/admin/users/${currentStaffId.value}`, payload)
-      ElMessage.success(t('staff.updateSuccess'))
+      const res = await request.put(`/admin/users/${currentStaffId.value}`, payload) as { message?: string }
+      ElMessage.success(res?.message || t('staff.updateSuccess'))
     } else {
       await request.post('/admin/users', form.value)
       ElMessage.success(t('staff.createSuccess'))
@@ -724,6 +740,7 @@ onMounted(() => {
 .offboard-preview { padding: 4px 0; }
 .offboard-desc { margin: 0 0 12px; color: var(--text-secondary); font-size: 14px; }
 .offboard-hint { margin-top: 6px; font-size: 12px; color: var(--text-tertiary); }
+.form-hint { margin-top: 6px; font-size: 12px; color: var(--text-tertiary); line-height: 1.45; }
 
 /* 统计卡片 */
 .stats-row {

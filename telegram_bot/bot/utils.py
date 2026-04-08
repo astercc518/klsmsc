@@ -74,6 +74,23 @@ async def get_session():
 from sqlalchemy import select
 
 
+def dedupe_country_codes_from_templates(raw_codes: list) -> list[str]:
+    """
+    开户模板国家列表去重：同一国家码只保留一条（避免 distinct(country_code, country_name) 产生重复按钮），
+    并合并大小写差异（如 id / ID），统一使用大写 ISO 码。
+    """
+    by_upper: dict[str, str] = {}
+    for c in raw_codes:
+        if c is None:
+            continue
+        s = str(c).strip()
+        if not s:
+            continue
+        u = s.upper()
+        by_upper.setdefault(u, u)
+    return sorted(by_upper.keys())
+
+
 async def get_group_ids() -> dict:
     """
     从 system_config 读取各 TG 群组 ID（优先数据库，回退环境变量）

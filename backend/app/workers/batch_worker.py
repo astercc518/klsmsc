@@ -27,17 +27,26 @@ from app.utils.errors import InsufficientBalanceError, PricingNotFoundError
 
 logger = get_logger(__name__)
 
+_worker_engine = None
+_worker_session_factory = None
+
+
 def _get_worker_session():
-    """为 worker 创建独立的数据库会话"""
-    eng = create_async_engine(
-        settings.SQLALCHEMY_DATABASE_URL,
-        echo=False,
-        pool_size=2,
-        max_overflow=3,
-        pool_pre_ping=True,
-        pool_recycle=600,
-    )
-    return async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)()
+    """复用进程级单例引擎，避免每次任务新建连接池"""
+    global _worker_engine, _worker_session_factory
+    if _worker_engine is None:
+        _worker_engine = create_async_engine(
+            settings.SQLALCHEMY_DATABASE_URL,
+            echo=False,
+            pool_size=2,
+            max_overflow=3,
+            pool_pre_ping=True,
+            pool_recycle=600,
+        )
+        _worker_session_factory = async_sessionmaker(
+            _worker_engine, class_=AsyncSession, expire_on_commit=False
+        )
+    return _worker_session_factory()
 
 def _run_async(coro):
     """在 Celery 同步 worker 中安全地执行异步协程"""
@@ -237,8 +246,8 @@ async def _do_process_batch(batch_id: int):
             batch.status = BatchStatus.FAILED
             batch.error_message = str(e)[:500]
             await db.commit()
-        except:
-            pass
+        except Exception as rollback_err:
+            logger.error(f"批次失败状态写入异常: {rollback_err}")
     finally:
         await db.close()
 

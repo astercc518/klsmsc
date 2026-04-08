@@ -5,6 +5,7 @@ import phonenumbers
 from typing import Dict, Tuple, Optional, List
 from app.utils.logger import get_logger
 from app.utils.sms_segment import count_sms_parts, is_gsm7_message
+from app.utils.country_code import normalize_country_code
 
 logger = get_logger(__name__)
 
@@ -40,18 +41,18 @@ class Validator:
                 return False, "无效的手机号码", None
                 
             region_code = phonenumbers.region_code_for_number(parsed)
-            country_code = str(parsed.country_code)
+            dial_code = str(parsed.country_code)
+            # 统一使用 ISO2 作为 country_code，区号保留在 dial_code
+            iso_code = normalize_country_code(region_code) or normalize_country_code(dial_code) or region_code or dial_code
             
-            # 简单的类型检查（拦截固定电话等，非完全准确）
             num_type = phonenumbers.number_type(parsed)
-            # 0: FIXED_LINE, 1: MOBILE, 2: FIXED_LINE_OR_MOBILE ...
-            # 这里我们放宽一点，只要不是明确的特殊服务号即可
             
             return True, "", {
                 "e164_format": phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164),
                 "e164": phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164),
                 "region": region_code,
-                "country_code": country_code
+                "dial_code": dial_code,
+                "country_code": iso_code
             }
             
         except phonenumbers.NumberParseException:

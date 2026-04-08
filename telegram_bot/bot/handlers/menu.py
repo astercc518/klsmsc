@@ -5,7 +5,14 @@ import time
 
 from telegram import Message, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler
-from bot.utils import get_session, get_valid_customer_binding_and_account, logger, edit_and_log, send_and_log
+from bot.utils import (
+    get_session,
+    get_valid_customer_binding_and_account,
+    logger,
+    edit_and_log,
+    send_and_log,
+    dedupe_country_codes_from_templates,
+)
 from app.modules.common.telegram_binding import TelegramBinding
 from app.modules.common.account import Account, AccountChannel
 from app.modules.sms.channel import Channel
@@ -23,6 +30,9 @@ import secrets
 # 已处理的供应商审核回复消息 (chat_id, message_id)，防止重复转发
 _processed_sms_reply_ids: set = set()
 _MAX_PROCESSED_IDS = 5000
+
+# 「我的客户」分页：单页条数（避免超过 Telegram 4096 字与键盘体积）
+_MY_CUSTOMERS_PAGE_SIZE = 20
 
 # 短信审核「等待回复」会话：user_data 在部分客户端/群场景会丢失，用 bot_data 双写备份
 SMS_APPROVAL_SESSION_TTL = 3600
@@ -104,6 +114,7 @@ COUNTRY_NAMES = {
     'KZ': '哈萨克斯坦', 'LT': '立陶宛', 'GH': '加纳', 'MA': '摩洛哥', 'DZ': '阿尔及利亚',
     'TN': '突尼斯', 'UG': '乌干达', 'TZ': '坦桑尼亚', 'ET': '埃塞俄比亚', 'SN': '塞内加尔',
     'CM': '喀麦隆', 'CI': '科特迪瓦', 'ZM': '赞比亚', 'JO': '约旦',
+    'BJ': '贝宁',
 }
 
 
@@ -401,17 +412,16 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         
         async with get_session() as db:
             result = await db.execute(
-                select(AccountTemplate.country_code, AccountTemplate.country_name)
-                .where(
+                select(AccountTemplate.country_code).where(
                     AccountTemplate.business_type == biz_type,
-                    AccountTemplate.status == "active"
+                    AccountTemplate.status == "active",
+                    AccountTemplate.country_code.isnot(None),
                 )
-                .distinct()
-                .order_by(AccountTemplate.country_code)
             )
-            countries = result.all()
+            raw_codes = [r[0] for r in result.all()]
+            country_codes = dedupe_country_codes_from_templates(raw_codes)
         
-        if not countries:
+        if not country_codes:
             await query.edit_message_text(
                 f"❌ 暂无 {biz_label} 业务的可用模板\n\n请联系管理员在后台添加账户模板",
                 reply_markup=get_back_menu()
@@ -421,8 +431,8 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         # 显示国家选择
         keyboard = []
         row = []
-        for country_code, _ in countries:
-            # 使用映射表获取中文名称，避免编码问题
+        for country_code in country_codes:
+            # 使用映射表获取中文名称，避免编码问题；统一大写 ISO 码避免重复键
             label = COUNTRY_NAMES.get(country_code, country_code)
             row.append(InlineKeyboardButton(label, callback_data=f"country_{country_code}"))
             if len(row) == 2:
@@ -445,10 +455,13 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await show_my_customers(query, context)
         return
 
-    # 按业务类型查看客户
+    # 按业务类型查看客户（支持分页：my_cust_voice、my_cust_voice_p1）
     if data.startswith("my_cust_"):
-        biz_filter = data.replace("my_cust_", "")
-        await show_my_customers(query, context, biz_filter=biz_filter)
+        m = re.match(r"^my_cust_(sms|voice|data|all)(?:_p(\d+))?$", data)
+        if m:
+            await show_my_customers(
+                query, context, biz_filter=m.group(1), page=int(m.group(2) or 0)
+            )
         return
     
     # 业务知识
@@ -551,7 +564,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # 处理国家选择（邀请流程）
     if data.startswith("country_"):
-        country_code = data.replace("country_", "")
+        country_code = data.replace("country_", "").strip().upper()
         context.user_data['country_code'] = country_code
         biz_type = context.user_data.get('business_type', 'sms')
         
@@ -565,7 +578,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 select(AccountTemplate)
                 .where(
                     AccountTemplate.business_type == biz_type,
-                    AccountTemplate.country_code == country_code,
+                    func.upper(AccountTemplate.country_code) == country_code,
                     AccountTemplate.status == "active"
                 )
                 .order_by(AccountTemplate.template_name)
@@ -1264,8 +1277,8 @@ async def handle_sales_quick_login(query, context, override_account_id=None, ski
     )
 
 
-async def show_my_customers(query, context, biz_filter=None):
-    """显示我的客户 — 支持按业务类型分类"""
+async def show_my_customers(query, context, biz_filter=None, page: int = 0):
+    """显示我的客户 — 支持按业务类型分类；列表分页以展示全部客户"""
     tg_id = query.from_user.id
     
     async with get_session() as db:
@@ -1341,19 +1354,35 @@ async def show_my_customers(query, context, biz_filter=None):
             )
             return
 
-        # 指定业务类型或全部：展示客户列表
+        # 指定业务类型或全部：展示客户列表（与统计同条件；分页展示全部）
+        count_q = select(func.count()).select_from(Account).where(*base_filter)
+        if biz_filter != 'all':
+            count_q = count_q.where(Account.business_type == biz_filter)
+        total_matched = (await db.execute(count_q)).scalar() or 0
+
+        total_pages = max(
+            1, (total_matched + _MY_CUSTOMERS_PAGE_SIZE - 1) // _MY_CUSTOMERS_PAGE_SIZE
+        )
+        if page < 0:
+            page = 0
+        if total_matched and page >= total_pages:
+            page = total_pages - 1
+        offset = page * _MY_CUSTOMERS_PAGE_SIZE
+
         q = select(Account).where(*base_filter)
         if biz_filter != 'all':
             q = q.where(Account.business_type == biz_filter)
-        q = q.order_by(desc(Account.created_at)).limit(20)
+        q = (
+            q.order_by(desc(Account.created_at))
+            .limit(_MY_CUSTOMERS_PAGE_SIZE)
+            .offset(offset)
+        )
         customers_result = await db.execute(q)
-        all_customers = customers_result.scalars().all()
+        customers = list(customers_result.scalars().all())
 
         display_note = ""
-        customers = all_customers
-        if len(all_customers) > 10:
-            display_note = f"\n（仅展示前 10 位，共 {len(all_customers)} 位）\n"
-            customers = all_customers[:10]
+        if total_pages > 1:
+            display_note = f"\n第 {page + 1}/{total_pages} 页（共 {total_matched} 位，按创建时间倒序）\n"
 
         # 批量解析各账户优先通道
         acc_ids = [c.id for c in customers]
@@ -1388,12 +1417,12 @@ async def show_my_customers(query, context, biz_filter=None):
         title = biz_title_map.get(biz_filter, '我的客户')
 
         lines = [
-            f"👥 {title}（{len(all_customers)} 个）\n",
+            f"👥 {title}（{total_matched} 个）\n",
             display_note,
             "────────\n",
         ]
 
-        keyboard = []
+        keyboard: list[list[InlineKeyboardButton]] = []
         for c in customers:
             balance = float(c.balance or 0)
             up = float(c.unit_price or 0)
@@ -1415,6 +1444,25 @@ async def show_my_customers(query, context, biz_filter=None):
             keyboard.append(
                 [InlineKeyboardButton(f"🔐 {btn_text}", callback_data=f"sales_login_{c.id}")]
             )
+
+        if total_pages > 1:
+            nav_row: list[InlineKeyboardButton] = []
+            if page > 0:
+                nav_row.append(
+                    InlineKeyboardButton(
+                        "⬅️ 上一页",
+                        callback_data=f"my_cust_{biz_filter}_p{page - 1}",
+                    )
+                )
+            if page < total_pages - 1:
+                nav_row.append(
+                    InlineKeyboardButton(
+                        "下一页 ➡️",
+                        callback_data=f"my_cust_{biz_filter}_p{page + 1}",
+                    )
+                )
+            if nav_row:
+                keyboard.append(nav_row)
 
         lines.append("点击「🔐」生成浏览器登录链接")
         

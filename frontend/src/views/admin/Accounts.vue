@@ -320,6 +320,7 @@
                   <el-button link type="primary" size="small">{{ $t('common.more') }}</el-button>
                   <template #dropdown>
                     <el-dropdown-menu>
+                      <el-dropdown-item @click="openSummary(row)">{{ $t('customers.accountSummary') }}</el-dropdown-item>
                       <el-dropdown-item @click="bindSales(row)">{{ $t('customers.assignedSales') }}</el-dropdown-item>
                       <el-dropdown-item @click="openLogs(row)">{{ $t('customers.balance') }}</el-dropdown-item>
                       <el-dropdown-item @click="handleResetKey(row)">{{ $t('dashboard.apiKey') }}</el-dropdown-item>
@@ -553,6 +554,152 @@
       </template>
     </el-dialog>
 
+    <!-- 账号摘要 -->
+    <el-dialog v-model="summaryVisible" :title="$t('customers.accountSummary')" width="680px" :close-on-click-modal="false">
+      <div v-loading="summaryLoading">
+        <template v-if="summaryData">
+          <div class="summary-header">
+            <el-tag effect="dark" :type="summaryData.protocol === 'SMPP' ? 'warning' : 'primary'" size="large">
+              {{ summaryData.protocol }}
+            </el-tag>
+            <span class="summary-account-name">{{ summaryData.account_name }} (#{{ summaryData.id }})</span>
+          </div>
+
+          <!-- HTTP 凭证未生成警告 -->
+          <el-alert
+            v-if="summaryData.protocol === 'HTTP' && !summaryData.api_key"
+            type="warning" :closable="false" show-icon style="margin-bottom: 16px"
+          >
+            <template #title>{{ $t('customers.credentialsNotGenerated') }}</template>
+            <template #default>
+              {{ $t('customers.credentialsNotGeneratedHint') }}
+              <el-button type="primary" size="small" style="margin-left: 12px" @click="resetAndRefreshSummary">
+                {{ $t('customers.generateNow') }}
+              </el-button>
+            </template>
+          </el-alert>
+
+          <!-- SMPP 凭证未生成警告 -->
+          <el-alert
+            v-if="summaryData.protocol === 'SMPP' && !summaryData.smpp_system_id"
+            type="warning" :closable="false" show-icon style="margin-bottom: 16px"
+          >
+            <template #title>{{ $t('customers.credentialsNotGenerated') }}</template>
+            <template #default>{{ $t('customers.smppCredentialsNotGeneratedHint') }}</template>
+          </el-alert>
+
+          <!-- HTTP 对接信息 -->
+          <template v-if="summaryData.protocol === 'HTTP'">
+            <!-- 认证方式一：API Key -->
+            <div class="summary-section-title">{{ $t('customers.authMethodApiKey') }}</div>
+            <el-descriptions :column="1" border class="summary-desc">
+              <el-descriptions-item label="API Key">
+                <template v-if="summaryData.api_key">
+                  <code class="mono-val">{{ summaryData.api_key }}</code>
+                  <el-button link size="small" @click="copyText(summaryData.api_key)">{{ $t('common.copy') }}</el-button>
+                </template>
+                <span v-else class="text-placeholder">{{ $t('customers.notGenerated') }}</span>
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.requestUrl')">
+                <code class="mono-val">{{ summaryData.api_base_url }}/sms/send?api_key={{ summaryData.api_key || 'YOUR_API_KEY' }}</code>
+              </el-descriptions-item>
+            </el-descriptions>
+
+            <!-- 认证方式二：Basic Auth -->
+            <div class="summary-section-title">{{ $t('customers.authMethodBasicAuth') }}</div>
+            <el-descriptions :column="1" border class="summary-desc">
+              <el-descriptions-item :label="$t('customers.basicAuthUsername')">
+                <code class="mono-val">{{ summaryData.account_name || summaryData.email || '-' }}</code>
+                <el-button link size="small" @click="copyText(summaryData.account_name || summaryData.email || '')">{{ $t('common.copy') }}</el-button>
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.interfacePassword')">
+                <template v-if="summaryData.api_secret">
+                  <code class="mono-val">{{ summaryData.api_secret }}</code>
+                  <el-button link size="small" @click="copyText(summaryData.api_secret)">{{ $t('common.copy') }}</el-button>
+                </template>
+                <span v-else class="text-placeholder">{{ $t('customers.notGenerated') }}</span>
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.requestUrl')">
+                <code class="mono-val">{{ summaryData.api_base_url }}/sms/send</code>
+              </el-descriptions-item>
+            </el-descriptions>
+
+            <!-- 接口地址 -->
+            <div class="summary-section-title">{{ $t('customers.apiEndpoints') }}</div>
+            <el-descriptions :column="1" border class="summary-desc">
+              <el-descriptions-item label="API Base">
+                <code class="mono-val">{{ summaryData.api_base_url }}</code>
+                <el-button link size="small" @click="copyText(summaryData.api_base_url)">{{ $t('common.copy') }}</el-button>
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.httpSendUrl')">
+                <code class="mono-val">POST {{ summaryData.api_base_url }}/sms/send</code>
+              </el-descriptions-item>
+              <el-descriptions-item label="Batch URL">
+                <code class="mono-val">POST {{ summaryData.api_base_url }}/sms/batch</code>
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.httpStatusUrl')">
+                <code class="mono-val">GET {{ summaryData.api_base_url }}/sms/status/{'{message_id}'}</code>
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.httpBalanceUrl')">
+                <code class="mono-val">GET {{ summaryData.api_base_url }}/account/balance</code>
+              </el-descriptions-item>
+            </el-descriptions>
+
+            <!-- 限制 -->
+            <div class="summary-section-title">{{ $t('customers.restrictions') }}</div>
+            <el-descriptions :column="1" border class="summary-desc">
+              <el-descriptions-item :label="$t('customers.maxThroughput')">
+                {{ summaryData.rate_limit || 100 }} {{ $t('customers.perSecond') }}
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.ipWhitelist')">
+                {{ (summaryData.ip_whitelist && summaryData.ip_whitelist.length) ? summaryData.ip_whitelist.join(', ') : $t('customers.noRestriction') }}
+              </el-descriptions-item>
+            </el-descriptions>
+          </template>
+
+          <!-- SMPP 对接信息 -->
+          <template v-else-if="summaryData.protocol === 'SMPP'">
+            <el-descriptions :column="1" border class="summary-desc">
+              <el-descriptions-item :label="$t('customers.accessMethod')">SMPP</el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.serverAddress')">
+                <code class="mono-val">{{ summaryData.smpp_server_host }}</code>
+                <el-button link size="small" @click="copyText(summaryData.smpp_server_host)">{{ $t('common.copy') }}</el-button>
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.serverPort')">
+                <code class="mono-val">{{ summaryData.smpp_server_port }}</code>
+              </el-descriptions-item>
+              <el-descriptions-item label="System ID">
+                <template v-if="summaryData.smpp_system_id">
+                  <code class="mono-val">{{ summaryData.smpp_system_id }}</code>
+                  <el-button link size="small" @click="copyText(summaryData.smpp_system_id)">{{ $t('common.copy') }}</el-button>
+                </template>
+                <span v-else class="text-placeholder">{{ $t('customers.notGenerated') }}</span>
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.interfacePassword')">
+                <template v-if="summaryData.smpp_password">
+                  <code class="mono-val">{{ summaryData.smpp_password }}</code>
+                  <el-button link size="small" @click="copyText(summaryData.smpp_password)">{{ $t('common.copy') }}</el-button>
+                </template>
+                <span v-else class="text-placeholder">{{ $t('customers.notGenerated') }}</span>
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.maxThroughput')">
+                {{ summaryData.rate_limit || 100 }} {{ $t('customers.perSecond') }}
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.maxConnections')">1</el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.ipWhitelist')">
+                {{ (summaryData.ip_whitelist && summaryData.ip_whitelist.length) ? summaryData.ip_whitelist.join(', ') : $t('customers.noRestriction') }}
+              </el-descriptions-item>
+            </el-descriptions>
+          </template>
+        </template>
+        <el-empty v-else-if="!summaryLoading" :description="$t('customers.noCredentials')" />
+      </div>
+      <template #footer>
+        <el-button v-if="summaryData && ((summaryData.protocol === 'HTTP' && summaryData.api_key) || (summaryData.protocol === 'SMPP' && summaryData.smpp_system_id))" @click="copySummaryAll" type="primary">{{ $t('customers.copyAll') }}</el-button>
+        <el-button @click="summaryVisible=false">{{ $t('common.close') }}</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 销售绑定对话框 -->
     <el-dialog v-model="salesBindVisible" :title="$t('customers.bindSales')" width="500px">
       <div v-if="currentAccountSales" class="current-sales">
@@ -738,6 +885,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh } from '@element-plus/icons-vue'
 import {
   getAccountsAdmin,
+  getAccountAdminDetail,
   createAccountAdmin,
   updateAccountAdmin,
   adjustAccountBalance,
@@ -1160,6 +1308,84 @@ const submitAdjust = async () => {
     ElMessage.error(e?.response?.data?.detail || e?.message || t('customers.operationFailed'))
   } finally {
     adjusting.value = false
+  }
+}
+
+// 账号摘要
+const summaryVisible = ref(false)
+const summaryLoading = ref(false)
+const summaryData = ref<any>(null)
+
+const openSummary = async (row: AdminAccount) => {
+  summaryVisible.value = true
+  summaryLoading.value = true
+  summaryData.value = null
+  try {
+    const res = await getAccountAdminDetail(row.id)
+    summaryData.value = res.account
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || t('customers.loadFailed'))
+  } finally {
+    summaryLoading.value = false
+  }
+}
+
+const resetAndRefreshSummary = async () => {
+  if (!summaryData.value) return
+  try {
+    await ElMessageBox.confirm(
+      t('customers.generateCredentialsConfirm'),
+      t('customers.accountSummary'),
+      { confirmButtonText: t('common.confirm'), cancelButtonText: t('common.cancel'), type: 'warning' }
+    )
+    const res = await resetAccountApiKey(summaryData.value.id)
+    ElMessage.success(t('customers.resetSuccess'))
+    const detail = await getAccountAdminDetail(summaryData.value.id)
+    summaryData.value = detail.account
+    await loadAccounts()
+  } catch (e: any) {
+    if (e !== 'cancel') {
+      ElMessage.error(e?.response?.data?.detail || e?.message || t('customers.operationFailed'))
+    }
+  }
+}
+
+const copySummaryAll = async () => {
+  if (!summaryData.value) return
+  const d = summaryData.value
+  let lines: string[] = []
+  lines.push(`${t('customers.accountSummary')} - ${d.account_name} (#${d.id})`)
+  lines.push(`${t('customers.accessMethod')}: ${d.protocol}`)
+  lines.push('')
+  if (d.protocol === 'HTTP') {
+    lines.push(`=== ${t('customers.authMethodApiKey')} ===`)
+    lines.push(`API Key: ${d.api_key || '-'}`)
+    lines.push(`${t('customers.requestUrl')}: ${d.api_base_url}/sms/send?api_key=${d.api_key || 'YOUR_API_KEY'}`)
+    lines.push('')
+    lines.push(`=== ${t('customers.authMethodBasicAuth')} ===`)
+    lines.push(`${t('customers.basicAuthUsername')}: ${d.account_name || d.email || '-'}`)
+    lines.push(`${t('customers.interfacePassword')}: ${d.api_secret || '-'}`)
+    lines.push(`${t('customers.requestUrl')}: ${d.api_base_url}/sms/send`)
+    lines.push('')
+    lines.push(`=== ${t('customers.apiEndpoints')} ===`)
+    lines.push(`API Base: ${d.api_base_url}`)
+    lines.push(`${t('customers.httpSendUrl')}: POST ${d.api_base_url}/sms/send`)
+    lines.push(`Batch URL: POST ${d.api_base_url}/sms/batch`)
+    lines.push(`${t('customers.httpStatusUrl')}: GET ${d.api_base_url}/sms/status/{message_id}`)
+    lines.push(`${t('customers.httpBalanceUrl')}: GET ${d.api_base_url}/account/balance`)
+  } else if (d.protocol === 'SMPP') {
+    lines.push(`${t('customers.serverAddress')}: ${d.smpp_server_host}`)
+    lines.push(`${t('customers.serverPort')}: ${d.smpp_server_port}`)
+    lines.push(`System ID: ${d.smpp_system_id || '-'}`)
+    lines.push(`Password: ${d.smpp_password || '-'}`)
+  }
+  lines.push('')
+  lines.push(`${t('customers.maxThroughput')}: ${d.rate_limit || 100} ${t('customers.perSecond')}`)
+  try {
+    await navigator.clipboard.writeText(lines.join('\n'))
+    ElMessage.success(t('customers.copyAllSuccess'))
+  } catch {
+    ElMessage.warning(t('customers.copyFailed'))
   }
 }
 
@@ -1975,6 +2201,53 @@ onMounted(() => {
   .filter-section {
     flex-wrap: wrap;
   }
+}
+
+/* 账号摘要弹窗 */
+.summary-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-default, rgba(255,255,255,0.08));
+}
+.summary-account-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.summary-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 16px 0 8px;
+  padding-left: 4px;
+}
+.summary-section-title:first-of-type {
+  margin-top: 0;
+}
+.summary-desc {
+  margin-bottom: 4px;
+}
+.mono-val {
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', Consolas, monospace;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-input, rgba(255,255,255,0.03));
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.04));
+  word-break: break-all;
+}
+.text-placeholder {
+  color: var(--text-quaternary, #c0c4cc);
+  font-style: italic;
+  font-size: 13px;
+}
+.text-hint {
+  color: var(--text-tertiary, #909399);
+  font-size: 13px;
 }
 </style>
 

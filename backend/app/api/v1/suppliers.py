@@ -17,6 +17,7 @@ from app.modules.sms.supplier import Supplier, SupplierChannel, SupplierRate, Se
 from app.modules.sms.channel import Channel
 from app.api.v1.admin import get_current_admin
 from app.modules.common.admin_user import AdminUser
+from app.utils.country_code import normalize_country_code
 
 router = APIRouter(prefix="/admin/suppliers", tags=["供应商管理"])
 
@@ -895,7 +896,9 @@ async def create_supplier_rate(
     if not supplier or supplier.is_deleted:
         raise HTTPException(status_code=404, detail="供应商不存在")
     
-    rate = SupplierRate(supplier_id=supplier_id, **data.dict())
+    rate_data = data.dict()
+    rate_data["country_code"] = normalize_country_code(rate_data.get("country_code")) or rate_data.get("country_code")
+    rate = SupplierRate(supplier_id=supplier_id, **rate_data)
     db.add(rate)
     await db.commit()
     
@@ -915,8 +918,10 @@ async def batch_import_supplier_rates(
         raise HTTPException(status_code=404, detail="供应商不存在")
     
     created_count = 0
-    for rate_data in data.rates:
-        rate = SupplierRate(supplier_id=supplier_id, **rate_data.dict())
+    for rate_item in data.rates:
+        rd = rate_item.dict()
+        rd["country_code"] = normalize_country_code(rd.get("country_code")) or rd.get("country_code")
+        rate = SupplierRate(supplier_id=supplier_id, **rd)
         db.add(rate)
         created_count += 1
     
@@ -961,7 +966,7 @@ async def update_supplier_rate(
     if data.business_type is not None:
         rate.business_type = data.business_type
     if data.country_code is not None:
-        rate.country_code = data.country_code
+        rate.country_code = normalize_country_code(data.country_code) or data.country_code
     if data.resource_type is not None:
         rate.resource_type = data.resource_type
     if data.business_scope is not None:

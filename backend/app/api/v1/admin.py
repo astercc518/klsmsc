@@ -684,7 +684,7 @@ async def create_account_admin(
 
     # 生成API Key/Secret（注意长度限制）
     api_key = f"ak_{secrets.token_hex(30)}"  # <= 64
-    api_secret = secrets.token_hex(32)
+    api_secret = secrets.token_urlsafe(4)[:6]  # 6 位随机接口密码
     
     # 生成SMPP System ID (如果是SMPP协议)
     smpp_system_id = None
@@ -836,6 +836,9 @@ async def get_account_admin(
         for ac, ch in channel_rows
     ]
 
+    from app.config import settings
+    api_base = (settings.PUBLIC_WEB_BASE_URL or "https://www.kaolach.com").rstrip("/")
+
     return {
         "success": True,
         "account": {
@@ -861,12 +864,17 @@ async def get_account_admin(
             "ip_whitelist": whitelist,
             # API凭证
             "api_key": a.api_key,
+            "api_secret": a.api_secret,
             # 绑定配置
             "sales_id": a.sales_id,
             "channels": channels,
             "channel_ids": [ch["id"] for ch in channels],
             "created_at": a.created_at.isoformat() if a.created_at else None,
             "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+            # 平台对接配置
+            "api_base_url": f"{api_base}/api/v1",
+            "smpp_server_host": settings.SMPP_SERVER_HOST,
+            "smpp_server_port": settings.SMPP_SERVER_PORT,
         },
     }
 
@@ -1001,7 +1009,7 @@ async def reset_account_api_key(
         raise HTTPException(status_code=403, detail="销售人员无权重置 API Key")
 
     a.api_key = f"ak_{secrets.token_hex(30)}"
-    a.api_secret = secrets.token_hex(32)
+    a.api_secret = secrets.token_urlsafe(4)[:6]  # 6 位随机接口密码
     await db.commit()
 
     return {
@@ -1745,13 +1753,15 @@ async def channel_test_send(
     test_message_id = f"TEST_{uuid.uuid4().hex[:12]}"
     sender_id = request.sender_id or channel.default_sender_id or "TEST"
 
-    # 解析国家代码
+    # 解析国家代码（统一为 ISO2）
     country_code = ""
     phone = request.phone.lstrip("+")
     try:
         import phonenumbers
+        from app.utils.country_code import normalize_country_code as _norm_cc
         pn = phonenumbers.parse("+" + phone, None)
-        country_code = str(pn.country_code)
+        region = phonenumbers.region_code_for_number(pn)
+        country_code = _norm_cc(region) or _norm_cc(str(pn.country_code)) or str(pn.country_code)
     except Exception:
         pass
 
@@ -2804,16 +2814,16 @@ async def get_send_statistics(
     account_id: Optional[int] = Query(None, description="客户账户ID"),
     sales_id: Optional[int] = Query(None, description="归属销售/员工ID"),
     channel_id: Optional[int] = Query(None, description="通道ID"),
-    report_type: str = Query("day", description="报表类型: day/week/month/quarter/year"),
+    country_code: Optional[str] = Query(None, description="国家代码"),
+    group_by: str = Query("account", description="分组维度: account/channel/country/sales"),
     start_date: Optional[str] = Query(None, description="开始日期 YYYY-MM-DD"),
     end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """发送统计查询：支持按员工、通道、客户账户筛选"""
+    """发送统计查询：支持多维度分组（客户/通道/国家）+ 多条件筛选"""
     from app.modules.sms.sms_log import SMSLog
+    from app.modules.sms.channel import Channel
     from sqlalchemy import func, and_, case, or_
 
     if not end_date:
@@ -2826,57 +2836,150 @@ async def get_send_statistics(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format")
 
-    # 销售角色只能看自己的客户
     if admin.role == "sales":
         sales_id = admin.id
 
-    base = (
-        select(
-            SMSLog.account_id,
-            func.count(SMSLog.id).label("submit_total"),
-            func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("success_count"),
-            func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("pending_count"),
-            func.avg(SMSLog.selling_price).label("avg_unit_price"),
-            func.sum(SMSLog.cost_price).label("total_cost"),
-            func.sum(SMSLog.selling_price).label("total_revenue"),
-        )
-        .where(and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt))
-    )
+    agg_cols = [
+        func.count(SMSLog.id).label("submit_total"),
+        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("success_count"),
+        func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("failed_count"),
+        func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("pending_count"),
+        func.avg(SMSLog.selling_price).label("avg_unit_price"),
+        func.sum(SMSLog.cost_price).label("total_cost"),
+        func.sum(SMSLog.selling_price).label("total_revenue"),
+    ]
+
+    need_account_join = group_by == "sales" or bool(sales_id)
+
+    if group_by == "channel":
+        base = select(SMSLog.channel_id, *agg_cols)
+    elif group_by == "country":
+        base = select(SMSLog.country_code, *agg_cols)
+    elif group_by == "sales":
+        base = select(Account.sales_id, *agg_cols)
+    else:
+        base = select(SMSLog.account_id, *agg_cols)
+
+    if need_account_join:
+        base = base.join(Account, SMSLog.account_id == Account.id)
+
+    base = base.where(and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt))
+
     if account_id:
         base = base.where(SMSLog.account_id == account_id)
     if channel_id:
         base = base.where(SMSLog.channel_id == channel_id)
+    if country_code:
+        base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
     if sales_id:
-        base = base.join(Account, SMSLog.account_id == Account.id).where(Account.sales_id == sales_id)
+        base = base.where(Account.sales_id == sales_id)
 
-    base = base.group_by(SMSLog.account_id)
+    if group_by == "channel":
+        base = base.where(SMSLog.channel_id.isnot(None)).group_by(SMSLog.channel_id)
+    elif group_by == "country":
+        base = base.where(SMSLog.country_code.isnot(None)).group_by(SMSLog.country_code)
+    elif group_by == "sales":
+        base = base.group_by(Account.sales_id)
+    else:
+        base = base.group_by(SMSLog.account_id)
+
     result = await db.execute(base)
     rows = result.all()
 
-    # 获取账户名称
-    account_ids = list({r.account_id for r in rows})
-    acc_map = {}
-    if account_ids:
-        acc_res = await db.execute(select(Account.id, Account.account_name).where(Account.id.in_(account_ids)))
-        for row in acc_res:
-            acc_map[row.id] = row.account_name
+    name_map: dict = {}
+    if group_by == "channel":
+        ch_ids = list({r.channel_id for r in rows if r.channel_id})
+        if ch_ids:
+            ch_res = await db.execute(select(Channel.id, Channel.channel_name, Channel.channel_code).where(Channel.id.in_(ch_ids)))
+            for r in ch_res:
+                name_map[r.id] = {"name": r.channel_name, "code": r.channel_code}
+    elif group_by == "account":
+        acc_ids = list({r.account_id for r in rows if r.account_id})
+        if acc_ids:
+            acc_res = await db.execute(select(Account.id, Account.account_name).where(Account.id.in_(acc_ids)))
+            for r in acc_res:
+                name_map[r.id] = r.account_name
+    elif group_by == "sales":
+        staff_ids = list({r.sales_id for r in rows if r.sales_id})
+        if staff_ids:
+            staff_res = await db.execute(select(AdminUser.id, AdminUser.real_name, AdminUser.username).where(AdminUser.id.in_(staff_ids)))
+            for r in staff_res:
+                name_map[r.id] = r.real_name or r.username
+
+    # 汇总
+    sum_submit = sum_success = sum_failed = sum_pending = 0
+    sum_cost = sum_revenue = 0.0
 
     items = []
     for r in rows:
         submit_total = r.submit_total or 0
         success_count = r.success_count or 0
-        success_rate = (success_count / submit_total * 100) if submit_total > 0 else 0
-        items.append({
-            "account_id": r.account_id,
-            "account_name": acc_map.get(r.account_id, "-"),
+        failed_count = r.failed_count or 0
+        pending_count = r.pending_count or 0
+        total_cost = round(float(r.total_cost or 0), 5)
+        total_revenue = round(float(r.total_revenue or 0), 5)
+        profit = round(total_revenue - total_cost, 5)
+        success_rate = round((success_count / submit_total * 100) if submit_total > 0 else 0, 2)
+
+        sum_submit += submit_total
+        sum_success += success_count
+        sum_failed += failed_count
+        sum_pending += pending_count
+        sum_cost += total_cost
+        sum_revenue += total_revenue
+
+        item: dict = {
             "submit_total": submit_total,
             "success_count": success_count,
-            "success_rate": round(success_rate, 2),
-            "avg_unit_price": round(float(r.avg_unit_price or 0), 4),
-            "total_cost": round(float(r.total_cost or 0), 4),
-            "total_revenue": round(float(r.total_revenue or 0), 4),
-        })
-    return {"success": True, "total": len(items), "items": items, "filters": {"start_date": start_date, "end_date": end_date, "report_type": report_type}}
+            "failed_count": failed_count,
+            "pending_count": pending_count,
+            "success_rate": success_rate,
+            "avg_unit_price": round(float(r.avg_unit_price or 0), 5),
+            "total_cost": total_cost,
+            "total_revenue": total_revenue,
+            "profit": profit,
+        }
+
+        if group_by == "channel":
+            ch_info = name_map.get(r.channel_id, {})
+            item["channel_id"] = r.channel_id
+            item["channel_name"] = ch_info.get("name", "-") if isinstance(ch_info, dict) else "-"
+            item["channel_code"] = ch_info.get("code", "-") if isinstance(ch_info, dict) else "-"
+            item["dim_label"] = item["channel_name"]
+        elif group_by == "country":
+            item["country_code"] = r.country_code
+            item["dim_label"] = r.country_code
+        elif group_by == "sales":
+            item["sales_id"] = r.sales_id
+            item["sales_name"] = name_map.get(r.sales_id, "未分配")
+            item["dim_label"] = item["sales_name"]
+        else:
+            item["account_id"] = r.account_id
+            item["account_name"] = name_map.get(r.account_id, "-")
+            item["dim_label"] = item["account_name"]
+
+        items.append(item)
+
+    items.sort(key=lambda x: x["submit_total"], reverse=True)
+
+    summary = {
+        "submit_total": sum_submit,
+        "success_count": sum_success,
+        "failed_count": sum_failed,
+        "pending_count": sum_pending,
+        "success_rate": round((sum_success / sum_submit * 100) if sum_submit > 0 else 0, 2),
+        "total_cost": round(sum_cost, 5),
+        "total_revenue": round(sum_revenue, 5),
+        "profit": round(sum_revenue - sum_cost, 5),
+    }
+
+    return {
+        "success": True,
+        "total": len(items),
+        "items": items,
+        "summary": summary,
+        "filters": {"start_date": start_date, "end_date": end_date, "group_by": group_by},
+    }
 
 
 @router.get("/reports/success-rate", response_model=dict)
@@ -2980,12 +3083,16 @@ async def get_admin_daily_stats(
     days: int = Query(7, ge=1, le=90),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    account_id: Optional[int] = Query(None, description="客户账户ID"),
+    channel_id: Optional[int] = Query(None, description="通道ID"),
+    country_code: Optional[str] = Query(None, description="国家代码"),
+    sales_id: Optional[int] = Query(None, description="归属销售/员工ID"),
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """管理员：每日统计（用于图表）。销售角色仅统计归属客户。"""
+    """管理员：每日统计（用于图表）。支持按客户/通道/国家筛选。销售角色仅统计归属客户。"""
     from app.modules.sms.sms_log import SMSLog
-    from sqlalchemy.sql import text
+    from sqlalchemy import func, and_, case, or_ as sa_or
 
     if start_date and end_date:
         try:
@@ -2994,47 +3101,52 @@ async def get_admin_daily_stats(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format")
     else:
-        end_dt = datetime.now().date()
-        start_dt = end_dt - timedelta(days=max(1, min(90, days)) - 1)
+        end_dt = datetime.now().date() + timedelta(days=1)
+        start_dt = end_dt - timedelta(days=max(1, min(90, days)))
 
     if admin.role == "sales":
-        query = text("""
-            SELECT DATE(l.submit_time) as date,
-                COUNT(*) as total_sent,
-                SUM(CASE WHEN l.status = 'delivered' THEN 1 ELSE 0 END) as total_delivered,
-                SUM(l.cost_price) as total_cost,
-                SUM(l.selling_price) as total_revenue
-            FROM sms_logs l
-            INNER JOIN accounts a ON a.id = l.account_id
-                AND a.sales_id = :sales_id AND a.is_deleted = 0
-            WHERE l.submit_time >= :start_date AND l.submit_time < :end_date
-            GROUP BY DATE(l.submit_time)
-            ORDER BY date ASC
-        """)
-        bind = {"start_date": start_dt, "end_date": end_dt, "sales_id": admin.id}
-    else:
-        query = text("""
-            SELECT DATE(submit_time) as date,
-                COUNT(*) as total_sent,
-                SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as total_delivered,
-                SUM(cost_price) as total_cost,
-                SUM(selling_price) as total_revenue
-            FROM sms_logs
-            WHERE submit_time >= :start_date AND submit_time < :end_date
-            GROUP BY DATE(submit_time)
-            ORDER BY date ASC
-        """)
-        bind = {"start_date": start_dt, "end_date": end_dt}
-    result = await db.execute(query, bind)
+        sales_id = admin.id
+
+    base = (
+        select(
+            func.date(SMSLog.submit_time).label("date"),
+            func.count(SMSLog.id).label("total_sent"),
+            func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
+            func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
+            func.sum(SMSLog.cost_price).label("total_cost"),
+            func.sum(SMSLog.selling_price).label("total_revenue"),
+        )
+        .where(and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt))
+    )
+
+    if account_id:
+        base = base.where(SMSLog.account_id == account_id)
+    if channel_id:
+        base = base.where(SMSLog.channel_id == channel_id)
+    if country_code:
+        base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
+    if sales_id:
+        base = base.join(Account, SMSLog.account_id == Account.id).where(
+            and_(Account.sales_id == sales_id, Account.is_deleted == False)
+        )
+
+    base = base.group_by(func.date(SMSLog.submit_time)).order_by(func.date(SMSLog.submit_time).asc())
+    result = await db.execute(base)
+
     statistics = []
     for row in result:
         ts, td = row.total_sent or 0, row.total_delivered or 0
+        tf = row.total_failed or 0
         cost, rev = float(row.total_cost or 0), float(row.total_revenue or 0)
         statistics.append({
             "date": row.date.isoformat() if row.date else None,
-            "total_sent": ts, "total_delivered": td,
+            "total_sent": ts,
+            "total_delivered": td,
+            "total_failed": tf,
             "success_rate": round(td / ts * 100, 2) if ts > 0 else 0,
-            "total_cost": cost, "total_revenue": rev, "total_profit": round(rev - cost, 4)
+            "total_cost": round(cost, 4),
+            "total_revenue": round(rev, 4),
+            "total_profit": round(rev - cost, 4),
         })
     return {"success": True, "days": (end_dt - start_dt).days, "statistics": statistics}
 
@@ -3111,6 +3223,14 @@ class StaffUpdateRequest(BaseModel):
     role: Optional[str] = None
     status: Optional[str] = None
     password: Optional[str] = None  # 可选重置密码
+
+
+def _normalize_staff_tg_username(v: Optional[str]) -> Optional[str]:
+    """员工 TG 展示名：去空白、去前导 @，空串视为未填"""
+    if v is None:
+        return None
+    s = str(v).strip().lstrip("@")
+    return s or None
 
 
 def _clear_staff_telegram_binding(staff: AdminUser) -> bool:
@@ -3213,10 +3333,25 @@ async def update_staff(
         raise HTTPException(status_code=403, detail="无权限修改超级管理员")
     
     # 更新字段
+    cleared_tg_for_username_change = False
     if request.real_name is not None:
         staff.real_name = request.real_name
-    if request.tg_username is not None:
-        staff.tg_username = request.tg_username
+    # Bot 以 tg_id（数字 ID）识别员工，仅改 tg_username 不会换绑。若展示名变更则清除 tg_id，避免旧号仍被视为该员工。
+    if "tg_username" in request.model_fields_set:
+        old_norm = _normalize_staff_tg_username(staff.tg_username)
+        new_norm = _normalize_staff_tg_username(request.tg_username)
+        old_cmp = (old_norm or "").lower()
+        new_cmp = (new_norm or "").lower()
+        if old_cmp != new_cmp and staff.tg_id is not None:
+            staff.tg_id = None
+            cleared_tg_for_username_change = True
+            logger.info(
+                "员工 %s 修改 Telegram 用户名展示字段 (%r -> %r)，已清除 tg_id，需在 Bot 内重新绑定",
+                staff.username,
+                old_norm,
+                new_norm,
+            )
+        staff.tg_username = new_norm
     if request.commission_rate is not None:
         staff.commission_rate = request.commission_rate
     if request.role is not None and admin.role == 'super_admin':
@@ -3230,10 +3365,15 @@ async def update_staff(
         staff.password_hash = AuthService.hash_password(request.password)
     
     await db.commit()
-    
+
+    msg = "员工信息已更新"
+    if cleared_tg_for_username_change:
+        msg += "：已解除原 Telegram 绑定，请新员工在 TG 业务助手内用登录名+密码完成绑定"
+
     return {
         "success": True,
-        "message": "员工信息已更新"
+        "message": msg,
+        "telegram_rebind_required": cleared_tg_for_username_change,
     }
 
 

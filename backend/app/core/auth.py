@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from fastapi import Security, HTTPException, Header, Request, Depends
-from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from jose import JWTError, jwt
@@ -30,6 +30,9 @@ security = HTTPBearer()
 # 可选 Bearer：用于识别 Authorization: Bearer ak_xxx（与 X-API-Key 等价）
 optional_bearer = HTTPBearer(auto_error=False)
 
+# 可选 HTTP Basic Auth：客户通过 account_name + password 认证
+optional_basic = HTTPBasic(auto_error=False)
+
 # 模块级 CryptContext 实例（避免每次调用重复创建）
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -47,20 +50,27 @@ async def get_current_account(
     request: Request,
     api_key: Optional[str] = Security(api_key_header),
     bearer: Optional[HTTPAuthorizationCredentials] = Security(optional_bearer),
+    basic_creds: Optional[HTTPBasicCredentials] = Security(optional_basic),
     db: AsyncSession = Depends(get_db),
 ) -> Account:
-    """获取当前认证账户：优先 X-API-Key；否则若 Bearer 则视为 API Key；兜底支持 URL 参数 api_key（供文件下载）"""
+    """获取当前认证账户：优先 X-API-Key > Bearer ak_xxx > HTTP Basic Auth > URL参数 api_key"""
     effective = api_key
     if not effective and bearer and bearer.credentials:
         token = bearer.credentials.strip()
         if token.startswith("ak_"):
             effective = token
-    
-    # 兜底支持从 URL 参数中获取 api_key
+
     if not effective:
         effective = request.query_params.get("api_key")
-        
-    return await AuthService.verify_api_key(effective, db)
+
+    if effective:
+        return await AuthService.verify_api_key(effective, db)
+
+    # HTTP Basic Auth（account_name/email + password）
+    if basic_creds and basic_creds.username:
+        return await AuthService.verify_basic_credentials(basic_creds, db)
+
+    raise AuthenticationError("Missing API Key or credentials")
 
 
 async def get_current_admin(
@@ -128,6 +138,50 @@ class AuthService:
         logger.debug(f"认证成功: 账户 {account.id} ({account.email})")
         return account
     
+    @staticmethod
+    async def verify_basic_credentials(
+        credentials: HTTPBasicCredentials,
+        db: AsyncSession,
+    ) -> Account:
+        """
+        通过 HTTP Basic Auth（用户名 + 密码）验证客户账户
+
+        支持 account_name 或 email 作为用户名。
+        密码优先匹配 api_secret（接口密码），其次匹配 password_hash（登录密码）。
+        """
+        from sqlalchemy import or_
+        login_id = credentials.username
+        result = await db.execute(
+            select(Account).where(
+                or_(
+                    Account.account_name == login_id,
+                    Account.email == login_id,
+                ),
+                Account.status == "active",
+                Account.is_deleted == False,
+            )
+        )
+        account = result.scalar_one_or_none()
+
+        if not account:
+            logger.warning(f"Basic Auth 失败：账户不存在 login_id={login_id}")
+            raise AuthenticationError("Invalid credentials")
+
+        pwd = credentials.password
+
+        # 优先匹配 api_secret（接口密码，明文比对）
+        if account.api_secret and pwd == account.api_secret:
+            logger.debug(f"Basic Auth(api_secret) 认证成功: 账户 {account.id} ({account.account_name})")
+            return account
+
+        # 回退匹配 password_hash（登录密码）
+        if account.password_hash and _pwd_context.verify(pwd, account.password_hash):
+            logger.debug(f"Basic Auth(login_pwd) 认证成功: 账户 {account.id} ({account.account_name})")
+            return account
+
+        logger.warning(f"Basic Auth 密码错误: login_id={login_id}")
+        raise AuthenticationError("Invalid credentials")
+
     @staticmethod
     async def verify_signature(
         request: Request,

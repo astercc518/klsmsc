@@ -14,13 +14,13 @@ from telegram.ext import (
     ContextTypes, CallbackQueryHandler,
     ConversationHandler, MessageHandler, filters
 )
-from bot.utils import get_session, logger
+from bot.utils import get_session, logger, dedupe_country_codes_from_templates
 from app.modules.common.admin_user import AdminUser
 from app.modules.common.account_template import AccountTemplate
 from app.modules.common.account import Account
 from app.modules.common.ticket import Ticket, TicketReply
 from app.core.auth import AuthService
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from app.database import AsyncSessionLocal
 
 from bot.utils import get_group_ids
@@ -45,6 +45,7 @@ COUNTRY_NAMES = {
     'RO': '罗马尼亚', 'PL': '波兰', 'CZ': '捷克', 'LT': '立陶宛', 'KW': '科威特',
     'MM': '缅甸', 'MX': '墨西哥', 'PE': '秘鲁', 'CO': '哥伦比亚', 'ET': '埃塞俄比亚',
     'IE': '爱尔兰',
+    'BJ': '贝宁',
 }
 
 BIZ_LABELS = {"voice": "📞 语音", "data": "📊 数据", "sms": "📱 短信"}
@@ -129,25 +130,24 @@ async def _show_country_list(query, context, biz_type):
     """展示国家列表"""
     async with get_session() as db:
         result = await db.execute(
-            select(AccountTemplate.country_code, AccountTemplate.country_name)
-            .where(
+            select(AccountTemplate.country_code).where(
                 AccountTemplate.business_type == biz_type,
-                AccountTemplate.status == "active"
+                AccountTemplate.status == "active",
+                AccountTemplate.country_code.isnot(None),
             )
-            .distinct()
-            .order_by(AccountTemplate.country_code)
         )
-        countries = result.all()
+        raw_codes = [r[0] for r in result.all()]
+        country_codes = dedupe_country_codes_from_templates(raw_codes)
 
-    if not countries:
+    if not country_codes:
         biz_label = BIZ_LABELS.get(biz_type, biz_type)
         await query.edit_message_text(f"❌ 暂无 {biz_label} 业务的可用模板")
         return ConversationHandler.END
 
     keyboard = []
     row = []
-    for cc, cn in countries:
-        label = f"{cn or COUNTRY_NAMES.get(cc, '')} ({cc})" if (cn or COUNTRY_NAMES.get(cc)) else cc
+    for cc in country_codes:
+        label = COUNTRY_NAMES.get(cc, cc)
         row.append(InlineKeyboardButton(label, callback_data=f"open_cc_{cc}"))
         if len(row) == 2:
             keyboard.append(row)
@@ -190,7 +190,7 @@ async def handle_select_country(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    cc = data.replace("open_cc_", "")
+    cc = data.replace("open_cc_", "").strip().upper()
     context.user_data['opening_country_code'] = cc
     biz_type = context.user_data.get('opening_biz_type', '')
 
@@ -214,7 +214,7 @@ async def _show_voice_multi_select(query, context, cc):
             select(AccountTemplate)
             .where(
                 AccountTemplate.business_type == 'voice',
-                AccountTemplate.country_code == cc,
+                func.upper(AccountTemplate.country_code) == cc,
                 AccountTemplate.status == "active"
             )
             .order_by(AccountTemplate.template_name)
@@ -450,7 +450,7 @@ async def _show_data_template_list(query, context, cc, biz_type):
             select(AccountTemplate)
             .where(
                 AccountTemplate.business_type == biz_type,
-                AccountTemplate.country_code == cc,
+                func.upper(AccountTemplate.country_code) == cc,
                 AccountTemplate.status == "active"
             )
             .order_by(AccountTemplate.template_name)

@@ -6,12 +6,12 @@ import uuid
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, BackgroundTasks, Header, HTTPException, Body
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, HTTPBasicCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.modules.common.account import Account
 from app.modules.sms.sms_log import SMSLog
-from app.core.auth import AuthService, api_key_header
+from app.core.auth import AuthService, api_key_header, optional_basic
 from app.utils.validator import Validator
 from app.utils.sms_template import render_sms_variables, sms_template_has_variables
 from app.core.router import RoutingEngine
@@ -83,29 +83,34 @@ optional_bearer = HTTPBearer(auto_error=False)
 async def get_current_account_or_admin(
     api_key: Optional[str] = Depends(api_key_header),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+    basic_creds: Optional[HTTPBasicCredentials] = Depends(optional_basic),
     db: AsyncSession = Depends(get_db)
 ) -> Account:
     """
-    获取当前认证账户 - 支持 API Key 或管理员 JWT Token
-    
-    优先使用 API Key，如果没有则尝试使用 JWT Token（管理员模式）
-    管理员模式下会使用系统默认账户或第一个可用账户
+    获取当前认证账户 - 支持多种认证方式
+
+    优先级：API Key > HTTP Basic Auth (用户名+密码) > JWT Token (管理员)
     """
     # 1. 优先使用 API Key
     if api_key:
         try:
             return await AuthService.verify_api_key(api_key, db)
         except AuthenticationError:
-            pass  # 继续尝试 JWT Token
-    
-    # 2. 尝试使用 JWT Token（管理员模式）
+            pass
+
+    # 2. HTTP Basic Auth（account_name/email + password）
+    if basic_creds and basic_creds.username:
+        try:
+            return await AuthService.verify_basic_credentials(basic_creds, db)
+        except AuthenticationError:
+            pass
+
+    # 3. 尝试使用 JWT Token（管理员模式）
     if credentials and credentials.credentials:
         try:
             payload = AuthService.verify_token(credentials.credentials)
             admin_id = payload.get("sub")
             if admin_id:
-                # 管理员认证成功，获取一个可用账户来发送短信
-                # 优先查找系统账户或第一个激活的账户
                 result = await db.execute(
                     select(Account).where(
                         Account.status == 'active',
@@ -125,18 +130,19 @@ async def get_current_account_or_admin(
         except Exception as e:
             logger.warning(f"JWT Token 验证失败: {str(e)}")
     
-    # 3. 都失败了
-    raise AuthenticationError("Missing API Key or invalid token")
+    # 4. 都失败了
+    raise AuthenticationError("Missing API Key, credentials or token")
 
 
 async def get_auth_context(
     api_key: Optional[str] = Depends(api_key_header),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
+    basic_creds: Optional[HTTPBasicCredentials] = Depends(optional_basic),
     db: AsyncSession = Depends(get_db)
 ) -> dict:
     """
     获取认证上下文 - 区分管理员和客户账户
-    
+
     返回:
         {
             "is_admin": bool,
@@ -151,7 +157,7 @@ async def get_auth_context(
         "account": None,
         "account_id": None
     }
-    
+
     # 1. 先检查 JWT Token（管理员模式）
     if credentials and credentials.credentials:
         try:
@@ -164,7 +170,7 @@ async def get_auth_context(
                 return context
         except Exception as e:
             logger.debug(f"JWT Token 验证失败: {str(e)}")
-    
+
     # 2. 检查 API Key（客户账户模式）
     if api_key:
         try:
@@ -174,9 +180,19 @@ async def get_auth_context(
             return context
         except AuthenticationError:
             pass
-    
-    # 3. 都失败了
-    raise AuthenticationError("Missing API Key or invalid token")
+
+    # 3. HTTP Basic Auth（account_name/email + password）
+    if basic_creds and basic_creds.username:
+        try:
+            account = await AuthService.verify_basic_credentials(basic_creds, db)
+            context["account"] = account
+            context["account_id"] = account.id
+            return context
+        except AuthenticationError:
+            pass
+
+    # 4. 都失败了
+    raise AuthenticationError("Missing API Key, credentials or token")
 
 
 # 保留旧函数名以兼容
@@ -1662,7 +1678,6 @@ async def dlr_callback_by_channel(
 async def get_public_rates(db: AsyncSession = Depends(get_db)):
     """获取公开短信费率（基于开户模板最高价 + 50% 利润）"""
     try:
-        # 查询激活的短信开户模板，按国家分组取最高价
         query = (
             select(
                 AccountTemplate.country_code,
@@ -1680,43 +1695,6 @@ async def get_public_rates(db: AsyncSession = Depends(get_db)):
         
         rates = []
         for row in rows:
-            # 应用 50% 利润上浮
-            price = float(Decimal(str(row.max_price or 0)) * Decimal("1.5"))
-            rates.append(PublicSMSRate(
-                code=row.country_code,
-                name=row.country_name,
-                price=round(price, 4)
-            ))
-            
-        return PublicSMSRateResponse(success=True, data=rates)
-    except Exception as e:
-        logger.error(f"获取公开费率失败: {str(e)}", exc_info=True)
-        return PublicSMSRateResponse(success=False, data=[])
-
-
-@router.get("/public/rates", response_model=PublicSMSRateResponse)
-async def get_public_rates(db: AsyncSession = Depends(get_db)):
-    """获取公开短信费率（基于开户模板最高价 + 50% 利润）"""
-    try:
-        # 查询激活的短信开户模板，按国家分组取最高价
-        query = (
-            select(
-                AccountTemplate.country_code,
-                AccountTemplate.country_name,
-                func.max(AccountTemplate.default_price).label("max_price")
-            )
-            .where(AccountTemplate.business_type == "sms")
-            .where(AccountTemplate.status == "active")
-            .group_by(AccountTemplate.country_code, AccountTemplate.country_name)
-            .order_by(AccountTemplate.country_name.asc())
-        )
-        
-        result = await db.execute(query)
-        rows = result.all()
-        
-        rates = []
-        for row in rows:
-            # 应用 50% 利润上浮
             price = float(Decimal(str(row.max_price or 0)) * Decimal("1.5"))
             rates.append(PublicSMSRate(
                 code=row.country_code,

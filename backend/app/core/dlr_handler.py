@@ -482,32 +482,30 @@ def detect_and_parse_dlr(content: str, content_type: str = '') -> List[Dict]:
             import json
             data = json.loads(content)
             return parse_json_dlr(data)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"DLR JSON 解析失败 (content-type hint): {e}")
     
     elif 'xml' in content_type:
         return parse_xml_dlr(content)
     
-    # 自动检测格式
     if content.startswith('{') or content.startswith('['):
         try:
             import json
             data = json.loads(content)
             return parse_json_dlr(data)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"DLR JSON 自动检测解析失败: {e}")
     
     if content.startswith('<?xml') or content.startswith('<'):
         return parse_xml_dlr(content)
     
-    # 尝试解析为键值对
     if '=' in content:
         try:
             from urllib.parse import parse_qs
             data = {k: v[0] for k, v in parse_qs(content).items()}
             return parse_form_dlr(data)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"DLR form 解析失败: {e}")
     
     logger.warning(f"无法识别 DLR 格式: {content[:200]}")
     return []

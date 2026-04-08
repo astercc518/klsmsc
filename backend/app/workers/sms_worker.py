@@ -17,17 +17,32 @@ from app.database import AsyncSessionLocal
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from app.config import settings
 
+_worker_engine = None
+_worker_session_factory = None
+
+
+def _get_worker_engine():
+    """进程级单例引擎，避免每次任务新建连接池"""
+    global _worker_engine, _worker_session_factory
+    if _worker_engine is None:
+        _worker_engine = create_async_engine(
+            settings.SQLALCHEMY_DATABASE_URL,
+            echo=False,
+            pool_size=5,
+            max_overflow=5,
+            pool_pre_ping=True,
+            pool_recycle=1800,
+        )
+        _worker_session_factory = async_sessionmaker(
+            _worker_engine, class_=AsyncSession, expire_on_commit=False
+        )
+    return _worker_engine, _worker_session_factory
+
+
 def _get_worker_session():
-    """为 worker 创建独立的数据库会话，避免与父进程共享连接池"""
-    eng = create_async_engine(
-        settings.SQLALCHEMY_DATABASE_URL,
-        echo=False,
-        pool_size=5,
-        max_overflow=5,
-        pool_pre_ping=True,
-        pool_recycle=1800,
-    )
-    return async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)()
+    """复用进程级引擎的会话"""
+    _, factory = _get_worker_engine()
+    return factory()
 from app.utils.logger import get_logger
 import asyncio
 

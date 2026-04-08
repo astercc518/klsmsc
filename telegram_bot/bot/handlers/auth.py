@@ -116,14 +116,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             admin = admin_result.scalar_one_or_none()
             
             if admin:
-                # 补全 tg_username（历史绑定可能未保存，每次 /start 时同步）
-                if not admin.tg_username and update.effective_user:
-                    admin.tg_username = (
-                        update.effective_user.username
-                        or update.effective_user.first_name
-                        or str(tg_id)
-                    )
-                    await db.commit()
+                # 与 Telegram @username 同步（同号改名后后台显示更新）；识别员工仍以数字 tg_id 为准
+                if update.effective_user:
+                    eu = update.effective_user
+                    if eu.username:
+                        live = eu.username.strip().lstrip("@")
+                        db_u = (admin.tg_username or "").strip().lstrip("@") or None
+                        if db_u is None or db_u.lower() != live.lower():
+                            admin.tg_username = live
+                            await db.commit()
+                    elif not admin.tg_username:
+                        admin.tg_username = (
+                            eu.first_name.strip() if eu.first_name else None
+                        ) or str(tg_id)
+                        await db.commit()
                 # 员工/管理员登录
                 context.user_data['user_type'] = 'admin'
                 context.user_data['user_id'] = admin.id

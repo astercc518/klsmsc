@@ -272,18 +272,6 @@
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.accountTemplates') }}</span>
                 </div>
 
-                <div class="nav-item" :class="{ active: isActive('/admin/business-accounts') }" @click="navigate('/admin/business-accounts')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <rect x="2" y="3" width="16" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <circle cx="8" cy="9" r="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M5 14c0-1.7 1.3-3 3-3s3 1.3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                      <path d="M13 8h3M13 11h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.businessAccounts') }}</span>
-                </div>
-
               </div>
 
               <!-- 2. 短信业务 -->
