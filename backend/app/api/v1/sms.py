@@ -1334,12 +1334,16 @@ async def get_sms_records(
     auth_context: dict = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db)
 ):
-    """获取短信发送记录（带通道信息）"""
+    """获取短信发送记录（带通道信息、客户名称、归属员工）"""
     from sqlalchemy import func, and_
     from sqlalchemy.orm import aliased
     from datetime import datetime
     from app.modules.sms.channel import Channel
     from app.modules.sms.sms_batch import SmsBatch
+    from app.modules.common.account import Account
+    from app.modules.common.admin_user import AdminUser
+
+    SalesUser = aliased(AdminUser)
 
     conditions = []
 
@@ -1396,8 +1400,16 @@ async def get_sms_records(
 
     offset = (page - 1) * page_size
     query = (
-        select(SMSLog, Channel.channel_code, Channel.channel_name)
+        select(
+            SMSLog,
+            Channel.channel_code,
+            Channel.channel_name,
+            Account.account_name,
+            SalesUser.real_name.label("sales_name"),
+        )
         .outerjoin(Channel, SMSLog.channel_id == Channel.id)
+        .outerjoin(Account, SMSLog.account_id == Account.id)
+        .outerjoin(SalesUser, Account.sales_id == SalesUser.id)
         .where(where_clause)
         .order_by(SMSLog.id.desc())
         .offset(offset)
@@ -1418,6 +1430,7 @@ async def get_sms_records(
                 "message_id": r.message_id,
                 "upstream_message_id": r.upstream_message_id,
                 "account_id": r.account_id,
+                "account_name": acct_name,
                 "channel_id": r.channel_id,
                 "channel_code": ch_code,
                 "channel_name": ch_name,
@@ -1435,8 +1448,9 @@ async def get_sms_records(
                 "sent_time": r.sent_time.isoformat() if r.sent_time else None,
                 "delivery_time": r.delivery_time.isoformat() if r.delivery_time else None,
                 "error_message": r.error_message,
+                "sales_name": sales_name,
             }
-            for r, ch_code, ch_name in rows
+            for r, ch_code, ch_name, acct_name, sales_name in rows
         ],
     }
 

@@ -123,9 +123,12 @@
     <div class="table-card">
       <div class="table-wrapper" v-loading="loading">
         <el-table :data="records" class="records-table" :row-class-name="tableRowClassName" @row-click="handleViewDetail" empty-text="暂无记录" stripe>
-          <el-table-column v-if="isAdmin" prop="account_id" label="账户" width="70" align="center">
+          <el-table-column v-if="isAdmin" prop="account_name" label="客户" width="160">
             <template #default="{ row }">
-              <span class="mono-text">{{ row.account_id }}</span>
+              <div class="account-cell">
+                <span class="account-name-text">{{ row.account_name || '-' }}</span>
+                <span v-if="row.sales_name" class="sales-tag">{{ row.sales_name }}</span>
+              </div>
             </template>
           </el-table-column>
 
@@ -747,6 +750,9 @@ onMounted(() => {
 }
 .clickable { cursor: pointer; }
 .phone-text { font-weight: 500; color: var(--text-primary); }
+.account-cell { display: flex; flex-direction: column; gap: 2px; line-height: 1.3; }
+.account-name-text { font-size: 13px; font-weight: 500; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sales-tag { font-size: 11px; color: var(--text-quaternary); }
 .text-muted { color: var(--text-quaternary); font-size: 12px; }
 .error-preview {
   color: var(--el-color-danger);
