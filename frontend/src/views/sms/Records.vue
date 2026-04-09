@@ -178,11 +178,16 @@
           <el-table-column
             prop="error_message"
             :label="$t('smsRecords.errorMsg')"
-            min-width="140"
+            min-width="160"
             show-overflow-tooltip
           >
             <template #default="{ row }">
-              <span v-if="row.error_message" class="error-preview">{{ row.error_message }}</span>
+              <template v-if="row.error_message">
+                <span v-if="friendlyError(row.error_message)" class="error-preview-friendly">
+                  {{ friendlyError(row.error_message)!.title }}
+                </span>
+                <span v-else class="error-preview">{{ row.error_message }}</span>
+              </template>
               <span v-else class="text-muted">-</span>
             </template>
           </el-table-column>
@@ -360,6 +365,12 @@
 
         <div class="detail-section" v-if="currentRecord.error_message">
           <h4 class="section-title error-title">{{ $t('smsRecords.errorMsg') }}</h4>
+          <div v-if="friendlyError(currentRecord.error_message)" class="error-explain">
+            <el-alert :type="friendlyError(currentRecord.error_message).type" :closable="false" show-icon>
+              <template #title>{{ friendlyError(currentRecord.error_message).title }}</template>
+              <template #default>{{ friendlyError(currentRecord.error_message).desc }}</template>
+            </el-alert>
+          </div>
           <div class="error-box">{{ currentRecord.error_message }}</div>
         </div>
       </div>
@@ -522,6 +533,60 @@ const handleReset = () => {
 const handleViewDetail = (row: any) => {
   currentRecord.value = row
   detailVisible.value = true
+}
+
+const friendlyError = (msg: string | null | undefined): { title: string; desc: string; type: 'warning' | 'error' | 'info' } | null => {
+  if (!msg) return null
+  if (msg.includes('UNDELIV')) {
+    return {
+      type: 'warning',
+      title: '运营商拒绝投递（UNDELIVERABLE）',
+      desc: '短信已提交至运营商，但被目标运营商拒绝投递。常见原因：号码关机/停机、运营商内容过滤拦截、号码加入了免打扰名单(DND)、号码不存在或已注销。',
+    }
+  }
+  if (msg.includes('REJECTD') || msg.includes('REJECTED')) {
+    return {
+      type: 'error',
+      title: '运营商拒绝（REJECTED）',
+      desc: '短信被运营商直接拒绝，未尝试投递。可能原因：发送内容违规、发送号码被列入黑名单、目标运营商策略限制。',
+    }
+  }
+  if (msg.includes('EXPIRED')) {
+    return {
+      type: 'warning',
+      title: '短信过期（EXPIRED）',
+      desc: '短信在运营商网络中等待投递超时。通常因为接收方设备长时间不在线（关机/无信号）。',
+    }
+  }
+  if (msg.includes('different loop')) {
+    return {
+      type: 'error',
+      title: '系统内部错误',
+      desc: '发送过程中出现系统内部异常，该条短信未被发出。可联系管理员安排重发。',
+    }
+  }
+  if (msg.includes('No available channel')) {
+    return {
+      type: 'error',
+      title: '无可用通道',
+      desc: '当前没有匹配该目标国家的可用发送通道，请联系管理员检查通道配置。',
+    }
+  }
+  if (/SMPP.*提交被拒.*129/.test(msg)) {
+    return {
+      type: 'error',
+      title: '无效目标号码',
+      desc: '目标手机号码格式错误或不存在，请检查号码是否正确（含国家码）。',
+    }
+  }
+  if (msg.includes('connection failed') || msg.includes('Connection') || msg.includes('timeout')) {
+    return {
+      type: 'error',
+      title: '通道连接异常',
+      desc: '与上游通道的网络连接失败或超时，系统会自动重试。若持续出现请联系管理员。',
+    }
+  }
+  return null
 }
 
 const loadAccounts = async () => {
@@ -774,6 +839,11 @@ onMounted(() => {
   color: var(--el-color-danger);
   font-size: 12px;
 }
+.error-preview-friendly {
+  color: var(--el-color-warning-dark-2);
+  font-size: 12px;
+  font-weight: 500;
+}
 .message-preview {
   display: block;
   white-space: nowrap;
@@ -881,13 +951,23 @@ onMounted(() => {
   white-space: pre-wrap;
   word-break: break-all;
 }
+.error-explain {
+  margin-bottom: 10px;
+}
+.error-explain :deep(.el-alert__description) {
+  font-size: 12px;
+  line-height: 1.6;
+  margin-top: 4px;
+}
 .error-box {
   background: rgba(255, 69, 58, 0.08);
   border: 1px solid rgba(255, 69, 58, 0.2);
   border-radius: 10px;
   padding: 14px;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--danger);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  word-break: break-all;
 }
 
 /* 时间线 */

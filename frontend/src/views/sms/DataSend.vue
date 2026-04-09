@@ -101,13 +101,20 @@
             <!-- 变量插入工具栏 -->
             <div class="sms-toolbar">
               <div class="toolbar-group">
-                <span class="toolbar-label">插入变量:</span>
-                <el-button
-                  v-for="v in VARIABLES"
-                  :key="v.tag"
-                  size="small"
-                  @click="insertVariable(v.tag)"
-                >{{ v.label }}</el-button>
+                <span class="toolbar-label">变量:</span>
+                <el-tooltip v-for="v in MAIN_VARS" :key="v.tag" :content="v.tip" placement="top" :show-after="400">
+                  <el-button size="small" @click="insertVariable(v.tag)">{{ v.label }}</el-button>
+                </el-tooltip>
+                <el-dropdown trigger="click" @command="insertVariable">
+                  <el-button size="small">更多 ▾</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item v-for="v in MORE_VARS" :key="v.tag" :command="v.tag">
+                        {{ v.label }} <span style="color:var(--el-text-color-placeholder);font-size:11px;margin-left:6px">{{ v.tip }}</span>
+                      </el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </div>
               <div class="toolbar-group">
                 <el-button size="small" type="success" @click="showTemplateEngine = true">
@@ -309,13 +316,20 @@ const { t } = useI18n()
 
 // ============ 变量定义 ============
 
-const VARIABLES = [
-  { tag: '{序号}', label: '序号' },
-  { tag: '{国家}', label: '国家' },
-  { tag: '{日期}', label: '日期' },
-  { tag: '{随机码}', label: '随机码' },
-  { tag: '{号码}', label: '号码' },
+const MAIN_VARS = [
+  { tag: '{序号}', label: '序号', tip: '批次内序号，从1递增' },
+  { tag: '{号码}', label: '号码', tip: '接收方手机号码' },
+  { tag: '{国家}', label: '国家', tip: '目标国家代码（如 BR、IN）' },
+  { tag: '{日期}', label: '日期', tip: '当天日期 YYYY-MM-DD' },
+  { tag: '{随机码}', label: '随机码', tip: '6位随机数字' },
 ]
+const MORE_VARS = [
+  { tag: '{时间}', label: '时间', tip: '当前时间 HH:MM' },
+  { tag: '{随机码4}', label: '随机码4', tip: '4位随机数字' },
+  { tag: '{随机码8}', label: '随机码8', tip: '8位随机数字' },
+  { tag: '{随机字母}', label: '随机字母', tip: '6位随机大写字母' },
+]
+const VARIABLES = [...MAIN_VARS, ...MORE_VARS]
 
 const TPL_TYPES = [
   { value: 'marketing', label: '营销推广' },
@@ -577,17 +591,34 @@ const canSubmit = computed(() => {
 
 const hasVariables = computed(() => {
   const msg = orderForm.value.smsContent
-  return /\{(序号|国家|日期|随机码|号码|index|country|date|code|phone)\}/.test(msg)
+  if (/\{(序号|国家|日期|时间|随机码|号码|随机字母|index|country|date|time|code|phone|letters)\}/.test(msg)) return true
+  return /\{(随机码|code|随机字母|letters)\d{1,2}\}/.test(msg)
 })
+
+function _previewRandDigits(n: number): string {
+  return Array.from({ length: n }, () => Math.floor(Math.random() * 10)).join('')
+}
+function _previewRandLetters(n: number): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  return Array.from({ length: n }, () => chars[Math.floor(Math.random() * 26)]).join('')
+}
 
 const previewSms = computed(() => {
   let msg = orderForm.value.smsContent
-  const today = new Date().toISOString().slice(0, 10)
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const time = now.toTimeString().slice(0, 5)
   msg = msg.replace(/\{序号\}/g, '1').replace(/\{index\}/g, '1')
   msg = msg.replace(/\{国家\}/g, 'BR').replace(/\{country\}/g, 'BR')
   msg = msg.replace(/\{日期\}/g, today).replace(/\{date\}/g, today)
+  msg = msg.replace(/\{时间\}/g, time).replace(/\{time\}/g, time)
   msg = msg.replace(/\{随机码\}/g, '385921').replace(/\{code\}/g, '385921')
   msg = msg.replace(/\{号码\}/g, '5511999887766').replace(/\{phone\}/g, '5511999887766')
+  msg = msg.replace(/\{随机字母\}/g, 'AXKPMZ').replace(/\{letters\}/g, 'AXKPMZ')
+  msg = msg.replace(/\{随机码(\d{1,2})\}/g, (_, n) => _previewRandDigits(parseInt(n)))
+  msg = msg.replace(/\{code(\d{1,2})\}/g, (_, n) => _previewRandDigits(parseInt(n)))
+  msg = msg.replace(/\{随机字母(\d{1,2})\}/g, (_, n) => _previewRandLetters(parseInt(n)))
+  msg = msg.replace(/\{letters(\d{1,2})\}/g, (_, n) => _previewRandLetters(parseInt(n)))
   return msg
 })
 
@@ -1038,6 +1069,12 @@ onMounted(() => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
   white-space: nowrap;
+}
+.var-group-label {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  font-weight: 500;
 }
 
 /* 短信预览 */

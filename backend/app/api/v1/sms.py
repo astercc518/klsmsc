@@ -1720,3 +1720,38 @@ async def get_public_rates(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         logger.error(f"获取公开费率失败: {str(e)}", exc_info=True)
         return PublicSMSRateResponse(success=False, data=[])
+
+
+@router.get("/channels/{channel_id}/banned-words")
+async def get_channel_banned_words_for_user(
+    channel_id: int,
+    account: Account = Depends(get_current_account_or_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取通道违禁词（客户和管理员均可访问）"""
+    from app.modules.sms.channel import Channel
+    from app.modules.sms.routing_rule import RoutingRule
+
+    result = await db.execute(select(Channel).where(Channel.id == channel_id))
+    channel = result.scalar_one_or_none()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    rules_result = await db.execute(
+        select(RoutingRule).where(
+            RoutingRule.channel_id == channel_id,
+            RoutingRule.is_active == True
+        )
+    )
+    rules = rules_result.scalars().all()
+
+    country_words = {}
+    for r in rules:
+        if r.banned_words:
+            country_words[r.country_code] = r.banned_words
+
+    return {
+        "success": True,
+        "channel_banned_words": channel.banned_words or "",
+        "country_banned_words": country_words,
+    }

@@ -74,6 +74,7 @@ class Channel(Base):
         onupdate=func.now(),
         comment="更新时间"
     )
+    banned_words = Column(Text, nullable=True, comment="违禁词列表，逗号分隔")
     is_deleted = Column(Boolean, nullable=False, default=False, comment="软删除标记")
     
     def __repr__(self):

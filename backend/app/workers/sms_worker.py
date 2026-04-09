@@ -253,13 +253,24 @@ def _send_via_smpp_sync(sms_log: SMSLog, channel: Channel) -> Tuple[bool, Option
             return ok, mid, err
 
 
+_worker_loop: Optional[asyncio.AbstractEventLoop] = None
+_worker_loop_lock = threading.Lock()
+
+
+def _get_worker_loop() -> asyncio.AbstractEventLoop:
+    """进程级单例事件循环，确保 async engine 连接池始终绑定同一 loop"""
+    global _worker_loop
+    if _worker_loop is None or _worker_loop.is_closed():
+        with _worker_loop_lock:
+            if _worker_loop is None or _worker_loop.is_closed():
+                _worker_loop = asyncio.new_event_loop()
+    return _worker_loop
+
+
 def _run_async(coro):
-    """在 Celery 同步 worker 中安全地执行异步协程，每次使用独立事件循环"""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    """在 Celery 同步 worker 中安全地执行异步协程，复用进程级事件循环"""
+    loop = _get_worker_loop()
+    return loop.run_until_complete(coro)
 
 
 @celery_app.task(name='send_sms_task', bind=True, max_retries=3)

@@ -79,3 +79,7 @@ export const executeApprovedSms = (approvalId: number, data?: { phone_number?: s
   return request.post(`/sms/approval/${approvalId}/execute`, data ?? {})
 }
 
+export const getChannelBannedWords = (channelId: number): Promise<any> => {
+  return request.get(`/sms/channels/${channelId}/banned-words`)
+}
+

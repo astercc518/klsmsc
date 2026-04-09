@@ -343,6 +343,20 @@
           {{ $t('channels.rateControlTip') }}
         </div>
 
+        <el-divider content-position="left">违禁词管理</el-divider>
+        <el-form-item label="全局违禁词">
+          <el-input
+            v-model="form.banned_words"
+            type="textarea"
+            :rows="3"
+            placeholder="该通道所有国家通用的违禁词，每行一个或逗号分隔"
+            resize="vertical"
+          />
+          <div style="font-size: 11px; color: var(--el-text-color-placeholder); margin-top: 4px;">
+            此处配置对该通道所有国家生效。如需按国家单独配置，请在「路由规则」中为每个国家设置专属违禁词。
+          </div>
+        </el-form-item>
+
         <template v-if="!isEdit">
           <el-divider content-position="left">{{ $t('channels.pricingConfigOptional') }}</el-divider>
           <div class="inline-pricing">
@@ -426,6 +440,16 @@
             <el-tag :type="row.is_active ? 'success' : 'info'" size="small">{{ row.is_active ? $t('channels.enabled') : $t('channels.disabled') }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="违禁词" min-width="100" align="center">
+          <template #default="{ row }">
+            <template v-if="row.banned_words">
+              <el-tooltip :content="row.banned_words" placement="top" :show-after="300">
+                <el-tag size="small" type="danger">{{ row.banned_words.split(/[,，\n]/).filter((w: string) => w.trim()).length }} 个</el-tag>
+              </el-tooltip>
+            </template>
+            <span v-else style="color: var(--el-text-color-placeholder)">-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="updated_at" :label="$t('common.updatedAt')" min-width="160">
           <template #default="{ row }">
             {{ row.updated_at ? new Date(row.updated_at).toLocaleString() : '-' }}
@@ -465,6 +489,18 @@
         </el-form-item>
         <el-form-item :label="$t('channels.enabled')">
           <el-switch v-model="routingForm.is_active" />
+        </el-form-item>
+        <el-form-item label="违禁词">
+          <el-input
+            v-model="routingForm.banned_words"
+            type="textarea"
+            :rows="4"
+            placeholder="该国家专属违禁词，每行一个或逗号分隔"
+            resize="vertical"
+          />
+          <div style="font-size: 11px; color: var(--el-text-color-placeholder); margin-top: 4px;">
+            仅对该国家生效，与通道全局违禁词合并检测
+          </div>
         </el-form-item>
       </el-form>
 
@@ -805,7 +841,8 @@ const routingForm = reactive({
   id: 0,
   country_code: '',
   priority: 0,
-  is_active: true
+  is_active: true,
+  banned_words: ''
 })
 
 // 费率管理
@@ -938,7 +975,8 @@ const form = reactive({
   max_tps: 100,
   concurrency: 1,
   rate_control_window: 1000,
-  supplier_id: null as number | null
+  supplier_id: null as number | null,
+  banned_words: ''
 })
 
 const rules = computed(() => ({
@@ -964,6 +1002,7 @@ const mapAdminChannel = (ch: any) => ({
   default_sender_id: ch.default_sender_id,
   created_at: ch.created_at,
   updated_at: ch.updated_at,
+  banned_words: ch.banned_words ?? '',
 })
 
 const loadChannels = async () => {
@@ -1023,7 +1062,8 @@ const handleCreate = () => {
     status: 'active',
     priority: 0,
     weight: 100,
-    supplier_id: null
+    supplier_id: null,
+    banned_words: ''
   })
   formVisible.value = true
 }
@@ -1045,7 +1085,8 @@ const handleEdit = async (row: any) => {
     status: row.status,
     priority: row.priority ?? 0,
     weight: row.weight ?? 100,
-    supplier_id: row.supplier?.id ?? null
+    supplier_id: row.supplier?.id ?? null,
+    banned_words: row.banned_words ?? ''
   })
   formVisible.value = true
 
@@ -1068,7 +1109,8 @@ const handleEdit = async (row: any) => {
         status: ch.status,
         priority: ch.priority ?? 0,
         weight: ch.weight ?? 100,
-        supplier_id: ch.supplier_id ?? row.supplier?.id ?? null
+        supplier_id: ch.supplier_id ?? row.supplier?.id ?? null,
+        banned_words: ch.banned_words ?? ''
       })
     } else {
       form.supplier_id = row.supplier?.id ?? null
@@ -1119,7 +1161,8 @@ const openRoutingForm = (row?: any) => {
     id: row?.id || 0,
     country_code: countryCode,
     priority: row?.priority ?? (routingChannel.value?.priority ?? 0),
-    is_active: row?.is_active ?? true
+    is_active: row?.is_active ?? true,
+    banned_words: row?.banned_words ?? ''
   })
   routingFormVisible.value = true
 }
@@ -1136,7 +1179,8 @@ const saveRoutingRule = async () => {
     if (routingEditing.value) {
       await updateRoutingRule(routingEditing.value.id, {
         priority: routingForm.priority,
-        is_active: routingForm.is_active
+        is_active: routingForm.is_active,
+        banned_words: routingForm.banned_words || null
       })
       ElMessage.success(t('channels.routingUpdateSuccess'))
     } else {
@@ -1144,7 +1188,8 @@ const saveRoutingRule = async () => {
         channel_id: routingChannel.value.id,
         country_code: routingForm.country_code,
         priority: routingForm.priority,
-        is_active: routingForm.is_active
+        is_active: routingForm.is_active,
+        banned_words: routingForm.banned_words || null
       })
       ElMessage.success(t('channels.routingCreateSuccess'))
     }
@@ -1285,8 +1330,8 @@ const submitForm = async () => {
             api_key: form.protocol === 'HTTP' ? (form.api_key || undefined) : undefined,
             default_sender_id: form.default_sender_id || undefined
           }
-          // 始终提交 supplier_id，传 null 表示清除关联
           updatePayload.supplier_id = form.supplier_id ?? null
+          updatePayload.banned_words = form.banned_words || null
           await updateChannel(form.id, updatePayload)
           ElMessage.success(t('common.updateSuccess'))
         } else {
@@ -1323,6 +1368,9 @@ const submitForm = async () => {
           }
           if (form.supplier_id) {
             createPayload.supplier_id = form.supplier_id
+          }
+          if (form.banned_words) {
+            createPayload.banned_words = form.banned_words
           }
           const created = await createChannel(createPayload)
 

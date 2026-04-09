@@ -280,6 +280,19 @@
             />
           </el-select>
         </el-form-item>
+        <el-divider content-position="left">违禁词管理</el-divider>
+        <el-form-item label="全局违禁词">
+          <el-input
+            v-model="channelForm.banned_words"
+            type="textarea"
+            :rows="3"
+            placeholder="该通道所有国家通用的违禁词，每行一个或逗号分隔"
+            resize="vertical"
+          />
+          <div style="font-size: 11px; color: var(--el-text-color-placeholder); margin-top: 4px;">
+            此处配置对该通道所有国家生效。如需按国家单独配置，请在「路由规则」中为每个国家设置专属违禁词。
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showCreateDialog = false">{{ $t('common.cancel') }}</el-button>
@@ -586,7 +599,8 @@ const channelForm = ref({
   priority: 0,
   weight: 100,
   default_sender_id: '',
-  supplier_id: null as number | null
+  supplier_id: null as number | null,
+  banned_words: '',
 })
 
 const loadChannels = async () => {
@@ -625,7 +639,8 @@ const handleEdit = async (channel: any) => {
         priority: ch.priority || 0,
         weight: ch.weight || 100,
         default_sender_id: ch.default_sender_id || '',
-        supplier_id: ch.supplier_id ?? null
+        supplier_id: ch.supplier_id ?? null,
+        banned_words: ch.banned_words ?? '',
       }
     } else {
       channelForm.value = {
@@ -645,7 +660,8 @@ const handleEdit = async (channel: any) => {
         priority: channel.priority || 0,
         weight: channel.weight || 100,
         default_sender_id: channel.default_sender_id || '',
-        supplier_id: channel.supplier?.id ?? null
+        supplier_id: channel.supplier?.id ?? null,
+        banned_words: channel.banned_words ?? '',
       }
     }
   } catch {
@@ -666,7 +682,8 @@ const handleEdit = async (channel: any) => {
       priority: channel.priority || 0,
       weight: channel.weight || 100,
       default_sender_id: channel.default_sender_id || '',
-      supplier_id: channel.supplier?.id ?? null
+      supplier_id: channel.supplier?.id ?? null,
+      banned_words: channel.banned_words ?? '',
     }
   }
   showCreateDialog.value = true
@@ -743,7 +760,8 @@ const resetChannelForm = () => {
     priority: 0,
     weight: 100,
     default_sender_id: '',
-    supplier_id: null
+    supplier_id: null,
+    banned_words: '',
   }
 }
 

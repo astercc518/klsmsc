@@ -83,6 +83,7 @@ class ChannelCreateRequest(BaseModel):
     # DLR / SMPP：空则使用全局环境变量
     smpp_dlr_socket_hold_seconds: Optional[int] = Field(None, ge=60, le=86400)
     dlr_sent_timeout_hours: Optional[int] = Field(None, ge=4, le=720)
+    banned_words: Optional[str] = None  # 违禁词列表，逗号分隔
     
     @field_validator('protocol')
     @classmethod
@@ -122,6 +123,7 @@ class ChannelUpdateRequest(BaseModel):
     supplier_id: Optional[int] = None  # 关联供应商ID
     smpp_dlr_socket_hold_seconds: Optional[int] = Field(None, ge=60, le=86400)
     dlr_sent_timeout_hours: Optional[int] = Field(None, ge=4, le=720)
+    banned_words: Optional[str] = None  # 违禁词列表，逗号分隔
 
 
 class PricingCreateRequest(BaseModel):
@@ -1460,6 +1462,7 @@ async def list_channels_admin(
                 "smpp_interface_version": ch.smpp_interface_version or 0x34,
                 "smpp_dlr_socket_hold_seconds": getattr(ch, "smpp_dlr_socket_hold_seconds", None),
                 "dlr_sent_timeout_hours": getattr(ch, "dlr_sent_timeout_hours", None),
+                "banned_words": getattr(ch, "banned_words", None),
                 "default_sender_id": ch.default_sender_id,
                 "supplier": supplier_map.get(ch.id),
                 "created_at": ch.created_at.isoformat() if ch.created_at else None
@@ -1522,6 +1525,7 @@ async def get_channel_admin(
             "smpp_interface_version": ch.smpp_interface_version or 0x34,
             "smpp_dlr_socket_hold_seconds": getattr(ch, "smpp_dlr_socket_hold_seconds", None),
             "dlr_sent_timeout_hours": getattr(ch, "dlr_sent_timeout_hours", None),
+            "banned_words": getattr(ch, "banned_words", None),
             "default_sender_id": ch.default_sender_id,
             "supplier": supplier_info,
             "supplier_id": supplier_info["id"] if supplier_info else None,
@@ -1572,6 +1576,7 @@ async def create_channel(
         status=request.status,
         smpp_dlr_socket_hold_seconds=request.smpp_dlr_socket_hold_seconds,
         dlr_sent_timeout_hours=request.dlr_sent_timeout_hours,
+        banned_words=request.banned_words,
     )
     
     db.add(channel)
@@ -1657,6 +1662,8 @@ async def update_channel(
         channel.smpp_dlr_socket_hold_seconds = request.smpp_dlr_socket_hold_seconds
     if "dlr_sent_timeout_hours" in updated_fields:
         channel.dlr_sent_timeout_hours = request.dlr_sent_timeout_hours
+    if "banned_words" in updated_fields:
+        channel.banned_words = request.banned_words
 
     # 更新供应商关联（仅当请求中显式包含 supplier_id 时处理，传 null 表示清除）
     if 'supplier_id' in updated_fields:
@@ -1719,6 +1726,41 @@ async def delete_channel(
     return {
         "success": True,
         "message": "Channel deleted successfully"
+    }
+
+
+@router.get("/channels/{channel_id}/banned-words", response_model=dict)
+async def get_channel_banned_words(
+    channel_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取通道的全局违禁词及各国家专属违禁词"""
+    from app.modules.sms.channel import Channel
+    from app.modules.sms.routing_rule import RoutingRule
+
+    result = await db.execute(select(Channel).where(Channel.id == channel_id))
+    channel = result.scalar_one_or_none()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    rules_result = await db.execute(
+        select(RoutingRule).where(
+            RoutingRule.channel_id == channel_id,
+            RoutingRule.is_active == True
+        )
+    )
+    rules = rules_result.scalars().all()
+
+    country_words = {}
+    for r in rules:
+        if r.banned_words:
+            country_words[r.country_code] = r.banned_words
+
+    return {
+        "success": True,
+        "channel_banned_words": channel.banned_words or "",
+        "country_banned_words": country_words,
     }
 
 
@@ -2132,11 +2174,13 @@ class RoutingRuleCreateRequest(BaseModel):
     country_code: str
     priority: int = 0
     is_active: bool = True
+    banned_words: Optional[str] = None
 
 
 class RoutingRuleUpdateRequest(BaseModel):
     priority: Optional[int] = None
     is_active: Optional[bool] = None
+    banned_words: Optional[str] = None
 
 
 @router.get("/routing-rules", response_model=dict)
@@ -2169,6 +2213,7 @@ async def list_routing_rules(
                 "country_code": r.country_code,
                 "priority": r.priority,
                 "is_active": r.is_active,
+                "banned_words": r.banned_words,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
             }
@@ -2201,6 +2246,7 @@ async def create_routing_rule(
         country_code=request.country_code,
         priority=request.priority,
         is_active=request.is_active,
+        banned_words=request.banned_words,
     )
     db.add(rule)
     await db.commit()
@@ -2236,6 +2282,9 @@ async def update_routing_rule(
         rule.priority = request.priority
     if request.is_active is not None:
         rule.is_active = request.is_active
+    updated_fields = request.model_dump(exclude_unset=True)
+    if "banned_words" in updated_fields:
+        rule.banned_words = request.banned_words
 
     await db.commit()
 

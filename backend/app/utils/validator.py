@@ -12,11 +12,8 @@ logger = get_logger(__name__)
 class Validator:
     """验证工具"""
     
-    # 简单的敏感词列表（实际应从配置或数据库加载）
-    BLACKLIST_KEYWORDS = [
-        "博彩", "赌博", "杀猪盘", "casino", "gamble", 
-        "诈骗", "fraud", "发票", "invoice"
-    ]
+    # 后端不再拦截敏感词，违禁词检测已移至前端实时提醒
+    BLACKLIST_KEYWORDS: list = []
 
     @staticmethod
     def validate_phone_number(phone: str) -> Tuple[bool, str, Optional[Dict]]:

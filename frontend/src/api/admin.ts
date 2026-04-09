@@ -158,6 +158,13 @@ export async function deleteChannel(channelId: number): Promise<any> {
 }
 
 /**
+ * 获取通道违禁词（全局 + 各国家）
+ */
+export async function getChannelBannedWords(channelId: number): Promise<any> {
+  return request.get(`/admin/channels/${channelId}/banned-words`);
+}
+
+/**
  * 通道测试发送
  */
 export async function channelTestSend(
@@ -199,6 +206,7 @@ export async function createRoutingRule(data: {
   country_code: string;
   priority?: number;
   is_active?: boolean;
+  banned_words?: string | null;
 }): Promise<any> {
   return request.post('/admin/routing-rules', data);
 }
@@ -208,7 +216,7 @@ export async function createRoutingRule(data: {
  */
 export async function updateRoutingRule(
   ruleId: number,
-  data: { priority?: number; is_active?: boolean }
+  data: { priority?: number; is_active?: boolean; banned_words?: string | null }
 ): Promise<any> {
   return request.put(`/admin/routing-rules/${ruleId}`, data);
 }

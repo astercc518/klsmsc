@@ -48,6 +48,7 @@ export const getChannels = async () => {
         api_url: ch.api_url ?? null,
         default_sender_id: ch.default_sender_id ?? null,
         supplier: ch.supplier ?? null,
+        banned_words: ch.banned_words ?? '',
         created_at: ch.created_at ?? null,
         updated_at: ch.updated_at ?? null,
       })),

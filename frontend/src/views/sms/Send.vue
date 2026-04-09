@@ -68,13 +68,23 @@
               <!-- 变量插入工具栏 -->
               <div class="var-toolbar">
                 <div class="var-toolbar-left">
-                  <span class="toolbar-tip">系统变量:</span>
-                  <el-button v-for="v in VARIABLES" :key="v.tag" size="small" @click="insertVariable(v.tag)">{{ v.label }}</el-button>
-                  <el-divider direction="vertical" />
-                  <el-button v-for="cv in customVars" :key="cv.name" size="small" type="warning" @click="insertVariable(`{${cv.name}}`)">
-                    {{ cv.name }}
-                  </el-button>
-                  <el-button size="small" type="info" plain @click="showCustomVarDialog = true">+ 自定义</el-button>
+                  <span class="toolbar-tip">变量:</span>
+                  <el-tooltip v-for="v in MAIN_VARS" :key="v.tag" :content="v.tip" placement="top" :show-after="400">
+                    <el-button size="small" @click="insertVariable(v.tag)">{{ v.label }}</el-button>
+                  </el-tooltip>
+                  <el-dropdown trigger="click" @command="insertVariable">
+                    <el-button size="small">更多 ▾</el-button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item v-for="v in MORE_VARS" :key="v.tag" :command="v.tag">
+                          {{ v.label }} <span style="color:var(--el-text-color-placeholder);font-size:11px;margin-left:6px">{{ v.tip }}</span>
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                  <el-divider v-if="customVars.length" direction="vertical" />
+                  <el-button v-for="cv in customVars" :key="cv.name" size="small" type="warning" @click="insertVariable(`{${cv.name}}`)">{{ cv.name }}</el-button>
+                  <el-button size="small" type="info" plain @click="openCustomVarDialog">+ 自定义</el-button>
                 </div>
                 <div class="var-toolbar-right">
                   <el-button size="small" type="success" @click="showTemplateEngine = true">
@@ -110,13 +120,21 @@
                     （超过 {{ singleSegmentCharLimit }} 字符可能被拆分为多条）
                   </template>
                 </span>
-                <span v-if="hasSensitiveWord" class="sensitive-warn">含敏感词，发送时将自动替换为 ***</span>
+                <div v-if="hasSensitiveWord" class="banned-word-warn">
+                  <span class="bw-icon">⚠</span>
+                  <span>检测到违禁词：</span>
+                  <span v-for="(w, i) in matchedBannedWords" :key="w">
+                    <span class="bw-highlight">{{ w }}</span><span v-if="i < matchedBannedWords.length - 1">、</span>
+                  </span>
+                  <span class="bw-hint">（建议修改后再发送，含违禁词可能被运营商拦截）</span>
+                </div>
               </div>
 
               <!-- 变量预览 -->
               <div v-if="hasVariables" class="var-preview">
-                <span class="preview-tag">预览效果:</span>
+                <span class="preview-tag">预览效果{{ hasMultiValueVars ? '（第1条）' : '' }}:</span>
                 <div class="preview-msg">{{ previewSms }}</div>
+                <div v-if="hasMultiValueVars" class="preview-multi-hint">多值变量：每个号码将收到不同的值</div>
               </div>
 
               <!-- 多文案提示 -->
@@ -608,32 +626,81 @@
     />
 
     <!-- ========== 自定义变量管理对话框 ========== -->
-    <el-dialog v-model="showCustomVarDialog" title="自定义变量" width="520px" destroy-on-close>
-      <p style="font-size: 13px; color: var(--el-text-color-secondary); margin: 0 0 16px;">
-        自定义变量会在发送时统一替换为设定的值。变量名不含大括号。
-      </p>
+    <el-dialog v-model="showCustomVarDialog" title="自定义变量" width="540px" destroy-on-close>
+      <!-- 快速添加标签（始终显示） -->
+      <div class="cv-quick-tags">
+        <span class="cv-quick-label">快速添加：</span>
+        <el-tag v-for="q in quickVarOptions" :key="q" class="cv-quick-tag" :disabled="customVars.some(v => v.name === q)" @click="quickAddCustomVar(q, '')">+ {{ q }}</el-tag>
+      </div>
 
       <!-- 已有变量列表 -->
       <div v-if="customVars.length" class="cv-list">
-        <div v-for="(cv, idx) in customVars" :key="idx" class="cv-item">
-          <el-tag closable @close="removeCustomVar(idx)">{{ '{' + cv.name + '}' }}</el-tag>
-          <span class="cv-eq">=</span>
-          <el-input v-model="cv.value" size="small" style="flex: 1" placeholder="替换值" />
+        <div v-for="(cv, idx) in customVars" :key="idx" class="cv-item-block">
+          <div class="cv-item-header">
+            <el-tag closable type="warning" @close="removeCustomVar(idx)">{{ '{' + cv.name + '}' }}</el-tag>
+            <el-switch v-model="cv.multi" size="small" active-text="多值" inactive-text="单值" style="margin-left: auto;" />
+          </div>
+          <div v-if="!cv.multi" class="cv-item-value">
+            <el-input v-model="cv.value" size="small" placeholder="替换值" clearable />
+          </div>
+          <div v-else class="cv-item-value">
+            <el-input v-model="cv.value" type="textarea" :rows="3" placeholder="每行一个值，按号码顺序分配&#10;例如：&#10;CODE001&#10;CODE002&#10;CODE003" resize="vertical" />
+            <div class="cv-multi-info">
+              共 {{ cvValueLines(cv.value) }} 个值，按号码顺序依次分配（不足时循环）
+            </div>
+          </div>
         </div>
       </div>
-
-      <el-empty v-if="customVars.length === 0" description="暂无自定义变量" :image-size="50" />
+      <el-empty v-else description="暂无自定义变量，点击上方标签快速添加" :image-size="48" />
 
       <!-- 新增变量 -->
       <div class="cv-add">
-        <el-input v-model="newVarName" size="small" placeholder="变量名，如：公司名" style="width: 140px" @keyup.enter="addCustomVar" />
-        <el-input v-model="newVarValue" size="small" placeholder="替换值，如：ABC科技" style="flex: 1" @keyup.enter="addCustomVar" />
+        <el-input v-model="newVarName" size="small" placeholder="变量名" style="width: 130px" @keyup.enter="addCustomVar" />
+        <span class="cv-eq">=</span>
+        <el-input v-model="newVarValue" size="small" placeholder="替换值" style="flex: 1" @keyup.enter="addCustomVar" />
         <el-button size="small" type="primary" @click="addCustomVar" :disabled="!newVarName.trim()">添加</el-button>
       </div>
 
       <template #footer>
-        <el-button @click="showCustomVarDialog = false">关闭</el-button>
-        <el-button type="primary" @click="saveCustomVars">保存</el-button>
+        <div class="cv-footer">
+          <el-button link type="info" size="small" @click="showVarGuide = true">变量使用教程</el-button>
+          <div>
+            <el-button @click="showCustomVarDialog = false">关闭</el-button>
+            <el-button type="primary" @click="saveCustomVars">保存</el-button>
+          </div>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- ========== 变量使用教程（轻量） ========== -->
+    <el-dialog v-model="showVarGuide" title="变量使用教程" width="500px" destroy-on-close append-to-body>
+      <div class="guide-lite">
+        <div class="guide-lite-section">
+          <div class="guide-lite-title">系统变量</div>
+          <p>工具栏中的变量按钮（序号、号码、国家等）点击即可插入到短信内容中。发送时系统自动替换为真实值，每条短信独立生成。</p>
+          <div class="guide-lite-example">
+            <div>模板：您的验证码 <code>{随机码}</code>，请在5分钟内使用</div>
+            <div class="guide-lite-arrow">↓</div>
+            <div>短信1：您的验证码 <strong>385921</strong>，请在5分钟内使用</div>
+            <div>短信2：您的验证码 <strong>749063</strong>，请在5分钟内使用</div>
+          </div>
+        </div>
+        <div class="guide-lite-section">
+          <div class="guide-lite-title">自定义变量</div>
+          <p>点击 <code>+ 自定义</code> 添加变量，如 <code>{公司名}</code>、<code>{链接}</code>、<code>{金额}</code>，设定值后发送时统一替换。</p>
+        </div>
+        <div class="guide-lite-section">
+          <div class="guide-lite-title">多值模式（一号一码）</div>
+          <p>开启"多值"开关后，每行输入一个值。发送时按号码顺序依次分配，不足时自动循环。适用于优惠码、邀请码等场景。</p>
+          <div class="guide-lite-example">
+            <div>值列表：CODE01 / CODE02 / CODE03</div>
+            <div class="guide-lite-arrow">↓</div>
+            <div>号码1 → CODE01，号码2 → CODE02，号码3 → CODE03</div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="showVarGuide = false">知道了</el-button>
       </template>
     </el-dialog>
 
@@ -845,9 +912,10 @@ import { useRoute } from 'vue-router'
 import type { FormInstance } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, QuestionFilled } from '@element-plus/icons-vue'
+import { MagicStick } from '@element-plus/icons-vue'
 import { sendBatchSMS, submitSmsApproval } from '@/api/sms'
 import { getChannels } from '@/api/channel'
+import { getChannelBannedWords } from '@/api/sms'
 import { getDataProducts, buyAndSend, getCarriers, getMyNumbersSummary, type DataProduct } from '@/api/data'
 import { getAiConfig, generateSmsContent } from '@/api/ai'
 import request from '@/api/index'
@@ -859,13 +927,20 @@ const route = useRoute()
 
 // ============ 常量 ============
 
-const VARIABLES = [
-  { tag: '{序号}', label: '序号' },
-  { tag: '{国家}', label: '国家' },
-  { tag: '{日期}', label: '日期' },
-  { tag: '{随机码}', label: '随机码' },
-  { tag: '{号码}', label: '号码' },
+const MAIN_VARS = [
+  { tag: '{序号}', label: '序号', tip: '批次内序号，从1递增' },
+  { tag: '{号码}', label: '号码', tip: '接收方手机号码' },
+  { tag: '{国家}', label: '国家', tip: '目标国家代码（如 BR、IN）' },
+  { tag: '{日期}', label: '日期', tip: '当天日期 YYYY-MM-DD' },
+  { tag: '{随机码}', label: '随机码', tip: '6位随机数字' },
 ]
+const MORE_VARS = [
+  { tag: '{时间}', label: '时间', tip: '当前时间 HH:MM' },
+  { tag: '{随机码4}', label: '随机码4', tip: '4位随机数字' },
+  { tag: '{随机码8}', label: '随机码8', tip: '8位随机数字' },
+  { tag: '{随机字母}', label: '随机字母', tip: '6位随机大写字母' },
+]
+const VARIABLES = [...MAIN_VARS, ...MORE_VARS]
 
 const TPL_TYPES = [
   { value: 'marketing', label: '营销推广' },
@@ -1101,8 +1176,8 @@ function inferCountryIsoFromPhone(raw: string): string {
   return ''
 }
 
-// 敏感词列表（发送前自动过滤替换）
-const SENSITIVE_WORDS = [
+// 全局违禁词（始终检测）
+const GLOBAL_BANNED_WORDS = [
   'casino', 'gambling', 'porn', 'sex', 'drug', 'kill', 'bomb', 'terror',
   '赌博', '色情', '毒品', '暴力', '杀', '炸弹', '恐怖',
   'free money', 'dinero gratis', 'dinheiro grátis',
@@ -1111,16 +1186,6 @@ const SENSITIVE_WORDS = [
 // 去除 emoji 的工具函数
 function stripEmoji(str: string): string {
   return str.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{200D}\u{20E3}\u{2702}-\u{27B0}\u{E0020}-\u{E007F}]/gu, '').replace(/\s{2,}/g, ' ').trim()
-}
-
-// 敏感词检测 & 替换
-function sanitizeMessage(msg: string): string {
-  let result = msg
-  for (const w of SENSITIVE_WORDS) {
-    const regex = new RegExp(w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
-    result = result.replace(regex, '***')
-  }
-  return result
 }
 
 // 截断到指定字符数
@@ -1266,11 +1331,13 @@ const msgInputRef = ref<any>(null)
 const cursorPos = ref(0)
 
 // 自定义变量
-interface CustomVar { name: string; value: string }
+interface CustomVar { name: string; value: string; multi?: boolean }
 const customVars = ref<CustomVar[]>(loadCustomVarsFromStorage())
 const showCustomVarDialog = ref(false)
+const showVarGuide = ref(false)
 const newVarName = ref('')
 const newVarValue = ref('')
+const quickVarOptions = ['公司名', '链接', '优惠码', '金额', '客服电话']
 
 const numberSource = ref<'manual' | 'store' | 'private'>('manual')
 const loadingPrivate = ref(false)
@@ -1443,6 +1510,39 @@ const form = ref({
 
 // ============ Computed ============
 
+// 通道级违禁词（选中通道后从 API 加载）
+const channelGlobalBanned = ref<string[]>([])
+// 国家级违禁词 map: { 'BD': 'word1,word2', 'TH': 'word3' }
+const countryBannedMap = ref<Record<string, string>>({})
+
+// 监听通道切换，重新加载违禁词
+watch(() => form.value.channel_id, async (newId) => {
+  channelGlobalBanned.value = []
+  countryBannedMap.value = {}
+  if (!newId) return
+  try {
+    const res = await getChannelBannedWords(newId)
+    if (res?.channel_banned_words) {
+      channelGlobalBanned.value = res.channel_banned_words
+        .split(/[,，\n]/).map((w: string) => w.trim()).filter(Boolean)
+    }
+    if (res?.country_banned_words) {
+      countryBannedMap.value = res.country_banned_words
+    }
+  } catch { /* 静默失败 */ }
+})
+
+// 合并全局 + 通道 + 所有国家违禁词（用于内容检测）
+const allBannedWords = computed(() => {
+  const words = new Set([...GLOBAL_BANNED_WORDS, ...channelGlobalBanned.value])
+  for (const bw of Object.values(countryBannedMap.value)) {
+    if (bw) {
+      bw.split(/[,，\n]/).map(w => w.trim()).filter(Boolean).forEach(w => words.add(w))
+    }
+  }
+  return [...words]
+})
+
 /** 模板引擎：当前语言对应的单条字符上限（用于输入框 max） */
 const tplMaxLenLimit = computed(() => maxSmsCharsForLang(tplForm.value.language))
 /** AI 生成：当前语言对应的单条字符上限 */
@@ -1515,26 +1615,54 @@ const privateTotalCost = computed(() => privateDataCost.value + privateSmsCost.v
 const privateCostStr = computed(() => formatUsdEstimate(privateTotalCost.value))
 
 const hasVariables = computed(() => {
-  if (/\{(序号|国家|日期|随机码|号码|index|country|date|code|phone)\}/.test(form.value.message)) return true
-  return customVars.value.some(cv => form.value.message.includes(`{${cv.name}}`))
+  const msg = form.value.message
+  if (/\{(序号|国家|日期|时间|随机码|号码|随机字母|index|country|date|time|code|phone|letters)\}/.test(msg)) return true
+  if (/\{(随机码|code|随机字母|letters)\d{1,2}\}/.test(msg)) return true
+  return customVars.value.some(cv => msg.includes(`{${cv.name}}`))
 })
 
 const hasSensitiveWord = computed(() => {
   const msg = form.value.message.toLowerCase()
-  return SENSITIVE_WORDS.some(w => msg.includes(w.toLowerCase()))
+  return allBannedWords.value.some(w => msg.includes(w.toLowerCase()))
 })
+
+const matchedBannedWords = computed(() => {
+  const msg = form.value.message.toLowerCase()
+  return allBannedWords.value.filter(w => msg.includes(w.toLowerCase()))
+})
+
+function _previewRandDigits(n: number): string {
+  return Array.from({ length: n }, () => Math.floor(Math.random() * 10)).join('')
+}
+function _previewRandLetters(n: number): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  return Array.from({ length: n }, () => chars[Math.floor(Math.random() * 26)]).join('')
+}
 
 const previewSms = computed(() => {
   let msg = form.value.message
-  const today = new Date().toISOString().slice(0, 10)
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const time = now.toTimeString().slice(0, 5)
   msg = msg.replace(/\{序号\}/g, '1').replace(/\{index\}/g, '1')
   msg = msg.replace(/\{国家\}/g, 'BR').replace(/\{country\}/g, 'BR')
   msg = msg.replace(/\{日期\}/g, today).replace(/\{date\}/g, today)
+  msg = msg.replace(/\{时间\}/g, time).replace(/\{time\}/g, time)
   msg = msg.replace(/\{随机码\}/g, '385921').replace(/\{code\}/g, '385921')
   msg = msg.replace(/\{号码\}/g, '5511999887766').replace(/\{phone\}/g, '5511999887766')
-  // 替换自定义变量
+  msg = msg.replace(/\{随机字母\}/g, 'AXKPMZ').replace(/\{letters\}/g, 'AXKPMZ')
+  msg = msg.replace(/\{随机码(\d{1,2})\}/g, (_, n) => _previewRandDigits(parseInt(n)))
+  msg = msg.replace(/\{code(\d{1,2})\}/g, (_, n) => _previewRandDigits(parseInt(n)))
+  msg = msg.replace(/\{随机字母(\d{1,2})\}/g, (_, n) => _previewRandLetters(parseInt(n)))
+  msg = msg.replace(/\{letters(\d{1,2})\}/g, (_, n) => _previewRandLetters(parseInt(n)))
   for (const cv of customVars.value) {
-    msg = msg.replace(new RegExp(`\\{${cv.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}`, 'g'), cv.value || `[${cv.name}]`)
+    const pat = new RegExp(`\\{${cv.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}`, 'g')
+    if (cv.multi && cv.value.includes('\n')) {
+      const first = cv.value.split('\n').map(l => l.trim()).find(Boolean) || `[${cv.name}]`
+      msg = msg.replace(pat, first)
+    } else {
+      msg = msg.replace(pat, cv.value || `[${cv.name}]`)
+    }
   }
   return msg
 })
@@ -1569,7 +1697,7 @@ function addCustomVar() {
   const name = newVarName.value.trim().replace(/[{}]/g, '')
   if (!name) return
   if (customVars.value.some(v => v.name === name)) { ElMessage.warning(`变量 {${name}} 已存在`); return }
-  const builtIn = ['序号', '国家', '日期', '随机码', '号码', 'index', 'country', 'date', 'code', 'phone']
+  const builtIn = ['序号', '国家', '日期', '时间', '随机码', '号码', '随机字母', 'index', 'country', 'date', 'time', 'code', 'phone', 'letters']
   if (builtIn.includes(name)) { ElMessage.warning(`{${name}} 是系统内置变量，请换个名称`); return }
   customVars.value.push({ name, value: newVarValue.value.trim() })
   newVarName.value = ''; newVarValue.value = ''
@@ -1583,12 +1711,37 @@ function saveCustomVars() {
   ElMessage.success('自定义变量已保存')
 }
 
-function replaceCustomVars(msg: string): string {
+function replaceCustomVars(msg: string, index = 0): string {
   let result = msg
   for (const cv of customVars.value) {
-    result = result.replace(new RegExp(`\\{${cv.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}`, 'g'), cv.value)
+    const pat = new RegExp(`\\{${cv.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}`, 'g')
+    if (cv.multi && cv.value.includes('\n')) {
+      const lines = cv.value.split('\n').map(l => l.trim()).filter(Boolean)
+      const val = lines.length > 0 ? lines[index % lines.length] : cv.value
+      result = result.replace(pat, val)
+    } else {
+      result = result.replace(pat, cv.value)
+    }
   }
   return result
+}
+
+function cvValueLines(val: string): number {
+  return val.split('\n').map(l => l.trim()).filter(Boolean).length
+}
+
+const hasMultiValueVars = computed(() => customVars.value.some(cv => cv.multi && cv.value.includes('\n')))
+
+function quickAddCustomVar(name: string, value: string) {
+  if (customVars.value.some(v => v.name === name)) {
+    ElMessage.warning(`变量 {${name}} 已存在`)
+    return
+  }
+  customVars.value.push({ name, value })
+}
+
+function openCustomVarDialog() {
+  showCustomVarDialog.value = true
 }
 
 // ============ 模板引擎 ============
@@ -1653,7 +1806,7 @@ function generateFromTemplateEngine() {
         })
       }
     }
-    tplResults.value = raw.map(m => truncateToLimit(sanitizeMessage(stripEmoji(m)), maxLen))
+    tplResults.value = raw.map(m => truncateToLimit(stripEmoji(m), maxLen))
     tplGenerating.value = false
   }, 300)
 }
@@ -1707,7 +1860,7 @@ async function generateFromAi() {
   try {
     const res = await generateSmsContent({ prompt, count: aiForm.value.count, language: aiForm.value.language, max_length: maxLen })
     if (res.success && res.messages?.length) {
-      aiResults.value = res.messages.map(m => truncateToLimit(sanitizeMessage(stripEmoji(m)), maxLen))
+      aiResults.value = res.messages.map(m => truncateToLimit(stripEmoji(m), maxLen))
     } else { ElMessage.warning('AI 未返回有效文案') }
   } catch (e: any) {
     ElMessage.error(e.message || 'AI 生成失败')
@@ -1985,10 +2138,20 @@ const handleSubmitApproval = async () => {
     ElMessage.warning(t('smsSend.pleaseEnterContent'))
     return
   }
+  if (hasSensitiveWord.value) {
+    const words = matchedBannedWords.value.join('、')
+    try {
+      await ElMessageBox.confirm(
+        `短信内容包含违禁词：${words}\n\n含违禁词的短信可能被运营商拦截，确定继续提交？`,
+        '违禁词提醒',
+        { confirmButtonText: '仍然提交', cancelButtonText: '返回修改', type: 'warning' }
+      )
+    } catch { return }
+  }
   approvalSubmitting.value = true
   try {
     const payload: { message: string; phone_number?: string } = {
-      message: sanitizeMessage(stripEmoji(replaceCustomVars(form.value.message))),
+      message: stripEmoji(replaceCustomVars(form.value.message)),
     }
     const numbers = parseNumbers()
     if (numbers.length === 1) {
@@ -2021,11 +2184,32 @@ const handleSend = async () => {
     ElMessage.warning('单次最多提交 5000 个号码，请分批发送')
     return
   }
+
+  if (hasSensitiveWord.value) {
+    const words = matchedBannedWords.value.join('、')
+    try {
+      await ElMessageBox.confirm(
+        `短信内容包含违禁词：${words}\n\n含违禁词的短信可能被运营商拦截，确定继续发送？`,
+        '违禁词提醒',
+        { confirmButtonText: '仍然发送', cancelButtonText: '返回修改', type: 'warning' }
+      )
+    } catch { return }
+  }
+
   loading.value = true; result.value = null; sendProgress.value = 0
 
-  // 多文案轮发 + 清理 emoji / 敏感词（与后端 /sms/batch 一致）
-  const msgs = (multiMessages.value.length > 1 ? multiMessages.value.map(replaceCustomVars) : [replaceCustomVars(form.value.message)])
-    .map(m => sanitizeMessage(stripEmoji(m)))
+  // 多文案轮发 + 多值变量展开 + 清理 emoji
+  let msgs: string[]
+  if (hasMultiValueVars.value && !isPrivate) {
+    const base = multiMessages.value.length > 1 ? multiMessages.value : [form.value.message]
+    msgs = numbers.map((_, ni) => {
+      const tpl = base[ni % base.length]
+      return stripEmoji(replaceCustomVars(tpl, ni))
+    })
+  } else {
+    msgs = (multiMessages.value.length > 1 ? multiMessages.value.map(m => replaceCustomVars(m)) : [replaceCustomVars(form.value.message)])
+      .map(m => stripEmoji(m))
+  }
 
   const e164List = numbers.map((n) => {
     let p = n.trim()
@@ -2132,11 +2316,11 @@ const handleStoreSend = async () => {
     const payload: any = {
       product_id: selectedProduct.value.id,
       quantity: storeQuantity.value,
-      message: sanitizeMessage(stripEmoji(replaceCustomVars(form.value.message))),
+      message: stripEmoji(replaceCustomVars(form.value.message)),
     }
     if (selectedCarrier.value) payload.carrier = selectedCarrier.value
     if (multiMessages.value.length > 1) {
-      payload.messages = multiMessages.value.map(m => sanitizeMessage(stripEmoji(replaceCustomVars(m))))
+      payload.messages = multiMessages.value.map(m => stripEmoji(replaceCustomVars(m)))
     }
     const res = await buyAndSend(payload)
     if (res.success) {
@@ -2308,6 +2492,7 @@ onUnmounted(() => clearInterval(timeInterval))
 .var-preview { margin-top: 8px; padding: 10px 12px; background: rgba(102, 126, 234, 0.06); border: 1px dashed var(--border-default); border-radius: 8px; }
 .preview-tag { font-size: 12px; color: var(--text-tertiary); }
 .preview-msg { font-size: 13px; color: var(--text-primary); margin-top: 4px; line-height: 1.5; word-break: break-all; }
+.preview-multi-hint { font-size: 11px; color: var(--el-color-warning); margin-top: 4px; }
 
 /* 号码来源切换 */
 .source-tabs { display: flex; gap: 10px; margin-bottom: 12px; }
@@ -2430,6 +2615,10 @@ onUnmounted(() => clearInterval(timeInterval))
 .char-counter { color: var(--el-text-color-secondary); }
 .char-counter.over-limit { color: var(--el-color-warning, #e6a23c); font-weight: 500; }
 .sensitive-warn { color: var(--el-color-danger, #f56c6c); font-weight: 500; }
+.banned-word-warn { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; font-size: 12px; color: var(--el-color-danger); padding: 6px 10px; background: rgba(245, 87, 108, 0.06); border-radius: 6px; margin-top: 4px; }
+.bw-icon { margin-right: 4px; }
+.bw-highlight { background: rgba(245, 87, 108, 0.15); color: var(--el-color-danger); padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+.bw-hint { color: var(--el-text-color-secondary); font-size: 11px; margin-left: 4px; }
 
 /* 自定义变量对话框 */
 .cv-list { margin-bottom: 16px; }
@@ -2470,4 +2659,30 @@ onUnmounted(() => clearInterval(timeInterval))
 
 @media (max-width: 1200px) { .stats-cards { grid-template-columns: repeat(2, 1fr); } .page-grid { grid-template-columns: 1fr; } .preview-panel { display: none; } }
 @media (max-width: 768px) { .stats-cards { grid-template-columns: 1fr; } .options-row { flex-direction: column; } .number-actions { flex-direction: column; } .source-tabs { flex-direction: column; } }
+
+/* ========== 自定义变量对话框 ========== */
+.cv-empty { margin-bottom: 12px; }
+.cv-empty-desc { font-size: 13px; color: var(--el-text-color-secondary); margin: 0 0 12px; line-height: 1.6; }
+.cv-empty-desc code { background: var(--el-fill-color, #f5f7fa); padding: 1px 5px; border-radius: 3px; font-size: 12px; color: var(--el-color-primary); }
+.cv-quick-tags { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cv-quick-label { font-size: 12px; color: var(--el-text-color-placeholder); }
+.cv-quick-tag { cursor: pointer; transition: all 0.15s; }
+.cv-quick-tag:hover { transform: scale(1.05); }
+
+.cv-item-block { margin-bottom: 14px; padding: 10px 12px; background: var(--el-fill-color-light, #f5f7fa); border-radius: 8px; }
+.cv-item-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.cv-item-value { }
+.cv-multi-info { font-size: 11px; color: var(--el-text-color-secondary); margin-top: 4px; }
+.cv-footer { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+
+/* 变量教程（轻量） */
+.guide-lite { }
+.guide-lite-section { margin-bottom: 16px; }
+.guide-lite-section:last-child { margin-bottom: 0; }
+.guide-lite-title { font-size: 14px; font-weight: 600; color: var(--el-text-color-primary); margin-bottom: 6px; }
+.guide-lite-section p { font-size: 13px; color: var(--el-text-color-regular); line-height: 1.6; margin: 0 0 8px; }
+.guide-lite-section code { background: var(--el-fill-color, #f5f7fa); padding: 1px 5px; border-radius: 3px; font-size: 12px; color: var(--el-color-primary); }
+.guide-lite-example { padding: 10px 12px; background: var(--el-fill-color-light, #f5f7fa); border-radius: 8px; font-size: 12px; line-height: 1.8; }
+.guide-lite-arrow { color: var(--el-text-color-placeholder); text-align: center; font-size: 11px; }
+.guide-lite-example strong { color: var(--el-color-success); }
 </style>
