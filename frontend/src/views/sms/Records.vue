@@ -123,7 +123,7 @@
     <div class="table-card">
       <div class="table-wrapper" v-loading="loading">
         <el-table :data="records" class="records-table" :row-class-name="tableRowClassName" @row-click="handleViewDetail" empty-text="暂无记录" stripe>
-          <el-table-column v-if="isAdmin" prop="account_name" label="客户" width="160">
+          <el-table-column v-if="isAdmin" prop="account_name" label="客户" min-width="180" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="account-cell">
                 <span class="account-name-text">{{ row.account_name || '-' }}</span>
@@ -243,6 +243,22 @@
         <div class="status-banner" :class="currentRecord.status">
           <span class="status-badge lg" :class="currentRecord.status">{{ getStatusText(currentRecord.status) }}</span>
           <span class="status-time" v-if="currentRecord.sent_time">{{ formatTime(currentRecord.sent_time) }}</span>
+        </div>
+
+        <!-- 客户信息（仅管理员可见） -->
+        <div class="detail-grid-3" v-if="isAdmin && (currentRecord.account_name || currentRecord.account_id)">
+          <div class="detail-card">
+            <span class="dc-label">客户账号</span>
+            <span class="dc-value">{{ currentRecord.account_name || '-' }}</span>
+          </div>
+          <div class="detail-card">
+            <span class="dc-label">客户ID</span>
+            <span class="dc-value mono">{{ currentRecord.account_id }}</span>
+          </div>
+          <div class="detail-card" v-if="currentRecord.sales_name">
+            <span class="dc-label">归属员工</span>
+            <span class="dc-value">{{ currentRecord.sales_name }}</span>
+          </div>
         </div>
 
         <div class="detail-grid-3">
