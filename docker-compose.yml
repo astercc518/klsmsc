@@ -14,7 +14,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
-    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --character-set-client-handshake=FALSE --default-time-zone=+08:00
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --character-set-client-handshake=FALSE --default-time-zone=+08:00 --max-connections=500 --range-optimizer-max-mem-size=67108864
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpass123}"]
       interval: 10s
@@ -173,7 +173,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4 -Q celery,sms_dlr,data_tasks
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-8} -Q celery,sms_dlr,data_tasks
     restart: unless-stopped
     networks:
       - smsc-network
@@ -216,8 +216,50 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    # 单进程：避免多进程同时 bind 同一 SMPP 账号（ESME 13），并允许延迟断线以接收 deliver_sm 送达回执
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=1 -Q sms_send
+    # HTTP 通道高并发；SMPP 通道受连接限制需单独评估
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${SMS_WORKER_CONCURRENCY:-32} -Q sms_send
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # 专用 SMPP 短信发送 Worker（线程池模式，同进程内共享 SMPP 连接，避免并发 bind 冲突）
+  worker-sms-smpp:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: smsc-worker-sms-smpp
+    environment:
+      TZ: Asia/Shanghai
+      APP_ENV: ${APP_ENV:-development}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      DATABASE_HOST: mysql
+      DATABASE_PORT: 3306
+      DATABASE_USER: ${MYSQL_USER:-smsuser}
+      DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+      DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
+      SMPP_SUBMIT_RESP_WAIT_SECONDS: ${SMPP_SUBMIT_RESP_WAIT_SECONDS:-8}
+      SMPP_DLR_SOCKET_HOLD_SECONDS: ${SMPP_DLR_SOCKET_HOLD_SECONDS:-300}
+      DLR_SENT_TIMEOUT_HOURS: ${DLR_SENT_TIMEOUT_HOURS:-72}
+      DLR_PULL_HTTP_TIMEOUT_SECONDS: ${DLR_PULL_HTTP_TIMEOUT_SECONDS:-60}
+    volumes:
+      - ./backend:/app
+      - ./logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    # threads 池：所有任务在同一进程的不同线程中运行，threading.Lock 有效串行化同通道 SMPP 连接
+    # concurrency=8 允许最多 8 个不同 SMPP 通道同时发送
+    command: celery -A app.workers.celery_app worker --loglevel=info --pool=threads --concurrency=${SMPP_WORKER_CONCURRENCY:-8} -Q sms_send_smpp
     restart: unless-stopped
     networks:
       - smsc-network

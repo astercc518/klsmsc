@@ -2,9 +2,25 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
+const buildStamp = new Date().toISOString()
+
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [vue()],
+  define: {
+    __APP_BUILD_STAMP__: JSON.stringify(buildStamp),
+  },
+  plugins: [
+    vue(),
+    {
+      name: 'inject-build-meta',
+      transformIndexHtml(html) {
+        return html.replace(
+          '</head>',
+          `  <meta name="app-build-stamp" content="${buildStamp}" />\n</head>`,
+        )
+      },
+    },
+  ],
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),

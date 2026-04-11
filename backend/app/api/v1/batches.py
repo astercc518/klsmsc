@@ -102,9 +102,8 @@ async def upload_batch_file(
         content = await file.read()
         file_size = len(content)
         
-        # 验证文件大小（限制10MB）
-        if file_size > 10 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="文件大小不能超过10MB")
+        if file_size > 100 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="文件大小不能超过100MB")
         
         # 解析CSV
         csv_content = content.decode('utf-8')
@@ -121,8 +120,8 @@ async def upload_batch_file(
         if total_count == 0:
             raise HTTPException(status_code=400, detail="CSV文件为空")
         
-        if total_count > 10000:
-            raise HTTPException(status_code=400, detail="单次批量最多支持10000条")
+        if total_count > 2000000:
+            raise HTTPException(status_code=400, detail="单次批量最多支持200万条")
         
         # 如果使用模板，验证模板存在
         if template_id:
@@ -339,8 +338,7 @@ async def export_batch_records_csv(
     current_account: Account = Depends(get_current_account),
     db: AsyncSession = Depends(get_db),
 ):
-    """导出该批量任务下短信明细；手机号列已脱敏，便于外发。"""
-    from app.modules.sms.channel import Channel
+    """导出该批量任务下短信明细；手机号列已脱敏，便于外发（客户导出不含发送通道）。"""
 
     q_batch = select(SmsBatch).where(
         SmsBatch.id == batch_id,
@@ -353,8 +351,7 @@ async def export_batch_records_csv(
         raise HTTPException(status_code=404, detail="批次不存在")
 
     query = (
-        select(SMSLog, Channel.channel_code)
-        .outerjoin(Channel, SMSLog.channel_id == Channel.id)
+        select(SMSLog)
         .where(
             SMSLog.batch_id == batch_id,
             SMSLog.account_id == current_account.id,
@@ -362,7 +359,7 @@ async def export_batch_records_csv(
         .order_by(SMSLog.id.asc())
         .limit(10000)
     )
-    rows = (await db.execute(query)).all()
+    rows = (await db.execute(query)).scalars().all()
 
     output = io.StringIO()
     output.write("\ufeff")
@@ -372,7 +369,6 @@ async def export_batch_records_csv(
             "ID",
             "消息ID",
             "上游消息ID",
-            "通道",
             "手机号(脱敏)",
             "国家",
             "内容",
@@ -389,13 +385,12 @@ async def export_batch_records_csv(
         ]
     )
 
-    for r, ch_code in rows:
+    for r in rows:
         writer.writerow(
             [
                 r.id,
                 r.message_id,
                 r.upstream_message_id or "",
-                ch_code or "",
                 _mask_phone_for_export(r.phone_number),
                 r.country_code or "",
                 (r.message or "")[:200],

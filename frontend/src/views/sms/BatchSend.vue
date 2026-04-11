@@ -81,6 +81,14 @@
             <el-progress :percentage="row.progress" :status="row.status === 'completed' ? 'success' : undefined" />
           </template>
         </el-table-column>
+        <el-table-column :label="$t('batchSend.successRate')" width="120" align="center">
+          <template #default="{ row }">
+            <span v-if="row.total_count > 0" :class="getSuccessRateClass(row)">
+              {{ ((row.success_count / row.total_count) * 100).toFixed(1) }}%
+            </span>
+            <span v-else class="text-muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="status" :label="$t('batchSend.status')" width="100">
           <template #default="{ row }">
             <el-tag v-if="row.status === 'pending'" type="info">{{ $t('batchSend.pending') }}</el-tag>
@@ -95,6 +103,12 @@
         <el-table-column :label="$t('batchSend.createdAtLocal')" width="168">
           <template #default="{ row }">
             {{ formatBatchDate(row.created_at) }}
+          </template>
+        </el-table-column>
+        <el-table-column :label="$t('batchSend.completedAt')" width="168">
+          <template #default="{ row }">
+            <span v-if="row.completed_at" class="time-text">{{ formatBatchDate(row.completed_at) }}</span>
+            <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
         <el-table-column :label="$t('common.action')" min-width="300" fixed="right">
@@ -293,6 +307,7 @@ phone,name,code<br>
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload, Refresh } from '@element-plus/icons-vue'
 import {
@@ -308,6 +323,7 @@ import { getSMSRecords } from '@/api/sms'
 import { getTemplates } from '@/api/template'
 
 const { t } = useI18n()
+const router = useRouter()
 const loading = ref(false)
 const batches = ref<SmsBatch[]>([])
 const stats = reactive({
@@ -351,6 +367,14 @@ const uploadForm = reactive({
 const templates = ref<any[]>([])
 /** 正在导出 CSV 的任务 id，用于按钮 loading */
 const exportingBatchId = ref<number | null>(null)
+
+function getSuccessRateClass(row: SmsBatch): string {
+  if (row.total_count <= 0) return 'text-muted'
+  const rate = (row.success_count / row.total_count) * 100
+  if (rate >= 90) return 'rate-high'
+  if (rate >= 60) return 'rate-mid'
+  return 'rate-low'
+}
 
 /** 列表与详情中的时间展示 */
 function formatBatchDate(iso: string | null | undefined): string {
@@ -552,15 +576,7 @@ const viewDetail = (row: SmsBatch) => {
     ElMessage.error(t('batchSend.invalidBatchId'))
     return
   }
-  detailError.value = ''
-  detailBatch.value = row
-  detailMessageId.value = ''
-  detailRecPagination.page = 1
-  detailRecPagination.pageSize = 20
-  detailRecPagination.total = 0
-  detailRecords.value = []
-  detailVisible.value = true
-  loadDetailRecords()
+  router.push({ path: '/sms/records', query: { batch_id: String(bid) } })
 }
 
 const exportBatchCsv = async (row: SmsBatch) => {
@@ -895,6 +911,25 @@ onMounted(() => {
 
 .tag-tooltip-wrap {
   cursor: help;
+}
+
+.rate-high {
+  color: #67c23a;
+  font-weight: 700;
+}
+
+.rate-mid {
+  color: #e6a23c;
+  font-weight: 700;
+}
+
+.rate-low {
+  color: #f56c6c;
+  font-weight: 700;
+}
+
+.text-muted {
+  color: var(--text-tertiary);
 }
 
 code {

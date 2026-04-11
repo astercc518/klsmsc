@@ -72,7 +72,7 @@ class SMSStatusResponse(BaseModel):
 
 class BatchSMSRequest(BaseModel):
     """批量发送短信请求"""
-    phone_numbers: Optional[list[str]] = Field(None, max_items=1000, description="电话号码列表")
+    phone_numbers: Optional[list[str]] = Field(None, description="电话号码列表（支持百万级）")
     message: str = Field(..., min_length=1, max_length=1000, description="短信内容（无 messages 时使用；多文案时作占位）")
     sender_id: Optional[str] = Field(None, max_length=20, description="发送方ID（可选）")
     callback_url: Optional[str] = Field(None, description="状态回调URL（可选）")
@@ -102,6 +102,7 @@ class BatchSMSResponse(BaseModel):
     failed: int
     messages: list[dict]
     batch_id: Optional[int] = Field(None, description="关联 sms_batches.id，可在发送任务页查看进度")
+    async_processing: bool = Field(False, description="大批量异步处理中，succeeded 暂为 0 属正常")
     # 无号码入队等场景下供前端展示（如私库筛选结果为空、limit≤0）
     error: Optional[dict] = Field(None, description='{"code": "...", "message": "..."}')
 

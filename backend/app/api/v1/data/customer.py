@@ -69,6 +69,8 @@ from app.modules.data.private_upload_parse import (
 )
 from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache as _invalidate_my_numbers_summary_cache
 from app.utils.phone_utils import export_phone_plain_digits
+from app.utils.country_code import normalize_country_code
+from app.utils.account_country_restrict import account_country_iso
 from app.modules.data.data_account import DataAccount
 from app.modules.common.account import Account
 from app.modules.common.package import AccountPackage
@@ -81,6 +83,7 @@ from app.schemas.data import (
 from app.api.v1.data.helpers import (
     build_filter_query,
     calculate_stock,
+    calculate_stock_with_carriers,
     serialize_product,
     serialize_order,
     compute_freshness,
@@ -436,16 +439,30 @@ async def customer_list_products(
         DataProduct.is_deleted == False, DataProduct.status == "active"
     )
 
-    # 1. 基础国家过滤逻辑 - 默认显示本账户对应国家，按国家查询后才显示其他
+    # 1. 国家过滤：DataAccount、短信账户 country_code 任一存在则默认只展示该国商品；禁止跨国家查询
     da_result = await db.execute(
         select(DataAccount).where(DataAccount.account_id == account.id)
     )
     da = da_result.scalar_one_or_none()
-    
-    target_country = country or (da.country_code if da else None)
+
+    acc_locked_iso = account_country_iso(account)
+    if country:
+        req_iso = normalize_country_code(country)
+        if acc_locked_iso and req_iso != acc_locked_iso:
+            raise HTTPException(
+                400,
+                f"当前短信账户仅允许查看 {acc_locked_iso} 地区数据商品，无法切换到其他国家。",
+            )
+        target_country = country
+    else:
+        target_country = (da.country_code if da and da.country_code else None) or (
+            account.country_code if getattr(account, "country_code", None) else None
+        )
+
     if target_country:
+        norm_c = normalize_country_code(target_country)
         query = query.where(
-            func.json_unquote(func.json_extract(DataProduct.filter_criteria, "$.country")) == target_country
+            func.json_unquote(func.json_extract(DataProduct.filter_criteria, "$.country")) == norm_c
         )
 
     # 2. 其他筛选项
@@ -485,58 +502,11 @@ async def customer_list_products(
         countries_result = await db.execute(countries_query)
         return [c[0] for c in countries_result.all() if c[0]]
 
-    # 13. 使用 Redis 缓存聚合结果
     cache_manager = await get_cache_manager()
-    # 统计范围跟随目标国家
-    cache_key = f"data:store:agg_stats:{target_country or 'global'}"
-    cached_agg = await cache_manager.get(cache_key)
-    
-    if cached_agg:
-        agg_map = cached_agg["agg_map"]
-        country_total_carriers = cached_agg["country_total_carriers"]
-    else:
-        agg_map = {}
-        country_total_carriers = {}
-        # 构造聚合查询
-        agg_select = select(
-            DataNumber.country_code,
-            DataNumber.source,
-            DataNumber.purpose,
-            DataNumber.carrier,
-            func.count().label("cnt")
-        ).where(
-            DataNumber.account_id.is_(None),
-            DataNumber.status == 'active'
-        )
-        
-        if target_country:
-            agg_select = agg_select.where(DataNumber.country_code == target_country)
-            
-        agg_res = await db.execute(
-            agg_select.group_by(
-                DataNumber.country_code,
-                DataNumber.source,
-                DataNumber.purpose,
-                DataNumber.carrier
-            )
-        )
-        
-        for r in agg_res.fetchall():
-            co, s, p, car, cnt = r.country_code, r.source, r.purpose, r.carrier or "Unknown", int(r.cnt)
-            key_str = f"{co}:{s}:{p}" # JSON key 必须是字符串
-            if key_str not in agg_map:
-                agg_map[key_str] = {}
-            agg_map[key_str][car] = agg_map[key_str].get(car, 0) + cnt
-            
-            # 记录可用运营商 (如果指定了国家则按国家统计，否则全局统计)
-            if not target_country or co == target_country:
-                country_total_carriers[car] = country_total_carriers.get(car, 0) + cnt
-        
-        # 存入缓存 (60秒)
-        await cache_manager.set(cache_key, {
-            "agg_map": agg_map,
-            "country_total_carriers": country_total_carriers
-        }, ttl=60)
+
+    # 精确库存：per-product 查询，应用完整 filter_criteria（含 freshness/data_date）
+    # 使用 Redis 缓存（60s TTL）避免重复查询
+    country_total_carriers: dict = {}
 
     # 批量获取评分统计
     product_ids = [p.id for p in products]
@@ -575,41 +545,38 @@ async def customer_list_products(
                 rating_stats[r.product_id]["recent_max"] = r.max or 0
                 rating_stats[r.product_id]["recent_count"] = r.cnt
 
-    # 构造返回项
+    # 构造返回项：per-product 精确库存（含 freshness 过滤）
     items = []
     for p in products:
         item = serialize_product(p)
         fc = p.filter_criteria or {}
-        p_country = fc.get("country")
-        p_source = fc.get("source")
-        p_purpose = fc.get("purpose")
-        
-        # 匹配该商品的运营商分布 (增加国家维度)
-        product_dist = {}
-        if p_country and p_source and p_purpose:
-            product_dist = agg_map.get(f"{p_country}:{p_source}:{p_purpose}", {})
-        elif p_country and p_source:
-            # 兼容：按国家+来源匹配
-            for key_str, d in agg_map.items():
-                co, s, _ = key_str.split(":")
-                if co == p_country and s == p_source:
-                    for car, cnt in d.items():
-                        product_dist[car] = product_dist.get(car, 0) + cnt
-        
-        # 构造 carriers 列表并计算总库存
-        carrier_list = [{"name": c, "count": cnt} for c, cnt in product_dist.items()]
-        
-        # 过滤
+
+        # 带运营商筛选时合并进 filter_criteria
+        stock_fc = dict(fc)
         if carrier:
-            carrier_list = [c for c in carrier_list if c["name"] == carrier]
-            item["stock_count"] = sum(c["count"] for c in carrier_list)
-            item["carrier_filter"] = carrier
-            if item["stock_count"] <= 0:
-                continue
+            stock_fc["carrier"] = carrier
+
+        # Redis 缓存 per-product 精确库存（60s）
+        stock_cache_key = f"data:product_stock:{p.id}:{carrier or 'all'}"
+        cached_stock = await cache_manager.get(stock_cache_key)
+        if cached_stock is not None:
+            stock_total = cached_stock["total"]
+            carrier_list = cached_stock["carriers"]
         else:
-            item["stock_count"] = sum(c["count"] for c in carrier_list)
-        
+            stock_total, carrier_list = await calculate_stock_with_carriers(db, stock_fc, public_only=True)
+            await cache_manager.set(stock_cache_key, {"total": stock_total, "carriers": carrier_list}, ttl=60)
+
+        if carrier:
+            item["carrier_filter"] = carrier
+            if stock_total <= 0:
+                continue
+
+        item["stock_count"] = stock_total
         item["carriers"] = carrier_list
+
+        # 汇总该国家/地区下所有运营商（用于页面顶部运营商筛选器）
+        for c_item in carrier_list:
+            country_total_carriers[c_item["name"]] = country_total_carriers.get(c_item["name"], 0) + c_item["count"]
         
         rs = rating_stats.get(p.id, {})
         item["rating"] = {
@@ -649,6 +616,7 @@ async def preview_data_selection(
 ):
     """预览筛选结果(不消费数据)"""
     filter_dict = data.dict(exclude_unset=True)
+    _assert_account_country_matches_data_filter(account, filter_dict)
     count = await calculate_stock(db, filter_dict, public_only=True)
 
     query = build_filter_query(filter_dict, public_only=True).limit(10)
@@ -674,7 +642,7 @@ async def buy_to_stock(
     account: Account = Depends(get_current_account),
 ):
     """购买数据到私有库(不立即发送) — 使用 SQL 批量操作"""
-    product, filter_criteria, unit_price = await _validate_purchase(data, db)
+    product, filter_criteria, unit_price = await _validate_purchase(data, db, account)
 
     if data.carrier:
         filter_criteria = dict(filter_criteria or {})
@@ -780,6 +748,8 @@ async def buy_combo(
         raise HTTPException(400, f"最小购买量: {product.min_purchase}")
     if data.quantity > product.max_purchase:
         raise HTTPException(400, f"最大购买量: {product.max_purchase}")
+
+    _assert_account_country_matches_data_filter(account, product.filter_criteria)
 
     available = await calculate_stock(db, product.filter_criteria, public_only=True)
     if available < data.quantity:
@@ -894,7 +864,7 @@ async def buy_and_send(
     account: Account = Depends(get_current_account),
 ):
     """购买数据并立即发送短信（支持变量模板 + 运营商过滤）"""
-    product, filter_criteria, unit_price = await _validate_purchase(data, db)
+    product, filter_criteria, unit_price = await _validate_purchase(data, db, account)
 
     if data.carrier:
         filter_criteria = dict(filter_criteria or {})
@@ -902,15 +872,17 @@ async def buy_and_send(
 
     available = await calculate_stock(db, filter_criteria, public_only=True)
     if available < data.quantity:
-        raise HTTPException(400, f"库存不足，当前可用: {available}")
+        hint = ""
+        if available == 0 and filter_criteria.get("freshness"):
+            fc_no_fresh = {k: v for k, v in filter_criteria.items() if k != "freshness"}
+            total_no_fresh = await calculate_stock(db, fc_no_fresh, public_only=True)
+            if total_no_fresh > 0:
+                hint = f"（数据已超过 {filter_criteria['freshness']} 时效，{total_no_fresh} 条数据过期）"
+        raise HTTPException(400, f"库存不足，当前可用: {available}{hint}")
 
-    # ---------- 1. 先锁定号码（防超卖） ----------
-    from app.core.router import RoutingEngine
-    from app.core.pricing import PricingEngine
+    # ---------- 1. 锁定号码 ----------
     from app.modules.sms.sms_batch import SmsBatch, BatchStatus
-    from app.modules.sms.sms_log import SMSLog
-    from app.utils.queue import QueueManager
-    from app.utils.phone_utils import country_to_dial_code
+    from app.modules.common.balance_log import BalanceLog
 
     id_query = build_filter_query(filter_criteria, public_only=True).with_only_columns(DataNumber.id).limit(data.quantity)
     id_result = await db.execute(id_query)
@@ -918,118 +890,76 @@ async def buy_and_send(
     if len(number_ids) < data.quantity:
         raise HTTPException(400, f"库存不足，仅剩 {len(number_ids)} 条")
 
-    # 原子锁定
-    lock_result = await db.execute(
-        sa_update(DataNumber)
-        .where(DataNumber.id.in_(number_ids), DataNumber.account_id.is_(None))
-        .values(account_id=account.id, last_used_at=datetime.now())
-    )
-    if lock_result.rowcount < data.quantity:
+    # 分批锁定（每批 1000 条），避免超大 IN 子句
+    LOCK_BATCH = 1000
+    total_locked = 0
+    now_ts = datetime.now()
+    for i in range(0, len(number_ids), LOCK_BATCH):
+        chunk = number_ids[i:i + LOCK_BATCH]
+        lock_result = await db.execute(
+            sa_update(DataNumber)
+            .where(DataNumber.id.in_(chunk), DataNumber.account_id.is_(None))
+            .values(account_id=account.id, last_used_at=now_ts)
+        )
+        total_locked += lock_result.rowcount
+    if total_locked < data.quantity:
         raise HTTPException(400, "号码已被抢购，请重试")
 
-    num_result = await db.execute(select(DataNumber).where(DataNumber.id.in_(number_ids)))
-    numbers = num_result.scalars().all()
+    # ---------- 2. 估算费用（用首条号码的通道价格 × 总数估算短信费用） ----------
+    from app.core.router import RoutingEngine
+    from app.core.pricing import PricingEngine
+    from app.utils.phone_utils import country_to_dial_code
 
-    # ---------- 2. 按每个号码的国家单独选通道（与手动发送一致，避免用样本导致通道错误） ----------
+    sample_result = await db.execute(
+        select(DataNumber.country_code).where(DataNumber.id == number_ids[0])
+    )
+    sample_country = sample_result.scalar() or "PH"
     routing_engine = RoutingEngine(db)
     pricing_engine = PricingEngine(db)
-    msg_list = data.messages if data.messages and len(data.messages) > 1 else [data.message]
-    msg_count = len(msg_list)
-    msg_has_vars = [sms_template_has_variables(m) for m in msg_list]
-
-    # 预计算每条短信的通道、价格、成本
-    num_plans = []  # [(num, channel, price_info, msg, parts, sell, cost), ...]
-    for idx, num in enumerate(numbers, start=1):
-        template = msg_list[(idx - 1) % msg_count]
-        msg = (
-            render_sms_variables(
-                template,
-                index=idx,
-                phone_e164=num.phone_number or "",
-                country_code=num.country_code or "",
+    dial_code = country_to_dial_code(sample_country)
+    sample_channel = None
+    for cc in [dial_code, sample_country]:
+        try:
+            ch = await routing_engine.select_channel(
+                country_code=cc, strategy='priority', account_id=account.id
             )
-            if msg_has_vars[(idx - 1) % msg_count]
-            else template
-        )
-        parts = pricing_engine._count_sms_parts(msg)
+            if ch and ch.protocol in ('VIRTUAL', 'HTTP', 'SMPP'):
+                sample_channel = ch
+                break
+        except Exception:
+            continue
 
-        phone_country = num.country_code or "PH"
-        dial_code = country_to_dial_code(phone_country)
-
-        channel = None
-        for cc in [dial_code, phone_country]:
-            try:
-                ch = await routing_engine.select_channel(
-                    country_code=cc,
-                    strategy='priority',
-                    account_id=account.id
-                )
-                if ch:
-                    # 支持 HTTP 与 SMPP，与手动发送一致
-                    if ch.protocol == 'HTTP':
-                        if ch.api_url:
-                            channel = ch
-                            break
-                    elif ch.protocol == 'SMPP':
-                        if ch.host and ch.port:
-                            channel = ch
-                            break
-            except Exception:
-                continue
-
-        if not channel:
-            from sqlalchemy import select as sa_select, or_, and_
-            from app.modules.sms.channel import Channel
-            from app.modules.common.account import AccountChannel
-            # 兜底：HTTP 或 SMPP 均可（与手动发送一致）
-            base_q = sa_select(Channel).where(
-                Channel.status == 'active',
-                Channel.is_deleted == False,
-                or_(
-                    and_(Channel.protocol == 'HTTP', Channel.api_url.isnot(None)),
-                    and_(Channel.protocol == 'SMPP', Channel.host.isnot(None), Channel.port.isnot(None)),
-                ),
-            )
-            ac_result = await db.execute(
-                select(AccountChannel.channel_id).where(AccountChannel.account_id == account.id)
-            )
-            bound_ids = [r[0] for r in ac_result.all()]
-            if bound_ids:
-                base_q = base_q.where(Channel.id.in_(bound_ids))
-            ch_result = await db.execute(base_q.order_by(Channel.priority.desc()).limit(1))
-            channel = ch_result.scalar_one_or_none()
-
-        if not channel:
-            raise HTTPException(
-                400,
-                f"号码 {num.phone_number}（国家 {phone_country}）无可用发送通道，请检查账户通道绑定与路由规则"
-            )
-
-        price_info = await pricing_engine.get_price(channel.id, dial_code, account_id=account.id)
+    sms_unit_price = Decimal('0')
+    currency = 'USD'
+    if sample_channel:
+        price_info = await pricing_engine.get_price(sample_channel.id, dial_code, account_id=account.id)
         if not price_info:
-            price_info = await pricing_engine.get_price(channel.id, phone_country, account_id=account.id)
-        base_cost = await pricing_engine.resolve_base_cost_per_sms(channel.id, phone_country, channel)
-        sell = float(price_info['price']) * parts if price_info else 0.0
-        cost = float(base_cost) * parts
-        currency = price_info['currency'] if price_info else 'USD'
-        num_plans.append((num, channel, price_info, msg, parts, sell, cost, currency))
+            price_info = await pricing_engine.get_price(sample_channel.id, sample_country, account_id=account.id)
+        if price_info:
+            sms_unit_price = Decimal(str(price_info['price']))
+            currency = price_info.get('currency', 'USD')
 
-    # 汇总费用
     data_cost = Decimal(str(unit_price)) * data.quantity
-    sms_cost = sum(Decimal(str(p[5])) for p in num_plans)
-    total_cost = data_cost + sms_cost
-    currency = num_plans[0][7] if num_plans else 'USD'
+    sms_cost_est = sms_unit_price * data.quantity
+    total_cost = data_cost + sms_cost_est
 
-    # P0-FIX: 原子扣费
+    # ---------- 3. 原子扣费 ----------
     deduct = await db.execute(
         sa_update(Account)
         .where(Account.id == account.id, Account.balance >= total_cost)
         .values(balance=Account.balance - total_cost)
     )
     if deduct.rowcount == 0:
-        raise HTTPException(400, f"余额不足，需要 {total_cost:.4f} {currency}（数据 {data_cost:.4f} + 短信 {sms_cost:.4f}）")
+        raise HTTPException(400, f"余额不足，需要 {total_cost:.4f} {currency}（数据 {data_cost:.4f} + 短信 {sms_cost_est:.4f}）")
 
-    # ---------- 3. 创建订单 ----------
+    new_bal = await db.execute(select(Account.balance).where(Account.id == account.id))
+    db.add(BalanceLog(
+        account_id=account.id, change_type='charge', amount=-total_cost,
+        balance_after=float(new_bal.scalar()),
+        description=f"DataSend: {data.quantity} 条（异步处理中）"
+    ))
+
+    # ---------- 4. 创建订单 + 批次（状态 processing） ----------
     order = DataOrder(
         order_no=_gen_order_no(),
         account_id=account.id,
@@ -1039,98 +969,52 @@ async def buy_and_send(
         unit_price=str(unit_price),
         total_price=str(total_cost),
         order_type="data_and_send",
-        status="completed",
-        executed_count=data.quantity,
-        executed_at=datetime.now(),
+        status="processing",
+        executed_count=0,
     )
     db.add(order)
     await db.flush()
 
-    # ---------- 4. 创建短信记录（每条使用该号码国家对应的通道） ----------
     batch_tag = f"BATCH-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
     sms_batch = SmsBatch(
         account_id=account.id,
         batch_name=f"DataSend-{product.product_name if product else 'Custom'}-{batch_tag}",
-        total_count=len(numbers),
+        total_count=data.quantity,
         status=BatchStatus.PROCESSING,
     )
     db.add(sms_batch)
     await db.flush()
 
-    message_ids = []
-    channels_used = set()
-    for idx, (num, channel, price_info, msg, parts, sell, cost, _) in enumerate(num_plans, start=1):
-        num.use_count = (num.use_count or 0) + 1
-        channels_used.add(channel.channel_code)
-
-        mid = f"msg_{uuid.uuid4().hex}"
-        sms = SMSLog(
-            message_id=mid,
-            account_id=account.id,
-            channel_id=channel.id,
-            batch_id=sms_batch.id,
-            phone_number=num.phone_number,
-            country_code=num.country_code,
-            message=msg,
-            message_count=parts,
-            status="pending",
-            cost_price=cost,
-            selling_price=sell,
-            currency=currency,
-            submit_time=datetime.now(),
-        )
-        db.add(sms)
-        message_ids.append(mid)
-        db.add(DataOrderNumber(order_id=order.id, number_id=num.id))
-
     if product:
-        product.total_sold = (product.total_sold or 0) + len(numbers)
-
-    from app.modules.common.balance_log import BalanceLog
-    new_bal = await db.execute(select(Account.balance).where(Account.id == account.id))
-    db.add(BalanceLog(
-        account_id=account.id, change_type='charge', amount=-total_cost,
-        balance_after=float(new_bal.scalar()),
-        description=f"DataSend: {len(numbers)} 条 via {','.join(sorted(channels_used))}"
-    ))
-
-    now_pls = datetime.now()
-    pls_deltas = []
-    for num, *_rest in num_plans:
-        pls_deltas.append(
-            (
-                ORIGIN_PURCHASED,
-                norm_dim(num.country_code),
-                norm_dim(num.source),
-                norm_dim(num.purpose),
-                norm_dim(num.batch_id),
-                norm_dim(num.carrier),
-                1,
-                1,
-                num.remarks,
-                num.created_at,
-                now_pls,
-            )
-        )
-    await pls_apply_deltas_bulk(db, account.id, pls_deltas)
-    await pls_prune_non_positive(db, account.id)
+        product.total_sold = (product.total_sold or 0) + data.quantity
 
     await db.commit()
     await _invalidate_my_numbers_summary_cache(account.id)
 
-    queued = 0
-    for mid in message_ids:
-        if QueueManager.queue_sms(mid):
-            queued += 1
+    # ---------- 5. 派发 Celery 异步任务 ----------
+    from app.workers.celery_app import celery_app as _celery
+    _celery.send_task(
+        'data_buy_send_async',
+        kwargs={
+            'order_id': order.id,
+            'batch_id': sms_batch.id,
+            'account_id': account.id,
+            'number_ids': number_ids,
+            'message': data.message,
+            'messages': data.messages,
+            'sender_id': getattr(data, 'sender_id', None),
+        },
+    )
 
     return {
         "success": True,
-        "message": f"已购买 {len(numbers)} 条数据并创建发送任务",
+        "message": f"已购买 {data.quantity} 条数据，发送任务处理中",
         "order_no": order.order_no,
         "batch_id": batch_tag,
-        "queued": queued,
-        "channel": ",".join(sorted(channels_used)) if channels_used else "-",
-        "cost": {"data": data_cost, "sms": sms_cost, "total": total_cost, "currency": currency},
+        "queued": 0,
+        "async": True,
+        "channel": sample_channel.channel_code if sample_channel else "-",
+        "cost": {"data": data_cost, "sms": sms_cost_est, "total": total_cost, "currency": currency},
     }
 
 
@@ -1143,7 +1027,7 @@ async def create_data_order(
     account: Account = Depends(get_current_account),
 ):
     """创建数据订单(预下单)"""
-    product, filter_criteria, unit_price = await _validate_purchase(data, db)
+    product, filter_criteria, unit_price = await _validate_purchase(data, db, account)
 
     available = await calculate_stock(db, filter_criteria)
     if available < data.quantity:
@@ -2012,6 +1896,26 @@ async def my_numbers_upload(
 _PRIVATE_UPLOAD_DIR = Path(os.environ.get("PRIVATE_UPLOAD_DIR", "/tmp/smsc_pl_uploads"))
 
 
+def _assert_account_country_matches_data_filter(account: Account, filter_criteria: Optional[dict]) -> None:
+    """账户配置了国家时，仅允许购买该国数据（商品筛选须含一致的国家）。"""
+    acc_iso = account_country_iso(account)
+    if not acc_iso:
+        return
+    fc = filter_criteria or {}
+    fc_country = fc.get("country")
+    if not fc_country:
+        raise HTTPException(
+            400,
+            f"当前短信账户已限定国家/地区为 {acc_iso}，无法购买未限定国家的数据商品，请选择该国家的数据商品。",
+        )
+    fc_iso = normalize_country_code(str(fc_country))
+    if fc_iso != acc_iso:
+        raise HTTPException(
+            400,
+            f"当前短信账户仅允许购买 {acc_iso} 地区数据，所选商品国家为 {fc_iso}，请选择匹配的商品。",
+        )
+
+
 def _assert_private_upload_country_matches_account(account: Account, country_code: str) -> None:
     """私库上传所选国家必须与账户 country_code 一致（归一化后比较）。"""
     acc_cc = norm_dim(getattr(account, "country_code", None) or "").upper()
@@ -2228,7 +2132,7 @@ async def abandon_my_numbers_upload_task_path(
 
 # ============ 辅助 ============
 
-async def _validate_purchase(data, db: AsyncSession):
+async def _validate_purchase(data, db: AsyncSession, account: Optional[Account] = None):
     """验证购买请求，返回 (product, filter_criteria, unit_price)"""
     if getattr(data, "product_id", None):
         result = await db.execute(
@@ -2245,10 +2149,16 @@ async def _validate_purchase(data, db: AsyncSession):
             raise HTTPException(400, f"最小购买量: {product.min_purchase}")
         if data.quantity > product.max_purchase:
             raise HTTPException(400, f"最大购买量: {product.max_purchase}")
-        return product, product.filter_criteria, product.price_per_number
+        fc = product.filter_criteria
+        if account is not None:
+            _assert_account_country_matches_data_filter(account, fc)
+        return product, fc, product.price_per_number
 
     if getattr(data, "filter_criteria", None):
-        return None, data.filter_criteria, "0.001"
+        fc = data.filter_criteria
+        if account is not None:
+            _assert_account_country_matches_data_filter(account, fc)
+        return None, fc, "0.001"
 
     raise HTTPException(400, "请选择商品或指定筛选条件")
 

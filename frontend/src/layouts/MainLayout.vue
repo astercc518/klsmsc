@@ -44,44 +44,40 @@
             <!-- 短信业务 -->
             <div class="nav-section" v-if="hasSmsService">
               <span class="nav-section-title" v-if="!sidebarCollapsed">{{ $t('menu.smsBusiness') }}</span>
-              <div class="nav-item" :class="{ active: isActive('/sms/send') }" @click="navigate('/sms/send')">
+              <div
+                v-for="item in customerSmsNavItems"
+                :key="item.path"
+                class="nav-item"
+                :class="{ active: isActive(item.path) }"
+                @click="navigate(item.path)"
+              >
                 <div class="nav-icon">
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <path d="M18 2L9 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    <path d="M18 2L12 18L9 11L2 8L18 2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-                  </svg>
+                  <template v-if="item.icon === 'plane'">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M18 2L9 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                      <path d="M18 2L12 18L9 11L2 8L18 2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                    </svg>
+                  </template>
+                  <template v-else-if="item.icon === 'tasks' || item.icon === 'records'">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <rect x="3" y="2" width="14" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M7 6H13M7 10H13M7 14H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </template>
+                  <template v-else-if="item.icon === 'stats'">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M2 16H18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                      <path d="M4 16V10M8 16V6M12 16V8M16 16V4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </template>
+                  <template v-else-if="item.icon === 'approvals'">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M4 10L8 14L16 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/>
+                    </svg>
+                  </template>
                 </div>
-                <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.sendSms') }}</span>
-              </div>
-              
-              <div class="nav-item" :class="{ active: isActive('/sms/tasks') }" @click="navigate('/sms/tasks')">
-                <div class="nav-icon">
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <rect x="3" y="2" width="14" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                    <path d="M7 6H13M7 10H13M7 14H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                  </svg>
-                </div>
-                <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.sendTasks') }}</span>
-              </div>
-              
-              <div class="nav-item" :class="{ active: isActive('/sms/records') }" @click="navigate('/sms/records')">
-                <div class="nav-icon">
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <rect x="3" y="2" width="14" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                    <path d="M7 6H13M7 10H13M7 14H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                  </svg>
-                </div>
-                <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.sendRecords') }}</span>
-              </div>
-              
-              <div class="nav-item" :class="{ active: isActive('/sms/approvals') }" @click="navigate('/sms/approvals')">
-                <div class="nav-icon">
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <path d="M4 10L8 14L16 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/>
-                  </svg>
-                </div>
-                <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.smsApprovals') }}</span>
+                <span class="nav-label" v-if="!sidebarCollapsed">{{ $t(item.titleKey) }}</span>
               </div>
             </div>
 
@@ -673,6 +669,9 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { getAccountInfo } from '@/api/account'
 import { setLocale, getLocale } from '@/i18n'
+import { CUSTOMER_SMS_NAV } from '@/config/customerSmsNav'
+
+const customerSmsNavItems = CUSTOMER_SMS_NAV
 
 const route = useRoute()
 const router = useRouter()

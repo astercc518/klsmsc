@@ -471,10 +471,13 @@ const handleExceed: UploadProps['onExceed'] = (files) => {
   uploadFile.value = raw
 }
 
-function buildUploadFormData(): FormData {
+const CHUNK_SIZE_LIMIT = 90 * 1024 * 1024
+
+function buildUploadFormData(file?: File | Blob): FormData {
   const formData = new FormData()
-  if (!uploadFile.value) return formData
-  formData.append('file', uploadFile.value)
+  const f = file || uploadFile.value
+  if (!f) return formData
+  formData.append('file', f, (f as File).name || 'chunk.txt')
   formData.append('country_code', uploadForm.value.country_code)
   formData.append('source', uploadForm.value.source)
   formData.append('purpose', uploadForm.value.purpose)
@@ -483,6 +486,37 @@ function buildUploadFormData(): FormData {
   }
   formData.append('detect_carrier', uploadDetectCarrier.value ? 'true' : 'false')
   return formData
+}
+
+async function splitFileIntoChunks(file: File): Promise<File[]> {
+  const text = await file.text()
+  const lines = text.split(/\r?\n/)
+  const chunks: File[] = []
+  let buf: string[] = []
+  let bufSize = 0
+  const baseName = file.name.replace(/\.[^.]+$/, '')
+  const ext = file.name.includes('.') ? file.name.slice(file.name.lastIndexOf('.')) : '.txt'
+  const encoder = new TextEncoder()
+
+  for (const line of lines) {
+    const lineBytes = encoder.encode(line + '\n').byteLength
+    if (bufSize + lineBytes > CHUNK_SIZE_LIMIT && buf.length > 0) {
+      const blob = new Blob([buf.join('\n') + '\n'], { type: 'text/plain' })
+      chunks.push(new File([blob], `${baseName}_part${chunks.length + 1}${ext}`, { type: 'text/plain' }))
+      buf = []
+      bufSize = 0
+    }
+    buf.push(line)
+    bufSize += lineBytes
+  }
+  if (buf.length > 0) {
+    const content = buf.join('\n')
+    if (content.trim()) {
+      const blob = new Blob([content + '\n'], { type: 'text/plain' })
+      chunks.push(new File([blob], `${baseName}_part${chunks.length + 1}${ext}`, { type: 'text/plain' }))
+    }
+  }
+  return chunks
 }
 
 function mergeTaskRow(updated: PrivateLibraryUploadTaskDTO) {
@@ -534,12 +568,22 @@ async function loadUploadTasks() {
       page: uploadTasksPage.value,
       page_size: uploadTasksPageSize.value,
     })
-    if (res.success) {
-      uploadTasks.value = res.items || []
+    // 后端正常时带 success；兼容仅返回 items/total 的形态
+    if (res && (res.success === true || Array.isArray(res.items))) {
+      uploadTasks.value = res.items ?? []
       uploadTasksTotal.value = res.total ?? 0
+    } else {
+      uploadTasks.value = []
+      uploadTasksTotal.value = 0
     }
-  } catch {
-    /* 列表失败静默，避免打断主流程 */
+  } catch (e: any) {
+    uploadTasks.value = []
+    uploadTasksTotal.value = 0
+    const msg =
+      e?.response?.data?.detail ||
+      e?.message ||
+      t('dataMyNumbers.uploadTasksLoadFailed')
+    ElMessage.error(typeof msg === 'string' ? msg : t('dataMyNumbers.uploadTasksLoadFailed'))
   } finally {
     uploadTasksLoading.value = false
   }
@@ -581,24 +625,52 @@ async function submitUpload() {
     return ElMessage.warning(t('dataMyNumbers.uploadNoAccountCountry'))
   }
   uploadForm.value.country_code = accountCountryLocked.value
-
   uploading.value = true
-  const formData = buildUploadFormData()
 
   try {
-    const res = await createMyNumbersUploadTask(formData)
-    if (res.task_id) {
-      showUpload.value = false
-      resetForm()
-      uploadTasksPage.value = 1
-      showUploadTasksDialog.value = true
-      ElMessage.success(t('dataMyNumbers.uploadAsyncStartedWithHint'))
-      startUploadTaskPoll(res.task_id)
+    const file = uploadFile.value
+    if (file.size > CHUNK_SIZE_LIMIT) {
+      ElMessage.info(`文件较大（${(file.size / 1024 / 1024).toFixed(1)}MB），正在自动分片上传…`)
+      const chunks = await splitFileIntoChunks(file)
+      let lastTaskId = ''
+      for (let i = 0; i < chunks.length; i++) {
+        ElMessage.info(`正在上传第 ${i + 1}/${chunks.length} 片…`)
+        const formData = buildUploadFormData(chunks[i])
+        const res = await createMyNumbersUploadTask(formData)
+        if (res.task_id) {
+          lastTaskId = res.task_id
+        } else {
+          ElMessage.warning(`第 ${i + 1} 片上传失败: ${res.message || '未知错误'}`)
+        }
+      }
+      if (lastTaskId) {
+        showUpload.value = false
+        resetForm()
+        uploadTasksPage.value = 1
+        showUploadTasksDialog.value = true
+        ElMessage.success(`已提交 ${chunks.length} 个分片任务`)
+        startUploadTaskPoll(lastTaskId)
+      }
     } else {
-      ElMessage.warning(res.message || '创建任务失败')
+      const formData = buildUploadFormData()
+      const res = await createMyNumbersUploadTask(formData)
+      if (res.task_id) {
+        showUpload.value = false
+        resetForm()
+        uploadTasksPage.value = 1
+        showUploadTasksDialog.value = true
+        ElMessage.success(t('dataMyNumbers.uploadAsyncStartedWithHint'))
+        startUploadTaskPoll(res.task_id)
+      } else {
+        ElMessage.warning(res.message || '创建任务失败')
+      }
     }
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || e.message || '上传失败')
+    if (e?.response?.status === 413) {
+      ElMessage.error('文件过大，CDN 限制 100MB。请将文件拆分为更小的文件后重试。')
+    } else {
+      ElMessage.error(e.response?.data?.detail || e.message || '上传失败')
+    }
   } finally {
     uploading.value = false
   }

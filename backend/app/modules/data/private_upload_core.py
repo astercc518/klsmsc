@@ -149,10 +149,14 @@ async def run_private_library_upload(
 
     await _p(stage="inserting", progress_percent=50, total_unique=total_u)
     ins_chunks = max(1, (len(insert_dicts) + 4999) // 5000)
+    actually_inserted = 0
     if insert_dicts:
         chunk_size = 5000
         for j, i in enumerate(range(0, len(insert_dicts), chunk_size)):
-            await db.execute(insert(PrivateLibraryNumber), insert_dicts[i : i + chunk_size])
+            chunk_data = insert_dicts[i : i + chunk_size]
+            stmt = insert(PrivateLibraryNumber).prefix_with("IGNORE")
+            result = await db.execute(stmt, chunk_data)
+            actually_inserted += getattr(result, 'rowcount', len(chunk_data))
             pct = 50 + int(35 * (j + 1) / ins_chunks)
             await _p(
                 stage="inserting",
@@ -227,8 +231,9 @@ async def run_private_library_upload(
     await db.commit()
     await invalidate_my_numbers_summary_cache(account_id)
 
-    n_ins = len(insert_dicts)
+    n_ins = actually_inserted
     n_upd = len(update_ids)
+    n_dup = len(insert_dicts) - actually_inserted
     await _p(
         stage="completed",
         progress_percent=100,
@@ -240,12 +245,12 @@ async def run_private_library_upload(
 
     return {
         "success": True,
-        "message": f"成功上传 {n_ins} 条新数据，更新 {n_upd} 条已有私库记录",
+        "message": f"成功上传 {n_ins} 条新数据，更新 {n_upd} 条已有私库记录" + (f"，跳过 {n_dup} 条重复" if n_dup else ""),
         "total": total_u,
         "added": n_ins + n_upd,
         "inserted": n_ins,
         "updated": n_upd,
         "batch_id": batch_id,
         "skipped_other_account": 0,
-        "duplicates": 0,
+        "duplicates": n_dup,
     }

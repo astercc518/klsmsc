@@ -19,6 +19,7 @@ from app.config import settings
 
 _worker_engine = None
 _worker_session_factory = None
+_http_client = None
 
 
 def _get_worker_engine():
@@ -28,8 +29,8 @@ def _get_worker_engine():
         _worker_engine = create_async_engine(
             settings.SQLALCHEMY_DATABASE_URL,
             echo=False,
-            pool_size=5,
-            max_overflow=5,
+            pool_size=20,
+            max_overflow=15,
             pool_pre_ping=True,
             pool_recycle=1800,
         )
@@ -43,6 +44,23 @@ def _get_worker_session():
     """复用进程级引擎的会话"""
     _, factory = _get_worker_engine()
     return factory()
+
+
+def _get_http_client():
+    """进程级单例 httpx 客户端，复用 TCP/TLS 连接"""
+    global _http_client
+    import httpx
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=30.0,
+            limits=httpx.Limits(
+                max_connections=50,
+                max_keepalive_connections=20,
+                keepalive_expiry=120,
+            ),
+            http2=False,
+        )
+    return _http_client
 from app.utils.logger import get_logger
 import asyncio
 
@@ -267,10 +285,16 @@ def _get_worker_loop() -> asyncio.AbstractEventLoop:
     return _worker_loop
 
 
+_run_async_lock = threading.Lock()
+
+
 def _run_async(coro):
-    """在 Celery 同步 worker 中安全地执行异步协程，复用进程级事件循环"""
+    """在 Celery 同步 worker 中安全地执行异步协程。
+    prefork 模式下复用进程级事件循环；threads 模式下多线程共享时用锁串行化。
+    """
     loop = _get_worker_loop()
-    return loop.run_until_complete(coro)
+    with _run_async_lock:
+        return loop.run_until_complete(coro)
 
 
 @celery_app.task(name='send_sms_task', bind=True, max_retries=3)
@@ -283,10 +307,24 @@ def send_sms_task(self, message_id: str, http_credentials: dict = None):
         http_credentials: HTTP通道凭据（可选），包含 username 和 password
     """
     logger.info(f"开始处理短信发送任务: {message_id}")
+    current_queue = (self.request.delivery_info or {}).get('routing_key', 'sms_send')
     
     try:
-        result = _run_async(_send_sms_async(message_id, http_credentials))
-        # API 若在事务提交前入队，Worker 会读不到未提交的 sms_logs（MySQL 默认可重复读/读已提交）
+        result = _run_async(_send_sms_async(message_id, http_credentials, _current_queue=current_queue))
+
+        if isinstance(result, dict) and result.get("_reroute_smpp"):
+            logger.info(f"SMPP 通道任务重路由到 sms_send_smpp 队列: {message_id}")
+            send_sms_task.apply_async(
+                args=[message_id, http_credentials],
+                queue='sms_send_smpp',
+            )
+            return {"success": True, "rerouted": "sms_send_smpp"}
+
+        if isinstance(result, dict) and result.get("_rate_limited"):
+            wait_sec = result.get("_wait_sec", 0.5)
+            logger.info(f"通道限速，{wait_sec}s 后重试: {message_id}")
+            raise self.retry(countdown=wait_sec, max_retries=200)
+
         if (
             isinstance(result, dict)
             and result.get("error") == "Message not found"
@@ -313,13 +351,14 @@ def send_sms_task(self, message_id: str, http_credentials: dict = None):
             return {"success": False, "error": str(e)}
 
 
-async def _send_sms_async(message_id: str, http_credentials: dict = None) -> dict:
+async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _current_queue: str = 'sms_send') -> dict:
     """
     异步发送短信
     
     Args:
         message_id: 消息ID
         http_credentials: HTTP通道凭据（可选），包含 username 和 password
+        _current_queue: 当前任务所在队列，用于 SMPP 通道重路由判断
     """
     db = _get_worker_session()
     try:
@@ -360,14 +399,30 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None) -> dic
             return {"success": False, "error": "No available channel"}
         
         logger.info(f"使用通道: {channel.channel_code} ({channel.protocol})")
-        
+
+        # SMPP 通道需在专用线程池 worker 中处理，避免多进程并发 bind
+        # 如果当前任务运行在 sms_send 队列（prefork worker），返回重路由标记
+        if channel.protocol == 'SMPP' and _current_queue != 'sms_send_smpp':
+            await db.close()
+            return {"_reroute_smpp": True}
+
+        if channel.protocol != 'VIRTUAL':
+            from app.utils.rate_limiter import acquire_send_slot
+            max_tps = channel.max_tps or 100
+            allowed, wait_ms = acquire_send_slot(channel.id, max_tps)
+            if not allowed:
+                await db.close()
+                return {"_rate_limited": True, "_wait_sec": round(wait_ms / 1000, 2)}
+
         # 更新状态为发送中
         sms_log.status = 'sent'
         sms_log.sent_time = datetime.now()
         await db.commit()
         
         # 根据通道协议发送
-        if channel.protocol == 'HTTP':
+        if channel.protocol == 'VIRTUAL':
+            success = await _send_via_virtual(sms_log, channel)
+        elif channel.protocol == 'HTTP':
             success = await _send_via_http(sms_log, channel, http_credentials)
         elif channel.protocol == 'SMPP':
             success = await _send_via_smpp(sms_log, channel)
@@ -448,9 +503,9 @@ async def _update_batch_progress(db, batch_id: int):
             ).where(SMSLog.batch_id == batch_id).group_by(SMSLog.status)
         )
         counts = {row.status: row.cnt for row in stats}
-        total = sum(counts.values())
+        log_total = sum(counts.values())
         sent = counts.get('sent', 0) + counts.get('delivered', 0)
-        failed = counts.get('failed', 0)
+        failed = counts.get('failed', 0) + counts.get('expired', 0)
         done = sent + failed
 
         batch_result = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
@@ -458,12 +513,15 @@ async def _update_batch_progress(db, batch_id: int):
         if not batch:
             return
 
+        total = batch.total_count or log_total
+        pending_cnt = counts.get('pending', 0) + counts.get('queued', 0)
+
         batch.success_count = sent
         batch.failed_count = failed
         batch.processing_count = total - done
-        batch.progress = int(done * 100 / total) if total > 0 else 0
+        batch.progress = int(done * 100 / max(total, 1))
 
-        if done >= total:
+        if log_total >= total and done >= log_total:
             if failed == 0:
                 batch.status = BatchStatus.COMPLETED
             elif sent == 0:
@@ -472,8 +530,36 @@ async def _update_batch_progress(db, batch_id: int):
                 batch.status = BatchStatus.COMPLETED
                 batch.error_message = f"部分失败: {failed}/{total}"
             batch.completed_at = datetime.now()
+        elif log_total >= total and pending_cnt > 0 and pending_cnt <= total * 0.02:
+            # 兜底：全部日志已创建，仅少量 pending（≤2%），可能是 worker 重启丢失定时任务
+            # 将这些 pending 消息直接标记为 expired，让批次能正常完成
+            from sqlalchemy import update as _sa_upd
+            await db.execute(
+                _sa_upd(SMSLog)
+                .where(SMSLog.batch_id == batch_id, SMSLog.status.in_(["pending", "queued"]))
+                .values(status="expired", error_message="Worker restart: simulated task lost",
+                        sent_time=datetime.now())
+            )
+            await db.commit()
+            # 重新计算
+            stats2 = await db.execute(
+                select(SMSLog.status, sa_func.count().label('cnt'))
+                .where(SMSLog.batch_id == batch_id).group_by(SMSLog.status)
+            )
+            counts2 = {r.status: r.cnt for r in stats2}
+            sent2 = counts2.get('sent', 0) + counts2.get('delivered', 0)
+            failed2 = counts2.get('failed', 0) + counts2.get('expired', 0)
+            batch.success_count = sent2
+            batch.failed_count = failed2
+            batch.processing_count = 0
+            batch.progress = 100
+            batch.status = BatchStatus.COMPLETED
+            batch.completed_at = datetime.now()
+            batch.error_message = f"部分失败: {failed2}/{total}" if failed2 > 0 else None
+            logger.info(f"批次兜底完成: batch={batch_id}, 清理了 {pending_cnt} 条遗留pending")
+        elif log_total >= total and batch.status == BatchStatus.COMPLETED:
+            pass
         else:
-            # 仍有排队/发送中：批次回到处理中（如失败重发后重新入队）
             batch.status = BatchStatus.PROCESSING
             batch.completed_at = None
             batch.error_message = None
@@ -519,6 +605,36 @@ async def _refund_failed_sms(db, batch_id: int, account_id: int):
         logger.info(f"失败退款完成: batch={batch_id}, 退款={refund_amount}")
     except Exception as e:
         logger.error(f"退款失败: batch={batch_id}, {e}")
+
+
+async def _send_via_virtual(sms_log: SMSLog, channel: Channel) -> bool:
+    """
+    虚拟通道：不实际发送短信，立即标记为 sent，
+    然后安排延迟 Celery 任务生成模拟回执（delivered/failed）。
+    """
+    import uuid
+    try:
+        virtual_msg_id = f"VIRT-{uuid.uuid4().hex[:12]}"
+        sms_log.upstream_message_id = virtual_msg_id
+        logger.info(f"虚拟通道发送: {sms_log.message_id} via {channel.channel_code}, virt_id={virtual_msg_id}")
+
+        cfg = channel.get_virtual_config()
+        delay_min = max(1, cfg.get("dlr_delay_min", 3))
+        delay_max = max(delay_min, cfg.get("dlr_delay_max", 30))
+
+        import random
+        delay = random.uniform(delay_min, delay_max)
+
+        from app.workers.celery_app import celery_app as _celery
+        _celery.send_task(
+            "virtual_dlr_generate",
+            args=[sms_log.message_id, channel.id],
+            countdown=delay,
+        )
+        return True
+    except Exception as e:
+        logger.error(f"虚拟通道处理异常: {sms_log.message_id}, {e}")
+        return False
 
 
 async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: dict = None) -> bool:
@@ -605,113 +721,89 @@ async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: di
         logger.info(f"HTTP请求URL: {channel.api_url}")
         logger.info(f"HTTP请求参数: {payload}")
         
-        # 实际发送请求
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                channel.api_url,
-                json=payload,
-                headers=headers
-            )
-            
-            response_text = response.text
-            logger.info(f"HTTP响应: status={response.status_code}, body={response_text[:500]}")
-            
-            if response.status_code in [200, 201]:
-                # 解析上游JSON响应
-                # 格式: {"status":0, "balance":520, "list":[{"mid":"xxx", "mobile":"xxx", "result":0}]}
-                # status: 0=成功, 2=IP错误, 3=账号密码错误, 5=其它错误
-                # result: 0=成功, 10=extno错误, 15=余额不足, 100=系统错误
-                try:
-                    resp_data = response.json()
-                    api_status = resp_data.get('status')
-                    balance = resp_data.get('balance', 0)
-                    result_list = resp_data.get('list', [])
-                    
-                    # STATUS错误代码表
-                    status_errors = {
-                        0: "成功",
-                        2: "IP错误",
-                        3: "账号密码错误",
-                        5: "其它错误",
-                        6: "接入点错误",
-                        7: "账号状态异常(已停用)",
-                        11: "系统内部错误",
-                        34: "请求参数有误",
-                        100: "系统内部错误"
-                    }
-                    
-                    # RESULT错误代码表
-                    result_errors = {
-                        0: "提交成功",
-                        10: "原发号码错误(extno错误)",
-                        15: "余额不足",
-                        100: "系统内部错误"
-                    }
-                    
-                    if api_status == 0:
-                        # 请求成功，检查每个号码的提交结果
-                        if result_list:
-                            first_result = result_list[0]
-                            # 支持多种上游返回的消息ID字段名
-                            mid = (first_result.get('mid') or first_result.get('msgid') or
-                                   first_result.get('taskid') or first_result.get('message_id') or
-                                   first_result.get('id') or '')
-                            result_code = first_result.get('result', first_result.get('status', -1))
-                            if isinstance(result_code, str) and result_code.isdigit():
-                                result_code = int(result_code)
-                            
-                            if result_code == 0:
-                                logger.info(f"HTTP发送成功: {sms_log.message_id}, upstream_id={mid}, balance={balance}")
-                                # 保存上游消息ID（DLR 回执匹配必需）
-                                sms_log.upstream_message_id = mid or None
-                                return True
-                            else:
-                                error_desc = result_errors.get(result_code, f"未知错误({result_code})")
-                                logger.error(f"HTTP发送失败(提交错误): {sms_log.message_id}, result={result_code}, 错误: {error_desc}")
-                                sms_log.error_message = f"上游错误: {error_desc}"
-                                return False
-                        else:
-                            # 没有返回list，但status=0，认为成功；尝试从响应顶层提取上游ID
-                            mid = (resp_data.get('mid') or resp_data.get('msgid') or
-                                   resp_data.get('taskid') or resp_data.get('message_id') or
-                                   resp_data.get('id') or '')
-                            if mid:
-                                sms_log.upstream_message_id = str(mid)
-                                logger.info(f"HTTP发送成功(无明细): {sms_log.message_id}, upstream_id={mid}")
-                            else:
-                                logger.info(f"HTTP发送成功(无明细): {sms_log.message_id}, balance={balance} (无上游ID，DLR可能无法匹配)")
-                            return True
-                    else:
-                        # status != 0，请求失败
-                        error_desc = status_errors.get(api_status, f"未知错误({api_status})")
-                        logger.error(f"HTTP发送失败(API错误): {sms_log.message_id}, status={api_status}, 错误: {error_desc}")
-                        sms_log.error_message = f"上游API错误: {error_desc}"
-                        return False
-                        
-                except Exception as e:
-                    # JSON解析失败，尝试解析XML响应（兼容旧接口）
-                    if '<returnsms>' in response_text:
-                        import re
-                        status_match = re.search(r'<returnstatus>(\w+)</returnstatus>', response_text)
-                        message_match = re.search(r'<message>([^<]*)</message>', response_text)
-                        
-                        return_status = status_match.group(1) if status_match else 'Unknown'
-                        return_message = message_match.group(1) if message_match else ''
-                        
-                        if return_status.lower() == 'success':
-                            logger.info(f"HTTP发送成功(XML): {sms_log.message_id}")
+        client = _get_http_client()
+        response = await client.post(
+            channel.api_url,
+            json=payload,
+            headers=headers
+        )
+
+        response_text = response.text
+        logger.info(f"HTTP响应: status={response.status_code}, body={response_text[:500]}")
+
+        if response.status_code in [200, 201]:
+            try:
+                resp_data = response.json()
+                api_status = resp_data.get('status')
+                balance = resp_data.get('balance', 0)
+                result_list = resp_data.get('list', [])
+
+                status_errors = {
+                    0: "成功", 2: "IP错误", 3: "账号密码错误", 5: "其它错误",
+                    6: "接入点错误", 7: "账号状态异常(已停用)", 11: "系统内部错误",
+                    34: "请求参数有误", 100: "系统内部错误"
+                }
+                result_errors = {
+                    0: "提交成功", 10: "原发号码错误(extno错误)",
+                    15: "余额不足", 100: "系统内部错误"
+                }
+
+                if api_status == 0:
+                    if result_list:
+                        first_result = result_list[0]
+                        mid = (first_result.get('mid') or first_result.get('msgid') or
+                               first_result.get('taskid') or first_result.get('message_id') or
+                               first_result.get('id') or '')
+                        result_code = first_result.get('result', first_result.get('status', -1))
+                        if isinstance(result_code, str) and result_code.isdigit():
+                            result_code = int(result_code)
+
+                        if result_code == 0:
+                            logger.info(f"HTTP发送成功: {sms_log.message_id}, upstream_id={mid}, balance={balance}")
+                            sms_log.upstream_message_id = mid or None
                             return True
                         else:
-                            logger.error(f"HTTP发送失败(XML): {sms_log.message_id}, status={return_status}, message={return_message}")
-                            sms_log.error_message = f"上游XML错误: status={return_status}, code={return_message}"
+                            error_desc = result_errors.get(result_code, f"未知错误({result_code})")
+                            logger.error(f"HTTP发送失败(提交错误): {sms_log.message_id}, result={result_code}, 错误: {error_desc}")
+                            sms_log.error_message = f"上游错误: {error_desc}"
                             return False
                     else:
-                        logger.error(f"HTTP响应解析失败: {sms_log.message_id}, error={e}, body={response_text[:200]}")
-                        sms_log.error_message = f"响应解析失败: {str(e)}"
+                        mid = (resp_data.get('mid') or resp_data.get('msgid') or
+                               resp_data.get('taskid') or resp_data.get('message_id') or
+                               resp_data.get('id') or '')
+                        if mid:
+                            sms_log.upstream_message_id = str(mid)
+                            logger.info(f"HTTP发送成功(无明细): {sms_log.message_id}, upstream_id={mid}")
+                        else:
+                            logger.info(f"HTTP发送成功(无明细): {sms_log.message_id}, balance={balance} (无上游ID，DLR可能无法匹配)")
+                        return True
+                else:
+                    error_desc = status_errors.get(api_status, f"未知错误({api_status})")
+                    logger.error(f"HTTP发送失败(API错误): {sms_log.message_id}, status={api_status}, 错误: {error_desc}")
+                    sms_log.error_message = f"上游API错误: {error_desc}"
+                    return False
+
+            except Exception as e:
+                if '<returnsms>' in response_text:
+                    import re
+                    status_match = re.search(r'<returnstatus>(\w+)</returnstatus>', response_text)
+                    message_match = re.search(r'<message>([^<]*)</message>', response_text)
+                    return_status = status_match.group(1) if status_match else 'Unknown'
+                    return_message = message_match.group(1) if message_match else ''
+                    if return_status.lower() == 'success':
+                        logger.info(f"HTTP发送成功(XML): {sms_log.message_id}")
+                        return True
+                    else:
+                        logger.error(f"HTTP发送失败(XML): {sms_log.message_id}, status={return_status}, message={return_message}")
+                        sms_log.error_message = f"上游XML错误: status={return_status}, code={return_message}"
                         return False
-            else:
-                logger.error(f"HTTP发送失败: {response.status_code} {response.text}")
-                return False
+                else:
+                    logger.error(f"HTTP响应解析失败: {sms_log.message_id}, error={e}, body={response_text[:200]}")
+                    sms_log.error_message = f"响应解析失败: {str(e)}"
+                    return False
+        else:
+            logger.error(f"HTTP发送失败: {response.status_code} {response.text}")
+            return False
         
     except Exception as e:
         logger.error(f"HTTP发送异常: {str(e)}", exc_info=e)
@@ -1165,3 +1257,254 @@ async def _dlr_timeout_check_async():
         return {"success": True, "expired": expired_count}
     finally:
         await db.close()
+
+
+# ============ 虚拟通道回执生成任务 ============
+
+@celery_app.task(name="virtual_dlr_generate", bind=True, max_retries=3,
+                 autoretry_for=(Exception,), retry_backoff=2, retry_backoff_max=30)
+def virtual_dlr_generate_task(self, message_id: str, channel_id: int):
+    """延迟生成虚拟通道的模拟回执（单条，兼容旧逻辑）"""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_do_virtual_dlr(message_id, channel_id))
+    finally:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+
+
+@celery_app.task(name="virtual_submit_simulate", bind=True, max_retries=2,
+                 autoretry_for=(Exception,), retry_backoff=5, retry_backoff_max=60,
+                 soft_time_limit=10 * 60, time_limit=12 * 60,
+                 acks_late=True, reject_on_worker_lost=True)
+def virtual_submit_simulate_task(self, message_ids: list, channel_id: int, batch_id: int = None):
+    """模拟虚拟通道上游提交：将 pending 状态批量更新为 sent"""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_do_virtual_submit(message_ids, channel_id, batch_id))
+    finally:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+
+
+async def _do_virtual_submit(message_ids: list, channel_id: int, batch_id: int = None):
+    """批量将 pending 消息更新为 sent，模拟上游提交完成"""
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession as _AS
+    from sqlalchemy import update as sa_update
+    from app.modules.sms.sms_batch import SmsBatch
+
+    eng = create_async_engine(
+        settings.SQLALCHEMY_DATABASE_URL, echo=False,
+        pool_size=2, max_overflow=1, pool_pre_ping=True, pool_recycle=300,
+    )
+    factory = async_sessionmaker(eng, class_=_AS, expire_on_commit=False)
+    updated = 0
+    now = datetime.now()
+
+    try:
+        async with factory() as db:
+            if batch_id:
+                _bs = (await db.execute(select(SmsBatch.status).where(SmsBatch.id == batch_id))).scalar_one_or_none()
+                if _bs in ('cancelled', 'failed'):
+                    logger.info(f"虚拟提交跳过: batch={batch_id} 已{_bs}")
+                    return {"updated": 0, "skipped": True}
+            for chunk_start in range(0, len(message_ids), 200):
+                chunk_ids = message_ids[chunk_start:chunk_start + 200]
+                result = await db.execute(
+                    sa_update(SMSLog)
+                    .where(
+                        SMSLog.message_id.in_(chunk_ids),
+                        SMSLog.status == "pending",
+                    )
+                    .values(status="sent", sent_time=now)
+                )
+                updated += result.rowcount
+                await db.commit()
+
+            if batch_id:
+                await _update_batch_progress(db, batch_id)
+
+        logger.info(
+            f"虚拟通道提交模拟完成: batch={batch_id}, updated={updated}/{len(message_ids)}"
+        )
+        return {"updated": updated}
+    except Exception as e:
+        logger.error(f"虚拟通道提交模拟异常: batch={batch_id}, {e}")
+        raise
+    finally:
+        await eng.dispose()
+
+
+@celery_app.task(name="virtual_dlr_batch_generate", bind=True, max_retries=2,
+                 autoretry_for=(Exception,), retry_backoff=5, retry_backoff_max=60,
+                 soft_time_limit=15 * 60, time_limit=20 * 60,
+                 acks_late=True, reject_on_worker_lost=True)
+def virtual_dlr_batch_generate_task(self, message_ids: list, channel_id: int, batch_id: int = None):
+    """批量生成虚拟通道回执，一个任务处理一整个分片（最多500条）"""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_do_virtual_dlr_batch(message_ids, channel_id, batch_id))
+    finally:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+
+
+async def _do_virtual_dlr_batch(message_ids: list, channel_id: int, batch_id: int = None):
+    """批量处理虚拟DLR：一个DB连接处理整个分片"""
+    import random
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession as _AS
+    from app.modules.sms.sms_batch import SmsBatch
+
+    eng = create_async_engine(
+        settings.SQLALCHEMY_DATABASE_URL, echo=False,
+        pool_size=2, max_overflow=1, pool_pre_ping=True, pool_recycle=300,
+    )
+    factory = async_sessionmaker(eng, class_=_AS, expire_on_commit=False)
+    delivered = 0
+    failed_cnt = 0
+    expired_cnt = 0
+
+    try:
+        async with factory() as db:
+            if batch_id:
+                _bs = (await db.execute(select(SmsBatch.status).where(SmsBatch.id == batch_id))).scalar_one_or_none()
+                if _bs in ('cancelled', 'failed'):
+                    logger.info(f"虚拟DLR跳过: batch={batch_id} 已{_bs}")
+                    return {"delivered": 0, "failed": 0, "expired": 0, "skipped": True}
+
+            ch_result = await db.execute(
+                select(Channel).where(Channel.id == channel_id)
+            )
+            channel = ch_result.scalar_one_or_none()
+            cfg = channel.get_virtual_config() if channel else {}
+
+            delivery_rate_min = cfg.get("delivery_rate_min", 80)
+            delivery_rate_max = cfg.get("delivery_rate_max", 90)
+            fail_rate_min = cfg.get("fail_rate_min", 5)
+            fail_rate_max = cfg.get("fail_rate_max", 15)
+            fail_codes = cfg.get("fail_codes", ["UNDELIV"])
+
+            delivery_base = random.uniform(delivery_rate_min, delivery_rate_max)
+            fail_base = random.uniform(fail_rate_min, fail_rate_max)
+            delivery_rate = max(0.0, min(100.0, delivery_base + random.gauss(0, 1.5)))
+            fail_rate = max(0.0, min(100.0 - delivery_rate, fail_base + random.gauss(0, 0.8)))
+
+            now = datetime.now()
+
+            for chunk_start in range(0, len(message_ids), 100):
+                chunk_ids = message_ids[chunk_start:chunk_start + 100]
+                result = await db.execute(
+                    select(SMSLog).where(
+                        SMSLog.message_id.in_(chunk_ids),
+                        SMSLog.status.in_(["sent", "pending", "queued"]),
+                    )
+                )
+                logs = result.scalars().all()
+
+                for sms_log in logs:
+                    if not sms_log.sent_time:
+                        sms_log.sent_time = now
+                    roll = random.uniform(0, 100)
+                    if roll < delivery_rate:
+                        sms_log.status = "delivered"
+                        sms_log.delivery_time = now
+                        sms_log.error_message = None
+                        delivered += 1
+                    elif roll < delivery_rate + fail_rate:
+                        sms_log.status = "failed"
+                        code = random.choice(fail_codes) if fail_codes else "UNDELIV"
+                        sms_log.error_message = f"SMPP DLR: stat={code} err={random.randint(1,99):03d}"
+                        failed_cnt += 1
+                    else:
+                        sms_log.status = "expired"
+                        sms_log.error_message = "Virtual DLR: receipt timeout (simulated)"
+                        expired_cnt += 1
+
+                await db.commit()
+
+            if batch_id:
+                await _update_batch_progress(db, batch_id)
+
+        logger.info(
+            f"虚拟DLR批量完成: batch={batch_id}, "
+            f"delivered={delivered}, failed={failed_cnt}, expired={expired_cnt}"
+        )
+        return {"delivered": delivered, "failed": failed_cnt, "expired": expired_cnt}
+    except Exception as e:
+        logger.error(f"虚拟DLR批量异常: batch={batch_id}, {e}")
+        raise
+    finally:
+        await eng.dispose()
+
+
+async def _do_virtual_dlr(message_id: str, channel_id: int):
+    """根据虚拟通道配置，随机决定回执状态并更新 SMSLog（单条兼容）"""
+    import random
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession as _AS
+    eng = create_async_engine(
+        settings.SQLALCHEMY_DATABASE_URL, echo=False,
+        pool_size=1, max_overflow=0, pool_pre_ping=True, pool_recycle=300,
+    )
+    factory = async_sessionmaker(eng, class_=_AS, expire_on_commit=False)
+    try:
+        async with factory() as db:
+            result = await db.execute(
+                select(SMSLog).where(SMSLog.message_id == message_id)
+            )
+            sms_log = result.scalar_one_or_none()
+            if not sms_log:
+                logger.warning(f"虚拟DLR: 未找到记录 {message_id}")
+                return {"success": False, "reason": "not_found"}
+
+            if sms_log.status not in ("sent", "pending", "queued"):
+                return {"success": True, "status": sms_log.status}
+
+            ch_result = await db.execute(
+                select(Channel).where(Channel.id == channel_id)
+            )
+            channel = ch_result.scalar_one_or_none()
+            cfg = channel.get_virtual_config() if channel else {}
+
+            delivery_rate_min = cfg.get("delivery_rate_min", 80)
+            delivery_rate_max = cfg.get("delivery_rate_max", 90)
+            fail_rate_min = cfg.get("fail_rate_min", 5)
+            fail_rate_max = cfg.get("fail_rate_max", 15)
+            fail_codes = cfg.get("fail_codes", ["UNDELIV"])
+
+            delivery_base = random.uniform(delivery_rate_min, delivery_rate_max)
+            fail_base = random.uniform(fail_rate_min, fail_rate_max)
+
+            delivery_rate = delivery_base + random.gauss(0, 1.5)
+            fail_rate = fail_base + random.gauss(0, 0.8)
+            delivery_rate = max(0.0, min(100.0, delivery_rate))
+            fail_rate = max(0.0, min(100.0 - delivery_rate, fail_rate))
+
+            roll = random.uniform(0, 100)
+            if roll < delivery_rate:
+                new_status = "delivered"
+                sms_log.delivery_time = datetime.now()
+                sms_log.error_message = None
+            elif roll < delivery_rate + fail_rate:
+                new_status = "failed"
+                code = random.choice(fail_codes) if fail_codes else "UNDELIV"
+                err_no = f"{random.randint(1,99):03d}"
+                sms_log.error_message = f"SMPP DLR: stat={code} err={err_no}"
+            else:
+                new_status = "expired"
+                sms_log.error_message = "Virtual DLR: receipt timeout (simulated)"
+
+            sms_log.status = new_status
+            await db.commit()
+
+            if sms_log.batch_id:
+                await _update_batch_progress(db, sms_log.batch_id)
+
+            return {"success": True, "message_id": message_id, "status": new_status}
+    except Exception as e:
+        logger.error(f"虚拟DLR异常: {message_id}, {e}")
+        raise
+    finally:
+        await eng.dispose()

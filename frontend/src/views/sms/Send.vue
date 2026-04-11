@@ -260,7 +260,7 @@
                     <el-input-number
                       v-model="privateQuantity"
                       :min="privateStockMax > 0 ? 1 : 0"
-                      :max="Math.min(1000, Math.max(0, privateStockMax))"
+                      :max="Math.max(0, privateStockMax)"
                       :step="100"
                       style="width: 200px"
                     />
@@ -490,6 +490,17 @@
                   发送中...
                 </template>
               </button>
+            </div>
+
+            <!-- 大批量异步进度 -->
+            <div v-if="asyncBatchPolling" class="async-batch-progress">
+              <div class="async-batch-header">
+                <span>批次 #{{ asyncBatchPolling.batchId }} 后台处理中</span>
+                <span class="async-batch-pct">{{ asyncBatchProgress }}%</span>
+              </div>
+              <el-progress :percentage="asyncBatchProgress" :stroke-width="8" :show-text="false"
+                :status="asyncBatchStatus === 'completed' ? 'success' : asyncBatchStatus === 'failed' ? 'exception' : ''" />
+              <div class="async-batch-tip">共 {{ asyncBatchPolling.total.toLocaleString() }} 条，可关闭页面，在「发送任务」页查看进度</div>
             </div>
 
             <!-- 发送结果 -->
@@ -916,6 +927,7 @@ import { MagicStick } from '@element-plus/icons-vue'
 import { sendBatchSMS, submitSmsApproval } from '@/api/sms'
 import { getChannels } from '@/api/channel'
 import { getChannelBannedWords } from '@/api/sms'
+import { getBatchDetail } from '@/api/batch'
 import { getDataProducts, buyAndSend, getCarriers, getMyNumbersSummary, type DataProduct } from '@/api/data'
 import { getAiConfig, generateSmsContent } from '@/api/ai'
 import request from '@/api/index'
@@ -1323,6 +1335,9 @@ const channelBound = ref(false)
 const currentTime = ref('')
 const currentDate = ref('')
 const sendProgress = ref(0)
+const asyncBatchPolling = ref<{batchId: number; total: number; timer: number | null} | null>(null)
+const asyncBatchProgress = ref(0)
+const asyncBatchStatus = ref('')
 const fileInputRef = ref<HTMLInputElement>()
 const fileAccept = ref('.txt')
 const draftDialogVisible = ref(false)
@@ -1404,8 +1419,8 @@ watch([selectedPrivateGroup, carrierFilterPrivate, unusedOnlyPrivate], () => {
     if (privateQuantity.value > max) {
       privateQuantity.value = max
     }
-    if (privateQuantity.value === 0 || privateQuantity.value > 1000) {
-      privateQuantity.value = max > 1000 ? 1000 : max
+    if (privateQuantity.value === 0) {
+      privateQuantity.value = max
     }
   }
 }, { immediate: true })
@@ -1890,7 +1905,7 @@ async function handlePrivateSend() {
     return ElMessage.warning('当前分组无可用号码或发送条数须至少为 1')
   }
 
-  const qty = Math.max(1, Math.min(privateQuantity.value, privateStockMax.value, 50000))
+  const qty = Math.max(1, Math.min(privateQuantity.value, privateStockMax.value))
 
   privateSending.value = true
   try {
@@ -1913,7 +1928,10 @@ async function handlePrivateSend() {
       batch_name: `私有库 - ${g.country_code} - ${g.sourceLabel || g.source}`
     })
 
-    if (res.success && (res.succeeded ?? 0) > 0) {
+    if (res.async_processing && res.batch_id) {
+      ElMessage.success(`批量发送任务已提交（${res.total} 条），后台处理中，请在发送任务页查看进度`)
+      result.value = { ...res, success: true }
+    } else if (res.success && (res.succeeded ?? 0) > 0) {
       ElMessage.success('批量发送任务已创建')
       result.value = { ...res, success: true }
     } else if (res.success && (res.total ?? 0) > 0 && (res.succeeded ?? 0) === 0) {
@@ -2180,8 +2198,8 @@ const handleSend = async () => {
   if (isPrivate && !selectedPrivateGroup.value) { ElMessage.warning('请选择私有库分组'); return }
   if (!form.value.message) { ElMessage.warning(t('smsSend.pleaseEnterContent')); return }
 
-  if (!isPrivate && numbers.length > 5000) {
-    ElMessage.warning('单次最多提交 5000 个号码，请分批发送')
+  if (!isPrivate && numbers.length > 2000000) {
+    ElMessage.warning('单次最多提交 200 万个号码')
     return
   }
 
@@ -2231,7 +2249,7 @@ const handleSend = async () => {
         source: pg.source || undefined,
         purpose: pg.purpose || undefined,
         batch_id: pg.batch_id != null && pg.batch_id !== undefined ? String(pg.batch_id) : '',
-        limit: Math.max(1, Math.min(privateQuantity.value, privateStockMax.value, 50000)),
+        limit: Math.max(1, Math.min(privateQuantity.value, privateStockMax.value)),
         unused_only: unusedOnlyPrivate.value,
       }
       if (carrierFilterPrivate.value) pf.carrier = carrierFilterPrivate.value
@@ -2251,7 +2269,16 @@ const handleSend = async () => {
     const totalQueued = res?.total ?? 0
     sendProgress.value = isPrivate ? privateQuantity.value : e164List.length
 
-    if (isPrivate) {
+    const isAsyncBatch = res?.async_processing || (totalQueued > 500 && successCount === 0 && failCount === 0 && apiOk)
+
+    if (isAsyncBatch) {
+      result.value = { success: true, successCount: 0, failCount: 0, batchId: res?.batch_id }
+      ElMessage.success(`已提交 ${totalQueued.toLocaleString()} 条，后台异步处理中，可在「发送任务」页查看进度`)
+      if (res?.batch_id) startBatchPolling(res.batch_id, totalQueued)
+      if (form.value.resetOnlyNumbers) form.value.phone_numbers_text = ''
+      else handleReset()
+      loadStats()
+    } else if (isPrivate) {
       if (!apiOk || totalQueued === 0) {
         result.value = { success: false, successCount: 0, failCount: 0, batchId: res?.batch_id }
         ElMessage.error(res?.error?.message || '未找到可发送的私库号码，请检查筛选条件或刷新私库')
@@ -2293,6 +2320,53 @@ const handleSend = async () => {
   } finally { loading.value = false }
 }
 
+// ============ 大批量异步进度轮询 ============
+
+function startBatchPolling(batchId: number, total: number) {
+  stopBatchPolling()
+  asyncBatchProgress.value = 0
+  asyncBatchStatus.value = 'processing'
+  const poll = async () => {
+    try {
+      const detail = await getBatchDetail(batchId)
+      asyncBatchProgress.value = detail.progress ?? 0
+      asyncBatchStatus.value = detail.status ?? 'processing'
+      const processed = (detail.success_count ?? 0) + (detail.failed_count ?? 0)
+
+      if (detail.status === 'completed' || detail.status === 'failed') {
+        stopBatchPolling()
+        if (detail.status === 'completed') {
+          ElMessage.success(`批次 #${batchId} 处理完成：成功 ${detail.success_count?.toLocaleString()}，失败 ${detail.failed_count?.toLocaleString()}`)
+        } else {
+          ElMessage.error(`批次 #${batchId} 处理失败：${detail.error_message || '未知错误'}`)
+        }
+        result.value = {
+          success: (detail.success_count ?? 0) > 0,
+          successCount: detail.success_count ?? 0,
+          failCount: detail.failed_count ?? 0,
+          batchId,
+        }
+        loadStats()
+        return
+      }
+
+      asyncBatchPolling.value!.timer = window.setTimeout(poll, 3000)
+    } catch {
+      asyncBatchPolling.value!.timer = window.setTimeout(poll, 5000)
+    }
+  }
+  asyncBatchPolling.value = { batchId, total, timer: window.setTimeout(poll, 2000) }
+}
+
+function stopBatchPolling() {
+  if (asyncBatchPolling.value?.timer) {
+    clearTimeout(asyncBatchPolling.value.timer)
+  }
+  asyncBatchPolling.value = null
+}
+
+onUnmounted(() => stopBatchPolling())
+
 // ============ 商店购买发送 ============
 
 const selectProduct = (product: DataProduct) => {
@@ -2324,14 +2398,16 @@ const handleStoreSend = async () => {
     }
     const res = await buyAndSend(payload)
     if (res.success) {
-      result.value = { success: true, message: `已购买 ${storeQuantity.value} 条数据并创建发送任务，批次: ${res.batch_id}` }
-      ElMessage.success('订单创建成功！')
+      const asyncHint = res.async ? '（后台处理中，请稍后查看发送统计）' : ''
+      result.value = { success: true, message: `已购买 ${storeQuantity.value} 条数据并创建发送任务${asyncHint}，批次: ${res.batch_id}` }
+      ElMessage.success(`订单创建成功！${asyncHint}`)
       loadStats()
       loadStoreProducts()
     }
   } catch (error: any) {
-    result.value = { success: false, error: { message: error.message } }
-    ElMessage.error(error.message || '购买发送失败')
+    const detail = error?.response?.data?.detail || error.message || '购买发送失败'
+    result.value = { success: false, error: { message: detail } }
+    ElMessage.error(detail)
   } finally { storeSending.value = false }
 }
 
@@ -2619,6 +2695,12 @@ onUnmounted(() => clearInterval(timeInterval))
 .bw-icon { margin-right: 4px; }
 .bw-highlight { background: rgba(245, 87, 108, 0.15); color: var(--el-color-danger); padding: 1px 6px; border-radius: 3px; font-weight: 600; }
 .bw-hint { color: var(--el-text-color-secondary); font-size: 11px; margin-left: 4px; }
+
+/* 大批量异步进度 */
+.async-batch-progress { padding: 12px 16px; background: var(--el-fill-color-light, #f5f7fa); border-radius: 8px; margin-bottom: 12px; }
+.async-batch-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 13px; font-weight: 500; }
+.async-batch-pct { color: var(--el-color-primary); font-weight: 700; }
+.async-batch-tip { font-size: 11px; color: var(--el-text-color-secondary); margin-top: 4px; }
 
 /* 自定义变量对话框 */
 .cv-list { margin-bottom: 16px; }

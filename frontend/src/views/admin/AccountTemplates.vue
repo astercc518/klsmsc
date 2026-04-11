@@ -128,7 +128,7 @@
         </el-table-column>
         <el-table-column prop="default_price" :label="$t('accountTemplates.costPrice')" width="110" sortable>
           <template #default="{ row }">
-            <span class="price-text">${{ row.default_price?.toFixed(4) || '0.0000' }}</span>
+            <span class="price-text">${{ row.default_price?.toFixed(5) || '0.00000' }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="status" :label="$t('common.status')" width="80">
@@ -224,7 +224,7 @@
         <el-row :gutter="16">
           <el-col :span="12">
             <el-form-item :label="$t('accountTemplates.defaultPrice')">
-              <el-input-number v-model="form.default_price" :min="0" :precision="4" :step="0.01" style="width: 100%;" />
+              <el-input-number v-model="form.default_price" :min="0" :precision="5" :step="0.001" style="width: 100%;" />
             </el-form-item>
           </el-col>
         </el-row>

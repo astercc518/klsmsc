@@ -255,6 +255,22 @@ class PricingEngine:
             }
             await cache_manager.set(cache_key, price_info, ttl=3600)
             return price_info
+
+        # 4. 通配符全球定价（country_code = '*'），无具体国家规则时回退
+        query_wild = select(CountryPricing).where(
+            CountryPricing.channel_id == channel_id,
+            CountryPricing.country_code == '*',
+        ).order_by(CountryPricing.effective_date.desc()).limit(1)
+        result_w = await self.db.execute(query_wild)
+        pricing_w = result_w.scalar_one_or_none()
+        if pricing_w:
+            price_info = {
+                'price': float(pricing_w.price_per_sms),
+                'currency': pricing_w.currency,
+                'country': pricing_w.country_name or '全球',
+            }
+            await cache_manager.set(cache_key, price_info, ttl=3600)
+            return price_info
         
         return None
     

@@ -27,8 +27,8 @@ celery_app.conf.update(
     timezone='Asia/Shanghai',
     enable_utc=False,
     task_track_started=True,
-    task_time_limit=30 * 60,  # 默认30分钟硬超时
-    task_soft_time_limit=25 * 60,  # 默认25分钟软超时
+    task_time_limit=60 * 60,  # 默认60分钟硬超时
+    task_soft_time_limit=55 * 60,  # 默认55分钟软超时
     worker_prefetch_multiplier=1,  # 每个worker一次只取一个任务
     worker_max_tasks_per_child=1000,  # 每个worker处理1000个任务后重启
 )
@@ -47,6 +47,10 @@ celery_app.conf.task_queues = {
         'exchange': 'sms_send',
         'routing_key': 'sms_send',
     },
+    'sms_send_smpp': {
+        'exchange': 'sms_send_smpp',
+        'routing_key': 'sms_send_smpp',
+    },
     'sms_dlr': {
         'exchange': 'sms_dlr',
         'routing_key': 'sms_dlr',
@@ -64,12 +68,18 @@ celery_app.conf.task_routes.update({
     'data_expire_pending_orders': {'queue': 'data_tasks'},
     'data_import_numbers': {'queue': 'data_tasks'},
     'private_library_upload': {'queue': 'data_tasks'},
+    'private_library_sync_used': {'queue': 'data_tasks'},
 })
 # 任务路由 - 批量发送 & Webhook 回调
 celery_app.conf.task_routes.update({
     'process_batch': {'queue': 'celery'},
+    'process_batch_chunk': {'queue': 'celery'},
     'send_webhook': {'queue': 'celery'},
     'okcc_sync_balances_task': {'queue': 'celery'},
+    'virtual_dlr_generate': {'queue': 'celery'},
+    'virtual_dlr_batch_generate': {'queue': 'celery'},
+    'virtual_submit_simulate': {'queue': 'celery'},
+    'data_buy_send_async': {'queue': 'data_tasks'},
 })
 
 # 定时任务配置（Celery Beat）
@@ -79,10 +89,10 @@ celery_app.conf.beat_schedule = {
         'task': 'fetch_dlr_reports_task',
         'schedule': 30.0,
     },
-    # 每小时刷新所有活跃商品库存
-    'data-refresh-stock-hourly': {
+    # 每10分钟刷新所有活跃商品库存（含时效过期自动下架）
+    'data-refresh-stock-10min': {
         'task': 'data_refresh_all_product_stock',
-        'schedule': 3600.0,
+        'schedule': 600.0,
     },
     # 每天 03:00 回收过期私库号码
     'data-recycle-expired-daily': {

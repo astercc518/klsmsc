@@ -94,6 +94,27 @@ async def calculate_stock(db: AsyncSession, filter_criteria: dict, public_only: 
     return result.scalar() or 0
 
 
+async def calculate_stock_with_carriers(
+    db: AsyncSession, filter_criteria: dict, public_only: bool = True
+) -> tuple:
+    """计算精确库存（含时效过滤）并返回运营商分布。
+    返回 (total_stock, carrier_list) 其中 carrier_list = [{"name": str, "count": int}, ...]
+    """
+    query = build_filter_query(filter_criteria, public_only=public_only)
+    carrier_q = query.with_only_columns(
+        DataNumber.carrier, func.count().label("cnt")
+    ).group_by(DataNumber.carrier)
+    result = await db.execute(carrier_q)
+    carriers = []
+    total = 0
+    for row in result.fetchall():
+        name = row[0] or "Unknown"
+        cnt = int(row[1])
+        carriers.append({"name": name, "count": cnt})
+        total += cnt
+    return total, carriers
+
+
 async def lookup_price(db: AsyncSession, source: str, purpose: str, freshness: str, country_code: str = '*') -> Optional[Decimal]:
     """从定价模板查找单价，优先匹配具体国家，回退到通配符"""
     result = await db.execute(

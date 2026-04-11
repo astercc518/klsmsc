@@ -39,6 +39,9 @@
             <span class="metric-value">{{ formatNumber(todaySent) }}</span>
             <span class="metric-unit">{{ $t('dashboard.items') }}</span>
           </div>
+          <div class="metric-footer" v-if="yesterdayStats.sent > 0 || todaySent > 0">
+            <span :class="['metric-change', sentChange.dir]">{{ sentChange.pct }}%</span>
+          </div>
         </div>
 
         <!-- 送达成功 -->
@@ -228,6 +231,156 @@
                 {{ svc.status === 'ok' ? $t('dashboard.serviceOk') : $t('dashboard.serviceError') }}
               </span>
               <p v-if="svc.message" class="service-msg">{{ svc.message }}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 日环比指示器（嵌入指标卡片下方） -->
+      <div class="compare-row" v-if="yesterdayStats.sent > 0 || todaySent > 0">
+        <div class="compare-chip" :class="sentChange.dir">
+          <span class="compare-label">{{ $t('dashboard.todaySent') }}</span>
+          <span class="compare-val">{{ sentChange.pct }}%</span>
+          <span class="compare-hint">{{ $t('dashboard.yesterdayCompare') }}</span>
+        </div>
+        <div class="compare-chip" :class="deliveredChange.dir">
+          <span class="compare-label">{{ $t('dashboard.delivered') }}</span>
+          <span class="compare-val">{{ deliveredChange.pct }}%</span>
+          <span class="compare-hint">{{ $t('dashboard.yesterdayCompare') }}</span>
+        </div>
+        <div class="compare-chip" :class="revenueChange.dir" v-if="permissions.view_finance">
+          <span class="compare-label">{{ $t('dashboard.todayRevenue') }}</span>
+          <span class="compare-val">{{ revenueChange.pct }}%</span>
+          <span class="compare-hint">{{ $t('dashboard.yesterdayCompare') }}</span>
+        </div>
+      </div>
+
+      <!-- 数据可视化行 -->
+      <div class="viz-row" v-if="dailyTrend.length > 0 || topCustomers.length > 0">
+        <!-- 7日发送趋势 -->
+        <div class="card trend-card soft-card" v-if="dailyTrend.length > 0">
+          <div class="card-header">
+            <h2 class="card-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M2 14L6 9L10 11L16 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M12 4H16V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              {{ $t('dashboard.dailyTrend') }}
+            </h2>
+          </div>
+          <div class="trend-chart">
+            <div class="trend-bars">
+              <div
+                v-for="day in dailyTrend"
+                :key="day.date"
+                class="trend-bar-group"
+              >
+                <div class="trend-bar-wrapper">
+                  <div
+                    class="trend-bar sent-bar"
+                    :style="{ height: `${Math.max(4, day.sent / trendMaxSent * 100)}%` }"
+                  >
+                    <span class="trend-bar-tooltip">{{ day.sent.toLocaleString() }}</span>
+                  </div>
+                  <div
+                    class="trend-bar delivered-bar"
+                    :style="{ height: `${Math.max(2, day.delivered / trendMaxSent * 100)}%` }"
+                  />
+                </div>
+                <span class="trend-date">{{ day.date.slice(5) }}</span>
+              </div>
+            </div>
+            <div class="trend-legend">
+              <span class="legend-item"><span class="legend-dot sent"></span>{{ $t('dashboard.sent') }}</span>
+              <span class="legend-item"><span class="legend-dot delivered"></span>{{ $t('dashboard.deliveredCount') }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 客户发送 TOP -->
+        <div class="card top-card soft-card" v-if="topCustomers.length > 0 && (permissions.view_customers || permissions.view_global)">
+          <div class="card-header">
+            <h2 class="card-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M9 2L11.5 7H15L12 10L13 15L9 12L5 15L6 10L3 7H6.5L9 2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              </svg>
+              {{ $t('dashboard.topCustomers') }}
+            </h2>
+          </div>
+          <div class="top-list">
+            <div
+              v-for="(cust, idx) in topCustomers"
+              :key="cust.account_name"
+              class="top-item"
+            >
+              <span class="top-rank" :class="{ gold: idx === 0, silver: idx === 1, bronze: idx === 2 }">{{ idx + 1 }}</span>
+              <span class="top-name">{{ cust.account_name }}</span>
+              <span class="top-sent">{{ cust.sent.toLocaleString() }}</span>
+              <span class="top-rate" v-if="cust.sent > 0">{{ ((cust.delivered / cust.sent) * 100).toFixed(1) }}%</span>
+              <span class="top-revenue" v-if="permissions.view_finance">${{ formatNumber(cust.revenue) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 批次 & 通道统计行 -->
+      <div class="viz-row" v-if="batchOverview.total > 0 || channelStats.length > 0">
+        <!-- 批次概览 -->
+        <div class="card batch-card soft-card" v-if="batchOverview.total > 0">
+          <div class="card-header">
+            <h2 class="card-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <rect x="3" y="2" width="12" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M6 6H12M6 9H12M6 12H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              {{ $t('dashboard.batchOverview') }}
+            </h2>
+          </div>
+          <div class="batch-stats">
+            <div class="batch-stat-item total">
+              <span class="batch-num">{{ batchOverview.total }}</span>
+              <span class="batch-label">{{ $t('dashboard.totalBatches') }}</span>
+            </div>
+            <div class="batch-stat-item processing" v-if="batchOverview.processing > 0">
+              <span class="batch-num">{{ batchOverview.processing }}</span>
+              <span class="batch-label">{{ $t('dashboard.processingBatches') }}</span>
+            </div>
+            <div class="batch-stat-item completed">
+              <span class="batch-num">{{ batchOverview.completed }}</span>
+              <span class="batch-label">{{ $t('dashboard.completedBatches') }}</span>
+            </div>
+            <div class="batch-stat-item failed" v-if="batchOverview.failed > 0">
+              <span class="batch-num">{{ batchOverview.failed }}</span>
+              <span class="batch-label">{{ $t('dashboard.failedBatches') }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 通道发送统计 -->
+        <div class="card channel-stats-card soft-card" v-if="channelStats.length > 0">
+          <div class="card-header">
+            <h2 class="card-title">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <circle cx="5" cy="9" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="13" cy="5" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+                <circle cx="13" cy="13" r="2.5" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M7.5 9H10.5M10.5 5L7.5 9M10.5 13L7.5 9" stroke="currentColor" stroke-width="1.5"/>
+              </svg>
+              {{ $t('dashboard.channelPerformance') }}
+            </h2>
+          </div>
+          <div class="ch-stats-list">
+            <div
+              v-for="ch in channelStats"
+              :key="ch.channel_name"
+              class="ch-stat-row"
+            >
+              <span class="ch-stat-name">{{ ch.channel_name }}</span>
+              <div class="ch-stat-bar-wrap">
+                <div class="ch-stat-bar" :style="{ width: `${ch.rate}%` }" :class="ch.rate >= 90 ? 'good' : ch.rate >= 60 ? 'warn' : 'bad'"></div>
+              </div>
+              <span class="ch-stat-pct">{{ ch.rate }}%</span>
+              <span class="ch-stat-cnt">{{ ch.sent.toLocaleString() }}{{ $t('dashboard.items') }}</span>
             </div>
           </div>
         </div>
@@ -550,6 +703,14 @@
                 </div>
                 <span class="action-label">{{ $t('menu.sendRecords') }}</span>
               </div>
+              <div class="action-btn stats soft-button" @click="$router.push('/sms/send-stats')">
+                <div class="action-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <path d="M4 20V12M12 20V4M20 20V8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <span class="action-label">{{ $t('menu.sendStats') }}</span>
+              </div>
               <div class="action-btn info soft-button" @click="$router.push('/sms/approvals')">
                 <div class="action-icon">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -559,6 +720,15 @@
                   </svg>
                 </div>
                 <span class="action-label">{{ $t('menu.smsAudit') }}</span>
+              </div>
+              <div class="action-btn store soft-button" @click="$router.push('/data/store')">
+                <div class="action-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <path d="M3 9L12 2L21 9V20C21 20.5523 20.5523 21 20 21H4C3.44772 21 3 20.5523 3 20V9Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                    <path d="M9 21V12H15V21" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                  </svg>
+                </div>
+                <span class="action-label">{{ $t('menu.dataStore') }}</span>
               </div>
             </div>
           </div>
@@ -612,48 +782,6 @@
 
         <!-- 右侧 -->
         <div class="content-right">
-          <!-- 通道状态 -->
-          <div class="card channels-card">
-            <div class="card-header">
-              <h2 class="card-title">
-                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                  <circle cx="5" cy="9" r="2.5" stroke="currentColor" stroke-width="1.5"/>
-                  <circle cx="13" cy="5" r="2.5" stroke="currentColor" stroke-width="1.5"/>
-                  <circle cx="13" cy="13" r="2.5" stroke="currentColor" stroke-width="1.5"/>
-                  <path d="M7.5 9H10.5M10.5 5L7.5 9M10.5 13L7.5 9" stroke="currentColor" stroke-width="1.5"/>
-                </svg>
-                {{ $t('dashboard.channelStatus') }}
-              </h2>
-              <span class="channel-count">{{ availableChannels }} {{ $t('dashboard.units') }}</span>
-            </div>
-            <div class="channels-list">
-              <div v-if="channels.length === 0" class="empty-state">
-                <span>{{ $t('common.noData') }}</span>
-              </div>
-              <div 
-                v-else
-                v-for="channel in channels.slice(0, 4)" 
-                :key="channel.id" 
-                class="channel-item"
-              >
-                <div class="channel-info">
-                  <span class="channel-name">{{ channel.channel_name || channel.channel_code }}</span>
-                  <span class="channel-protocol">{{ channel.protocol }}</span>
-                </div>
-                <div :class="['channel-status', channel.status]">
-                  <div class="channel-activity" v-if="channel.status === 'active'">
-                    <span class="activity-bar" style="height: 12px; animation-delay: 0.1s"></span>
-                    <span class="activity-bar" style="height: 18px; animation-delay: 0.3s"></span>
-                    <span class="activity-bar" style="height: 14px; animation-delay: 0.2s"></span>
-                    <span class="activity-bar" style="height: 10px; animation-delay: 0.4s"></span>
-                  </div>
-                  <span class="status-dot"></span>
-                  {{ getChannelStatusText(channel.status) }}
-                </div>
-              </div>
-            </div>
-          </div>
-
           <!-- 账户信息 -->
           <div class="card account-card">
             <div class="card-header">
@@ -780,6 +908,12 @@ const permissions = ref({
 const serverMetrics = ref<AdminServerMetrics | null>(null)
 const serviceStatus = ref<AdminServiceStatusItem[]>([])
 
+const yesterdayStats = ref<{ sent: number; delivered: number; failed: number; revenue: number }>({ sent: 0, delivered: 0, failed: 0, revenue: 0 })
+const dailyTrend = ref<{ date: string; sent: number; delivered: number; revenue: number }[]>([])
+const topCustomers = ref<{ account_name: string; sent: number; delivered: number; revenue: number }[]>([])
+const batchOverview = ref<{ total: number; processing: number; completed: number; failed: number }>({ total: 0, processing: 0, completed: 0, failed: 0 })
+const channelStats = ref<{ channel_name: string; sent: number; delivered: number; rate: number }[]>([])
+
 /** 是否展示服务器监控区（与权限同步，供模板使用） */
 const showSystemMonitor = computed(() => permissions.value.view_system_monitor)
 
@@ -873,6 +1007,21 @@ const getRoleLabel = () => {
   }
   return roles[adminRole.value] || t('roles.customer')
 }
+
+const calcChange = (today: number, yesterday: number): { pct: string; dir: 'up' | 'down' | 'flat' } => {
+  if (yesterday === 0 && today === 0) return { pct: '0', dir: 'flat' }
+  if (yesterday === 0) return { pct: '+∞', dir: 'up' }
+  const pct = ((today - yesterday) / yesterday * 100).toFixed(1)
+  if (today > yesterday) return { pct: `+${pct}`, dir: 'up' }
+  if (today < yesterday) return { pct: pct, dir: 'down' }
+  return { pct: '0', dir: 'flat' }
+}
+
+const sentChange = computed(() => calcChange(todaySent.value, yesterdayStats.value.sent))
+const deliveredChange = computed(() => calcChange(todayDelivered.value, yesterdayStats.value.delivered))
+const revenueChange = computed(() => calcChange(todayRevenue.value, yesterdayStats.value.revenue))
+
+const trendMaxSent = computed(() => Math.max(...dailyTrend.value.map(d => d.sent), 1))
 
 const formatNumber = (num: number) => {
   const n = Number(num) || 0
@@ -1017,6 +1166,11 @@ const loadStaffData = async () => {
         ...(res.permissions || {}),
         view_system_monitor: viewSystemMonitor,
       }
+      yesterdayStats.value = res.yesterday_stats || { sent: 0, delivered: 0, failed: 0, revenue: 0 }
+      dailyTrend.value = res.daily_trend || []
+      topCustomers.value = res.top_customers || []
+      batchOverview.value = res.batch_overview || { total: 0, processing: 0, completed: 0, failed: 0 }
+      channelStats.value = res.channel_stats || []
       recentCustomers.value = res.recent_customers || []
       if (viewSystemMonitor) {
         const r = res as Record<string, unknown>
@@ -1056,10 +1210,6 @@ const loadCustomerData = async () => {
         /* ignore */
       }
     }
-
-    const channelsRes = await getChannels()
-    channels.value = channelsRes.channels || []
-    availableChannels.value = channels.value.filter((c: any) => c.status === 'active').length
 
     const todayStr = new Date().toISOString().split('T')[0]
     try {
@@ -1617,6 +1767,8 @@ onUnmounted(() => {
 .action-btn.warning .action-icon { color: var(--warning); }
 .action-btn.info { background: linear-gradient(135deg, rgba(79, 172, 254, 0.15), rgba(0, 242, 254, 0.1)); }
 .action-btn.info .action-icon { color: var(--info); }
+.action-btn.stats { background: linear-gradient(135deg, rgba(167, 139, 250, 0.18), rgba(139, 92, 246, 0.1)); }
+.action-btn.stats .action-icon { color: #a78bfa; }
 
 .action-label {
   font-size: 12px;
@@ -2015,6 +2167,206 @@ onUnmounted(() => {
   color: var(--primary);
 }
 
+/* ========== 日环比对比行 ========== */
+.compare-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.compare-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.compare-chip.up { background: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.2); }
+.compare-chip.down { background: rgba(239, 68, 68, 0.08); border-color: rgba(239, 68, 68, 0.2); }
+.compare-label { color: var(--text-tertiary); }
+.compare-val { font-weight: 700; }
+.compare-chip.up .compare-val { color: #10b981; }
+.compare-chip.down .compare-val { color: #ef4444; }
+.compare-chip.flat .compare-val { color: var(--text-secondary); }
+.compare-hint { color: var(--text-quaternary); font-size: 11px; }
+
+.metric-change {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.metric-change.up { color: #10b981; background: rgba(16, 185, 129, 0.1); }
+.metric-change.down { color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+.metric-change.flat { color: var(--text-tertiary); }
+
+/* ========== 可视化行 ========== */
+.viz-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+/* 7日趋势 */
+.trend-chart {
+  padding: 16px;
+}
+.trend-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 140px;
+  padding-bottom: 4px;
+}
+.trend-bar-group {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+}
+.trend-bar-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  width: 100%;
+  position: relative;
+}
+.trend-bar {
+  width: 60%;
+  min-height: 4px;
+  border-radius: 4px 4px 0 0;
+  position: relative;
+  transition: height 0.5s ease;
+}
+.sent-bar { background: linear-gradient(180deg, rgba(102, 126, 234, 0.8), rgba(102, 126, 234, 0.4)); }
+.delivered-bar {
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.8), rgba(16, 185, 129, 0.4));
+  width: 40%;
+  position: absolute;
+  bottom: 0;
+  border-radius: 4px 4px 0 0;
+}
+.trend-bar-tooltip {
+  display: none;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.trend-bar-group:hover .trend-bar-tooltip { display: block; }
+.trend-date { font-size: 11px; color: var(--text-quaternary); }
+.trend-legend {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.legend-item { display: flex; align-items: center; gap: 4px; }
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.legend-dot.sent { background: rgba(102, 126, 234, 0.8); }
+.legend-dot.delivered { background: rgba(16, 185, 129, 0.8); }
+
+/* 客户TOP */
+.top-list { padding: 8px 16px; }
+.top-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+}
+.top-item:last-child { border-bottom: none; }
+.top-rank {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-tertiary);
+}
+.top-rank.gold { background: linear-gradient(135deg, #f59e0b, #d97706); color: #fff; }
+.top-rank.silver { background: linear-gradient(135deg, #94a3b8, #64748b); color: #fff; }
+.top-rank.bronze { background: linear-gradient(135deg, #c2884e, #a0693c); color: #fff; }
+.top-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.top-sent { font-weight: 700; color: var(--primary); min-width: 60px; text-align: right; }
+.top-rate { color: #10b981; font-weight: 600; min-width: 52px; text-align: right; }
+.top-revenue { color: var(--text-secondary); min-width: 60px; text-align: right; }
+
+/* 批次概览 */
+.batch-stats {
+  display: flex;
+  gap: 16px;
+  padding: 20px 16px;
+  justify-content: center;
+}
+.batch-stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 20px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.batch-stat-item.total { border-left: 3px solid var(--primary); }
+.batch-stat-item.processing { border-left: 3px solid #3b82f6; }
+.batch-stat-item.completed { border-left: 3px solid #10b981; }
+.batch-stat-item.failed { border-left: 3px solid #ef4444; }
+.batch-num { font-size: 24px; font-weight: 800; color: var(--text-primary); }
+.batch-label { font-size: 12px; color: var(--text-tertiary); }
+
+/* 通道统计 */
+.ch-stats-list { padding: 8px 16px; }
+.ch-stat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+}
+.ch-stat-row:last-child { border-bottom: none; }
+.ch-stat-name { width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.ch-stat-bar-wrap {
+  flex: 1;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.ch-stat-bar { height: 100%; border-radius: 3px; transition: width 0.6s ease; }
+.ch-stat-bar.good { background: linear-gradient(90deg, #10b981, #34d399); }
+.ch-stat-bar.warn { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.ch-stat-bar.bad { background: linear-gradient(90deg, #ef4444, #f87171); }
+.ch-stat-pct { font-weight: 700; min-width: 44px; text-align: right; }
+.ch-stat-row .ch-stat-pct { color: var(--text-secondary); }
+.ch-stat-cnt { color: var(--text-quaternary); min-width: 70px; text-align: right; }
+
 /* 响应式 */
 @media (max-width: 1400px) {
   .metrics-grid.metrics-6 {
@@ -2032,6 +2384,10 @@ onUnmounted(() => {
   }
   
   .content-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .viz-row {
     grid-template-columns: 1fr;
   }
 }
@@ -2090,5 +2446,27 @@ onUnmounted(() => {
 
 [data-theme="light"] .record-item:hover {
   background: rgba(0, 0, 0, 0.02);
+}
+
+[data-theme="light"] .compare-chip {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .top-item,
+[data-theme="light"] .ch-stat-row {
+  border-bottom-color: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .batch-stat-item {
+  background: rgba(0, 0, 0, 0.02);
+}
+
+[data-theme="light"] .ch-stat-bar-wrap {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .top-rank {
+  background: rgba(0, 0, 0, 0.05);
 }
 </style>

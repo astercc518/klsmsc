@@ -117,6 +117,9 @@ COUNTRY_NAMES = {
     'BJ': '贝宁',
 }
 
+# 反向映射：国家名称 → 国家代码
+NAME_TO_COUNTRY = {name: code for code, name in COUNTRY_NAMES.items()}
+
 
 # ============ 主菜单 ============
 
@@ -428,11 +431,15 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
         
-        # 显示国家选择
+        # 显示国家选择（全球 * 置顶）
         keyboard = []
+        has_global = '*' in country_codes
+        if has_global:
+            keyboard.append([InlineKeyboardButton("🌍 全球（所有国家）", callback_data="country_*")])
         row = []
         for country_code in country_codes:
-            # 使用映射表获取中文名称，避免编码问题；统一大写 ISO 码避免重复键
+            if country_code == '*':
+                continue
             label = COUNTRY_NAMES.get(country_code, country_code)
             row.append(InlineKeyboardButton(label, callback_data=f"country_{country_code}"))
             if len(row) == 2:
@@ -562,27 +569,33 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await show_pricing_all(query, context)
         return
     
-    # 处理国家选择（邀请流程）
+    # 处理国家选择（邀请流程，支持 * = 全球）
     if data.startswith("country_"):
-        country_code = data.replace("country_", "").strip().upper()
+        country_code = data.replace("country_", "").strip()
+        if country_code != '*':
+            country_code = country_code.upper()
         context.user_data['country_code'] = country_code
         biz_type = context.user_data.get('business_type', 'sms')
         
         biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
         
-        # 获取该国家的模板
+        # 获取该国家的模板（* 代表全球通配）
         from app.modules.common.account_template import AccountTemplate
         
         async with get_session() as db:
-            result = await db.execute(
-                select(AccountTemplate)
-                .where(
+            if country_code == '*':
+                q = select(AccountTemplate).where(
+                    AccountTemplate.business_type == biz_type,
+                    AccountTemplate.country_code == '*',
+                    AccountTemplate.status == "active",
+                )
+            else:
+                q = select(AccountTemplate).where(
                     AccountTemplate.business_type == biz_type,
                     func.upper(AccountTemplate.country_code) == country_code,
-                    AccountTemplate.status == "active"
+                    AccountTemplate.status == "active",
                 )
-                .order_by(AccountTemplate.template_name)
-            )
+            result = await db.execute(q.order_by(AccountTemplate.template_name))
             templates = result.scalars().all()
         
         if not templates:
@@ -599,7 +612,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             keyboard.append([InlineKeyboardButton(label, callback_data=f"tpl_{tpl.id}")])
         keyboard.append([InlineKeyboardButton("🔙 返回", callback_data=f"biz_{biz_type}")])
 
-        country_label = COUNTRY_NAMES.get(country_code, country_code)
+        country_label = '全球（所有国家）' if country_code == '*' else COUNTRY_NAMES.get(country_code, country_code)
         await query.edit_message_text(
             f"🎯 创建开户授权码\n\n"
             f"📦 业务类型: {biz_label}\n"
@@ -629,7 +642,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
         
-        country_label = COUNTRY_NAMES.get(template.country_code, template.country_code)
+        country_label = '全球（所有国家）' if template.country_code == '*' else COUNTRY_NAMES.get(template.country_code, template.country_code)
         template_name = template.template_name or f"{country_label}标准版"
         price = float(template.default_price) if template.default_price else 0
 
@@ -640,12 +653,27 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         }
         context.user_data['template_name'] = template_name
 
+        # 全球模板需要额外指定客户国家 + 价格
+        if template.country_code == '*':
+            await query.edit_message_text(
+                f"🎯 创建开户授权码\n\n"
+                f"📋 模板: {template_name}\n"
+                f"💰 底价: ${price:.4f}\n\n"
+                f"请输入 <b>国家名称</b> 和 <b>客户单价（USD）</b>，用空格分隔：\n"
+                f"例如: <code>中国 0.05</code>  或  <code>美国 0</code>\n\n"
+                f"输入 0 表示免费",
+                reply_markup=get_back_menu(),
+                parse_mode='HTML',
+            )
+            context.user_data['waiting_for'] = 'invite_country_price'
+            return
+
         await query.edit_message_text(
             f"🎯 创建开户授权码\n\n"
             f"📋 模板: {template_name}\n"
             f"🌍 国家: {country_label}\n"
             f"💰 底价: ${price:.4f}\n\n"
-            f"请输入客户单价（USD）：\n"
+            f"请输入客户单价（USD），输入 0 表示免费：\n"
             f"例如: 0.05",
             reply_markup=get_back_menu()
         )
@@ -2892,6 +2920,56 @@ async def handle_sms_approval_reply_media(update: Update, context: ContextTypes.
     await update.message.reply_text("✅ 回复已转发给客户")
 
 
+async def _generate_invite_code(target, context, is_callback=True):
+    """生成邀请码并展示结果（从模板选择或价格输入后统一调用）"""
+    import os
+    from app.core.invitation import InvitationService
+
+    price = context.user_data.get('customer_price', 0)
+    tpl_name = context.user_data.get('template_name', '')
+    biz_type = context.user_data.get('business_type', 'sms')
+    biz_label = {'sms': '短信', 'voice': '语音', 'data': '数据'}.get(biz_type, biz_type)
+    country = context.user_data.get('country_code', '')
+    country_label = '全球（所有国家）' if country == '*' else COUNTRY_NAMES.get(country, country)
+
+    config = {
+        'business_type': biz_type,
+        'country': country,
+        'template_id': context.user_data.get('template_id'),
+        'template_name': tpl_name,
+        'price': price,
+    }
+    async with get_session() as db:
+        service = InvitationService(db)
+        code = await service.create_code(
+            context.user_data.get('sales_id'),
+            config,
+            valid_hours=72,
+        )
+
+    bot_username = os.getenv('TELEGRAM_BOT_USERNAME', 'kaolachbot')
+    invite_link = f"https://t.me/{bot_username}?start={code}"
+
+    price_line = f"💰 客户单价: ${price}\n" if price > 0 else "💰 客户单价: 免费\n"
+    text = (
+        f"✅ <b>授权码创建成功！</b>\n\n"
+        f"📋 授权码: <code>{code}</code>\n"
+        f"🔗 开户链接:\n{invite_link}\n\n"
+        f"📦 模板: {tpl_name}\n"
+        f"🌍 国家/地区: {country_label}\n"
+        f"{price_line}"
+        f"⏰ 有效期: 72小时\n\n"
+        f"━━━━━━━━━━━━\n"
+        f"📤 将上方链接转发给客户\n"
+        f"客户点击链接即可自动开户"
+    )
+    context.user_data['waiting_for'] = None
+    if is_callback:
+        await target.edit_message_text(text, parse_mode='HTML', reply_markup=get_back_menu())
+    else:
+        await target.reply_text(text, parse_mode='HTML', reply_markup=get_back_menu())
+
+
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理用户文本输入"""
     waiting_for = context.user_data.get('waiting_for')
@@ -3031,60 +3109,102 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ 发送失败\n\n{err_msg}", reply_markup=get_main_menu_customer())
         return
     
-    # 处理邀请价格输入
+    # 处理全球模板：同时输入国家名称 + 价格
+    if waiting_for == 'invite_country_price':
+        parts = text.strip().rsplit(None, 1)  # 从右侧分割，支持多字国名如"新加坡"
+
+        # 尝试判断用户输入了什么
+        def _looks_like_price(s):
+            try:
+                float(s)
+                return True
+            except ValueError:
+                return False
+
+        def _resolve_country(s):
+            """尝试将输入解析为国家代码，支持名称和代码两种方式"""
+            s_stripped = s.strip()
+            # 先尝试名称匹配
+            if s_stripped in NAME_TO_COUNTRY:
+                return NAME_TO_COUNTRY[s_stripped]
+            # 再尝试代码匹配（兼容用户输入代码）
+            up = s_stripped.upper()
+            if up in COUNTRY_NAMES:
+                return up
+            return None
+
+        if len(parts) < 2:
+            if len(parts) == 1:
+                p = parts[0]
+                if _looks_like_price(p):
+                    await update.message.reply_text(
+                        "⚠️ 缺少国家名称，请同时输入 <b>国家名称</b> 和 <b>价格</b>：\n"
+                        f"例如: <code>中国 {p}</code>",
+                        parse_mode='HTML',
+                    )
+                elif _resolve_country(p):
+                    cc = _resolve_country(p)
+                    name = COUNTRY_NAMES.get(cc, p)
+                    await update.message.reply_text(
+                        f"⚠️ 缺少价格，请同时输入 <b>国家名称</b> 和 <b>价格</b>：\n"
+                        f"例如: <code>{name} 0.05</code>",
+                        parse_mode='HTML',
+                    )
+                else:
+                    await update.message.reply_text(
+                        "❌ 格式不正确，请输入 <b>国家名称 价格</b>（空格分隔）：\n"
+                        "例如: <code>中国 0.05</code>",
+                        parse_mode='HTML',
+                    )
+            else:
+                await update.message.reply_text(
+                    "❌ 请输入 <b>国家名称 价格</b>（空格分隔）：\n"
+                    "例如: <code>中国 0.05</code>",
+                    parse_mode='HTML',
+                )
+            return
+
+        country_part, price_raw = parts[0], parts[1]
+
+        # 如果最后一部分不是数字，可能用户格式有误
+        if not _looks_like_price(price_raw):
+            await update.message.reply_text(
+                f"❌ 价格 <code>{price_raw}</code> 无效，请输入 <b>国家名称 价格</b>：\n"
+                f"例如: <code>中国 0.05</code>",
+                parse_mode='HTML',
+            )
+            return
+
+        # 校验国家
+        cc = _resolve_country(country_part)
+        if not cc:
+            await update.message.reply_text(
+                f"❌ 未识别的国家 <code>{country_part}</code>，请输入正确的国家名称：\n"
+                f"例如: 中国、美国、菲律宾、印尼 等",
+                parse_mode='HTML',
+            )
+            return
+
+        # 校验价格
+        price = float(price_raw)
+        if price < 0:
+            await update.message.reply_text("❌ 价格不能为负数，请重新输入：")
+            return
+
+        context.user_data['country_code'] = cc
+        context.user_data['customer_price'] = price
+        await _generate_invite_code(update.message, context, is_callback=False)
+        return
+
+    # 处理邀请价格输入（非全球模板，已有国家）
     if waiting_for == 'invite_price':
         try:
             price = float(text)
-            if price <= 0:
-                await update.message.reply_text("❌ 价格必须大于0，请重新输入：")
+            if price < 0:
+                await update.message.reply_text("❌ 价格不能为负数，请重新输入（输入 0 表示免费）：")
                 return
-            
             context.user_data['customer_price'] = price
-            template_info = context.user_data.get('template_info', {})
-            
-            # 生成邀请码
-            from app.core.invitation import InvitationService
-            
-            async with get_session() as db:
-                service = InvitationService(db)
-                tpl_name = context.user_data.get('template_name', '')
-                config = {
-                    'business_type': context.user_data.get('business_type', 'sms'),
-                    'country': context.user_data.get('country_code', ''),
-                    'template_id': context.user_data.get('template_id'),
-                    'template_name': tpl_name,
-                    'price': price,
-                }
-                code = await service.create_code(
-                    context.user_data.get('sales_id'),
-                    config,
-                    valid_hours=72
-                )
-            
-            import os
-            bot_username = os.getenv('TELEGRAM_BOT_USERNAME', 'kaolachbot')
-            invite_link = f"https://t.me/{bot_username}?start={code}"
-            biz_type = context.user_data.get('business_type', 'sms')
-            biz_label = {'sms': '短信', 'voice': '语音', 'data': '数据'}.get(biz_type, biz_type)
-            country = context.user_data.get('country_code', '')
-            country_label = COUNTRY_NAMES.get(country, country)
-
-            await update.message.reply_text(
-                f"✅ <b>授权码创建成功！</b>\n\n"
-                f"📋 授权码: <code>{code}</code>\n"
-                f"🔗 开户链接:\n{invite_link}\n\n"
-                f"📦 模板: {tpl_name}\n"
-                f"🌍 国家/地区: {country_label}\n"
-                f"💰 客户单价: ${price}\n"
-                f"⏰ 有效期: 72小时\n\n"
-                f"━━━━━━━━━━━━\n"
-                f"📤 将上方链接转发给客户\n"
-                f"客户点击链接即可自动开户",
-                parse_mode='HTML',
-                reply_markup=get_back_menu(),
-            )
-            context.user_data['waiting_for'] = None
-            
+            await _generate_invite_code(update.message, context, is_callback=False)
         except ValueError:
             await update.message.reply_text("❌ 请输入有效的数字，例如: 0.05")
         return

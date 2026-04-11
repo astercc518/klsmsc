@@ -68,6 +68,7 @@
       <el-select v-model="filters.protocol" :placeholder="$t('channels.protocolType')" clearable style="width: 120px">
         <el-option label="SMPP" value="SMPP" />
         <el-option label="HTTP" value="HTTP" />
+        <el-option label="VIRTUAL" value="VIRTUAL" />
       </el-select>
       <el-select v-model="filters.status" :placeholder="$t('common.status')" clearable style="width: 100px">
         <el-option :label="$t('channels.active')" value="active" />
@@ -95,7 +96,7 @@
         </el-table-column>
         <el-table-column prop="protocol" :label="$t('channels.protocol')" min-width="70" align="center">
           <template #default="{ row }">
-            <el-tag :type="row.protocol === 'SMPP' ? '' : 'success'" size="small" effect="dark">
+            <el-tag :type="row.protocol === 'SMPP' ? '' : row.protocol === 'VIRTUAL' ? 'warning' : 'success'" size="small" effect="dark">
               {{ row.protocol }}
             </el-tag>
           </template>
@@ -104,6 +105,7 @@
           <template #default="{ row }">
             <span v-if="row.protocol === 'SMPP' && row.host" class="server-text">{{ row.host }}:{{ row.port }}</span>
             <span v-else-if="row.protocol === 'HTTP' && row.api_url" class="server-text">{{ row.api_url }}</span>
+            <span v-else-if="row.protocol === 'VIRTUAL'" class="server-text" style="color: #f59e0b">虚拟通道</span>
             <span v-else class="empty-text">-</span>
           </template>
         </el-table-column>
@@ -167,7 +169,7 @@
       <el-descriptions :column="2" border v-if="currentChannel">
         <el-descriptions-item :label="$t('channels.channelCode')">{{ currentChannel.code }}</el-descriptions-item>
         <el-descriptions-item :label="$t('channels.protocol')">
-          <el-tag :type="currentChannel.protocol === 'SMPP' ? 'primary' : 'success'" size="small">
+          <el-tag :type="currentChannel.protocol === 'SMPP' ? 'primary' : currentChannel.protocol === 'VIRTUAL' ? 'warning' : 'success'" size="small">
             {{ currentChannel.protocol }}
           </el-tag>
         </el-descriptions-item>
@@ -190,6 +192,9 @@
         </el-descriptions-item>
         <el-descriptions-item v-if="currentChannel.protocol === 'HTTP'" :label="$t('channels.apiAddress')" :span="2">
           {{ currentChannel.api_url || '-' }}
+        </el-descriptions-item>
+        <el-descriptions-item v-if="currentChannel.protocol === 'VIRTUAL'" label="虚拟通道" :span="2">
+          <span style="color: #f59e0b">模拟回执（不实际发送）</span>
         </el-descriptions-item>
         <el-descriptions-item :label="$t('common.createdAt')">
           {{ currentChannel.created_at ? new Date(currentChannel.created_at).toLocaleString() : '-' }}
@@ -222,6 +227,7 @@
               <el-select v-model="form.protocol" :disabled="isEdit" style="width: 100%">
                 <el-option label="SMPP" value="SMPP" />
                 <el-option label="HTTP" value="HTTP" />
+                <el-option label="VIRTUAL (虚拟通道)" value="VIRTUAL" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -279,6 +285,63 @@
           <el-form-item label="API Key" prop="api_key">
             <el-input v-model="form.api_key" type="password" show-password :placeholder="isEdit ? $t('channels.leaveEmptyNoChange') : $t('common.optional')" />
           </el-form-item>
+        </template>
+
+        <!-- VIRTUAL 虚拟通道配置 -->
+        <template v-if="form.protocol === 'VIRTUAL'">
+          <el-divider content-position="left">虚拟通道回执配置</el-divider>
+          <el-alert type="info" :closable="false" style="margin-bottom: 18px" show-icon>
+            虚拟通道不实际发送短信，系统将根据以下配置自动生成模拟回执
+          </el-alert>
+
+          <div class="virtual-rate-group">
+            <div class="virtual-rate-row">
+              <div class="virtual-rate-item">
+                <span class="virtual-rate-label success">送达率</span>
+                <el-input-number v-model="form.virtual_config.delivery_rate_min" :min="0" :max="100" :step="0.5" :precision="1" controls-position="right" size="small" style="width: 100px" />
+                <span class="virtual-rate-sep">~</span>
+                <el-input-number v-model="form.virtual_config.delivery_rate_max" :min="0" :max="100" :step="0.5" :precision="1" controls-position="right" size="small" style="width: 100px" />
+                <span class="virtual-rate-unit">%</span>
+              </div>
+              <div class="virtual-rate-item">
+                <span class="virtual-rate-label danger">失败率</span>
+                <el-input-number v-model="form.virtual_config.fail_rate_min" :min="0" :max="100" :step="0.5" :precision="1" controls-position="right" size="small" style="width: 100px" />
+                <span class="virtual-rate-sep">~</span>
+                <el-input-number v-model="form.virtual_config.fail_rate_max" :min="0" :max="100" :step="0.5" :precision="1" controls-position="right" size="small" style="width: 100px" />
+                <span class="virtual-rate-unit">%</span>
+              </div>
+              <div class="virtual-rate-item">
+                <span class="virtual-rate-label warning">过期率</span>
+                <span class="virtual-rate-computed">{{ virtualExpiredRange }}</span>
+              </div>
+            </div>
+            <div class="virtual-rate-hint">
+              系统会在区间范围内自然浮动，最终统计呈现真实小数比例（如 89.54%），而非整数。
+            </div>
+          </div>
+
+          <el-row :gutter="24" style="margin-top: 8px">
+            <el-col :span="12">
+              <el-form-item label="回执延迟">
+                <div style="display:flex;gap:8px;align-items:center">
+                  <el-input-number v-model="form.virtual_config.dlr_delay_min" :min="1" :max="3600" controls-position="right" style="width: 110px" />
+                  <span style="color: var(--el-text-color-secondary)">~</span>
+                  <el-input-number v-model="form.virtual_config.dlr_delay_max" :min="1" :max="3600" controls-position="right" style="width: 110px" />
+                  <span style="color: var(--el-text-color-secondary); font-size: 13px">秒</span>
+                </div>
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="失败错误码">
+                <el-select v-model="form.virtual_config.fail_codes" multiple collapse-tags collapse-tags-tooltip style="width: 100%" placeholder="选择模拟错误码">
+                  <el-option label="UNDELIV (未送达)" value="UNDELIV" />
+                  <el-option label="REJECTD (被拒绝)" value="REJECTD" />
+                  <el-option label="UNKNOWN (未知)" value="UNKNOWN" />
+                  <el-option label="EXPIRED (过期)" value="EXPIRED" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
         </template>
 
         <el-divider content-position="left">{{ $t('channels.channelParams') }}</el-divider>
@@ -378,7 +441,7 @@
               </el-table-column>
               <el-table-column :label="$t('channels.unitPrice')" min-width="110">
                 <template #default="{ row }">
-                  <el-input-number v-model="row.price_per_sms" size="small" :min="0" :precision="4" controls-position="right" style="width: 100%" />
+                  <el-input-number v-model="row.price_per_sms" size="small" :min="0" :precision="5" :step="0.001" controls-position="right" style="width: 100%" />
                 </template>
               </el-table-column>
               <el-table-column :label="$t('channels.currency')" min-width="85">
@@ -586,7 +649,7 @@
           <el-input v-model="pricingForm.country_code" :disabled="!!pricingEditing" :placeholder="$t('channels.autoFill')" />
         </el-form-item>
         <el-form-item :label="$t('channels.unitPrice')" required>
-          <el-input-number v-model="pricingForm.price_per_sms" :min="0" :precision="4" style="width: 100%" />
+          <el-input-number v-model="pricingForm.price_per_sms" :min="0" :precision="5" :step="0.001" style="width: 100%" />
         </el-form-item>
         <el-form-item :label="$t('channels.currency')">
           <el-select v-model="pricingForm.currency" style="width: 100%">
@@ -786,13 +849,24 @@ const resetFilters = () => {
   filters.status = ''
 }
 
+const virtualExpiredRange = computed(() => {
+  const vc = form.virtual_config
+  const maxUsed = vc.delivery_rate_max + vc.fail_rate_max
+  const minUsed = vc.delivery_rate_min + vc.fail_rate_min
+  const expMin = Math.max(0, 100 - maxUsed)
+  const expMax = Math.max(0, 100 - minUsed)
+  if (expMin === expMax) return `${expMin}%`
+  return `${expMin}% ~ ${expMax}%`
+})
+
 // 统计
 const stats = computed(() => {
   const total = channels.value.length
   const active = channels.value.filter(c => c.connection_status === 'online').length
   const smpp = channels.value.filter(c => c.protocol === 'SMPP').length
   const http = channels.value.filter(c => c.protocol === 'HTTP').length
-  return { total, active, smpp, http }
+  const virtual_count = channels.value.filter(c => c.protocol === 'VIRTUAL').length
+  return { total, active, smpp, http, virtual_count }
 })
 
 // 过滤后的通道
@@ -887,6 +961,7 @@ const countryList = [
   { name: '芬兰', code: '358' },
   { name: '法国', code: '33' },
   { name: '德国', code: '49' },
+  { name: '加纳', code: '233' },
   { name: '希腊', code: '30' },
   { name: '香港', code: '852' },
   { name: '匈牙利', code: '36' },
@@ -957,6 +1032,16 @@ const handleCountrySelect = (item: { value: string, code: string }) => {
 }
 
 const formSupplierList = ref<any[]>([])
+const defaultVirtualConfig = () => ({
+  delivery_rate_min: 80,
+  delivery_rate_max: 90,
+  fail_rate_min: 5,
+  fail_rate_max: 15,
+  dlr_delay_min: 3,
+  dlr_delay_max: 30,
+  fail_codes: ['UNDELIV'] as string[],
+})
+
 const form = reactive({
   id: 0,
   channel_code: '',
@@ -976,7 +1061,8 @@ const form = reactive({
   concurrency: 1,
   rate_control_window: 1000,
   supplier_id: null as number | null,
-  banned_words: ''
+  banned_words: '',
+  virtual_config: defaultVirtualConfig(),
 })
 
 const rules = computed(() => ({
@@ -1003,6 +1089,7 @@ const mapAdminChannel = (ch: any) => ({
   created_at: ch.created_at,
   updated_at: ch.updated_at,
   banned_words: ch.banned_words ?? '',
+  virtual_config: ch.virtual_config ?? null,
 })
 
 const loadChannels = async () => {
@@ -1063,7 +1150,8 @@ const handleCreate = () => {
     priority: 0,
     weight: 100,
     supplier_id: null,
-    banned_words: ''
+    banned_words: '',
+    virtual_config: defaultVirtualConfig(),
   })
   formVisible.value = true
 }
@@ -1086,7 +1174,8 @@ const handleEdit = async (row: any) => {
     priority: row.priority ?? 0,
     weight: row.weight ?? 100,
     supplier_id: row.supplier?.id ?? null,
-    banned_words: row.banned_words ?? ''
+    banned_words: row.banned_words ?? '',
+    virtual_config: row.virtual_config ? { ...defaultVirtualConfig(), ...row.virtual_config } : defaultVirtualConfig(),
   })
   formVisible.value = true
 
@@ -1110,7 +1199,8 @@ const handleEdit = async (row: any) => {
         priority: ch.priority ?? 0,
         weight: ch.weight ?? 100,
         supplier_id: ch.supplier_id ?? row.supplier?.id ?? null,
-        banned_words: ch.banned_words ?? ''
+        banned_words: ch.banned_words ?? '',
+        virtual_config: ch.virtual_config ? { ...defaultVirtualConfig(), ...ch.virtual_config } : defaultVirtualConfig(),
       })
     } else {
       form.supplier_id = row.supplier?.id ?? null
@@ -1332,6 +1422,9 @@ const submitForm = async () => {
           }
           updatePayload.supplier_id = form.supplier_id ?? null
           updatePayload.banned_words = form.banned_words || null
+          if (form.protocol === 'VIRTUAL') {
+            updatePayload.virtual_config = form.virtual_config
+          }
           await updateChannel(form.id, updatePayload)
           ElMessage.success(t('common.updateSuccess'))
         } else {
@@ -1371,6 +1464,9 @@ const submitForm = async () => {
           }
           if (form.banned_words) {
             createPayload.banned_words = form.banned_words
+          }
+          if (form.protocol === 'VIRTUAL') {
+            createPayload.virtual_config = form.virtual_config
           }
           const created = await createChannel(createPayload)
 
@@ -1943,5 +2039,71 @@ onMounted(() => {
   .stats-grid { grid-template-columns: 1fr; }
   .filter-bar { flex-direction: column; align-items: stretch; }
   .filter-bar > * { width: 100% !important; }
+}
+
+.virtual-rate-group {
+  padding: 16px 20px;
+  background: var(--el-fill-color-lighter, rgba(255, 255, 255, 0.04));
+  border-radius: 8px;
+  border: 1px solid var(--el-border-color-lighter, rgba(255, 255, 255, 0.08));
+}
+
+.virtual-rate-row {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.virtual-rate-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.virtual-rate-label {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 2px 10px;
+  border-radius: 4px;
+  margin-right: 4px;
+}
+
+.virtual-rate-label.success {
+  color: var(--el-color-success);
+  background: rgba(103, 194, 58, 0.1);
+}
+
+.virtual-rate-label.danger {
+  color: var(--el-color-danger);
+  background: rgba(245, 108, 108, 0.1);
+}
+
+.virtual-rate-label.warning {
+  color: var(--el-color-warning);
+  background: rgba(230, 162, 60, 0.1);
+}
+
+.virtual-rate-unit {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.virtual-rate-sep {
+  font-size: 14px;
+  color: var(--el-text-color-placeholder);
+}
+
+.virtual-rate-computed {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--el-color-warning);
+}
+
+.virtual-rate-hint {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 </style>

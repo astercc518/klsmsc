@@ -83,3 +83,25 @@ export const getChannelBannedWords = (channelId: number): Promise<any> => {
   return request.get(`/sms/channels/${channelId}/banned-words`)
 }
 
+export const getCustomerSendStatistics = (params?: {
+  start_date?: string
+  end_date?: string
+}): Promise<any> => {
+  return request.get('/sms/send-statistics', { params })
+}
+
+export const getCustomerDailyStats = (params?: {
+  days?: number
+  start_date?: string
+  end_date?: string
+}): Promise<any> => {
+  return request.get('/sms/daily-stats', { params })
+}
+
+export const getCustomerFailAnalysis = (params?: {
+  start_date?: string
+  end_date?: string
+}): Promise<any> => {
+  return request.get('/sms/fail-analysis', { params })
+}
+

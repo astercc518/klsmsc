@@ -101,7 +101,7 @@ export function buyCombo(data: { product_id: number; quantity: number }) {
 }
 
 export function buyAndSend(data: { product_id?: number; filter_criteria?: any; quantity: number; message: string; messages?: string[]; carrier?: string }) {
-  return request({ url: '/data/buy-and-send', method: 'post', data })
+  return request({ url: '/data/buy-and-send', method: 'post', data, timeout: 300000 })
 }
 
 // ============ 订单 ============

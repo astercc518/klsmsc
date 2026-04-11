@@ -14,7 +14,7 @@ class Channel(Base):
     channel_code = Column(String(50), unique=True, nullable=False, comment="通道编码")
     channel_name = Column(String(100), nullable=False, comment="通道名称")
     protocol = Column(
-        Enum("SMPP", "HTTP", name="channel_protocol"),
+        Enum("SMPP", "HTTP", "VIRTUAL", name="channel_protocol"),
         nullable=False,
         comment="协议类型"
     )
@@ -25,7 +25,6 @@ class Channel(Base):
     smpp_bind_mode = Column(String(20), default="transceiver", comment="SMPP绑定模式: transceiver/transmitter/receiver")
     smpp_system_type = Column(String(13), default="", comment="SMPP system_type参数")
     smpp_interface_version = Column(Integer, default=52, comment="SMPP接口版本(0x34=52=v3.4)")
-    # NULL 表示使用全局配置（见 Settings）
     smpp_dlr_socket_hold_seconds = Column(
         Integer,
         nullable=True,
@@ -42,7 +41,6 @@ class Channel(Base):
     default_sender_id = Column(String(20), nullable=False, comment="默认发送方ID(必填)")
     cost_rate = Column(DECIMAL(10, 4), default=0.0000, comment="通道基础成本价")
     
-    # 速率控制
     max_tps = Column(Integer, default=100, comment="下发总速度(条/秒)")
     concurrency = Column(Integer, default=1, comment="并发数")
     rate_control_window = Column(Integer, default=1000, comment="速率控制窗口(毫秒)")
@@ -57,7 +55,6 @@ class Channel(Base):
         comment="配置状态：是否启用通道"
     )
     
-    # 连接状态：由状态检测接口更新，用于展示实际连通性
     connection_status = Column(
         String(20),
         nullable=True,
@@ -76,6 +73,42 @@ class Channel(Base):
     )
     banned_words = Column(Text, nullable=True, comment="违禁词列表，逗号分隔")
     is_deleted = Column(Boolean, nullable=False, default=False, comment="软删除标记")
+
+    virtual_config = Column(
+        Text,
+        nullable=True,
+        comment="虚拟通道配置 JSON: {delivery_rate, fail_rate, pending_rate, dlr_delay_min, dlr_delay_max, fail_codes}",
+    )
+    
+    def get_virtual_config(self) -> dict:
+        """解析虚拟通道配置，返回带默认值的 dict（比例支持区间）"""
+        import json
+        defaults = {
+            "delivery_rate_min": 80,
+            "delivery_rate_max": 90,
+            "fail_rate_min": 5,
+            "fail_rate_max": 15,
+            "dlr_delay_min": 3,
+            "dlr_delay_max": 30,
+            "fail_codes": ["UNDELIV"],
+        }
+        if not self.virtual_config:
+            return defaults
+        try:
+            cfg = json.loads(self.virtual_config)
+            # 兼容旧的单值配置：自动转换为区间
+            if "delivery_rate" in cfg and "delivery_rate_min" not in cfg:
+                v = cfg.pop("delivery_rate")
+                cfg["delivery_rate_min"] = v
+                cfg["delivery_rate_max"] = v
+            if "fail_rate" in cfg and "fail_rate_min" not in cfg:
+                v = cfg.pop("fail_rate")
+                cfg["fail_rate_min"] = v
+                cfg["fail_rate_max"] = v
+            defaults.update(cfg)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return defaults
     
     def __repr__(self):
         return f"<Channel(id={self.id}, code={self.channel_code}, status={self.status})>"

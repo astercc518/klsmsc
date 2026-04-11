@@ -93,6 +93,19 @@
           </el-select>
         </div>
 
+        <div class="filter-item" v-if="searchForm.batch_id">
+          <label class="filter-label">任务ID</label>
+          <el-input-number
+            v-model="searchForm.batch_id"
+            :min="1"
+            placeholder="任务ID"
+            size="large"
+            class="filter-input"
+            controls-position="right"
+            style="width: 130px"
+          />
+        </div>
+
         <div class="filter-item">
           <label class="filter-label">日期范围</label>
           <el-date-picker
@@ -283,7 +296,7 @@
             <span class="dc-label">{{ $t('smsRecords.country') }}</span>
             <span class="dc-value">{{ countryDisplay(currentRecord.country_code) }}</span>
           </div>
-          <div class="detail-card" v-if="currentRecord.channel_code">
+          <div class="detail-card" v-if="isAdmin && currentRecord.channel_code">
             <span class="dc-label">发送通道</span>
             <el-tag size="small" effect="plain">{{ currentRecord.channel_code }}</el-tag>
           </div>
@@ -381,6 +394,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, Search, View } from '@element-plus/icons-vue'
 import { getSMSRecords } from '@/api/sms'
@@ -388,6 +402,8 @@ import { getAccountsAdmin, getChannelsAdmin } from '@/api/admin'
 import { COUNTRY_LIST, findCountryByDial, findCountryByIso } from '@/constants/countries'
 
 const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
 
 /** 国家列/详情：支持电话国码(如 880)或 ISO(如 BD)，与后台 country_code 存储一致 */
 function countryDisplay(code: string | null | undefined): string {
@@ -423,6 +439,7 @@ const searchForm = ref({
   account_id: null as number | null,
   channel_id: null as number | null,
   country_code: '' as string,
+  batch_id: null as number | null,
 })
 
 const pagination = ref({ page: 1, pageSize: 20, total: 0 })
@@ -496,6 +513,7 @@ const buildParams = () => {
   if (isAdmin.value && searchForm.value.account_id) params.account_id = searchForm.value.account_id
   if (isAdmin.value && searchForm.value.channel_id) params.channel_id = searchForm.value.channel_id
   if (searchForm.value.country_code) params.country_code = searchForm.value.country_code
+  if (searchForm.value.batch_id) params.batch_id = searchForm.value.batch_id
   if (dateRange.value && dateRange.value.length === 2) {
     params.start_date = dateRange.value[0]
     params.end_date = dateRange.value[1]
@@ -525,8 +543,11 @@ const handleSearch = () => {
 }
 
 const handleReset = () => {
-  searchForm.value = { phone_number: '', message_id: '', status: '', account_id: null, channel_id: null, country_code: '' }
+  searchForm.value = { phone_number: '', message_id: '', status: '', account_id: null, channel_id: null, country_code: '', batch_id: null }
   dateRange.value = null
+  if (route.query.batch_id) {
+    router.replace({ query: { ...route.query, batch_id: undefined } })
+  }
   handleSearch()
 }
 
@@ -606,6 +627,11 @@ const loadChannels = async () => {
 }
 
 onMounted(() => {
+  const qBatchId = route.query.batch_id
+  if (qBatchId) {
+    const bid = Number(qBatchId)
+    if (Number.isFinite(bid) && bid > 0) searchForm.value.batch_id = bid
+  }
   loadAccounts()
   loadChannels()
   loadRecords()

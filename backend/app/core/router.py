@@ -2,7 +2,7 @@
 路由引擎模块
 """
 from typing import Optional, List
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.sms.channel import Channel
 from app.modules.sms.routing_rule import RoutingRule
@@ -175,7 +175,10 @@ class RoutingEngine:
                 RoutingRule,
                 Channel.id == RoutingRule.channel_id
             ).where(
-                RoutingRule.country_code.in_(codes_to_try),
+                or_(
+                    RoutingRule.country_code.in_(codes_to_try),
+                    RoutingRule.country_code == '*',
+                ),
                 Channel.status == 'active',
                 Channel.is_deleted == False,
                 RoutingRule.is_active == True
@@ -185,12 +188,24 @@ class RoutingEngine:
             )
         )
         
-        # 结果包含 (Channel, route_priority) 元组
+        # 结果包含 (Channel, route_priority) 元组；同一通道若同时命中具体国家与 *，保留较高路由优先级
         rows = result.all()
-        channels = []
+        merged: dict = {}
         for row in rows:
             channel = row[0]
-            channel._route_priority = row[1]  # 附加路由优先级
+            route_priority = row[1]
+            cid = channel.id
+            prev = merged.get(cid)
+            if prev is None or route_priority > prev[1]:
+                merged[cid] = (channel, route_priority)
+        ordered = sorted(
+            merged.values(),
+            key=lambda x: (x[1], x[0].priority or 0),
+            reverse=True,
+        )
+        channels = []
+        for channel, route_priority in ordered:
+            channel._route_priority = route_priority
             channels.append(channel)
         
         # 存入缓存（只缓存通道ID和基本信息，避免序列化SQLAlchemy对象）

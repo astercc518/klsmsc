@@ -139,19 +139,270 @@ async def _refresh_all_stock():
         products = result.scalars().all()
 
         updated = 0
+        auto_deactivated = 0
         for product in products:
             try:
                 new_stock = await calculate_stock(db, product.filter_criteria, public_only=True)
                 if product.stock_count != new_stock:
                     product.stock_count = new_stock
                     updated += 1
+
+                # 自动下架：时效类商品库存持续为 0
+                if new_stock == 0 and product.filter_criteria and product.filter_criteria.get('freshness'):
+                    fc_no_fresh = {k: v for k, v in product.filter_criteria.items() if k != 'freshness'}
+                    total_no_fresh = await calculate_stock(db, fc_no_fresh, public_only=True)
+                    if total_no_fresh > 0:
+                        # 数据存在但已过期 → 自动下架并记录原因
+                        product.status = 'inactive'
+                        product.stock_count = 0
+                        logger.warning(
+                            f"商品 {product.id}({product.product_name}) 时效过期自动下架: "
+                            f"freshness={product.filter_criteria.get('freshness')}, "
+                            f"过期数据={total_no_fresh}条"
+                        )
+                        auto_deactivated += 1
             except Exception as e:
                 logger.error(f"刷新商品 {product.id} 库存失败: {e}")
 
         await db.commit()
-        logger.info(f"库存刷新完成: 共 {len(products)} 个商品, 更新 {updated} 个")
+        logger.info(f"库存刷新完成: 共 {len(products)} 个商品, 更新 {updated} 个, 过期下架 {auto_deactivated} 个")
     await eng.dispose()
-    return {"total": len(products), "updated": updated}
+    return {"total": len(products), "updated": updated, "auto_deactivated": auto_deactivated}
+
+
+# ============ 大批量 buy-and-send 异步处理 ============
+
+@celery_app.task(name='data_buy_send_async', bind=True, soft_time_limit=600, time_limit=660)
+def data_buy_send_async(self, order_id: int, batch_id: int, account_id: int,
+                        number_ids: list, message: str, messages: list = None,
+                        sender_id: str = None):
+    """异步处理大批量数据购买+发送：路由、定价、创建 SMS 记录、入队"""
+    return _run_async(_do_buy_send_async(
+        order_id, batch_id, account_id, number_ids,
+        message, messages, sender_id,
+    ))
+
+
+async def _do_buy_send_async(order_id, batch_id, account_id, number_ids,
+                              message, messages, sender_id):
+    from app.core.router import RoutingEngine
+    from app.core.pricing import PricingEngine
+    from app.modules.sms.sms_log import SMSLog
+    from app.modules.sms.sms_batch import SmsBatch, BatchStatus
+    from app.modules.sms.channel import Channel
+    from app.modules.common.account import Account, AccountChannel
+    from app.utils.queue import QueueManager
+    from app.utils.phone_utils import country_to_dial_code
+    from app.utils.sms_template import render_sms_variables, sms_template_has_variables
+    import uuid as _uuid
+
+    eng, Session = _make_session()
+    async with Session() as db:
+        try:
+            msg_list = messages if messages and len(messages) > 1 else [message]
+            msg_count = len(msg_list)
+            msg_has_vars = [sms_template_has_variables(m) for m in msg_list]
+
+            # 1. 加载号码
+            num_result = await db.execute(
+                select(DataNumber).where(DataNumber.id.in_(number_ids))
+            )
+            numbers = num_result.scalars().all()
+            logger.info(f"[buy-send-async] order={order_id}, 加载 {len(numbers)} 条号码")
+
+            # 2. 按 country_code 分组，每组只查一次路由/定价
+            from collections import defaultdict
+            by_country = defaultdict(list)
+            for num in numbers:
+                by_country[num.country_code or "PH"].append(num)
+
+            routing_engine = RoutingEngine(db)
+            pricing_engine = PricingEngine(db)
+
+            # 预加载账户绑定通道（兜底用）
+            ac_result = await db.execute(
+                select(AccountChannel.channel_id).where(AccountChannel.account_id == account_id)
+            )
+            bound_ids = [r[0] for r in ac_result.all()]
+
+            country_channel_cache = {}  # country_code -> Channel
+            country_price_cache = {}    # (channel_id, country_code) -> (sell_per_part, cost_per_part, currency)
+
+            async def _get_channel_for_country(cc_country):
+                if cc_country in country_channel_cache:
+                    return country_channel_cache[cc_country]
+                dial_code = country_to_dial_code(cc_country)
+                channel = None
+                for cc in [dial_code, cc_country]:
+                    try:
+                        ch = await routing_engine.select_channel(
+                            country_code=cc, strategy='priority', account_id=account_id
+                        )
+                        if ch:
+                            if ch.protocol in ('VIRTUAL', 'HTTP', 'SMPP'):
+                                channel = ch
+                                break
+                    except Exception:
+                        continue
+                if not channel and bound_ids:
+                    ch_result = await db.execute(
+                        select(Channel).where(
+                            Channel.id.in_(bound_ids),
+                            Channel.status == 'active',
+                            Channel.is_deleted == False,
+                        ).order_by(Channel.priority.desc()).limit(1)
+                    )
+                    channel = ch_result.scalar_one_or_none()
+                country_channel_cache[cc_country] = channel
+                return channel
+
+            async def _get_price_for(channel, cc_country):
+                cache_key = (channel.id, cc_country)
+                if cache_key in country_price_cache:
+                    return country_price_cache[cache_key]
+                dial_code = country_to_dial_code(cc_country)
+                price_info = await pricing_engine.get_price(channel.id, dial_code, account_id=account_id)
+                if not price_info:
+                    price_info = await pricing_engine.get_price(channel.id, cc_country, account_id=account_id)
+                base_cost = await pricing_engine.resolve_base_cost_per_sms(channel.id, cc_country, channel)
+                sell_per = float(price_info['price']) if price_info else 0.0
+                cost_per = float(base_cost)
+                curr = price_info['currency'] if price_info else 'USD'
+                country_price_cache[cache_key] = (sell_per, cost_per, curr)
+                return sell_per, cost_per, curr
+
+            # 3. 批量创建 SMS 记录
+            message_ids = []
+            channels_used = set()
+            total_sell = Decimal('0')
+            total_cost_sms = Decimal('0')
+            sms_objects = []
+
+            global_idx = 0
+            for cc_country, cc_numbers in by_country.items():
+                channel = await _get_channel_for_country(cc_country)
+                if not channel:
+                    logger.warning(f"[buy-send-async] 国家 {cc_country} 无可用通道，跳过 {len(cc_numbers)} 条")
+                    continue
+                channels_used.add(channel.channel_code)
+                sell_per, cost_per, curr = await _get_price_for(channel, cc_country)
+
+                for num in cc_numbers:
+                    global_idx += 1
+                    template = msg_list[(global_idx - 1) % msg_count]
+                    msg = (
+                        render_sms_variables(
+                            template, index=global_idx,
+                            phone_e164=num.phone_number or "",
+                            country_code=num.country_code or "",
+                        )
+                        if msg_has_vars[(global_idx - 1) % msg_count]
+                        else template
+                    )
+                    parts = pricing_engine._count_sms_parts(msg)
+                    sell = sell_per * parts
+                    cost = cost_per * parts
+                    total_sell += Decimal(str(sell))
+                    total_cost_sms += Decimal(str(cost))
+
+                    mid = f"msg_{_uuid.uuid4().hex}"
+                    sms = SMSLog(
+                        message_id=mid,
+                        account_id=account_id,
+                        channel_id=channel.id,
+                        batch_id=batch_id,
+                        phone_number=num.phone_number,
+                        country_code=num.country_code,
+                        message=msg,
+                        message_count=parts,
+                        status="pending",
+                        cost_price=cost,
+                        selling_price=sell,
+                        currency=curr,
+                        submit_time=datetime.now(),
+                    )
+                    if sender_id:
+                        sms.sender_id = sender_id
+                    sms_objects.append(sms)
+                    message_ids.append(mid)
+
+                    num.use_count = (num.use_count or 0) + 1
+
+                    # 每 500 条 flush 一次，控制内存
+                    if len(sms_objects) % 500 == 0:
+                        db.add_all(sms_objects[-500:])
+                        await db.flush()
+
+            # flush 剩余
+            remainder = len(sms_objects) % 500
+            if remainder > 0:
+                db.add_all(sms_objects[-remainder:])
+                await db.flush()
+
+            # 4. 更新批次状态
+            batch_result = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
+            sms_batch = batch_result.scalar_one_or_none()
+            if sms_batch:
+                sms_batch.total_count = len(message_ids)
+                sms_batch.status = BatchStatus.PROCESSING
+
+            # 5. PLS 统计更新
+            try:
+                from app.api.v1.data.customer import pls_apply_deltas_bulk, pls_prune_non_positive, ORIGIN_PURCHASED, norm_dim
+                now_pls = datetime.now()
+                pls_deltas = []
+                for num in numbers:
+                    pls_deltas.append((
+                        ORIGIN_PURCHASED, norm_dim(num.country_code), norm_dim(num.source),
+                        norm_dim(num.purpose), norm_dim(num.batch_id), norm_dim(num.carrier),
+                        1, 1, num.remarks, num.created_at, now_pls,
+                    ))
+                await pls_apply_deltas_bulk(db, account_id, pls_deltas)
+                await pls_prune_non_positive(db, account_id)
+            except Exception as e:
+                logger.warning(f"[buy-send-async] PLS 更新失败（非致命）: {e}")
+
+            # 6. 更新订单状态
+            order_result = await db.execute(select(DataOrder).where(DataOrder.id == order_id))
+            order = order_result.scalar_one_or_none()
+            if order:
+                order.status = "completed"
+                order.executed_count = len(message_ids)
+                order.executed_at = datetime.now()
+
+            await db.commit()
+            logger.info(f"[buy-send-async] order={order_id}, 创建 {len(message_ids)} 条 SMS 记录")
+
+            # 6. 入队发送
+            queued = 0
+            for mid in message_ids:
+                if QueueManager.queue_sms(mid):
+                    queued += 1
+            logger.info(f"[buy-send-async] order={order_id}, 入队 {queued}/{len(message_ids)}")
+
+            # 7. 入队完成后更新批次状态为 completed
+            batch_result2 = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
+            sms_batch2 = batch_result2.scalar_one_or_none()
+            if sms_batch2:
+                sms_batch2.status = BatchStatus.COMPLETED
+                await db.commit()
+                logger.info(f"[buy-send-async] batch={batch_id} 状态更新为 completed")
+
+            return {"order_id": order_id, "total": len(message_ids), "queued": queued}
+
+        except Exception as e:
+            logger.error(f"[buy-send-async] order={order_id} 异常: {e}", exc_info=True)
+            # 标记订单失败
+            try:
+                order_result = await db.execute(select(DataOrder).where(DataOrder.id == order_id))
+                order = order_result.scalar_one_or_none()
+                if order:
+                    order.status = "failed"
+                await db.commit()
+            except Exception:
+                pass
+            raise
+    await eng.dispose()
 
 
 @celery_app.task(name='data_backfill_carriers', bind=True, soft_time_limit=7200, time_limit=7500)
@@ -841,10 +1092,6 @@ async def _do_private_library_upload_task(task_id: str):
                     )
                 )
                 await db.commit()
-                try:
-                    os.remove(fpath)
-                except OSError:
-                    pass
                 return {"ok": False, "error": str(e)}
             except Exception as e:
                 logger.exception("私库上传任务失败: %s", task_id)
@@ -859,10 +1106,6 @@ async def _do_private_library_upload_task(task_id: str):
                     )
                 )
                 await db.commit()
-                try:
-                    os.remove(fpath)
-                except OSError:
-                    pass
                 return {"ok": False, "error": str(e)}
 
             await db.execute(
@@ -906,5 +1149,67 @@ async def _do_private_library_upload_task(task_id: str):
                 result.get("updated"),
             )
             return {"ok": True, "result": result}
+    finally:
+        await eng.dispose()
+
+
+@celery_app.task(name="private_library_sync_used", bind=True, soft_time_limit=300, time_limit=360)
+def private_library_sync_used(self, account_id: int, phone_numbers: list):
+    """异步更新私库汇总表的 used_count（发送时触发）"""
+    return _run_async(_do_sync_used(account_id, phone_numbers))
+
+
+async def _do_sync_used(account_id: int, phone_numbers: list):
+    from app.modules.data.private_library_summary_sync import (
+        ORIGIN_MANUAL, ORIGIN_PURCHASED, norm_dim, pls_apply_deltas_bulk,
+    )
+    from app.modules.data.models import PrivateLibraryNumber
+
+    eng, Session = _make_session()
+    try:
+        async with Session() as db:
+            BATCH_SZ = 2000
+            pls_deltas = []
+            now = datetime.now()
+
+            for ci in range(0, len(phone_numbers), BATCH_SZ):
+                chunk = phone_numbers[ci:ci + BATCH_SZ]
+                res_pln = await db.execute(
+                    select(PrivateLibraryNumber).where(
+                        PrivateLibraryNumber.account_id == account_id,
+                        PrivateLibraryNumber.phone_number.in_(chunk),
+                        PrivateLibraryNumber.use_count == 1,
+                        PrivateLibraryNumber.is_deleted == False,  # noqa: E712
+                    )
+                )
+                for row in res_pln.scalars():
+                    pls_deltas.append((
+                        ORIGIN_MANUAL,
+                        norm_dim(row.country_code), norm_dim(row.source),
+                        norm_dim(row.purpose), norm_dim(row.batch_id),
+                        norm_dim(row.carrier), 0, 1,
+                        row.remarks, row.created_at, now,
+                    ))
+
+                res_dn = await db.execute(
+                    select(DataNumber).where(
+                        DataNumber.account_id == account_id,
+                        DataNumber.phone_number.in_(chunk),
+                        DataNumber.use_count == 1,
+                    )
+                )
+                for row in res_dn.scalars():
+                    pls_deltas.append((
+                        ORIGIN_PURCHASED,
+                        norm_dim(row.country_code), norm_dim(row.source),
+                        norm_dim(row.purpose), norm_dim(row.batch_id),
+                        norm_dim(row.carrier), 0, 1,
+                        row.remarks, row.created_at, now,
+                    ))
+
+            if pls_deltas:
+                await pls_apply_deltas_bulk(db, account_id, pls_deltas)
+                await db.commit()
+                logger.info(f"私库汇总同步完成: account={account_id}, deltas={len(pls_deltas)}")
     finally:
         await eng.dispose()

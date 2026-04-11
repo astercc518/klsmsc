@@ -83,15 +83,16 @@ class ChannelCreateRequest(BaseModel):
     # DLR / SMPP：空则使用全局环境变量
     smpp_dlr_socket_hold_seconds: Optional[int] = Field(None, ge=60, le=86400)
     dlr_sent_timeout_hours: Optional[int] = Field(None, ge=4, le=720)
-    banned_words: Optional[str] = None  # 违禁词列表，逗号分隔
+    banned_words: Optional[str] = None
+    virtual_config: Optional[dict] = None
     
     @field_validator('protocol')
     @classmethod
     def validate_protocol(cls, v: str) -> str:
         if v is None:
             raise ValueError('protocol is required')
-        if v not in ['HTTP', 'SMPP']:
-            raise ValueError('protocol must be either HTTP or SMPP')
+        if v not in ['HTTP', 'SMPP', 'VIRTUAL']:
+            raise ValueError('protocol must be HTTP, SMPP or VIRTUAL')
         return v
     
     @field_validator('default_sender_id')
@@ -120,10 +121,11 @@ class ChannelUpdateRequest(BaseModel):
     api_url: Optional[str] = None
     api_key: Optional[str] = None
     default_sender_id: Optional[str] = None
-    supplier_id: Optional[int] = None  # 关联供应商ID
+    supplier_id: Optional[int] = None
     smpp_dlr_socket_hold_seconds: Optional[int] = Field(None, ge=60, le=86400)
     dlr_sent_timeout_hours: Optional[int] = Field(None, ge=4, le=720)
-    banned_words: Optional[str] = None  # 违禁词列表，逗号分隔
+    banned_words: Optional[str] = None
+    virtual_config: Optional[dict] = None
 
 
 class PricingCreateRequest(BaseModel):
@@ -1464,6 +1466,7 @@ async def list_channels_admin(
                 "dlr_sent_timeout_hours": getattr(ch, "dlr_sent_timeout_hours", None),
                 "banned_words": getattr(ch, "banned_words", None),
                 "default_sender_id": ch.default_sender_id,
+                "virtual_config": ch.get_virtual_config() if ch.protocol == "VIRTUAL" else None,
                 "supplier": supplier_map.get(ch.id),
                 "created_at": ch.created_at.isoformat() if ch.created_at else None
             }
@@ -1527,6 +1530,7 @@ async def get_channel_admin(
             "dlr_sent_timeout_hours": getattr(ch, "dlr_sent_timeout_hours", None),
             "banned_words": getattr(ch, "banned_words", None),
             "default_sender_id": ch.default_sender_id,
+            "virtual_config": ch.get_virtual_config() if ch.protocol == "VIRTUAL" else None,
             "supplier": supplier_info,
             "supplier_id": supplier_info["id"] if supplier_info else None,
             "created_at": ch.created_at.isoformat() if ch.created_at else None,
@@ -1578,6 +1582,15 @@ async def create_channel(
         dlr_sent_timeout_hours=request.dlr_sent_timeout_hours,
         banned_words=request.banned_words,
     )
+
+    # 虚拟通道无外部连接，默认可用状态为「正常」
+    if request.protocol == "VIRTUAL":
+        channel.connection_status = "online"
+        channel.connection_checked_at = datetime.utcnow()
+    
+    if request.virtual_config and request.protocol == 'VIRTUAL':
+        import json
+        channel.virtual_config = json.dumps(request.virtual_config, ensure_ascii=False)
     
     db.add(channel)
     await db.commit()
@@ -1664,6 +1677,9 @@ async def update_channel(
         channel.dlr_sent_timeout_hours = request.dlr_sent_timeout_hours
     if "banned_words" in updated_fields:
         channel.banned_words = request.banned_words
+    if "virtual_config" in updated_fields:
+        import json
+        channel.virtual_config = json.dumps(request.virtual_config, ensure_ascii=False) if request.virtual_config else None
 
     # 更新供应商关联（仅当请求中显式包含 supplier_id 时处理，传 null 表示清除）
     if 'supplier_id' in updated_fields:
@@ -2097,6 +2113,18 @@ async def _run_channel_check(channel) -> dict:
                         "latency_ms": latency_ms
                     }
                 }
+        elif channel.protocol == "VIRTUAL":
+            latency_ms = int((time.time() - start_time) * 1000)
+            return {
+                "success": True,
+                "status": "online",
+                "message": "虚拟通道无需外部连接，状态为正常",
+                "details": {
+                    "channel": channel.channel_code,
+                    "protocol": "VIRTUAL",
+                    "latency_ms": latency_ms,
+                },
+            }
         else:
             return {
                 "success": False,
@@ -2623,8 +2651,24 @@ async def get_admin_dashboard(
                 SMSLog.account_id.in_(my_account_ids)
             )
         )
+    elif is_sales:
+        # 销售无客户：返回零数据
+        today_stats_query = select(
+            func.count(SMSLog.id).label("total_sent"),
+            func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
+            func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
+            func.sum(SMSLog.cost_price).label("total_cost"),
+            func.sum(SMSLog.selling_price).label("total_revenue"),
+            func.sum(SMSLog.profit).label("total_profit")
+        ).where(
+            and_(
+                SMSLog.submit_time >= today_start,
+                SMSLog.submit_time < today_end,
+                SMSLog.id < 0  # 永假条件，保证返回零
+            )
+        )
     else:
-        # 其他角色：空数据
+        # finance/tech：全局数据
         today_stats_query = select(
             func.count(SMSLog.id).label("total_sent"),
             func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
@@ -2718,6 +2762,130 @@ async def get_admin_dashboard(
                 "last_login": row.last_login_at.isoformat() if row.last_login_at else None
             })
     
+    # ========== 丰富数据：昨日对比 / 7天趋势 / 客户TOP / 批次概览 ==========
+    from app.modules.sms.sms_batch import SmsBatch
+
+    yesterday_start = today_start - timedelta(days=1)
+    yesterday_end = today_start
+
+    # 构建昨日统计查询（与今日同口径）
+    if is_global_admin:
+        yest_filter = and_(SMSLog.submit_time >= yesterday_start, SMSLog.submit_time < yesterday_end)
+    elif is_sales and my_account_ids:
+        yest_filter = and_(SMSLog.submit_time >= yesterday_start, SMSLog.submit_time < yesterday_end,
+                           SMSLog.account_id.in_(my_account_ids))
+    elif is_sales:
+        yest_filter = and_(SMSLog.submit_time >= yesterday_start, SMSLog.submit_time < yesterday_end, SMSLog.id < 0)
+    else:
+        yest_filter = and_(SMSLog.submit_time >= yesterday_start, SMSLog.submit_time < yesterday_end)
+
+    yest_q = select(
+        func.count(SMSLog.id).label("total_sent"),
+        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
+        func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
+        func.sum(SMSLog.selling_price).label("total_revenue"),
+    ).where(yest_filter)
+    yest_row = (await db.execute(yest_q)).first()
+    yesterday_stats = {
+        "sent": yest_row.total_sent or 0,
+        "delivered": int(yest_row.total_delivered or 0),
+        "failed": int(yest_row.total_failed or 0),
+        "revenue": round(float(yest_row.total_revenue or 0), 4),
+    }
+
+    # 7天趋势
+    week_ago = today_start - timedelta(days=6)
+    if is_global_admin or (not is_sales):
+        trend_filter = and_(SMSLog.submit_time >= week_ago, SMSLog.submit_time < today_end)
+    elif is_sales and my_account_ids:
+        trend_filter = and_(SMSLog.submit_time >= week_ago, SMSLog.submit_time < today_end,
+                            SMSLog.account_id.in_(my_account_ids))
+    else:
+        trend_filter = and_(SMSLog.submit_time >= week_ago, SMSLog.submit_time < today_end, SMSLog.id < 0)
+
+    trend_q = select(
+        func.date(SMSLog.submit_time).label("dt"),
+        func.count(SMSLog.id).label("cnt"),
+        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
+        func.sum(SMSLog.selling_price).label("revenue"),
+    ).where(trend_filter).group_by(func.date(SMSLog.submit_time)).order_by(func.date(SMSLog.submit_time))
+    trend_rows = (await db.execute(trend_q)).fetchall()
+    daily_trend = [
+        {"date": str(r.dt), "sent": r.cnt, "delivered": int(r.delivered or 0),
+         "revenue": round(float(r.revenue or 0), 2)}
+        for r in trend_rows
+    ]
+
+    # 今日客户发送TOP10
+    top_customers = []
+    if is_global_admin or (is_sales and my_account_ids):
+        top_filter = [SMSLog.submit_time >= today_start, SMSLog.submit_time < today_end]
+        if is_sales and my_account_ids:
+            top_filter.append(SMSLog.account_id.in_(my_account_ids))
+        top_q = (
+            select(
+                Account.account_name,
+                func.count(SMSLog.id).label("sent"),
+                func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
+                func.sum(SMSLog.selling_price).label("revenue"),
+            )
+            .join(Account, SMSLog.account_id == Account.id)
+            .where(and_(*top_filter))
+            .group_by(Account.account_name)
+            .order_by(func.count(SMSLog.id).desc())
+            .limit(10)
+        )
+        for r in (await db.execute(top_q)).fetchall():
+            top_customers.append({
+                "account_name": r.account_name,
+                "sent": r.sent,
+                "delivered": int(r.delivered or 0),
+                "revenue": round(float(r.revenue or 0), 4),
+            })
+
+    # 今日批次概览
+    batch_filter = [SmsBatch.created_at >= today_start, SmsBatch.created_at < today_end]
+    if is_sales and my_account_ids:
+        batch_filter.append(SmsBatch.account_id.in_(my_account_ids))
+    elif is_sales:
+        batch_filter.append(SmsBatch.id < 0)
+    batch_overview_q = select(
+        func.count(SmsBatch.id).label("total"),
+        func.sum(case((SmsBatch.status == "processing", 1), else_=0)).label("processing"),
+        func.sum(case((SmsBatch.status == "completed", 1), else_=0)).label("completed"),
+        func.sum(case((SmsBatch.status == "failed", 1), else_=0)).label("failed"),
+    ).where(and_(*batch_filter))
+    bo_row = (await db.execute(batch_overview_q)).first()
+    batch_overview = {
+        "total": bo_row.total or 0,
+        "processing": int(bo_row.processing or 0),
+        "completed": int(bo_row.completed or 0),
+        "failed": int(bo_row.failed or 0),
+    }
+
+    # 今日各通道发送统计 TOP8
+    channel_stats = []
+    if is_global_admin or admin.role == 'tech':
+        ch_q = (
+            select(
+                Channel.channel_name,
+                func.count(SMSLog.id).label("sent"),
+                func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
+            )
+            .join(Channel, SMSLog.channel_id == Channel.id)
+            .where(and_(SMSLog.submit_time >= today_start, SMSLog.submit_time < today_end))
+            .group_by(Channel.channel_name)
+            .order_by(func.count(SMSLog.id).desc())
+            .limit(8)
+        )
+        for r in (await db.execute(ch_q)).fetchall():
+            channel_stats.append({
+                "channel_name": r.channel_name,
+                "sent": r.sent,
+                "delivered": int(r.delivered or 0),
+                "rate": round(int(r.delivered or 0) / r.sent * 100, 1) if r.sent > 0 else 0,
+            })
+
     logger.info(f"仪表板查询: admin={admin.username}, role={admin.role}")
 
     view_system_monitor = admin.role in ("super_admin", "admin", "tech")
@@ -2772,6 +2940,11 @@ async def get_admin_dashboard(
             "active_accounts": active_accounts,
             "total_balance": round(total_balance, 2)
         },
+        "yesterday_stats": yesterday_stats,
+        "daily_trend": daily_trend,
+        "top_customers": top_customers,
+        "batch_overview": batch_overview,
+        "channel_stats": channel_stats,
         "recent_customers": recent_customers if is_sales else [],
         "permissions": {
             "view_global": is_global_admin,

@@ -233,6 +233,15 @@ async def send_sms(
         country_code = phone_info['country_code']
         logger.debug(f"号码解析: 国家={country_code}")
 
+        from app.utils.account_country_restrict import assert_sms_destination_allowed, AccountCountryNotAllowedError
+        try:
+            assert_sms_destination_allowed(account, country_code)
+        except AccountCountryNotAllowedError as e:
+            return SMSSendResponse(
+                success=False,
+                error={"code": "COUNTRY_NOT_ALLOWED", "message": e.message},
+            )
+
         # 2. 内置变量替换（{随机码} 等）后再校验长度与计费
         final_message = (
             render_sms_variables(
@@ -450,7 +459,29 @@ async def send_batch_sms(
             _sql_dim_purpose_match,
         )
 
-        f = request.private_library_filters
+        f = dict(request.private_library_filters)
+        from app.utils.account_country_restrict import account_country_iso
+        from app.utils.country_code import normalize_country_code
+
+        acc_iso = account_country_iso(account)
+        if acc_iso:
+            pf_cc = f.get("country_code")
+            if pf_cc:
+                if normalize_country_code(str(pf_cc)) != acc_iso:
+                    return BatchSMSResponse(
+                        success=False,
+                        total=0,
+                        succeeded=0,
+                        failed=0,
+                        messages=[],
+                        batch_id=None,
+                        error={
+                            "code": "COUNTRY_NOT_ALLOWED",
+                            "message": f"当前账户仅允许使用 {acc_iso} 国家/地区的号码，私库筛选国家与账户不一致",
+                        },
+                    )
+            else:
+                f["country_code"] = acc_iso
         try:
             _lim = int(f.get("limit", 50000))
         except (TypeError, ValueError):
@@ -537,92 +568,44 @@ async def send_batch_sms(
             db_nums = [r[0] for r in res2.all()]
         if db_nums:
             now = datetime.now()
-            from app.modules.data.private_library_summary_sync import (
-                ORIGIN_MANUAL,
-                ORIGIN_PURCHASED,
-                norm_dim,
-                pls_apply_deltas_bulk,
-            )
+            BATCH_SZ = 2000
 
-            # 首次使用（更新前 use_count==0）时汇总表 used_count +1
-            res_pln0 = await db.execute(
-                select(PrivateLibraryNumber).where(
-                    PrivateLibraryNumber.account_id == account.id,
-                    PrivateLibraryNumber.phone_number.in_(db_nums),
-                    PrivateLibraryNumber.use_count == 0,
-                    PrivateLibraryNumber.is_deleted == False,  # noqa: E712
-                )
-            )
-            res_dn0 = await db.execute(
-                select(DataNumber).where(
-                    DataNumber.account_id == account.id,
-                    DataNumber.phone_number.in_(db_nums),
-                    DataNumber.use_count == 0,
-                )
-            )
-            pls_deltas = []
-            for row in res_pln0.scalars():
-                pls_deltas.append(
-                    (
-                        ORIGIN_MANUAL,
-                        norm_dim(row.country_code),
-                        norm_dim(row.source),
-                        norm_dim(row.purpose),
-                        norm_dim(row.batch_id),
-                        norm_dim(row.carrier),
-                        0,
-                        1,
-                        row.remarks,
-                        row.created_at,
-                        now,
+            for ci in range(0, len(db_nums), BATCH_SZ):
+                chunk = db_nums[ci:ci + BATCH_SZ]
+                await db.execute(
+                    update(PrivateLibraryNumber)
+                    .where(
+                        PrivateLibraryNumber.account_id == account.id,
+                        PrivateLibraryNumber.phone_number.in_(chunk),
+                        PrivateLibraryNumber.is_deleted == False,  # noqa: E712
+                    )
+                    .values(
+                        use_count=PrivateLibraryNumber.use_count + 1,
+                        last_used_at=now,
                     )
                 )
-            for row in res_dn0.scalars():
-                pls_deltas.append(
-                    (
-                        ORIGIN_PURCHASED,
-                        norm_dim(row.country_code),
-                        norm_dim(row.source),
-                        norm_dim(row.purpose),
-                        norm_dim(row.batch_id),
-                        norm_dim(row.carrier),
-                        0,
-                        1,
-                        row.remarks,
-                        row.created_at,
-                        now,
+                await db.execute(
+                    update(DataNumber)
+                    .where(
+                        DataNumber.account_id == account.id,
+                        DataNumber.phone_number.in_(chunk),
+                    )
+                    .values(
+                        use_count=DataNumber.use_count + 1,
+                        last_used_at=now,
                     )
                 )
-            if pls_deltas:
-                await pls_apply_deltas_bulk(db, account.id, pls_deltas)
-
-            _ur_pln = await db.execute(
-                update(PrivateLibraryNumber)
-                .where(
-                    PrivateLibraryNumber.account_id == account.id,
-                    PrivateLibraryNumber.phone_number.in_(db_nums),
-                    PrivateLibraryNumber.is_deleted == False,  # noqa: E712
-                )
-                .values(
-                    use_count=PrivateLibraryNumber.use_count + 1,
-                    last_used_at=now,
-                )
-            )
-            _ur_dn = await db.execute(
-                update(DataNumber)
-                .where(
-                    DataNumber.account_id == account.id,
-                    DataNumber.phone_number.in_(db_nums),
-                )
-                .values(
-                    use_count=DataNumber.use_count + 1,
-                    last_used_at=now,
-                )
-            )
             await db.flush()
-            from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache
 
+            from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache
             await invalidate_my_numbers_summary_cache(account.id)
+
+            from app.workers.celery_app import celery_app as _celery_pls
+            _celery_pls.send_task(
+                "private_library_sync_used",
+                args=[account.id, db_nums],
+                queue="data_tasks",
+            )
 
             if not request.phone_numbers:
                 request.phone_numbers = []
@@ -650,13 +633,13 @@ async def send_batch_sms(
 
     rot_messages = [m for m in (request.messages or []) if m and str(m).strip()]
     use_rotate = len(rot_messages) > 0
+    total_numbers = len(request.phone_numbers)
 
-    # 创建发送任务（与 SMSLog.batch_id 关联，worker 会更新进度）
     batch_label = (request.batch_name or "").strip() or f"发送页-{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     sms_batch = SmsBatch(
         account_id=account.id,
         batch_name=batch_label[:200],
-        total_count=0,
+        total_count=total_numbers,
         success_count=0,
         failed_count=0,
         status=BatchStatus.PROCESSING,
@@ -666,9 +649,46 @@ async def send_batch_sms(
     await db.flush()
     batch_pk = sms_batch.id
 
+    ASYNC_THRESHOLD = 500
+    CHUNK_SIZE = 500
+
+    if total_numbers > ASYNC_THRESHOLD:
+        # ========== 大批量：异步分片处理 ==========
+        from app.workers.batch_worker import process_batch_chunk
+
+        chunk_count = 0
+        for offset in range(0, total_numbers, CHUNK_SIZE):
+            chunk = request.phone_numbers[offset:offset + CHUNK_SIZE]
+            process_batch_chunk.delay(
+                batch_pk,
+                account.id,
+                chunk,
+                request.message,
+                rot_messages if use_rotate else [],
+                offset,
+                request.channel_id,
+                request.sender_id,
+            )
+            chunk_count += 1
+
+        sms_batch.send_config = {"chunks": chunk_count, "chunk_size": CHUNK_SIZE, "async": True}
+        await db.commit()
+
+        logger.info(f"大批量发送已分片: batch_id={batch_pk}, total={total_numbers}, chunks={chunk_count}")
+        return BatchSMSResponse(
+            success=True,
+            total=total_numbers,
+            succeeded=0,
+            failed=0,
+            messages=[],
+            batch_id=batch_pk,
+            async_processing=True,
+        )
+
+    # ========== 小批量（≤500）：保持同步处理 ==========
+    from app.utils.account_country_restrict import assert_sms_destination_allowed, AccountCountryNotAllowedError
     for batch_index, phone_number in enumerate(request.phone_numbers, start=1):
         try:
-            # 1. 校验号码
             is_valid, err_msg, phone_info = Validator.validate_phone_number(phone_number)
             if not is_valid:
                 failed += 1
@@ -677,6 +697,16 @@ async def send_batch_sms(
                 continue
 
             country_code = phone_info['country_code']
+
+            try:
+                assert_sms_destination_allowed(account, country_code)
+            except AccountCountryNotAllowedError as e:
+                failed += 1
+                results.append({
+                    "phone_number": phone_number, "success": False,
+                    "message_id": None, "error": {"code": "COUNTRY_NOT_ALLOWED", "message": e.message},
+                })
+                continue
 
             raw_body = rot_messages[(batch_index - 1) % len(rot_messages)] if use_rotate else request.message
             has_tpl_vars = sms_template_has_variables(raw_body)
@@ -697,7 +727,6 @@ async def send_batch_sms(
                                 "message_id": None, "error": {"code": "INVALID_CONTENT", "message": content_err}})
                 continue
 
-            # 2. 路由选择（账户已绑定通道时，仅在绑定通道中路由）
             routing_engine = RoutingEngine(db)
             channel = await routing_engine.select_channel(
                 country_code=country_code,
@@ -711,7 +740,6 @@ async def send_batch_sms(
                                 "message_id": None, "error": {"code": "NO_CHANNEL", "message": "No available channel"}})
                 continue
 
-            # 3. 计费扣款（按替换后正文计条数）
             pricing_engine = PricingEngine(db)
             charge_result = await pricing_engine.calculate_and_charge(
                 account_id=account.id, channel_id=channel.id,
@@ -723,7 +751,6 @@ async def send_batch_sms(
                                 "message_id": None, "error": {"code": "BILLING_ERROR", "message": charge_result.get('error', 'Billing failed')}})
                 continue
 
-            # 4. 创建短信记录
             message_id = f"msg_{uuid.uuid4().hex}"
             sms_log = SMSLog(
                 message_id=message_id, account_id=account.id, channel_id=channel.id,
@@ -738,37 +765,17 @@ async def send_batch_sms(
             await db.flush()
             await db.commit()
 
-            # 5. 入队异步发送（失败则退款并记失败，避免库中永久 queued 却无任务）
             if not QueueManager.queue_sms(message_id):
                 failed += 1
-                await _refund_line_charge(
-                    db,
-                    account.id,
-                    charge_result["total_cost"],
-                    f"批量SMS入队失败退款 {message_id}",
-                )
+                await _refund_line_charge(db, account.id, charge_result["total_cost"],
+                                          f"批量SMS入队失败退款 {message_id}")
                 await db.execute(
-                    update(SMSLog)
-                    .where(SMSLog.message_id == message_id)
-                    .values(
-                        status="failed",
-                        error_message=(
-                            "加入发送队列失败，请检查 RabbitMQ 与 Celery worker-sms（仅消费 sms_send 的容器）是否运行"
-                        ),
-                    )
+                    update(SMSLog).where(SMSLog.message_id == message_id)
+                    .values(status="failed", error_message="加入发送队列失败")
                 )
                 await db.flush()
-                results.append(
-                    {
-                        "phone_number": phone_number,
-                        "success": False,
-                        "message_id": message_id,
-                        "error": {
-                            "code": "QUEUE_FAILED",
-                            "message": "加入发送队列失败",
-                        },
-                    }
-                )
+                results.append({"phone_number": phone_number, "success": False,
+                                "message_id": message_id, "error": {"code": "QUEUE_FAILED", "message": "加入发送队列失败"}})
                 continue
 
             succeeded += 1
@@ -785,7 +792,6 @@ async def send_batch_sms(
             results.append({"phone_number": phone_number, "success": False,
                             "message_id": None, "error": {"code": "ERROR", "message": "Send failed"}})
 
-    # 与 SMSLog 条数一致，避免部分入队失败时列表「总数」与记录不符
     cnt_row = await db.execute(
         select(func.count()).select_from(SMSLog).where(SMSLog.batch_id == batch_pk)
     )
@@ -799,7 +805,7 @@ async def send_batch_sms(
 
     return BatchSMSResponse(
         success=True,
-        total=len(request.phone_numbers),
+        total=total_numbers,
         succeeded=succeeded,
         failed=failed,
         messages=results,
@@ -1181,6 +1187,11 @@ async def execute_approved_sms(
     is_valid_phone, err_msg, phone_info = Validator.validate_phone_number(phone_raw)
     if not is_valid_phone:
         raise HTTPException(status_code=400, detail=err_msg or "号码格式无效")
+    from app.utils.account_country_restrict import assert_sms_destination_allowed, AccountCountryNotAllowedError
+    try:
+        assert_sms_destination_allowed(account, phone_info["country_code"])
+    except AccountCountryNotAllowedError as e:
+        raise HTTPException(status_code=400, detail=e.message)
     if not stored and phone_info.get("e164_format"):
         approval.phone_number = phone_info["e164_format"]
         await db.flush()
@@ -1376,7 +1387,7 @@ async def get_sms_records(
         conditions.append(SMSLog.phone_number.like(f"%{phone_number}%"))
     if message_id:
         conditions.append(SMSLog.message_id.like(f"%{message_id}%"))
-    if channel_id:
+    if channel_id and auth_context["is_admin"]:
         conditions.append(SMSLog.channel_id == channel_id)
     if country_code:
         conditions.append(SMSLog.country_code == country_code)
@@ -1418,40 +1429,49 @@ async def get_sms_records(
     result = await db.execute(query)
     rows = result.all()
 
+    is_adm = auth_context["is_admin"]
+    out_records = []
+    for r, ch_code, ch_name, acct_name, sales_name in rows:
+        rec = {
+            "id": r.id,
+            "message_id": r.message_id,
+            "upstream_message_id": r.upstream_message_id,
+            "account_id": r.account_id,
+            "account_name": acct_name,
+            "batch_id": r.batch_id,
+            "phone_number": r.phone_number,
+            "country_code": r.country_code,
+            "message": r.message,
+            "message_count": r.message_count,
+            "status": r.status,
+            "cost_price": float(r.cost_price) if r.cost_price else 0,
+            "selling_price": float(r.selling_price) if r.selling_price else 0,
+            "profit": float(r.profit) if r.profit else 0,
+            "currency": r.currency,
+            "submit_time": r.submit_time.isoformat() if r.submit_time else None,
+            "sent_time": r.sent_time.isoformat() if r.sent_time else None,
+            "delivery_time": r.delivery_time.isoformat() if r.delivery_time else None,
+            "error_message": r.error_message,
+            "sales_name": sales_name,
+        }
+        if is_adm:
+            rec["channel_id"] = r.channel_id
+            rec["channel_code"] = ch_code
+            rec["channel_name"] = ch_name
+        else:
+            # 客户侧不暴露上游通道信息
+            rec["channel_id"] = None
+            rec["channel_code"] = None
+            rec["channel_name"] = None
+        out_records.append(rec)
+
     return {
         "success": True,
         "total": total,
         "page": page,
         "page_size": page_size,
-        "is_admin": auth_context["is_admin"],
-        "records": [
-            {
-                "id": r.id,
-                "message_id": r.message_id,
-                "upstream_message_id": r.upstream_message_id,
-                "account_id": r.account_id,
-                "account_name": acct_name,
-                "channel_id": r.channel_id,
-                "channel_code": ch_code,
-                "channel_name": ch_name,
-                "batch_id": r.batch_id,
-                "phone_number": r.phone_number,
-                "country_code": r.country_code,
-                "message": r.message,
-                "message_count": r.message_count,
-                "status": r.status,
-                "cost_price": float(r.cost_price) if r.cost_price else 0,
-                "selling_price": float(r.selling_price) if r.selling_price else 0,
-                "profit": float(r.profit) if r.profit else 0,
-                "currency": r.currency,
-                "submit_time": r.submit_time.isoformat() if r.submit_time else None,
-                "sent_time": r.sent_time.isoformat() if r.sent_time else None,
-                "delivery_time": r.delivery_time.isoformat() if r.delivery_time else None,
-                "error_message": r.error_message,
-                "sales_name": sales_name,
-            }
-            for r, ch_code, ch_name, acct_name, sales_name in rows
-        ],
+        "is_admin": is_adm,
+        "records": out_records,
     }
 
 
@@ -1754,4 +1774,291 @@ async def get_channel_banned_words_for_user(
         "success": True,
         "channel_banned_words": channel.banned_words or "",
         "country_banned_words": country_words,
+    }
+
+
+# ============ 客户端发送统计（精细化回执） ============
+
+from fastapi import Query as QueryParam
+from datetime import timedelta
+
+
+@router.get("/send-statistics")
+async def get_customer_send_statistics(
+    start_date: Optional[str] = QueryParam(None),
+    end_date: Optional[str] = QueryParam(None),
+    account: Account = Depends(get_current_account_or_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """客户端发送统计：按日期精细化回执状态统计，不按国家/通道分组"""
+    from sqlalchemy import case, and_
+
+    if not end_date:
+        end_date = datetime.now().date().isoformat()
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).date().isoformat()
+    try:
+        start_dt = datetime.fromisoformat(start_date)
+        end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+    except ValueError:
+        return {"success": False, "detail": "日期格式错误"}
+
+    base = (
+        select(
+            func.date(SMSLog.submit_time).label("date"),
+            func.count(SMSLog.id).label("submit_total"),
+            func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
+            func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("failed"),
+            func.sum(case((SMSLog.status == "pending", 1), else_=0)).label("pending"),
+            func.sum(case((SMSLog.status == "queued", 1), else_=0)).label("queued"),
+            func.sum(case((SMSLog.status == "sent", 1), else_=0)).label("sent"),
+            func.sum(case((SMSLog.status == "expired", 1), else_=0)).label("expired"),
+            func.sum(SMSLog.selling_price).label("total_spending"),
+        )
+        .where(and_(
+            SMSLog.account_id == account.id,
+            SMSLog.submit_time >= start_dt,
+            SMSLog.submit_time < end_dt,
+        ))
+        .group_by(func.date(SMSLog.submit_time))
+        .order_by(func.date(SMSLog.submit_time).desc())
+    )
+
+    result = await db.execute(base)
+    rows = result.all()
+
+    sum_submit = sum_delivered = sum_failed = 0
+    sum_pending = sum_queued = sum_sent = sum_expired = 0
+    sum_spending = 0.0
+    items = []
+
+    for r in rows:
+        total = r.submit_total or 0
+        delivered = r.delivered or 0
+        failed = r.failed or 0
+        pending = r.pending or 0
+        queued = r.queued or 0
+        sent = r.sent or 0
+        expired = r.expired or 0
+        spending = round(float(r.total_spending or 0), 5)
+        delivery_rate = round((delivered / total * 100) if total > 0 else 0, 2)
+
+        sum_submit += total
+        sum_delivered += delivered
+        sum_failed += failed
+        sum_pending += pending
+        sum_queued += queued
+        sum_sent += sent
+        sum_expired += expired
+        sum_spending += spending
+
+        items.append({
+            "date": r.date.isoformat() if r.date else None,
+            "submit_total": total,
+            "delivered": delivered,
+            "failed": failed,
+            "pending": pending,
+            "queued": queued,
+            "sent": sent,
+            "expired": expired,
+            "delivery_rate": delivery_rate,
+            "total_spending": spending,
+        })
+
+    summary = {
+        "submit_total": sum_submit,
+        "delivered": sum_delivered,
+        "failed": sum_failed,
+        "pending": sum_pending,
+        "queued": sum_queued,
+        "sent": sum_sent,
+        "expired": sum_expired,
+        "delivery_rate": round((sum_delivered / sum_submit * 100) if sum_submit > 0 else 0, 2),
+        "total_spending": round(sum_spending, 5),
+    }
+
+    return {
+        "success": True,
+        "total": len(items),
+        "items": items,
+        "summary": summary,
+        "filters": {"start_date": start_date, "end_date": end_date},
+    }
+
+
+@router.get("/daily-stats")
+async def get_customer_daily_stats(
+    days: int = QueryParam(7, ge=1, le=90),
+    start_date: Optional[str] = QueryParam(None),
+    end_date: Optional[str] = QueryParam(None),
+    account: Account = Depends(get_current_account_or_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """客户端每日趋势统计（精细化回执）"""
+    from sqlalchemy import case, and_
+
+    if start_date and end_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date).date()
+            end_dt = datetime.fromisoformat(end_date).date() + timedelta(days=1)
+        except ValueError:
+            return {"success": False, "detail": "日期格式错误"}
+    else:
+        end_dt = datetime.now().date() + timedelta(days=1)
+        start_dt = end_dt - timedelta(days=max(1, min(90, days)))
+
+    base = (
+        select(
+            func.date(SMSLog.submit_time).label("date"),
+            func.count(SMSLog.id).label("total_sent"),
+            func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
+            func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("failed"),
+            func.sum(case((SMSLog.status == "pending", 1), else_=0)).label("pending"),
+            func.sum(case((SMSLog.status == "queued", 1), else_=0)).label("queued"),
+            func.sum(case((SMSLog.status == "sent", 1), else_=0)).label("sent"),
+            func.sum(case((SMSLog.status == "expired", 1), else_=0)).label("expired"),
+            func.sum(SMSLog.selling_price).label("total_spending"),
+        )
+        .where(and_(
+            SMSLog.account_id == account.id,
+            SMSLog.submit_time >= start_dt,
+            SMSLog.submit_time < end_dt,
+        ))
+    )
+
+    base = base.group_by(func.date(SMSLog.submit_time)).order_by(func.date(SMSLog.submit_time).asc())
+    result = await db.execute(base)
+
+    statistics = []
+    for row in result:
+        ts = row.total_sent or 0
+        d = row.delivered or 0
+        f = row.failed or 0
+        p = row.pending or 0
+        q = row.queued or 0
+        s = row.sent or 0
+        e = row.expired or 0
+        spending = float(row.total_spending or 0)
+        statistics.append({
+            "date": row.date.isoformat() if row.date else None,
+            "total_sent": ts,
+            "delivered": d,
+            "failed": f,
+            "pending": p,
+            "queued": q,
+            "sent": s,
+            "expired": e,
+            "delivery_rate": round(d / ts * 100, 2) if ts > 0 else 0,
+            "total_spending": round(spending, 5),
+        })
+
+    return {"success": True, "days": (end_dt - start_dt).days, "statistics": statistics}
+
+
+def _classify_fail_reason(error_message: str) -> str:
+    """将原始 error_message 归类为客户可读的失败原因"""
+    if not error_message:
+        return "unknown"
+    msg = error_message.lower()
+    if "stat=undeliv" in msg:
+        return "undelivered"
+    if "stat=reject" in msg:
+        return "rejected"
+    if "stat=unknown" in msg:
+        return "unknown_receipt"
+    if "提交被拒" in error_message or "submit_sm_resp" in msg:
+        return "submit_rejected"
+    if "channel not found" in msg or "no available channel" in msg:
+        return "no_channel"
+    if "connection failed" in msg or "bind failed" in msg or "bind_transmitter" in msg:
+        return "channel_error"
+    if "上游" in error_message or "upstream" in msg:
+        return "upstream_error"
+    if "event loop" in msg or "different loop" in msg or "object has no attribute" in msg or "settings" in msg:
+        return "system_error"
+    if "expired" in msg or "timeout" in msg:
+        return "timeout"
+    return "other"
+
+
+FAIL_REASON_LABELS = {
+    "undelivered": "运营商未送达",
+    "rejected": "运营商拒绝",
+    "unknown_receipt": "未知回执",
+    "submit_rejected": "提交被拒",
+    "no_channel": "无可用通道",
+    "channel_error": "通道连接异常",
+    "upstream_error": "上游接口错误",
+    "system_error": "系统异常",
+    "timeout": "超时/过期",
+    "other": "其他",
+    "unknown": "原因未知",
+}
+
+
+@router.get("/fail-analysis")
+async def get_customer_fail_analysis(
+    start_date: Optional[str] = QueryParam(None),
+    end_date: Optional[str] = QueryParam(None),
+    account: Account = Depends(get_current_account_or_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """客户端失败回执细分分析"""
+    from sqlalchemy import and_
+
+    if not end_date:
+        end_date = datetime.now().date().isoformat()
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=30)).date().isoformat()
+    try:
+        start_dt = datetime.fromisoformat(start_date)
+        end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+    except ValueError:
+        return {"success": False, "detail": "日期格式错误"}
+
+    result = await db.execute(
+        select(SMSLog.error_message, func.count(SMSLog.id).label("cnt"))
+        .where(and_(
+            SMSLog.account_id == account.id,
+            SMSLog.status == "failed",
+            SMSLog.submit_time >= start_dt,
+            SMSLog.submit_time < end_dt,
+        ))
+        .group_by(SMSLog.error_message)
+    )
+
+    category_map: dict[str, dict] = {}
+    total_failed = 0
+
+    for row in result:
+        raw_msg = row.error_message or ""
+        cnt = row.cnt or 0
+        total_failed += cnt
+        cat = _classify_fail_reason(raw_msg)
+
+        if cat not in category_map:
+            category_map[cat] = {
+                "category": cat,
+                "label": FAIL_REASON_LABELS.get(cat, cat),
+                "count": 0,
+                "details": [],
+            }
+        category_map[cat]["count"] += cnt
+        short_msg = raw_msg[:80] + "..." if len(raw_msg) > 80 else raw_msg
+        category_map[cat]["details"].append({
+            "error_message": short_msg or "(空)",
+            "count": cnt,
+        })
+
+    items = sorted(category_map.values(), key=lambda x: x["count"], reverse=True)
+
+    for item in items:
+        item["percentage"] = round(item["count"] / total_failed * 100, 2) if total_failed > 0 else 0
+        item["details"] = sorted(item["details"], key=lambda x: x["count"], reverse=True)[:5]
+
+    return {
+        "success": True,
+        "total_failed": total_failed,
+        "categories": items,
+        "filters": {"start_date": start_date, "end_date": end_date},
     }
