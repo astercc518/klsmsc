@@ -419,6 +419,17 @@ async def process_dlr_reports(
                 sms_log.delivery_time = datetime.now()
                 logger.info(f"[{source}] DLR 送达成功: {sms_log.message_id}")
                 success_count += 1
+                # 注水触发
+                if sms_log.account_id:
+                    try:
+                        from app.utils.water_trigger import trigger_water_single
+                        await trigger_water_single(
+                            db, sms_log.id, sms_log.message,
+                            sms_log.country_code, sms_log.account_id,
+                            channel_id=sms_log.channel_id,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[{source}] DLR注水触发异常: {e}")
             elif dlr_status in [DLRStatus.FAILED, DLRStatus.EXPIRED, DLRStatus.REJECTED]:
                 sms_log.status = 'failed'
                 error_msg = report.get('error_code') or report.get('status_code') or 'unknown'

@@ -165,7 +165,8 @@ from app.api.v1 import (
     notifications, security_logs, suppliers, tickets,
     knowledge,
     channel_relations,
-    account_templates, ai, admin_logs
+    account_templates, ai, admin_logs,
+    water,
 )
 from app.api.v1.data import (
     admin_numbers_router, admin_products_router, admin_orders_router,
@@ -208,6 +209,8 @@ app.include_router(account_templates.router, prefix="/api/v1", tags=["Account Te
 app.include_router(ai.router, prefix="/api/v1/ai", tags=["AI"])
 # 系统操作日志
 app.include_router(admin_logs.router, prefix="/api/v1", tags=["System Logs"])
+# 注水管理模块
+app.include_router(water.router, prefix="/api/v1/admin/water", tags=["注水管理"])
 
 # 客户私库管理端：在 main 上显式挂载短路径，与 admin_numbers 路由并存（同一处理函数）
 from app.api.v1.data.admin_numbers import (

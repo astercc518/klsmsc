@@ -1,0 +1,20 @@
+# Playwright Worker 专用镜像
+# 基于官方 Playwright Python 镜像，包含 Chromium 浏览器
+FROM mcr.microsoft.com/playwright/python:v1.52.0-noble
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc python3-dev default-libmysqlclient-dev build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
+
+RUN pip install --no-cache-dir --break-system-packages "playwright==1.52.0" playwright-stealth>=1.0.6 faker>=33.0.0
+
+# Playwright 浏览器已内置在基础镜像中，无需额外安装
+
+COPY . .
+
+CMD ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--pool=threads", "--concurrency=4", "-Q", "web_automation"]

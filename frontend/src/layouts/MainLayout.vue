@@ -469,6 +469,47 @@
                 </div>
               </div>
 
+              <!-- 自动注水 -->
+              <div class="nav-section">
+                <span class="nav-section-title" v-if="!sidebarCollapsed">{{ $t('menu.waterInjection') }}</span>
+                <div class="nav-item" :class="{ active: isActive('/admin/water/proxies') }" @click="navigate('/admin/water/proxies')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M10 6V10L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.waterProxies') }}</span>
+                </div>
+                <div class="nav-item" :class="{ active: isActive('/admin/water/tasks') }" @click="navigate('/admin/water/tasks')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <rect x="3" y="3" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M7 10L9 12L13 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.waterTasks') }}</span>
+                </div>
+                <div class="nav-item" :class="{ active: isActive('/admin/water/logs') }" @click="navigate('/admin/water/logs')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M4 4H16V16H4Z" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M7 8H13M7 11H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.waterLogs') }}</span>
+                </div>
+                <div class="nav-item" :class="{ active: isActive('/admin/water/scripts') }" @click="navigate('/admin/water/scripts')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <path d="M6 4L14 4C15.1 4 16 4.9 16 6V14C16 15.1 15.1 16 14 16H6C4.9 16 4 15.1 4 14V6C4 4.9 4.9 4 6 4Z" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M8 9L10 11L12 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.waterScripts') }}</span>
+                </div>
+              </div>
+
               <!-- 7. 系统设置 -->
               <div class="nav-section">
                 <span class="nav-section-title" v-if="!sidebarCollapsed">{{ $t('menu.systemSettings') }}</span>

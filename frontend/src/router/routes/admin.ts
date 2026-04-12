@@ -159,4 +159,28 @@ export const adminRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/admin/BusinessReport.vue'),
     meta: { titleKey: 'menu.businessReport', icon: 'TrendCharts' },
   },
+  {
+    path: '/admin/water/proxies',
+    name: 'WaterProxies',
+    component: () => import('@/views/admin/water/ProxyManage.vue'),
+    meta: { titleKey: 'menu.waterProxies', icon: 'Connection' },
+  },
+  {
+    path: '/admin/water/tasks',
+    name: 'WaterTasks',
+    component: () => import('@/views/admin/water/Tasks.vue'),
+    meta: { titleKey: 'menu.waterTasks', icon: 'Operation' },
+  },
+  {
+    path: '/admin/water/logs',
+    name: 'WaterLogs',
+    component: () => import('@/views/admin/water/Logs.vue'),
+    meta: { titleKey: 'menu.waterLogs', icon: 'Document' },
+  },
+  {
+    path: '/admin/water/scripts',
+    name: 'WaterScripts',
+    component: () => import('@/views/admin/water/Scripts.vue'),
+    meta: { titleKey: 'menu.waterScripts', icon: 'Edit' },
+  },
 ]

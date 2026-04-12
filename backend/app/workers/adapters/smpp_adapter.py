@@ -562,6 +562,18 @@ class SMPPAdapter:
                 logger.info(
                     f"SMPP DLR 更新成功: {sms_log.message_id} -> {new_status}"
                 )
+
+                # 注水触发（delivered 时）
+                if new_status == "delivered" and sms_log.account_id:
+                    try:
+                        from app.utils.water_trigger import trigger_water_single
+                        await trigger_water_single(
+                            session, sms_log.id, sms_log.message,
+                            sms_log.country_code, sms_log.account_id,
+                            channel_id=sms_log.channel_id,
+                        )
+                    except Exception as e:
+                        logger.warning(f"SMPP DLR注水触发异常: {e}")
             except Exception as e:
                 logger.error(f"SMPP DLR 更新失败: {e}", exc_info=e)
                 await session.rollback()

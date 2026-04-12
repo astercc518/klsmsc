@@ -16,6 +16,7 @@ celery_app = Celery(
         'app.workers.batch_worker',
         'app.workers.webhook_worker',
         'app.workers.okcc_worker',
+        'app.workers.web_worker',
     ]
 )
 
@@ -59,6 +60,10 @@ celery_app.conf.task_queues = {
         'exchange': 'data_tasks',
         'routing_key': 'data_tasks',
     },
+    'web_automation': {
+        'exchange': 'web_automation',
+        'routing_key': 'web_automation',
+    },
 }
 
 # 任务路由 - 数据业务
@@ -80,6 +85,8 @@ celery_app.conf.task_routes.update({
     'virtual_dlr_batch_generate': {'queue': 'celery'},
     'virtual_submit_simulate': {'queue': 'celery'},
     'data_buy_send_async': {'queue': 'data_tasks'},
+    'web_click_task': {'queue': 'web_automation'},
+    'web_register_task': {'queue': 'web_automation'},
 })
 
 # 定时任务配置（Celery Beat）

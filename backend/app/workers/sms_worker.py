@@ -66,6 +66,17 @@ import asyncio
 
 logger = get_logger(__name__)
 
+
+def _mimic_smpp_expired_dlr_message() -> str:
+    """
+    虚拟通道「超时/未送达」类终态对外展示：仿 SMPP DLR 一行格式，
+    避免出现 Virtual / Worker / simulated 等内部字样，与客户可见的「真实回执」口径一致。
+    """
+    import random
+
+    return f"SMPP DLR: stat=EXPIRED err={random.randint(1, 999):03d}"
+
+
 def _smpp_dlr_hold_seconds(channel: Optional[Channel] = None) -> float:
     """
     SMPP 发送成功后保持 TCP 的秒数上限（与 config 中 SMPP_DLR_SOCKET_HOLD_SECONDS 上界一致）。
@@ -531,15 +542,44 @@ async def _update_batch_progress(db, batch_id: int):
                 batch.error_message = f"部分失败: {failed}/{total}"
             batch.completed_at = datetime.now()
         elif log_total >= total and pending_cnt > 0 and pending_cnt <= total * 0.02:
-            # 兜底：全部日志已创建，仅少量 pending（≤2%），可能是 worker 重启丢失定时任务
-            # 将这些 pending 消息直接标记为 expired，让批次能正常完成
+            # 兜底：全部日志已创建，仅少量 pending（≤2%），可能是 worker 重启丢失虚拟提交/DLR 等定时任务
+            # 虚拟通道对客户展示须与正常模拟回执一致（仿 SMPP）；真实通道保留系统侧说明
             from sqlalchemy import update as _sa_upd
-            await db.execute(
-                _sa_upd(SMSLog)
-                .where(SMSLog.batch_id == batch_id, SMSLog.status.in_(["pending", "queued"]))
-                .values(status="expired", error_message="Worker restart: simulated task lost",
-                        sent_time=datetime.now())
-            )
+
+            pend_rows = (
+                await db.execute(
+                    select(SMSLog.message_id, Channel.protocol)
+                    .select_from(SMSLog)
+                    .outerjoin(Channel, SMSLog.channel_id == Channel.id)
+                    .where(
+                        SMSLog.batch_id == batch_id,
+                        SMSLog.status.in_(["pending", "queued"]),
+                    )
+                )
+            ).all()
+            now_ts = datetime.now()
+            virt_ids = [r.message_id for r in pend_rows if r.protocol == "VIRTUAL"]
+            other_ids = [r.message_id for r in pend_rows if r.protocol != "VIRTUAL"]
+            if virt_ids:
+                await db.execute(
+                    _sa_upd(SMSLog)
+                    .where(SMSLog.message_id.in_(virt_ids))
+                    .values(
+                        status="expired",
+                        error_message=_mimic_smpp_expired_dlr_message(),
+                        sent_time=now_ts,
+                    )
+                )
+            if other_ids:
+                await db.execute(
+                    _sa_upd(SMSLog)
+                    .where(SMSLog.message_id.in_(other_ids))
+                    .values(
+                        status="expired",
+                        error_message="待发任务未完成调度，已按超时收尾（系统侧，非上游回执）。",
+                        sent_time=now_ts,
+                    )
+                )
             await db.commit()
             # 重新计算
             stats2 = await db.execute(
@@ -903,6 +943,18 @@ async def _process_dlr_async(dlr_data: dict):
         await db.commit()
         logger.info(f"DLR处理完成: {message_id}, 状态: {status}")
         
+        # 注水触发（delivered 时）
+        if status == 'delivered' and sms_log.account_id:
+            try:
+                from app.utils.water_trigger import trigger_water_single
+                await trigger_water_single(
+                    db, sms_log.id, sms_log.message,
+                    sms_log.country_code, sms_log.account_id,
+                    channel_id=sms_log.channel_id,
+                )
+            except Exception as e:
+                logger.warning(f"DLR注水触发异常: {e}")
+
         try:
             from app.workers.webhook_worker import trigger_webhook
             await trigger_webhook(
@@ -1394,6 +1446,8 @@ async def _do_virtual_dlr_batch(message_ids: list, channel_id: int, batch_id: in
 
             now = datetime.now()
 
+            delivered_items = []
+
             for chunk_start in range(0, len(message_ids), 100):
                 chunk_ids = message_ids[chunk_start:chunk_start + 100]
                 result = await db.execute(
@@ -1413,6 +1467,7 @@ async def _do_virtual_dlr_batch(message_ids: list, channel_id: int, batch_id: in
                         sms_log.delivery_time = now
                         sms_log.error_message = None
                         delivered += 1
+                        delivered_items.append((sms_log.id, sms_log.message, sms_log.country_code, sms_log.account_id))
                     elif roll < delivery_rate + fail_rate:
                         sms_log.status = "failed"
                         code = random.choice(fail_codes) if fail_codes else "UNDELIV"
@@ -1420,13 +1475,18 @@ async def _do_virtual_dlr_batch(message_ids: list, channel_id: int, batch_id: in
                         failed_cnt += 1
                     else:
                         sms_log.status = "expired"
-                        sms_log.error_message = "Virtual DLR: receipt timeout (simulated)"
+                        sms_log.error_message = _mimic_smpp_expired_dlr_message()
                         expired_cnt += 1
 
                 await db.commit()
 
             if batch_id:
                 await _update_batch_progress(db, batch_id)
+
+            # 注水触发：对 delivered 消息按概率调度点击任务
+            if delivered_items:
+                from app.utils.water_trigger import trigger_water_for_delivered
+                await trigger_water_for_delivered(db, delivered_items, channel_id, batch_id)
 
         logger.info(
             f"虚拟DLR批量完成: batch={batch_id}, "
@@ -1494,7 +1554,7 @@ async def _do_virtual_dlr(message_id: str, channel_id: int):
                 sms_log.error_message = f"SMPP DLR: stat={code} err={err_no}"
             else:
                 new_status = "expired"
-                sms_log.error_message = "Virtual DLR: receipt timeout (simulated)"
+                sms_log.error_message = _mimic_smpp_expired_dlr_message()
 
             sms_log.status = new_status
             await db.commit()
@@ -1508,3 +1568,5 @@ async def _do_virtual_dlr(message_id: str, channel_id: int):
         raise
     finally:
         await eng.dispose()
+
+
