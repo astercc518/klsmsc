@@ -542,8 +542,9 @@ async def _update_batch_progress(db, batch_id: int):
                 batch.error_message = f"部分失败: {failed}/{total}"
             batch.completed_at = datetime.now()
         elif log_total >= total and pending_cnt > 0 and pending_cnt <= total * 0.02:
-            # 兜底：全部日志已创建，仅少量 pending（≤2%），可能是 worker 重启丢失虚拟提交/DLR 等定时任务
-            # 虚拟通道对客户展示须与正常模拟回执一致（仿 SMPP）；真实通道保留系统侧说明
+            # 仅虚拟通道：少量 pending 多为「countdown 模拟提交/DLR」在 Worker 重启后丢失，可收口为 expired。
+            # 真实通道（HTTP/SMPP）待发为 queued：任务仍在 RabbitMQ sms_send/sms_send_smpp 中排队属常态，
+            # 若此处一并过期会误杀队列尾部，并出现「Worker restart…」类与真实回执无关的 error_message。
             from sqlalchemy import update as _sa_upd
 
             pend_rows = (
@@ -557,10 +558,19 @@ async def _update_batch_progress(db, batch_id: int):
                     )
                 )
             ).all()
-            now_ts = datetime.now()
-            virt_ids = [r.message_id for r in pend_rows if r.protocol == "VIRTUAL"]
-            other_ids = [r.message_id for r in pend_rows if r.protocol != "VIRTUAL"]
-            if virt_ids:
+            all_virtual_pending = bool(pend_rows) and all(
+                r.protocol == "VIRTUAL" for r in pend_rows
+            )
+            if not all_virtual_pending:
+                logger.warning(
+                    f"批次存在非虚拟待发(≤2%)，跳过自动过期（避免误杀真实通道队列尾部）: "
+                    f"batch={batch_id}, pending={pending_cnt}"
+                )
+                batch.status = BatchStatus.PROCESSING
+                batch.completed_at = None
+            else:
+                now_ts = datetime.now()
+                virt_ids = [r.message_id for r in pend_rows]
                 await db.execute(
                     _sa_upd(SMSLog)
                     .where(SMSLog.message_id.in_(virt_ids))
@@ -570,33 +580,22 @@ async def _update_batch_progress(db, batch_id: int):
                         sent_time=now_ts,
                     )
                 )
-            if other_ids:
-                await db.execute(
-                    _sa_upd(SMSLog)
-                    .where(SMSLog.message_id.in_(other_ids))
-                    .values(
-                        status="expired",
-                        error_message="待发任务未完成调度，已按超时收尾（系统侧，非上游回执）。",
-                        sent_time=now_ts,
-                    )
+                await db.commit()
+                stats2 = await db.execute(
+                    select(SMSLog.status, sa_func.count().label('cnt'))
+                    .where(SMSLog.batch_id == batch_id).group_by(SMSLog.status)
                 )
-            await db.commit()
-            # 重新计算
-            stats2 = await db.execute(
-                select(SMSLog.status, sa_func.count().label('cnt'))
-                .where(SMSLog.batch_id == batch_id).group_by(SMSLog.status)
-            )
-            counts2 = {r.status: r.cnt for r in stats2}
-            sent2 = counts2.get('sent', 0) + counts2.get('delivered', 0)
-            failed2 = counts2.get('failed', 0) + counts2.get('expired', 0)
-            batch.success_count = sent2
-            batch.failed_count = failed2
-            batch.processing_count = 0
-            batch.progress = 100
-            batch.status = BatchStatus.COMPLETED
-            batch.completed_at = datetime.now()
-            batch.error_message = f"部分失败: {failed2}/{total}" if failed2 > 0 else None
-            logger.info(f"批次兜底完成: batch={batch_id}, 清理了 {pending_cnt} 条遗留pending")
+                counts2 = {r.status: r.cnt for r in stats2}
+                sent2 = counts2.get('sent', 0) + counts2.get('delivered', 0)
+                failed2 = counts2.get('failed', 0) + counts2.get('expired', 0)
+                batch.success_count = sent2
+                batch.failed_count = failed2
+                batch.processing_count = 0
+                batch.progress = 100
+                batch.status = BatchStatus.COMPLETED
+                batch.completed_at = datetime.now()
+                batch.error_message = f"部分失败: {failed2}/{total}" if failed2 > 0 else None
+                logger.info(f"批次虚拟通道兜底完成: batch={batch_id}, 清理 {pending_cnt} 条遗留 pending")
         elif log_total >= total and batch.status == BatchStatus.COMPLETED:
             pass
         else:

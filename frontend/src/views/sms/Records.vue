@@ -195,7 +195,7 @@
             show-overflow-tooltip
           >
             <template #default="{ row }">
-              <template v-if="row.error_message">
+              <template v-if="shouldShowErrorMessage(row)">
                 <span v-if="friendlyError(row.error_message)" class="error-preview-friendly">
                   {{ friendlyError(row.error_message)!.title }}
                 </span>
@@ -376,7 +376,7 @@
           <p v-if="showDlrExplainHint" class="dlr-explain-hint">{{ $t('smsRecords.dlrTerminalHint') }}</p>
         </div>
 
-        <div class="detail-section" v-if="currentRecord.error_message">
+        <div class="detail-section" v-if="currentRecord.error_message && shouldShowErrorMessage(currentRecord)">
           <h4 class="section-title error-title">{{ $t('smsRecords.errorMsg') }}</h4>
           <div v-if="friendlyError(currentRecord.error_message)" class="error-explain">
             <el-alert :type="friendlyError(currentRecord.error_message).type" :closable="false" show-icon>
@@ -554,6 +554,23 @@ const handleReset = () => {
 const handleViewDetail = (row: any) => {
   currentRecord.value = row
   detailVisible.value = true
+}
+
+/** 已送达却仍带历史「批次兜底/Worker」脏文案时不在界面展示，避免与成功状态矛盾（库中可能未清空 error_message） */
+const STALE_SUCCESS_ERROR_PATTERNS = [
+  /worker restart/i,
+  /simulated task lost/i,
+  /待发任务未完成调度/,
+  /后台\s*worker\s*重启/,
+]
+
+const shouldShowErrorMessage = (row: { status?: string; error_message?: string | null }) => {
+  const msg = (row.error_message || '').trim()
+  if (!msg) return false
+  if (row.status === 'delivered' && STALE_SUCCESS_ERROR_PATTERNS.some((re) => re.test(msg))) {
+    return false
+  }
+  return true
 }
 
 const friendlyError = (msg: string | null | undefined): { title: string; desc: string; type: 'warning' | 'error' | 'info' } | null => {

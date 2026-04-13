@@ -552,6 +552,7 @@ class SMPPAdapter:
                 sms_log.status = new_status
                 if new_status == "delivered":
                     sms_log.delivery_time = datetime.now()
+                    sms_log.error_message = None  # 送达成功时清除历史错误/兜底字段
                 elif new_status == "failed":
                     sms_log.error_message = f"SMPP DLR: stat={stat} err={err}"
                 # 纠正错误保存的 sequence 等占位 ID，便于后续对账

@@ -417,6 +417,7 @@ async def process_dlr_reports(
             if dlr_status == DLRStatus.DELIVERED:
                 sms_log.status = 'delivered'
                 sms_log.delivery_time = datetime.now()
+                sms_log.error_message = None  # 避免历史内部/兜底文案在已送达后仍展示
                 logger.info(f"[{source}] DLR 送达成功: {sms_log.message_id}")
                 success_count += 1
                 # 注水触发
