@@ -37,7 +37,9 @@ celery_app.conf.update(
 # 任务路由
 celery_app.conf.task_routes = {
     'send_sms_task': {'queue': 'sms_send'},
+    'send_sms_batch_smpp_task': {'queue': 'sms_send_smpp'},
     'process_dlr_task': {'queue': 'sms_dlr'},
+    'process_smpp_dlr_task': {'queue': 'sms_dlr'},
     'fetch_dlr_reports_task': {'queue': 'sms_dlr'},
     'dlr_timeout_check_task': {'queue': 'sms_dlr'},
 }

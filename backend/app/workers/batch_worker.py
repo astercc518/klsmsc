@@ -220,12 +220,31 @@ async def _do_process_batch(batch_id: int):
                         if len(commit_batch) >= COMMIT_EVERY:
                             await db.flush()
                             await db.commit()
-                            for mid, cost in commit_batch:
-                                if QueueManager.queue_sms(mid):
-                                    success_count += 1
-                                else:
-                                    await _refund_single(db, batch.account_id, cost, mid)
-                                    failed_count += 1
+                            _proto = str(channel.protocol).upper()
+                            logger.info(f"DEBUG: 批次 {batch.id} 提交点, 原始协议={channel.protocol}, 转换协议={_proto}, 数量={len(commit_batch)}")
+                            if 'SMPP' in _proto:
+                                # SMPP 批量入队（窗口化）
+                                smpp_mids = [mid for mid, _ in commit_batch]
+                                from app.config import settings as _cfg
+                                _win = int(getattr(_cfg, 'SMPP_WINDOW_SIZE', 10) or 10)
+                                for _i in range(0, len(smpp_mids), _win):
+                                    _chunk = smpp_mids[_i:_i + _win]
+                                    if QueueManager.queue_sms_batch(_chunk):
+                                        success_count += len(_chunk)
+                                    else:
+                                        # 回退单条（异常处理）
+                                        for _m in _chunk:
+                                            if not QueueManager.queue_sms(_m):
+                                                failed_count += 1
+                                            else:
+                                                success_count += 1
+                            else:
+                                for mid, cost in commit_batch:
+                                    if QueueManager.queue_sms(mid):
+                                        success_count += 1
+                                    else:
+                                        await _refund_single(db, batch.account_id, cost, mid)
+                                        failed_count += 1
                             commit_batch.clear()
 
                     except (InsufficientBalanceError, PricingNotFoundError, Exception) as e:
@@ -244,12 +263,30 @@ async def _do_process_batch(batch_id: int):
         if commit_batch:
             await db.flush()
             await db.commit()
-            for mid, cost in commit_batch:
-                if QueueManager.queue_sms(mid):
-                    success_count += 1
-                else:
-                    await _refund_single(db, batch.account_id, cost, mid)
-                    failed_count += 1
+            _proto = str(channel.protocol).upper()
+            logger.info(f"DEBUG: 批次 {batch.id} 结束点, 原始协议={channel.protocol}, 转换协议={_proto}, 数量={len(commit_batch)}")
+            if 'SMPP' in _proto:
+                # SMPP 批量入队（窗口化）
+                smpp_mids = [mid for mid, _ in commit_batch]
+                from app.config import settings as _cfg
+                _win = int(getattr(_cfg, 'SMPP_WINDOW_SIZE', 10) or 10)
+                for _i in range(0, len(smpp_mids), _win):
+                    _chunk = smpp_mids[_i:_i + _win]
+                    if QueueManager.queue_sms_batch(_chunk):
+                        success_count += len(_chunk)
+                    else:
+                        for _m in _chunk:
+                            if not QueueManager.queue_sms(_m):
+                                failed_count += 1
+                            else:
+                                success_count += 1
+            else:
+                for mid, cost in commit_batch:
+                    if QueueManager.queue_sms(mid):
+                        success_count += 1
+                    else:
+                        await _refund_single(db, batch.account_id, cost, mid)
+                        failed_count += 1
             commit_batch.clear()
 
         if total_rows == 0:
@@ -486,7 +523,16 @@ async def _do_process_chunk(
                         await db.commit()
 
             else:
-                # ====== 普通通道逐条处理路径 ======
+                # ====== 普通通道批量快速路径（优化版） ======
+                # 阶段1: 批量验证号码 + 渲染消息 + 缓存路由/查价
+                from decimal import Decimal
+                from app.modules.common.balance_log import BalanceLog
+
+                _t0 = time.time()
+                route_cache = {}   # country_code -> channel
+                price_cache = {}   # (channel_id, country_code) -> (sell_pp, currency, cost_pp)
+                valid_items = []   # [(phone_info, cc, final_msg, msg_count, batch_index, channel), ...]
+
                 for i, phone_number in enumerate(phone_numbers):
                     if phone_number in already_done:
                         succeeded += 1
@@ -505,94 +551,257 @@ async def _do_process_chunk(
                             except AccountCountryNotAllowedError:
                                 failed += 1
                                 continue
+
+                        # 渲染消息
                         raw_body = rot_messages[(batch_index - 1) % len(rot_messages)] if use_rotate else message
                         has_tpl_vars = sms_template_has_variables(raw_body)
                         final_message = (
                             render_sms_variables(
-                                raw_body,
-                                index=batch_index,
+                                raw_body, index=batch_index,
                                 phone_e164=phone_info["e164_format"],
                                 country_code=country_code,
                             )
-                            if has_tpl_vars
-                            else raw_body
+                            if has_tpl_vars else raw_body
                         )
+                        msg_count = pricing_engine._count_sms_parts(final_message)
 
-                        channel = await routing_engine.select_channel(
-                            country_code=country_code,
-                            preferred_channel=channel_id,
-                            strategy='priority',
-                            account_id=account_id
-                        )
+                        # 路由（缓存）
+                        if country_code not in route_cache:
+                            ch = await routing_engine.select_channel(
+                                country_code=country_code,
+                                preferred_channel=channel_id,
+                                strategy='priority',
+                                account_id=account_id
+                            )
+                            route_cache[country_code] = ch
+                        channel = route_cache[country_code]
                         if not channel:
                             failed += 1
                             continue
 
-                        charge_result = await pricing_engine.calculate_and_charge(
-                            account_id=account_id, channel_id=channel.id,
-                            country_code=country_code, message=final_message,
-                        )
-                        if not charge_result.get('success'):
-                            failed += 1
-                            continue
+                        # 查价（缓存）
+                        _pk = (channel.id, country_code)
+                        if _pk not in price_cache:
+                            pi = await pricing_engine.get_price(channel.id, country_code, None, account_id)
+                            base_cost = await pricing_engine.resolve_base_cost_per_sms(
+                                channel.id, country_code, channel)
+                            price_cache[_pk] = (
+                                Decimal(str(pi['price'])) if pi else Decimal('0'),
+                                pi.get('currency', 'USD') if pi else 'USD',
+                                base_cost,
+                            )
 
-                        if channel.protocol == 'VIRTUAL':
-                            is_virtual_channel = True
-                            virtual_channel_id = channel.id
-
-                        message_id = f"msg_{uuid.uuid4().hex}"
-                        init_status = 'pending' if (channel.protocol == 'VIRTUAL') else 'queued'
-                        sms_log = SMSLog(
-                            message_id=message_id, account_id=account_id, channel_id=channel.id,
-                            phone_number=phone_info['e164_format'], country_code=country_code,
-                            message=final_message, message_count=charge_result['message_count'],
-                            status=init_status, cost_price=charge_result.get('total_base_cost', 0),
-                            selling_price=charge_result.get('total_cost', 0),
-                            currency=charge_result.get('currency', 'USD'),
-                            submit_time=datetime.now(),
-                            batch_id=batch_id,
-                        )
-                        if channel.protocol == 'VIRTUAL':
-                            sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
-                        db.add(sms_log)
-                        commit_batch.append((message_id, charge_result.get('total_cost', 0)))
-
-                        if len(commit_batch) >= 50:
-                            await db.flush()
-                            await db.commit()
-                            if is_virtual_channel:
-                                for mid, _ in commit_batch:
-                                    virtual_message_ids.append(mid)
-                                    succeeded += 1
-                            else:
-                                for mid, _ in commit_batch:
-                                    if not QueueManager.queue_sms(mid):
-                                        await _refund_single(db, account_id, _, mid)
-                                        failed += 1
-                                    else:
-                                        succeeded += 1
-                            commit_batch.clear()
-
+                        valid_items.append((phone_info, country_code, final_message, msg_count, batch_index, channel))
                     except Exception as e:
-                        logger.warning(f"分片单条失败: batch={batch_id}, phone={phone_number}, {e}")
+                        logger.warning(f"分片预检失败: batch={batch_id}, phone={phone_number}, {e}")
                         failed += 1
                         continue
 
-                if commit_batch:
-                    await db.flush()
-                    await db.commit()
-                    if is_virtual_channel:
-                        for mid, _ in commit_batch:
-                            virtual_message_ids.append(mid)
-                            succeeded += 1
-                    else:
-                        for mid, cost in commit_batch:
-                            if not QueueManager.queue_sms(mid):
-                                await _refund_single(db, account_id, cost, mid)
-                                failed += 1
+                _t1 = time.time()
+                logger.info(f"批量预检完成: batch={batch_id}, offset={start_offset}, "
+                            f"valid={len(valid_items)}, failed={failed}, 耗时={_t1 - _t0:.2f}s")
+
+                if valid_items:
+                    # 阶段2: 一次性批量扣费
+                    total_sell = Decimal('0')
+                    total_cost = Decimal('0')
+                    for _, cc, _, msg_count, _, ch in valid_items:
+                        sell_pp, currency, cost_pp = price_cache[(ch.id, cc)]
+                        total_sell += sell_pp * msg_count
+                        total_cost += cost_pp * msg_count
+
+                    deduct_ok = True
+                    if total_sell > 0:
+                        from sqlalchemy import update as sa_update
+                        dr = await db.execute(
+                            sa_update(Account)
+                            .where(Account.id == account_id, Account.balance >= total_sell)
+                            .values(balance=Account.balance - total_sell)
+                        )
+                        if dr.rowcount == 0:
+                            # 余额不足：逐条回退处理（按余额能扣多少扣多少）
+                            deduct_ok = False
+                            logger.warning(
+                                f"批量扣费失败(余额不足): batch={batch_id}, "
+                                f"total_sell={total_sell}, 回退逐条扣费"
+                            )
+                        else:
+                            bal_r = await db.execute(select(Account.balance).where(Account.id == account_id))
+                            bal_after = bal_r.scalar() or 0
+                            db.add(BalanceLog(
+                                account_id=account_id, change_type='charge',
+                                amount=-total_sell, balance_after=bal_after,
+                                description=f"Batch charge: {len(valid_items)} msgs, batch#{batch_id}"
+                            ))
+                            cache_manager = await get_cache_manager()
+                            await cache_manager.set(f"account:{account_id}:balance", float(bal_after), ttl=60)
+
+                    _t2 = time.time()
+                    logger.info(f"批量扣费完成: batch={batch_id}, total_sell={total_sell}, "
+                                f"deduct_ok={deduct_ok}, 耗时={_t2 - _t1:.2f}s")
+
+                    if deduct_ok:
+                        # 阶段3: 批量创建 SMSLog + 单次 commit
+                        now = datetime.now()
+                        all_mids = []
+                        smpp_mids = []
+                        http_mids = []
+                        _batch_channel = None
+
+                        for phone_info, cc, final_msg, msg_count, batch_index, ch in valid_items:
+                            sell_pp, currency, cost_pp = price_cache[(ch.id, cc)]
+                            mid = f"msg_{uuid.uuid4().hex}"
+                            _batch_channel = ch
+
+                            if ch.protocol == 'VIRTUAL':
+                                is_virtual_channel = True
+                                virtual_channel_id = ch.id
+                                init_status = 'pending'
                             else:
-                                succeeded += 1
-                    commit_batch.clear()
+                                init_status = 'queued'
+
+                            sms_log = SMSLog(
+                                message_id=mid, account_id=account_id, channel_id=ch.id,
+                                phone_number=phone_info['e164_format'], country_code=cc,
+                                message=final_msg, message_count=msg_count,
+                                status=init_status, cost_price=float(cost_pp * msg_count),
+                                selling_price=float(sell_pp * msg_count), currency=currency,
+                                submit_time=now, batch_id=batch_id,
+                            )
+                            if ch.protocol == 'VIRTUAL':
+                                sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
+                                virtual_message_ids.append(mid)
+                            db.add(sms_log)
+                            all_mids.append(mid)
+
+                            # 按协议分类
+                            _proto = str(ch.protocol).upper()
+                            if 'SMPP' in _proto:
+                                smpp_mids.append(mid)
+                            elif ch.protocol != 'VIRTUAL':
+                                http_mids.append(mid)
+
+                        await db.flush()
+                        await db.commit()
+
+                        _t3 = time.time()
+                        logger.info(f"批量写库完成: batch={batch_id}, count={len(all_mids)}, 耗时={_t3 - _t2:.2f}s")
+
+                        # 阶段4: 批量入队
+                        if is_virtual_channel:
+                            succeeded += len(virtual_message_ids)
+                        if smpp_mids:
+                            if QueueManager.queue_sms_batch(smpp_mids):
+                                succeeded += len(smpp_mids)
+                            else:
+                                # 回退单条
+                                for _m in smpp_mids:
+                                    if QueueManager.queue_sms(_m):
+                                        succeeded += 1
+                                    else:
+                                        failed += 1
+                        if http_mids:
+                            for _m in http_mids:
+                                if QueueManager.queue_sms(_m):
+                                    succeeded += 1
+                                else:
+                                    failed += 1
+
+                        _t4 = time.time()
+                        logger.info(f"批量入队完成: batch={batch_id}, smpp={len(smpp_mids)}, "
+                                    f"http={len(http_mids)}, virtual={len(virtual_message_ids)}, "
+                                    f"耗时={_t4 - _t3:.2f}s, 总耗时={_t4 - _t0:.2f}s")
+                    else:
+                        # 余额不足时逐条回退：尽可能扣到余额耗尽
+                        for phone_info, cc, final_msg, msg_count, batch_index, ch in valid_items:
+                            try:
+                                charge_result = await pricing_engine.calculate_and_charge(
+                                    account_id=account_id, channel_id=ch.id,
+                                    country_code=cc, message=final_msg,
+                                )
+                                if not charge_result.get('success'):
+                                    failed += 1
+                                    continue
+
+                                mid = f"msg_{uuid.uuid4().hex}"
+                                if ch.protocol == 'VIRTUAL':
+                                    is_virtual_channel = True
+                                    virtual_channel_id = ch.id
+                                init_status = 'pending' if ch.protocol == 'VIRTUAL' else 'queued'
+                                sms_log = SMSLog(
+                                    message_id=mid, account_id=account_id, channel_id=ch.id,
+                                    phone_number=phone_info['e164_format'], country_code=cc,
+                                    message=final_msg, message_count=charge_result['message_count'],
+                                    status=init_status, cost_price=charge_result.get('total_base_cost', 0),
+                                    selling_price=charge_result.get('total_cost', 0),
+                                    currency=charge_result.get('currency', 'USD'),
+                                    submit_time=datetime.now(), batch_id=batch_id,
+                                )
+                                if ch.protocol == 'VIRTUAL':
+                                    sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
+                                    virtual_message_ids.append(mid)
+                                db.add(sms_log)
+                                commit_batch.append((mid, charge_result.get('total_cost', 0)))
+
+                                if len(commit_batch) >= 50:
+                                    await db.flush()
+                                    await db.commit()
+                                    _proto = str(ch.protocol).upper()
+                                    if is_virtual_channel:
+                                        succeeded += len(commit_batch)
+                                    elif 'SMPP' in _proto:
+                                        _mids = [m for m, _ in commit_batch]
+                                        if QueueManager.queue_sms_batch(_mids):
+                                            succeeded += len(_mids)
+                                        else:
+                                            for _m in _mids:
+                                                if QueueManager.queue_sms(_m):
+                                                    succeeded += 1
+                                                else:
+                                                    failed += 1
+                                    else:
+                                        for m, _ in commit_batch:
+                                            if QueueManager.queue_sms(m):
+                                                succeeded += 1
+                                            else:
+                                                failed += 1
+                                    commit_batch.clear()
+                            except (InsufficientBalanceError, PricingNotFoundError):
+                                failed += 1
+                                break  # 余额耗尽，终止
+                            except Exception as e:
+                                logger.warning(f"逐条回退失败: batch={batch_id}, {e}")
+                                failed += 1
+                                continue
+
+                        # 提交剩余
+                        if commit_batch:
+                            await db.flush()
+                            await db.commit()
+                            _proto = str(ch.protocol).upper() if ch else ''
+                            if is_virtual_channel:
+                                succeeded += len(commit_batch)
+                            elif 'SMPP' in _proto:
+                                _mids = [m for m, _ in commit_batch]
+                                if QueueManager.queue_sms_batch(_mids):
+                                    succeeded += len(_mids)
+                                else:
+                                    for _m in _mids:
+                                        if QueueManager.queue_sms(_m):
+                                            succeeded += 1
+                                        else:
+                                            failed += 1
+                            else:
+                                for m, c in commit_batch:
+                                    if QueueManager.queue_sms(m):
+                                        succeeded += 1
+                                    else:
+                                        failed += 1
+                            commit_batch.clear()
+                        # 剩余未处理的标记为失败
+                        remaining_failed = len(valid_items) - succeeded - failed
+                        if remaining_failed > 0:
+                            failed += remaining_failed
 
             total_logs = (await db.execute(
                 select(func.count()).select_from(SMSLog).where(SMSLog.batch_id == batch_id)

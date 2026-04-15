@@ -649,7 +649,7 @@ async def send_batch_sms(
     await db.flush()
     batch_pk = sms_batch.id
 
-    ASYNC_THRESHOLD = 500
+    ASYNC_THRESHOLD = 10
     CHUNK_SIZE = 500
 
     if total_numbers > ASYNC_THRESHOLD:
@@ -674,7 +674,7 @@ async def send_batch_sms(
         sms_batch.send_config = {"chunks": chunk_count, "chunk_size": CHUNK_SIZE, "async": True}
         await db.commit()
 
-        logger.info(f"大批量发送已分片: batch_id={batch_pk}, total={total_numbers}, chunks={chunk_count}")
+        logger.info(f"批量发送已进入后台加速处理: batch_id={batch_pk}, total={total_numbers}, chunks={chunk_count}")
         return BatchSMSResponse(
             success=True,
             total=total_numbers,
@@ -685,8 +685,12 @@ async def send_batch_sms(
             async_processing=True,
         )
 
-    # ========== 小批量（≤500）：保持同步处理 ==========
+    # ========== 极小批量（≤10）：保持同步处理（也进行窗口化优化） ==========
     from app.utils.account_country_restrict import assert_sms_destination_allowed, AccountCountryNotAllowedError
+    
+    # 预创建所需的 log 记录（暂时不入队）
+    valid_logs_mids = []
+    
     for batch_index, phone_number in enumerate(request.phone_numbers, start=1):
         try:
             is_valid, err_msg, phone_info = Validator.validate_phone_number(phone_number)
@@ -756,31 +760,13 @@ async def send_batch_sms(
                 message_id=message_id, account_id=account.id, channel_id=channel.id,
                 phone_number=phone_info['e164_format'], country_code=country_code,
                 message=final_message, message_count=charge_result['message_count'],
-                status='queued', cost_price=charge_result['total_base_cost'],
-                selling_price=charge_result['total_cost'], currency=charge_result['currency'],
+                status='queued', cost_price=charge_result.get('total_base_cost', 0),
+                selling_price=charge_result.get('total_cost', 0), currency=charge_result.get('currency', 'USD'),
                 submit_time=datetime.now(),
                 batch_id=batch_pk,
             )
             db.add(sms_log)
-            await db.flush()
-            await db.commit()
-
-            if not QueueManager.queue_sms(message_id):
-                failed += 1
-                await _refund_line_charge(db, account.id, charge_result["total_cost"],
-                                          f"批量SMS入队失败退款 {message_id}")
-                await db.execute(
-                    update(SMSLog).where(SMSLog.message_id == message_id)
-                    .values(status="failed", error_message="加入发送队列失败")
-                )
-                await db.flush()
-                results.append({"phone_number": phone_number, "success": False,
-                                "message_id": message_id, "error": {"code": "QUEUE_FAILED", "message": "加入发送队列失败"}})
-                continue
-
-            succeeded += 1
-            results.append({"phone_number": phone_number, "success": True,
-                            "message_id": message_id, "error": None})
+            valid_logs_mids.append((message_id, phone_number, channel))
 
         except (InsufficientBalanceError, PricingNotFoundError, ChannelNotAvailableError) as e:
             failed += 1
@@ -791,6 +777,46 @@ async def send_batch_sms(
             failed += 1
             results.append({"phone_number": phone_number, "success": False,
                             "message_id": None, "error": {"code": "ERROR", "message": "Send failed"}})
+
+    # 统一提交记录，然后批量入队
+    if valid_logs_mids:
+        await db.commit()
+        # 暂时按通道分组或直接根据协议判断（由于是极小批量，暂不复杂分组，主要依靠 queue_sms_batch 的窗口优势）
+        smpp_ids = []
+        other_ids = []
+        for mid, phone, chan in valid_logs_mids:
+            if 'SMPP' in str(chan.protocol).upper():
+                smpp_ids.append((mid, phone))
+            else:
+                other_ids.append((mid, phone))
+        
+        # 处理 SMPP 批量
+        if smpp_ids:
+            mids_only = [m[0] for m in smpp_ids]
+            # 这里可以用一个大的 chunk，因为 ASYNC_THRESHOLD 很低
+            if QueueManager.queue_sms_batch(mids_only):
+                for mid, phone in smpp_ids:
+                    succeeded += 1
+                    results.append({"phone_number": phone, "success": True, "message_id": mid, "error": None})
+            else:
+                # 回退单条
+                for mid, phone in smpp_ids:
+                    if QueueManager.queue_sms(mid):
+                        succeeded += 1
+                        results.append({"phone_number": phone, "success": True, "message_id": mid, "error": None})
+                    else:
+                        failed += 1
+                        results.append({"phone_number": phone, "success": False, "message_id": mid, "error": "入队失败"})
+
+        # 处理其他（HTTP等）
+        for mid, phone in other_ids:
+            if QueueManager.queue_sms(mid):
+                succeeded += 1
+                results.append({"phone_number": phone, "success": True, "message_id": mid, "error": None})
+            else:
+                failed += 1
+                results.append({"phone_number": phone, "success": False, "message_id": mid, "error": "入队失败"})
+
 
     cnt_row = await db.execute(
         select(func.count()).select_from(SMSLog).where(SMSLog.batch_id == batch_pk)

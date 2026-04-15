@@ -427,12 +427,33 @@ class SMPPAdapter:
                 receipted = receipted.decode("utf-8", errors="replace")
 
             # 异步更新数据库
-            threading.Thread(
-                target=self._update_dlr_status,
-                args=(upstream_id, new_status, stat, err, str(dest_addr), str(source_addr), str(receipted)),
-                daemon=True,
-                name=f"smpp-dlr-{upstream_id}",
-            ).start()
+            try:
+                from app.workers.celery_app import celery_app
+                # 使用 send_task 避开异步环境下的底层链接泄露
+                logger.info(f"[{self.channel.channel_code}] 正在推送 SMPP DLR 到队列: process_smpp_dlr_task, id={upstream_id}")
+                celery_app.send_task(
+                    "process_smpp_dlr_task",
+                    args=[
+                        self.channel.id,
+                        upstream_id,
+                        new_status,
+                        stat,
+                        err,
+                        str(dest_addr),
+                        str(source_addr),
+                        str(receipted),
+                    ],
+                    queue="sms_dlr",
+                    retry=True,
+                    retry_policy={
+                        "max_retries": 3,
+                        "interval_start": 0.1,
+                        "interval_step": 0.2,
+                        "interval_max": 0.5,
+                    },
+                )
+            except Exception as async_err:
+                logger.error(f"[{self.channel.channel_code}] 推送 SMPP DLR 到队列失败: {async_err}")
 
         except Exception as e:
             logger.error(
@@ -440,154 +461,7 @@ class SMPPAdapter:
                 exc_info=e,
             )
 
-    def _update_dlr_status(
-        self,
-        upstream_id: str,
-        new_status: str,
-        stat: str,
-        err: str,
-        dest_addr: str = "",
-        source_addr: str = "",
-        receipted_message_id: str = "",
-    ):
-        """在独立线程中同步更新 DLR 状态到数据库"""
-        from datetime import datetime
-        from sqlalchemy import select as sa_select, and_, or_
-        from sqlalchemy.ext.asyncio import (
-            AsyncSession as _AS,
-            create_async_engine as _cae,
-            async_sessionmaker as _asm,
-        )
-        from app.config import settings
 
-        async def _do():
-            eng = _cae(
-                settings.SQLALCHEMY_DATABASE_URL,
-                echo=False,
-                pool_size=2,
-                max_overflow=2,
-                pool_pre_ping=True,
-            )
-            session = _asm(eng, class_=_AS, expire_on_commit=False)()
-            try:
-                channel_id = self.channel.id
-
-                def _expand_id_candidates(raw: str) -> List[str]:
-                    upstream_id_str = str(raw).strip()
-                    if not upstream_id_str:
-                        return []
-                    cands = [upstream_id_str]
-                    if any(x in upstream_id_str.upper() for x in "ABCDEF"):
-                        cands.append(upstream_id_str.upper())
-                        cands.append(upstream_id_str.lower())
-                    try:
-                        if upstream_id_str.startswith("0x") or upstream_id_str.startswith("0X"):
-                            cands.append(str(int(upstream_id_str, 16)))
-                        elif upstream_id_str.isdigit():
-                            cands.append(hex(int(upstream_id_str)))
-                        elif all(c in "0123456789abcdefABCDEF" for c in upstream_id_str):
-                            cands.append(str(int(upstream_id_str, 16)))
-                    except (ValueError, TypeError):
-                        pass
-                    return list(dict.fromkeys(cands))
-
-                candidate_ids: List[str] = []
-                for piece in (upstream_id, receipted_message_id):
-                    candidate_ids.extend(_expand_id_candidates(piece))
-                candidate_ids = list(dict.fromkeys(candidate_ids))
-
-                sms_log = None
-                if candidate_ids:
-                    stmt = sa_select(SMSLog).where(
-                        and_(
-                            SMSLog.channel_id == channel_id,
-                            SMSLog.upstream_message_id.in_(candidate_ids),
-                            SMSLog.status.in_(["sent", "pending", "queued"]),
-                        )
-                    ).order_by(SMSLog.submit_time.desc()).limit(1)
-                    # 短重试：应对主事务提交略晚于 deliver_sm 线程读库的残余竞态（每次约 80ms，最多约 400ms）
-                    for _attempt in range(5):
-                        result = await session.execute(stmt)
-                        sms_log = result.scalar_one_or_none()
-                        if sms_log:
-                            break
-                        if _attempt < 4:
-                            await asyncio.sleep(0.08)
-
-                # 上游 ID 未入库或与 submit_sm_resp 不一致时（例如误存了 SMPP sequence），用手机号兜底
-                if not sms_log:
-                    def _digits(s: str) -> str:
-                        return "".join(c for c in str(s) if c.isdigit())
-
-                    for addr in (dest_addr, source_addr):
-                        d = _digits(addr)
-                        if len(d) < 8:
-                            continue
-                        stmt2 = sa_select(SMSLog).where(
-                            and_(
-                                SMSLog.channel_id == channel_id,
-                                SMSLog.status.in_(["sent", "pending", "queued"]),
-                                or_(
-                                    SMSLog.phone_number.like(f"%{d}"),
-                                    SMSLog.phone_number == f"+{d}",
-                                ),
-                            )
-                        ).order_by(SMSLog.sent_time.desc()).limit(1)
-                        res2 = await session.execute(stmt2)
-                        sms_log = res2.scalar_one_or_none()
-                        if sms_log:
-                            logger.info(
-                                f"SMPP DLR: 按号码兜底匹配成功 upstream_id={upstream_id} -> "
-                                f"log={sms_log.message_id} phone={sms_log.phone_number}"
-                            )
-                            break
-
-                if not sms_log:
-                    logger.warning(
-                        f"SMPP DLR: 未找到 upstream_id={upstream_id} (候选 {candidate_ids})，"
-                        f"dest={dest_addr!r} src={source_addr!r}"
-                    )
-                    return
-
-                sms_log.status = new_status
-                if new_status == "delivered":
-                    sms_log.delivery_time = datetime.now()
-                    sms_log.error_message = None  # 送达成功时清除历史错误/兜底字段
-                elif new_status == "failed":
-                    sms_log.error_message = f"SMPP DLR: stat={stat} err={err}"
-                # 纠正错误保存的 sequence 等占位 ID，便于后续对账
-                if upstream_id and str(sms_log.upstream_message_id or "") != str(upstream_id).strip():
-                    sms_log.upstream_message_id = str(upstream_id).strip()
-
-                await session.commit()
-                logger.info(
-                    f"SMPP DLR 更新成功: {sms_log.message_id} -> {new_status}"
-                )
-
-                # 注水触发（delivered 时）
-                if new_status == "delivered" and sms_log.account_id:
-                    try:
-                        from app.utils.water_trigger import trigger_water_single
-                        await trigger_water_single(
-                            session, sms_log.id, sms_log.message,
-                            sms_log.country_code, sms_log.account_id,
-                            channel_id=sms_log.channel_id,
-                        )
-                    except Exception as e:
-                        logger.warning(f"SMPP DLR注水触发异常: {e}")
-            except Exception as e:
-                logger.error(f"SMPP DLR 更新失败: {e}", exc_info=e)
-                await session.rollback()
-            finally:
-                await session.close()
-                await eng.dispose()
-
-        try:
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(_do())
-            loop.close()
-        except Exception as e:
-            logger.error(f"SMPP DLR 线程异常: {e}", exc_info=e)
 
     # ------------------------------------------------------------------ #
     #  发送
@@ -786,6 +660,256 @@ class SMPPAdapter:
             logger.error(f"SMPP发送失败: {error_msg}", exc_info=e)
             self.connected = False
             return False, None, error_msg
+
+    # ------------------------------------------------------------------ #
+    #  窗口化批量发送
+    # ------------------------------------------------------------------ #
+
+    def _await_submit_sm_resp_batch(
+        self,
+        pending_seqs: dict,
+        deadline: float,
+    ) -> dict:
+        """
+        批量 drain 入站 PDU，收集多条 submit_sm_resp，按 sequence 匹配。
+
+        Args:
+            pending_seqs: {sequence: None} 待收集的 sequence 集合
+            deadline: monotonic 时间截止点
+
+        Returns:
+            {sequence: pdu_or_None} 已收集到的 resp（超时的为 None）
+        """
+        import smpplib.exceptions as smpp_exc
+
+        results = {seq: None for seq in pending_seqs}
+        remaining = set(pending_seqs.keys())
+
+        sock = self.client._socket
+        if sock is None:
+            return results
+
+        old_timeout = sock.gettimeout()
+        try:
+            while remaining and time.monotonic() < deadline:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                # 缩短轮询精度：从 0.05s 降至 0.005s，以支持更高 TPS
+                sock.settimeout(min(max(left, 0.001), 0.005))
+                try:
+                    pdu = self.client.read_pdu()
+                except socket.timeout:
+                    continue
+                except smpp_exc.ConnectionError:
+                    raise
+
+                if pdu.command == "submit_sm_resp":
+                    seq = getattr(pdu, "sequence", None)
+                    if seq in remaining:
+                        results[seq] = pdu
+                        remaining.discard(seq)
+                    else:
+                        # 非本批次的 resp，转交默认处理
+                        self.client.message_sent_handler(pdu=pdu)
+                elif pdu.command == "deliver_sm":
+                    self.client._message_received(pdu)
+                elif pdu.command == "enquire_link":
+                    self.client._enquire_link_received(pdu)
+                elif pdu.command == "enquire_link_resp":
+                    pass
+                elif pdu.command == "unbind":
+                    logger.info(
+                        f"[{self.channel.channel_code}] SMPP 收到 unbind，中止批量等待"
+                    )
+                    break
+                elif pdu.is_error():
+                    self.client.error_pdu_handler(pdu)
+                elif pdu.command == "alert_notification":
+                    self.client._alert_notification(pdu)
+                else:
+                    logger.debug(
+                        f"[{self.channel.channel_code}] 批量等待中忽略: {pdu.command!r}"
+                    )
+        finally:
+            try:
+                sock.settimeout(old_timeout)
+            except Exception:
+                pass
+
+        if remaining:
+            logger.warning(
+                f"[{self.channel.channel_code}] 批量等待 submit_sm_resp 超时: "
+                f"未收到 {len(remaining)}/{len(pending_seqs)} 条"
+            )
+        return results
+
+    def _send_batch_sync(
+        self, sms_logs: List[SMSLog], window_size: int = 10
+    ) -> List[Tuple[SMSLog, bool, Optional[str], Optional[str]]]:
+        """
+        窗口化批量发送：在一次持锁内连续发出多条 submit_sm，
+        然后统一 drain 收集 submit_sm_resp。
+
+        Args:
+            sms_logs: 待发送的短信列表
+            window_size: 窗口大小（一次发出的最大条数）
+
+        Returns:
+            [(sms_log, success, upstream_msg_id, error_msg), ...]
+        """
+        results: List[Tuple[SMSLog, bool, Optional[str], Optional[str]]] = []
+
+        if not sms_logs:
+            return results
+
+        try:
+            if not self.connected or not self.client:
+                if not self._connect_sync():
+                    err = self.last_error or "SMPP connection failed"
+                    return [(log, False, None, err) for log in sms_logs]
+
+            try:
+                import smpplib.gsm
+                import smpplib.consts
+                import smpplib.exceptions as smpp_exc
+            except ImportError:
+                # 模拟模式
+                for log in sms_logs:
+                    mid = f"smpp_{log.message_id[:16]}"
+                    results.append((log, True, mid, None))
+                return results
+
+            _submit_resp_wait = float(
+                getattr(settings, "SMPP_SUBMIT_RESP_WAIT_SECONDS", 8.0)
+            )
+
+            self.client.set_message_sent_handler(lambda pdu, **kwargs: None)
+            sender_id = self.channel.default_sender_id or ""
+
+            # 按窗口大小分批处理
+            for win_start in range(0, len(sms_logs), window_size):
+                window = sms_logs[win_start: win_start + window_size]
+
+                with self._lock:
+                    # 阶段 1：批量 submit_sm
+                    submitted = []  # [(sms_log, sequence, part_count)]
+                    submit_failed = []  # [(sms_log, error_msg)]
+
+                    for log in window:
+                        try:
+                            parts, enc_flag, msg_flag = smpplib.gsm.make_parts(log.message)
+                        except Exception as e:
+                            submit_failed.append((log, f"消息编码失败: {e}"))
+                            continue
+
+                        # 对于多段消息，只发第一段的 sequence 用于追踪
+                        # （当前逻辑与单条发送一致，仅取最终 message_id）
+                        part_seqs = []
+                        send_ok = True
+                        for i, part in enumerate(parts):
+                            try:
+                                submit_pdu = self.client.send_message(
+                                    source_addr_ton=(
+                                        smpplib.consts.SMPP_TON_ALNUM
+                                        if sender_id
+                                        else smpplib.consts.SMPP_TON_INTL
+                                    ),
+                                    source_addr_npi=smpplib.consts.SMPP_NPI_UNK,
+                                    source_addr=sender_id,
+                                    dest_addr_ton=smpplib.consts.SMPP_TON_INTL,
+                                    dest_addr_npi=smpplib.consts.SMPP_NPI_ISDN,
+                                    destination_addr=log.phone_number.lstrip("+"),
+                                    short_message=part,
+                                    data_coding=enc_flag,
+                                    esm_class=msg_flag,
+                                    registered_delivery=1,
+                                )
+                                seq = getattr(submit_pdu, "sequence", None)
+                                part_seqs.append(seq)
+                            except Exception as e:
+                                submit_failed.append(
+                                    (log, f"submit_sm 第{i+1}/{len(parts)}段失败: {e}")
+                                )
+                                send_ok = False
+                                break
+
+                        if send_ok and part_seqs:
+                            submitted.append((log, part_seqs, len(parts)))
+
+                    # 阶段 2：批量 drain submit_sm_resp
+                    all_seqs = {}
+                    for log, part_seqs, _ in submitted:
+                        for seq in part_seqs:
+                            if seq is not None:
+                                all_seqs[seq] = log
+
+                    resp_map = {}
+                    if all_seqs:
+                        resp_map = self._await_submit_sm_resp_batch(
+                            {seq: None for seq in all_seqs},
+                            time.monotonic() + _submit_resp_wait,
+                        )
+
+                # 锁已释放，处理结果
+                for log, error_msg in submit_failed:
+                    results.append((log, False, None, error_msg))
+
+                for log, part_seqs, part_count in submitted:
+                    message_ids = []
+                    any_rejected = False
+                    reject_msg = None
+
+                    for seq in part_seqs:
+                        resp_pdu = resp_map.get(seq)
+                        if resp_pdu is None:
+                            message_ids.append(None)
+                            continue
+
+                        st = getattr(resp_pdu, "status", None)
+                        try:
+                            st_i = int(st) if st is not None else 0
+                        except (TypeError, ValueError):
+                            st_i = 0
+
+                        if st_i != 0:
+                            desc = smpplib.consts.DESCRIPTIONS.get(st_i, str(st))
+                            _hint = _SUBMIT_SM_RESP_HINTS_ZH.get(st_i, "")
+                            _suffix = f" | {_hint}" if _hint else ""
+                            any_rejected = True
+                            reject_msg = f"SMPP 提交被拒: {desc} ({st_i}){_suffix}"
+                            message_ids.append(None)
+                        else:
+                            mid = self._pdu_message_id(resp_pdu)
+                            if isinstance(mid, str):
+                                mid = mid.strip() or None
+                            message_ids.append(mid)
+
+                    if any_rejected:
+                        results.append((log, False, None, reject_msg))
+                    else:
+                        final_mid = next((m for m in message_ids if m), None)
+                        results.append((log, True, final_mid, None))
+
+                logger.info(
+                    f"SMPP 窗口化发送完成: channel={self.channel.channel_code}, "
+                    f"窗口={len(window)}条, "
+                    f"成功={sum(1 for _, ok, _, _ in results[win_start:] if ok)}, "
+                    f"失败={sum(1 for _, ok, _, _ in results[win_start:] if not ok)}"
+                )
+
+            return results
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"SMPP 批量发送异常: {error_msg}", exc_info=e)
+            self.connected = False
+            # 对未处理的 sms_logs 返回失败
+            already = {id(r[0]) for r in results}
+            for log in sms_logs:
+                if id(log) not in already:
+                    results.append((log, False, None, error_msg))
+            return results
 
     # ------------------------------------------------------------------ #
     #  断开

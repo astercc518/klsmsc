@@ -1824,9 +1824,9 @@ export default {
       channel: { title: 'High Quality', desc: 'Premium direct channels with high success rates.' },
       report: { title: 'Transparent Data', desc: 'Real-time reports to help evaluate marketing performance.' }
     },
-    pricingDesc: 'No monthly fee, no service fee. Pay per actual usage.',
+    pricingDesc: 'No monthly fee, no service fee. Billed on submit.',
     priceFeatures: [
-      { title: 'Pay as You Go', desc: 'No fixed costs. Only pay for successfully sent messages.' },
+      { title: 'Pay as You Go', desc: 'No fixed costs. Charged when the message is submitted (including if delivery later fails).' },
       { title: 'Tiered Discounts', desc: 'Lower rates for higher volumes to support large campaigns.' },
       { title: 'Full Transparency', desc: 'Check consumption records in real-time in the dashboard.' }
     ],
@@ -1835,7 +1835,7 @@ export default {
     faqs: [
       { q: 'How do I start sending?', a: 'Register and recharge, then send manually or via API.' },
       { q: 'What payment methods?', a: 'Mainstream methods including USDT are supported.' },
-      { q: 'Charged for failures?', a: 'Only successfully sent messages (with DLR) are charged.' },
+      { q: 'Charged for failures?', a: 'Yes. Balance is debited on submit; delivery outcome does not trigger a refund. Channel cost uses submit-time rates.' },
       { q: 'How long for audit?', a: 'Most are auto-approved in seconds; some require manual review.' },
       { q: 'Where are reports?', a: 'Detailed records and analytics are available in the dashboard.' },
       { q: 'Can I send marketing?', a: 'Yes, we support various compliant marketing SMS.' }

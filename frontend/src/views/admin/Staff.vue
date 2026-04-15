@@ -111,6 +111,12 @@
             <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
+        <el-table-column prop="monthly_performance" :label="$t('staff.monthlyPerformance')" width="120" align="right">
+          <template #default="{ row }">
+            <span v-if="row.monthly_performance" class="money">${{ row.monthly_performance.toFixed(2) }}</span>
+            <span v-else class="text-muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="monthly_commission" :label="$t('staff.monthlyCommission')" width="120" align="right">
           <template #default="{ row }">
             <span v-if="row.monthly_commission" class="money">${{ row.monthly_commission.toFixed(2) }}</span>
@@ -316,6 +322,7 @@ interface Staff {
   status: string
   tg_id?: number
   commission_rate?: number
+  monthly_performance?: number
   monthly_commission?: number
   last_login_at?: string
   created_at?: string

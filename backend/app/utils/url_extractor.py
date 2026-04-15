@@ -15,6 +15,7 @@ _SHORT_DOMAINS = {
     'bit.ly', 't.co', 'tinyurl.com', 'goo.gl', 'is.gd', 'v.gd',
     'ow.ly', 'rebrand.ly', 'cutt.ly', 'rb.gy', 'shorturl.at',
     'tiny.cc', 'bc.vc', 'lnk.to', 'surl.li', 'short.io',
+    'did.li', 'jdykalnwl.icu', 'cutt.ly', 'bit.ly', 'shorturl.at',
 }
 
 # 匹配无协议前缀的短链域名（如 cutt.ly/htFIS3ZQ）
@@ -33,9 +34,17 @@ def extract_urls(text: str) -> List[str]:
 
     urls = _URL_PATTERN.findall(text)
 
-    # 提取无协议前缀的短链并补全 https://
-    for m in _BARE_SHORT_PATTERN.finditer(text):
-        bare = m.group(0)
+    # 提取无协议前缀的可能域名（格式如 domain.tld/path）
+    # 匹配规则：字母数字开头，包含点，跟随 2-6 位后缀，后面必须接 / 和路径字符
+    _GENERIC_BARE_PATTERN = re.compile(
+        r'(?<![a-zA-Z0-9])([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-z]{2,6}/[^\s<>"\'，。！？、；：）】}\]]+)',
+        re.IGNORECASE
+    )
+    for m in _GENERIC_BARE_PATTERN.finditer(text):
+        bare = m.group(1)
+        # 排除包含连续点的（可能是版本号或IP片段）
+        if '..' in bare:
+            continue
         full = f"https://{bare}"
         if full not in urls:
             urls.append(full)
@@ -43,7 +52,7 @@ def extract_urls(text: str) -> List[str]:
     cleaned = []
     for url in urls:
         url = url.rstrip('.,;:!?)')
-        if url and len(url) > 10:
+        if url and len(url) > 8: # 稍微放宽长度
             cleaned.append(url)
     return list(dict.fromkeys(cleaned))
 

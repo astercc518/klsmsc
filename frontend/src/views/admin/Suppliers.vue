@@ -651,6 +651,7 @@ import {
   importFromResourcePricing, importFromVoicePricing,
   type Supplier
 } from '@/api/supplier'
+import { findCountryByIso, findCountryByDial, COUNTRY_LIST } from '@/constants/countries'
 
 const { t } = useI18n()
 
@@ -919,25 +920,16 @@ const isEditRate = ref(false)
 const currentRateId = ref<number | null>(null)
 const rateFormRef = ref<FormInstance>()
 
-// 国家代码列表
-const countryCodes = [
-  'CN', 'US', 'GB', 'JP', 'KR', 'SG', 'HK', 'TW', 'MO', 'TH', 'VN', 'MY',
-  'ID', 'PH', 'IN', 'PK', 'BD', 'MM', 'KH', 'LA', 'NP', 'LK', 'AU', 'NZ',
-  'CA', 'MX', 'BR', 'AR', 'CL', 'CO', 'PE', 'VE', 'DE', 'FR', 'IT', 'ES',
-  'PT', 'NL', 'BE', 'CH', 'AT', 'SE', 'NO', 'DK', 'FI', 'PL', 'CZ', 'HU',
-  'GR', 'TR', 'RU', 'UA', 'RO', 'BG', 'AE', 'SA', 'IL', 'EG', 'ZA', 'NG',
-  'KE', 'MA', 'GH', 'QA', 'KW', 'BH', 'OM', 'JO', 'LB', 'IQ', 'IR', 'AF',
-  'IE', 'SK', 'SI', 'HR', 'RS', 'LT', 'LV', 'EE', 'BY', 'KZ', 'UZ', 'MN',
-]
-
-// 完整国家列表 - 使用计算属性以支持 i18n
+// 完整国家列表 - 基于全局字典动态生成
 const allCountries = computed(() => 
-  countryCodes.map(code => ({ code, name: t(`countries.${code}`) }))
+  COUNTRY_LIST.map(c => ({ code: c.iso, name: c.name }))
 )
 
 // 获取国家名称
 const getCountryName = (code: string) => {
-  return t(`countries.${code}`, code)
+  if (!code || code === '*') return t('common.all') || '全部'
+  const c = findCountryByIso(code)
+  return c ? `${c.name} (${c.iso})` : code
 }
 
 // 按业务类型分组的资源类型选项（发送方式/技术类型）

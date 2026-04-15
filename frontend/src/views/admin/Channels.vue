@@ -523,9 +523,13 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search, Connection, CircleCheck, Promotion, Link } from '@element-plus/icons-vue'
-import { getChannelsAdmin, createChannel, updateChannel, deleteChannel, getChannelAdmin } from '@/api/admin'
+import { getChannelsAdmin, createChannel,  updateChannel, deleteChannel,
+  getChannelRelationsAdmin,
+  type Channel
+} from '@/api/channel'
 import { getSuppliers } from '@/api/supplier'
 import request from '@/api/index'
+import { findCountryByIso, COUNTRY_LIST } from '@/constants/countries'
 
 const { t } = useI18n()
 
@@ -570,11 +574,9 @@ const getSidStatusType = (status: string) => {
   return map[status] || ''
 }
 
-// 国家列表 - 使用国际化
-const countryCodes = ['CN', 'US', 'GB', 'JP', 'KR', 'SG', 'HK', 'TW', 'TH', 'VN', 'MY', 'ID', 'PH', 'IN', 'AU', 'CA', 'DE', 'FR', 'BR', 'MX', 'RU', 'GH', 'NG', 'KE', 'ZA', 'EG', 'SA', 'AE', 'PK', 'BD', 'NP', 'LK', 'MM', 'KH', 'LA']
-
+// 国家列表 - 使用全局字典动态生成
 const allCountries = computed(() => 
-  countryCodes.map(code => ({ code, name: t(`countries.${code}`) }))
+  COUNTRY_LIST.map(c => ({ code: c.iso, name: c.name }))
 )
 
 const countryNameMap = computed(() => 

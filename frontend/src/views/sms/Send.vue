@@ -1896,11 +1896,23 @@ function toggleAiSelectAll(val: boolean) {
   if (val) { aiSelectedSet.value = new Set(aiResults.value.map((_, i) => i)) }
   else { aiSelectedSet.value = new Set() }
 }
+// ============ 长短信确认 ============
 // ============ 私有库发送 ============
 const privateSending = ref(false)
 async function handlePrivateSend() {
   if (!selectedPrivateGroup.value) return ElMessage.warning('请选择要发送的号码组')
   if (!form.value.message) return ElMessage.warning('请输入短信内容')
+  
+  const currentParts = countSmsParts(form.value.message)
+  if (currentParts > 1) {
+    try {
+      await ElMessageBox.confirm(
+        `当前短信内容较长，将拆分为 ${currentParts} 条计费。是否确认发送？`,
+        '长短信提醒',
+        { confirmButtonText: '确认发送', cancelButtonText: '取消', type: 'warning' }
+      )
+    } catch { return }
+  }
   if (privateStockMax.value < 1 || privateQuantity.value < 1) {
     return ElMessage.warning('当前分组无可用号码或发送条数须至少为 1')
   }
@@ -2156,6 +2168,16 @@ const handleSubmitApproval = async () => {
     ElMessage.warning(t('smsSend.pleaseEnterContent'))
     return
   }
+  const currentParts = countSmsParts(form.value.message)
+  if (currentParts > 1) {
+    try {
+      await ElMessageBox.confirm(
+        `当前短信内容较长，将拆分为 ${currentParts} 条计费。是否确认提交审核？`,
+        '长短信提醒',
+        { confirmButtonText: '确认提交', cancelButtonText: '返回修改', type: 'warning' }
+      )
+    } catch { return }
+  }
   if (hasSensitiveWord.value) {
     const words = matchedBannedWords.value.join('、')
     try {
@@ -2198,6 +2220,17 @@ const handleSend = async () => {
   if (isPrivate && !selectedPrivateGroup.value) { ElMessage.warning('请选择私有库分组'); return }
   if (!form.value.message) { ElMessage.warning(t('smsSend.pleaseEnterContent')); return }
 
+  const currentParts = countSmsParts(form.value.message)
+  if (currentParts > 1) {
+    try {
+      await ElMessageBox.confirm(
+        `当前短信内容较长，将拆分为 ${currentParts} 条计费。是否确认发送？`,
+        '长短信提醒',
+        { confirmButtonText: '确认发送', cancelButtonText: '取消', type: 'warning' }
+      )
+    } catch { return }
+  }
+  
   if (!isPrivate && numbers.length > 2000000) {
     ElMessage.warning('单次最多提交 200 万个号码')
     return
@@ -2375,12 +2408,14 @@ const selectProduct = (product: DataProduct) => {
 }
 
 const handleStoreSend = async () => {
-  if (!selectedProduct.value || !form.value.message) return
+  const currentParts = countSmsParts(form.value.message)
+  const longSmsHint = currentParts > 1 ? `\n(内容较长，将按 ${currentParts} 条计费)` : ''
+  
   try {
     await ElMessageBox.confirm(
       storeSmsCost.value > 0
-        ? `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n数据费: $${formatUsdEstimate(storeDataCost.value)} + 短信费: $${formatUsdEstimate(storeSmsCost.value)} = 合计: $${storeCost.value}`
-        : `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n费用: $${storeCost.value}`,
+        ? `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？${longSmsHint}\n数据费: $${formatUsdEstimate(storeDataCost.value)} + 短信费: $${formatUsdEstimate(storeSmsCost.value)} = 合计: $${storeCost.value}`
+        : `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？${longSmsHint}\n费用: $${storeCost.value}`,
       '确认购买发送', { type: 'warning' },
     )
   } catch { return }

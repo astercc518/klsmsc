@@ -1826,9 +1826,9 @@ export default {
       channel: { title: '高质量通道', desc: '优质直连通道，高成功率，支持高并发发送任务。' },
       report: { title: '数据透明', desc: '实时发送报告，数据可见，结果可查，助力营销效果评估。' }
     },
-    pricingDesc: '零月租费零服务费，按照实际发送量计费，价格透明',
+    pricingDesc: '零月租费零服务费，按提交任务计费，价格透明',
     priceFeatures: [
-      { title: '按需计费', desc: '无固定费用，仅为您发送成功的短信付费。' },
+      { title: '按需计费', desc: '无固定费用，提交发送即按条计费（含后续发送失败）。' },
       { title: '阶梯折扣', desc: '发送量越大，单价越低，助力大型营销活动。' },
       { title: '透明公开', desc: '后台实时查询消费记录，每一分钱都清晰可见。' }
     ],
@@ -1837,7 +1837,7 @@ export default {
     faqs: [
       { q: '如何开始发送短信？', a: '注册账户并充值后，即可在后台手动群发或通过 API 接入发送。' },
       { q: '支持哪些支付方式？', a: '支持加密货币 (USDT) 等主流支付方式。' },
-      { q: '短信发送失败会计费吗？', a: '仅对发送成功的短信（接收到状态报告）计费。' },
+      { q: '短信发送失败会计费吗？', a: '会。提交发送时已从余额扣费，与送达结果无关；通道成本亦按提交时的报价计入。' },
       { q: '内容审核需要多久？', a: '大多数内容几秒内自动通过，敏感内容需人工审核。' },
       { q: '如何查看发送报告？', a: '后台提供详细的发送记录和分析报表。' },
       { q: '我可以发送营销短信吗？', a: '可以，考拉出海不限行业，支持各类合规营销短信。' }
@@ -2566,6 +2566,8 @@ export default {
     insufficientBalance: '账户余额不足，请先充值',
     livePreview: '实时预览',
     loadDraft: '选择草稿',
+    longSmsWarning: '长短信提醒',
+    longSmsConfirmMsg: '当前短信内容较长，将拆分为 {parts} 条计费。是否确认发送？',
     message: '短信内容',
     noDrafts: '暂无草稿',
     numbers: '个号码',
@@ -2654,6 +2656,7 @@ export default {
     loginPassword: '登录密码',
     minSixChars: '至少6位字符',
     monthlyCommission: '本月佣金',
+    monthlyPerformance: '本月业绩',
     newPassword: '新密码',
     normal: '正常',
     offboard: '离职处理',

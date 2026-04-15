@@ -22,7 +22,7 @@ from app.modules.common.recharge_order import RechargeOrder
 from app.modules.common.sms_content_approval import SmsContentApproval
 from app.modules.common.system_config import SystemConfig
 from sqlalchemy import select, func, desc, text
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import os
 import re
 import secrets
@@ -846,11 +846,14 @@ async def show_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
                 msg = f"👋 {admin.real_name or admin.username}\n🔐 {role_label}\n\n请选择操作："
             else:
                 menu = get_main_menu_sales()
-                monthly = float(admin.monthly_commission or 0)
+                # 实时计算本月业绩和佣金
+                monthly_profit, monthly_comm = await get_monthly_commission(db, admin.id, admin.commission_rate)
+                
                 msg = (
                     f"👋 姓名: {admin.real_name or admin.username}\n"
                     f"🔐 角色: {role_label}\n"
-                    f"💰 本月佣金: ${monthly:.2f}\n\n"
+                    f"📊 本月预计业绩: ${monthly_profit:.2f}\n"
+                    f"💰 本月预计佣金: ${monthly_comm:.2f}\n\n"
                     f"请选择操作：\n\n"
                     f"📢 全行业短信群发，AI语音，渗透数据！\n"
                     f"所有信息以官网 https://www.kaolach.com/ 展示为准！"
@@ -1646,6 +1649,34 @@ async def send_knowledge_attachment(query, context, attachment_id: int):
         await query.answer("发送失败，请稍后重试", show_alert=True)
 
 
+async def get_monthly_commission(db, sales_id: int, commission_rate: float) -> tuple[float, float]:
+    """实时计算销售人员本月的预计利润和佣金"""
+    rate = float(commission_rate or 0) / 100.0
+    
+    # 本月第一天
+    first_day = date.today().replace(day=1).strftime('%Y-%m-%d 00:00:00')
+    
+    # SQL: 汇总该销售名下所有客户在本月产生的已送达利润，排除虚拟通道(VIRTUAL)
+    sql = text("""
+        SELECT SUM(l.profit * l.message_count) 
+        FROM sms_logs l
+        JOIN accounts acc ON l.account_id = acc.id
+        JOIN channels ch ON l.channel_id = ch.id
+        WHERE acc.sales_id = :sales_id 
+          AND l.submit_time >= :start_time
+          AND l.status = 'delivered'
+          AND ch.protocol != 'VIRTUAL'
+    """)
+    
+    try:
+        result = await db.execute(sql, {"sales_id": sales_id, "start_time": first_day})
+        total_profit = float(result.scalar() or 0)
+        return total_profit, total_profit * rate
+    except Exception as e:
+        logger.error(f"计算实时佣金失败 (sales_id={sales_id}): {e}")
+        return 0.0, 0.0
+
+
 async def show_commission(query, context):
     """显示佣金"""
     tg_id = query.from_user.id
@@ -1660,11 +1691,16 @@ async def show_commission(query, context):
         admin = admin_result.scalar_one_or_none()
         
         if admin:
+            # 实时计算本月业绩和佣金
+            monthly_profit, monthly_comm = await get_monthly_commission(db, admin.id, admin.commission_rate)
+            
             await query.edit_message_text(
-                f"💰 我的佣金\n\n"
-                f"本月佣金: ${admin.monthly_commission or 0:.2f}\n"
-                f"佣金比例: {(admin.commission_rate or 0) * 100:.1f}%\n\n"
-                f"佣金每月15日结算",
+                f"💰 我的佣金与业绩\n\n"
+                f"📊 本月预计业绩: ${monthly_profit:.2f}\n"
+                f"📈 本月预计佣金: ${monthly_comm:.2f}\n"
+                f"💵 当前提成比例: {float(admin.commission_rate or 0):.1f}%\n\n"
+                f"💡 业绩统计仅包含真实通道已送达的消息利润。\n"
+                f"最终结算以每月15日财务核算为准。",
                 reply_markup=get_back_menu()
             )
         else:
@@ -1941,15 +1977,15 @@ async def _get_test_countries_for_account(db, account_id: int) -> str:
         return "-"
 
 
-def _voice_unit(resource_type: str) -> str:
+def _voice_unit(billing_model: str) -> str:
     """语音计费模式转显示单位：1+1=按秒，60+60=按分钟，6+1/6+6/30+6等=按计费块"""
-    t = (resource_type or "").strip()
+    t = (billing_model or "").strip()
     if t == "1+1":
         return "/秒"
     if t == "60+60":
         return "/分钟"
     if re.match(r"^\d+\+\d+$", t):
-        return f"/{t}秒"
+        return f"({t}s)"
     return "/分钟"
 
 
@@ -2009,7 +2045,7 @@ async def show_pricing_by_biz_country(query, context, biz_type: str, country_cod
         async with get_session() as db:
             result = await db.execute(
                 text("""
-                    SELECT r.cost_price, r.sell_price, r.currency, s.supplier_name, r.resource_type
+                    SELECT r.cost_price, r.sell_price, r.currency, s.supplier_name, r.billing_model, r.line_desc
                     FROM supplier_rates r
                     JOIN suppliers s ON r.supplier_id = s.id
                     WHERE r.country_code = :cc AND r.business_type = :biz AND r.status = 'active'
@@ -2039,18 +2075,29 @@ async def show_pricing_by_biz_country(query, context, biz_type: str, country_cod
     lines = [f"📋 {biz_label} - {country_label} ({country_code}) 资源报价\n"]
     for row in rows:
         cost = float(row[0])
-        sell = float(row[1]) if row[1] else cost
+        sell_raw = float(row[1]) if row[1] else 0
         curr = row[2] or "USD"
-        supplier_name = row[3] or "-"
-        resource_type = (row[4] or "").strip() if len(row) > 4 else ""
-        # 语音业务按时间计费：1+1=按秒，60+60=按分钟，6+1/6+6/30+6等=按计费块；短信/数据按条计费
-        unit = _voice_unit(resource_type) if biz_type == "voice" else "/条"
-        lines.append(f"• {supplier_name}: 成本 ${cost:.4f} 售价 ${sell:.4f} {curr}{unit}")
+        supplier_name = (row[3] or "-")
+        billing_model = (row[4] or "").strip()
+        line_desc = (row[5] or "-").strip()
+        
+        # 语音业务计费单位
+        unit = _voice_unit(billing_model) if biz_type == "voice" else "/条"
+        
+        # 按照用户要求：供应商 计费模式 线路描述 成本 (售价)
+        if biz_type == "voice":
+            sell_part = f" (销:{sell_raw:7.6f})" if sell_raw > 0 else ""
+            lines.append(f"• `{supplier_name:<4}` | `{billing_model:<5}` | `{line_desc}` | `{cost:7.6f}`{sell_part}")
+        else:
+            # 短信保持原格式或略作微调
+            sell_part = f" 售:`{sell_raw:7.6f}`" if sell_raw > 0 else " (售价未设)"
+            lines.append(f"• `{supplier_name:<6}` 成本:`{cost:7.6f}`{sell_part}")
 
     keyboard = [[InlineKeyboardButton("🔙 返回", callback_data=f"pricing_biz_{biz_type}")]]
     await query.edit_message_text(
         "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
     )
 
 
@@ -2061,7 +2108,7 @@ async def show_pricing_all(query, context):
             result = await db.execute(
                 text("""
                     SELECT r.country_code, r.cost_price, r.sell_price, r.currency, s.supplier_name,
-                           r.business_type, r.resource_type
+                           r.business_type, r.billing_model, r.line_desc
                     FROM supplier_rates r
                     JOIN suppliers s ON r.supplier_id = s.id
                     WHERE r.status = 'active' AND (s.is_deleted = 0 OR s.is_deleted IS NULL)
@@ -2101,11 +2148,19 @@ async def show_pricing_all(query, context):
         for item in by_country[cc]:
             cost_price, sell_price, curr, supplier_name = item[0], item[1], item[2], item[3]
             biz_type = item[4] if len(item) > 4 else "sms"
-            resource_type = item[5] if len(item) > 5 else ""
+            billing_model = item[5] if len(item) > 5 else ""
+            line_desc = item[6] if len(item) > 6 else "-"
+            
             cost = float(cost_price)
-            sell = float(sell_price) if sell_price else cost
-            unit = _voice_unit(resource_type) if biz_type == "voice" else "/条"
-            lines.append(f"  • {supplier_name}: 成本 ${cost:.4f} 售价 ${sell:.4f} {curr}{unit}")
+            sell = float(sell_price) if sell_price else 0
+            unit = _voice_unit(billing_model) if biz_type == "voice" else "/条"
+            
+            if biz_type == "voice":
+                sell_part = f" (销:{sell:7.6f})" if sell > 0 else ""
+                lines.append(f"  • `{supplier_name:<4}` | `{billing_model:<5}` | `{line_desc}` | `{cost:7.6f}`{sell_part}")
+            else:
+                sell_part = f" 售:`{sell:7.6f}`" if sell > 0 else " (未设)"
+                lines.append(f"  • `{supplier_name:<6}` 成本:`{cost:7.6f}`{sell_part}")
 
     # Telegram 消息长度限制约 4096
     text = "\n".join(lines)
@@ -2663,13 +2718,17 @@ async def show_sales_stats(query, context):
         )
         total_balance = balance_result.scalar() or 0
         
+        # 实时计算本月佣金和业绩
+        monthly_profit, monthly_comm = await get_monthly_commission(db, admin.id, admin.commission_rate)
+        
         await query.edit_message_text(
             f"📊 我的业绩统计\n\n"
             f"👤 总客户数: {total_customers}\n"
             f"🆕 本月新增: {new_count}\n"
             f"💰 客户总余额: ${total_balance:.2f}\n"
-            f"📈 本月佣金: ${admin.monthly_commission or 0:.2f}\n"
-            f"💵 佣金比例: {float(admin.commission_rate or 0):.1f}%",
+            f"📊 本月预计业绩: ${monthly_profit:.2f}\n"
+            f"📈 本月预计佣金: ${monthly_comm:.2f}\n"
+            f"💵 提成比例: {float(admin.commission_rate or 0):.1f}%",
             reply_markup=get_back_menu()
         )
 
@@ -3359,12 +3418,16 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             else:
                 menu = get_main_menu_sales()
-                monthly = float(admin.monthly_commission or 0)
+                # 实时计算本月佣金和业绩
+                async with get_session() as db:
+                    monthly_profit, monthly_comm = await get_monthly_commission(db, admin.id, admin.commission_rate)
+                
                 msg = (
                     f"✅ 绑定成功！\n\n"
                     f"👋 姓名: {admin.real_name or admin.username}\n"
                     f"🔐 角色: {role_label}\n"
-                    f"💰 本月佣金: ${monthly:.2f}\n\n"
+                    f"📊 本月预计业绩: ${monthly_profit:.2f}\n"
+                    f"💰 本月预计佣金: ${monthly_comm:.2f}\n\n"
                     f"请选择操作：\n\n"
                     f"📢 全行业短信群发，AI语音，渗透数据！\n"
                     f"所有信息以官网 https://www.kaolach.com/ 展示为准！"

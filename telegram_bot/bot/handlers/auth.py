@@ -15,7 +15,8 @@ from sqlalchemy import select, update as sa_update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from bot.handlers.menu import (
     get_main_menu_customer, get_main_menu_sales, 
-    get_main_menu_tech, get_main_menu_guest
+    get_main_menu_tech, get_main_menu_guest,
+    get_monthly_commission
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -156,11 +157,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 else:
                     menu = get_main_menu_sales()
-                    monthly = float(admin.monthly_commission or 0)
+                    # 实时计算本月业绩和佣金
+                    monthly_profit, monthly_comm = await get_monthly_commission(db, admin.id, admin.commission_rate)
                     msg = (
                         f"👋 姓名: {display_name}\n"
                         f"🔐 角色: {role_label}\n"
-                        f"💰 本月佣金: ${monthly:.2f}\n\n"
+                        f"📊 本月预计业绩: ${monthly_profit:.2f}\n"
+                        f"💰 本月预计佣金: ${monthly_comm:.2f}\n\n"
                         f"请选择操作：\n\n"
                         f"📢 全行业短信群发，AI语音，渗透数据！\n"
                         f"所有信息以官网 https://www.kaolach.com/ 展示为准！"

@@ -144,11 +144,17 @@ class Settings(BaseSettings):
     # 非集群锁模式下，发送后保持 SMPP 连接的最长秒数以便接收 deliver_sm（快通道可改短，慢通道可至 24h；更久需靠 HTTP 拉取/回调）
     SMPP_DLR_SOCKET_HOLD_SECONDS: int = Field(default=300, ge=60, le=86400)
 
+    # SMPP 窗口化批量发送：一次持锁内连续发出的 submit_sm 条数（建议 10-50）
+    SMPP_WINDOW_SIZE: int = Field(default=50, ge=1, le=100)
+
     # sent 状态超过此时长未收到终态 DLR 则标记为 expired（快通道可改短；慢通道可设 72～168；最大 720h≈30 天）
     DLR_SENT_TIMEOUT_HOURS: int = Field(default=72, ge=4, le=720)
 
     # 定时拉取上游 DLR 报告的 HTTP 超时（秒）
     DLR_PULL_HTTP_TIMEOUT_SECONDS: float = Field(default=60.0, ge=10.0, le=300.0)
+
+    # HTTP 通道单条请求超过该秒数时 worker 打 WARNING，便于区分「Redis max_tps 未跑满」与「上游/网络慢」
+    SMS_HTTP_SLOW_WARN_SECONDS: float = Field(default=1.5, ge=0.5, le=120.0)
 
     # OKCC 语音客户全量同步：由 Celery Beat 按间隔触发（与手动「同步OKCC余额」相同逻辑）
     OKCC_BEAT_SYNC_ENABLED: bool = True

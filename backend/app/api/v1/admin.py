@@ -4,7 +4,7 @@
 import asyncio
 from fastapi import APIRouter, Depends, Header, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select, text, update as sa_update
+from sqlalchemy import delete, select, text, update as sa_update, func, and_
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, List
 from urllib.parse import quote
@@ -3395,7 +3395,25 @@ async def list_admin_users(
     if role:
         query = query.where(AdminUser.role == role)
     
-    query = query.order_by(AdminUser.created_at.desc())
+    # 获取本月起始时间
+    first_day = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    from app.modules.sms.sms_log import SMSLog
+    from app.modules.sms.channel import Channel
+    comm_query = (
+        select(Account.sales_id, func.sum(SMSLog.profit * SMSLog.message_count).label("total_profit"))
+        .join(SMSLog, Account.id == SMSLog.account_id)
+        .join(Channel, SMSLog.channel_id == Channel.id)
+        .where(and_(
+            SMSLog.submit_time >= first_day,
+            SMSLog.status == 'delivered',
+            Channel.protocol != 'VIRTUAL'
+        ))
+        .group_by(Account.sales_id)
+    )
+    comm_result = await db.execute(comm_query)
+    comm_map = {r.sales_id: float(r.total_profit or 0) for r in comm_result}
+    
     result = await db.execute(query)
     users = result.scalars().all()
     
@@ -3411,7 +3429,8 @@ async def list_admin_users(
                 "status": u.status,
                 "tg_id": u.tg_id,
                 "commission_rate": float(u.commission_rate) if u.commission_rate else 0,
-                "monthly_commission": float(u.monthly_commission) if u.monthly_commission else 0,
+                "monthly_performance": round(comm_map.get(u.id, 0.0), 2),
+                "monthly_commission": round(comm_map.get(u.id, 0.0) * (float(u.commission_rate or 0) / 100.0), 2),
                 "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
                 "created_at": u.created_at.isoformat() if u.created_at else None
             }
