@@ -160,7 +160,7 @@ async def root():
 
 # 注册路由
 from app.api.v1 import (
-    sms, account, channels, admin, reports, bot_admin, system_config,
+    sms, account, channels, admin, reports, bot_admin, internal_bot, system_config,
     templates, api_keys, batches, scheduled_tasks, sub_accounts, packages,
     notifications, security_logs, suppliers, tickets,
     knowledge,
@@ -179,6 +179,7 @@ app.include_router(channels.router, prefix="/api/v1/channels", tags=["Channels"]
 app.include_router(admin.router, prefix="/api/v1", tags=["Admin"])
 app.include_router(reports.router, prefix="/api/v1", tags=["Reports"])
 app.include_router(bot_admin.router, prefix="/api/v1/admin/bot", tags=["Bot Admin"])
+app.include_router(internal_bot.router, prefix="/api/v1/internal/bot", tags=["Bot Internal"])
 app.include_router(system_config.router, prefix="/api/v1/admin", tags=["System Config"])
 app.include_router(templates.router, prefix="/api/v1", tags=["Templates"])
 app.include_router(api_keys.router, prefix="/api/v1", tags=["API Keys"])

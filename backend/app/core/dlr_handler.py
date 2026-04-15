@@ -339,10 +339,11 @@ async def process_dlr_reports(
         channel_id: 若指定则仅匹配该通道下的短信，避免跨通道 upstream_message_id 碰撞误更新
         
     Returns:
-        (成功数, 失败数)
+        (成功数, 失败数, 影响的批次ID集合)
     """
     success_count = 0
     fail_count = 0
+    affected_batch_ids = set()
     
     for report in reports:
         try:
@@ -402,6 +403,10 @@ async def process_dlr_reports(
             if not sms_log:
                 logger.debug(f"[{source}] DLR 找不到对应记录: {message_id}")
                 continue
+            
+            # 记录受影响的批次ID
+            if sms_log.batch_id:
+                affected_batch_ids.add(sms_log.batch_id)
             
             # 只更新 sent 状态的记录
             if sms_log.status not in ['sent', 'pending', 'queued']:
@@ -471,7 +476,7 @@ async def process_dlr_reports(
         logger.error(f"[{source}] 提交 DLR 更新失败: {e}")
         await db.rollback()
     
-    return success_count, fail_count
+    return success_count, fail_count, affected_batch_ids
 
 
 def detect_and_parse_dlr(content: str, content_type: str = '') -> List[Dict]:

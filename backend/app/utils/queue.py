@@ -94,12 +94,11 @@ class QueueManager:
         Returns:
             是否成功加入队列
         """
-        from app.workers.sms_worker import send_sms_batch_smpp_task
-
         last_err = None
         for attempt in range(_SMS_QUEUE_RETRIES):
             try:
-                task = send_sms_batch_smpp_task.apply_async(
+                task = celery_app.send_task(
+                    'send_sms_batch_smpp_task',
                     args=[message_ids],
                     queue=queue,
                 )
@@ -108,6 +107,7 @@ class QueueManager:
                     + (f" (第{attempt + 1}次尝试)" if attempt else "")
                 )
                 return True
+
             except Exception as e:
                 last_err = e
                 logger.warning(

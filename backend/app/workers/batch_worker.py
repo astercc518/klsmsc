@@ -812,7 +812,19 @@ async def _do_process_chunk(
             )
             batch = result.scalar_one_or_none()
             if batch:
-                batch.progress = min(99, int(total_logs * 100 / max(batch.total_count, 1)))
+                # 累加成功/失败计数 (需要使用原子更新，但此处先简单累加)
+                batch.success_count += succeeded
+                batch.failed_count += failed
+                
+                # 计算进度
+                total_processed = batch.success_count + batch.failed_count
+                if total_processed >= batch.total_count:
+                    batch.progress = 100
+                    batch.status = BatchStatus.COMPLETED
+                    batch.completed_at = datetime.now()
+                else:
+                    batch.progress = min(99, int(total_processed * 100 / max(batch.total_count, 1)))
+                
                 await db.commit()
 
         if is_virtual_channel and virtual_message_ids and virtual_channel_id:

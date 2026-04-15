@@ -827,7 +827,13 @@ async def send_batch_sms(
         sms_batch.progress = 0
         sms_batch.error_message = "没有成功入队的短信（号码、内容、余额或通道等原因）"
     else:
-        sms_batch.status = BatchStatus.PROCESSING
+        sms_batch.status = BatchStatus.COMPLETED
+        sms_batch.success_count = succeeded
+        sms_batch.failed_count = failed
+        sms_batch.progress = 100
+        sms_batch.completed_at = datetime.now()
+    
+    await db.commit()
 
     return BatchSMSResponse(
         success=True,
@@ -1508,6 +1514,7 @@ from app.core.dlr_handler import (
     parse_json_dlr, parse_xml_dlr, parse_form_dlr, 
     detect_and_parse_dlr, process_dlr_reports
 )
+from app.modules.sms.batch_utils import update_batch_progress
 from app.config import settings
 import ipaddress as _ipaddress
 
@@ -1600,11 +1607,15 @@ async def _handle_dlr_callback_post(
         logger.warning(f"DLR 回调无法解析或无有效报告: {body_text[:200]}")
         return {"status": 0, "message": "no valid reports"}
 
-    success, fail = await process_dlr_reports(
+    success, fail, affected_batch_ids = await process_dlr_reports(
         reports, db, source=source, channel_id=channel_id
     )
 
-    logger.info(f"DLR 回调处理完成: 成功={success}, 失败={fail}")
+    # 异步同步批次统计数据
+    for b_id in affected_batch_ids:
+        await update_batch_progress(db, b_id)
+
+    logger.info(f"DLR 回调处理完成: 成功={success}, 失败={fail}, 影响批次={len(affected_batch_ids)}")
     return {"status": 0, "message": "success", "processed": success + fail}
 
 

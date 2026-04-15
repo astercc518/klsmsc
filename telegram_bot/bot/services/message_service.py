@@ -4,11 +4,9 @@ Telegram消息服务 - 处理消息记录持久化
 from datetime import datetime
 from typing import Optional, Any, Dict
 import json
-from sqlalchemy import select
-from bot.utils import get_session, logger
-from app.modules.common.telegram_message import TelegramMessage
-from app.modules.common.telegram_binding import TelegramBinding
-from app.modules.common.account import Account
+from bot.utils import logger
+import os
+import httpx
 
 class MessageService:
     @staticmethod
@@ -23,45 +21,32 @@ class MessageService:
         reply_to_message_id: Optional[int] = None,
         extra_data: Optional[Dict] = None
     ):
-        """记录消息到数据库"""
+        """记录消息到数据库（通过内部API解耦）"""
         try:
-            async with get_session() as db:
-                # 尝试查找关联账户
-                account_id = None
-                account_name = None
-                
-                binding_query = select(TelegramBinding, Account).join(
-                    Account, TelegramBinding.account_id == Account.id
-                ).where(
-                    TelegramBinding.tg_id == tg_user_id
-                )
-                result = await db.execute(binding_query)
-                row = result.first()
-                if row:
-                    binding, account = row
-                    account_id = account.id
-                    account_name = account.account_name
+            # 内部后端API地址，默认 smsc-api:8000
+            backend_url = os.getenv("API_URL", "http://api:8000")
+            url = f"{backend_url.rstrip('/')}/api/v1/internal/bot/messages"
+            
+            payload = {
+                "tg_user_id": tg_user_id,
+                "direction": direction,
+                "content": content,
+                "tg_username": tg_username,
+                "tg_chat_id": tg_chat_id,
+                "message_type": message_type,
+                "message_id": message_id,
+                "reply_to_message_id": reply_to_message_id,
+                "extra_data": extra_data
+            }
 
-                # 创建消息记录
-                msg = TelegramMessage(
-                    tg_user_id=str(tg_user_id),
-                    tg_username=tg_username,
-                    tg_chat_id=str(tg_chat_id) if tg_chat_id else None,
-                    direction=direction,
-                    message_type=message_type,
-                    content=content,
-                    account_id=account_id,
-                    account_name=account_name,
-                    message_id=str(message_id) if message_id else None,
-                    reply_to_message_id=str(reply_to_message_id) if reply_to_message_id else None,
-                    extra_data=json.dumps(extra_data) if extra_data else None,
-                    created_at=datetime.now()
-                )
-                db.add(msg)
-                await db.commit()
-                return True
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(url, json=payload)
+                if response.status_code != 200:
+                    logger.warning(f"记录Telegram消息API返回失败: {response.status_code}")
+                    return False
+            return True
         except Exception as e:
-            logger.error(f"记录Telegram消息失败: {e}")
+            logger.error(f"发送Telegram留痕消息到API失败: {e}")
             return False
 
     @staticmethod

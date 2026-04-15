@@ -26,6 +26,26 @@ export default defineConfig({
       '@': resolve(__dirname, 'src'),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('element-plus')) {
+              return 'element-plus';
+            }
+            if (id.includes('echarts')) {
+              return 'echarts';
+            }
+            if (id.includes('vue') || id.includes('pinia') || id.includes('vue-router')) {
+              return 'vue-vendor';
+            }
+            return 'vendor';
+          }
+        }
+      }
+    }
+  },
   server: {
     port: 5173,  // 使用Vite默认端口，避免与Grafana(3000)冲突
     host: '0.0.0.0',  // 允许外部访问

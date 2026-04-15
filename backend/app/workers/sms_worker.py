@@ -26,19 +26,16 @@ def _get_worker_engine():
     """进程级单例引擎，避免每次任务新建连接池"""
     global _worker_engine, _worker_session_factory
     if _worker_engine is None:
+        from sqlalchemy.pool import NullPool
         _worker_engine = create_async_engine(
             settings.SQLALCHEMY_DATABASE_URL,
             echo=False,
-            pool_size=20,
-            max_overflow=15,
-            pool_pre_ping=True,
-            pool_recycle=1800,
+            poolclass=NullPool,
         )
         _worker_session_factory = async_sessionmaker(
             _worker_engine, class_=AsyncSession, expire_on_commit=False
         )
     return _worker_engine, _worker_session_factory
-
 
 def _get_worker_session():
     """复用进程级引擎的会话"""
@@ -67,219 +64,11 @@ import asyncio
 logger = get_logger(__name__)
 
 
-def _mimic_smpp_expired_dlr_message() -> str:
-    """
-    虚拟通道「超时/未送达」类终态对外展示：仿 SMPP DLR 一行格式，
-    避免出现 Virtual / Worker / simulated 等内部字样，与客户可见的「真实回执」口径一致。
-    """
-    import random
-
-    return f"SMPP DLR: stat=EXPIRED err={random.randint(1, 999):03d}"
+# 从工具类导入
+from app.modules.sms.batch_utils import update_batch_progress, _mimic_smpp_expired_dlr_message
 
 
-def _smpp_dlr_hold_seconds(channel: Optional[Channel] = None) -> float:
-    """
-    SMPP 发送成功后保持 TCP 的秒数上限（与 config 中 SMPP_DLR_SOCKET_HOLD_SECONDS 上界一致）。
-    通道级 smpp_dlr_socket_hold_seconds 非空时优先（快慢通道分别调参）。
-    """
-    cap = float(getattr(settings, "SMPP_DLR_SOCKET_HOLD_SECONDS", 300) or 300)
-    # 与 pydantic Field le=86400 对齐
-    cap_max = 86400.0
-    cap = max(60.0, min(cap, cap_max))
-    try:
-        if channel is not None:
-            ch_hold = getattr(channel, "smpp_dlr_socket_hold_seconds", None)
-            if ch_hold is not None and int(ch_hold) > 0:
-                return float(max(60, min(int(ch_hold), int(cap_max))))
-    except (TypeError, ValueError):
-        pass
-    return cap
-# 按通道复用单连接：多数上游同一账号仅允许 1 条并发 bind，旧逻辑每条任务新建连接会导致第 2 条起 bind 失败，
-# 直至延迟断开释放会话（约 5 分钟），现象与「首条成功、其余失败、过一会又正常」一致。
-_smpp_cleanup_lock = threading.Lock()
-# channel_id -> (adapter, deadline)
-_smpp_disconnect_map: Dict[int, Tuple[Any, float]] = {}
-# channel_id -> 当前复用的适配器（与 disconnect_map 中对象为同一引用）
-_smpp_channel_adapter: Dict[int, Any] = {}
-_smpp_channel_locks_guard = threading.Lock()
-_smpp_channel_send_locks: Dict[int, threading.Lock] = {}
-# Celery 各子进程共用的 Redis 同步客户端（用于 SMPP 跨进程互斥）
-_smpp_sync_redis = None
 
-
-def _get_smpp_sync_redis():
-    """Worker 进程内懒加载同步 Redis（供 SMPP 分布式锁）"""
-    global _smpp_sync_redis
-    if _smpp_sync_redis is not None:
-        return _smpp_sync_redis
-    import redis as redis_sync
-
-    _smpp_sync_redis = redis_sync.Redis(
-        host=settings.REDIS_HOST,
-        port=settings.REDIS_PORT,
-        db=settings.REDIS_DB,
-        password=settings.REDIS_PASSWORD,
-        decode_responses=False,
-        socket_connect_timeout=3,
-        socket_timeout=60,
-    )
-    return _smpp_sync_redis
-
-
-@contextlib.contextmanager
-def _smpp_cross_process_lock(channel_id: int) -> Iterator[bool]:
-    """
-    跨 Celery 子进程串行化同一 SMPP 通道的 bind/发送。
-    若关闭或未连上 Redis，yield False（与旧版行为一致，多 worker 仍可能并发 bind）。
-    """
-    if not settings.SMPP_REDIS_CLUSTER_LOCK:
-        yield False
-        return
-
-    lock = None
-    held = False
-    try:
-        r = _get_smpp_sync_redis()
-        lock = r.lock(
-            f"smpp:bind:{channel_id}",
-            timeout=300,
-            blocking_timeout=240,
-            thread_local=False,
-        )
-        if lock.acquire(blocking=True):
-            held = True
-        else:
-            logger.error(f"SMPP 等待 Redis 全局锁超时 channel_id={channel_id}")
-    except Exception as e:
-        logger.warning(
-            f"SMPP Redis 集群锁不可用，退回仅进程内锁（多 worker 时仍可能对上游并发 bind）: {e}"
-        )
-
-    try:
-        yield held
-    finally:
-        if lock is not None and held:
-            try:
-                lock.release()
-            except Exception:
-                pass
-
-
-def _get_smpp_channel_lock(channel_id: int) -> threading.Lock:
-    """同一通道发送串行化，避免多任务同时操作同一 SMPP socket"""
-    with _smpp_channel_locks_guard:
-        if channel_id not in _smpp_channel_send_locks:
-            _smpp_channel_send_locks[channel_id] = threading.Lock()
-        return _smpp_channel_send_locks[channel_id]
-
-
-def _smpp_schedule_delayed_disconnect(adapter, channel_id: int, channel: Optional[Channel] = None):
-    """按通道刷新延迟断开时间：同通道多次发送共用一个连接，只保留最后一次 idle 后的断开点"""
-    if not adapter or not getattr(adapter, "client", None):
-        return
-    with _smpp_cleanup_lock:
-        _smpp_disconnect_map[channel_id] = (adapter, time.time() + _smpp_dlr_hold_seconds(channel))
-    # 启动清理线程（仅首次）
-    if not hasattr(_smpp_schedule_delayed_disconnect, "_cleanup_started"):
-        def _cleanup_loop():
-            while True:
-                time.sleep(30)
-                now = time.time()
-                due: List[Tuple[int, Any]] = []
-                with _smpp_cleanup_lock:
-                    for cid in list(_smpp_disconnect_map.keys()):
-                        adapter_ref, deadline = _smpp_disconnect_map[cid]
-                        if deadline <= now:
-                            _smpp_disconnect_map.pop(cid, None)
-                            due.append((cid, adapter_ref))
-                for cid, adapter_ref in due:
-                    lock = _get_smpp_channel_lock(cid)
-                    with lock:
-                        cur = _smpp_channel_adapter.get(cid)
-                        if cur is adapter_ref:
-                            try:
-                                adapter_ref._disconnect_sync()
-                            except Exception as e:
-                                logger.warning(f"SMPP 延迟断开失败: {e}")
-                            _smpp_channel_adapter.pop(cid, None)
-                        else:
-                            # 已被新会话替换或已摘除，仍关闭旧 socket，避免泄漏
-                            try:
-                                adapter_ref._disconnect_sync()
-                            except Exception:
-                                pass
-
-        t = threading.Thread(target=_cleanup_loop, daemon=True, name="smpp-dlr-cleanup")
-        t.start()
-        _smpp_schedule_delayed_disconnect._cleanup_started = True
-
-
-def _send_via_smpp_sync(sms_log: SMSLog, channel: Channel) -> Tuple[bool, Optional[str], Optional[str]]:
-    """
-    在线程池/同步上下文中持锁发送 SMPP，复用同通道连接。
-    返回 (success, upstream_message_id, error_message)。
-
-    说明：Celery prefork 下每个子进程有独立的连接池与 threading.Lock；上游单会话时多进程会并发 bind，
-    导致 ESME 13。开启 SMPP_REDIS_CLUSTER_LOCK 时用 Redis 全局锁串行化，并在成功后断开以释放 bind。
-    """
-    from app.workers.adapters.smpp_adapter import SMPPAdapter
-
-    with _smpp_cross_process_lock(channel.id) as cluster_lock_held:
-        lock = _get_smpp_channel_lock(channel.id)
-        with lock:
-            adapter = _smpp_channel_adapter.get(channel.id)
-            usable = (
-                adapter is not None
-                and getattr(adapter, "connected", False)
-                and getattr(adapter, "client", None) is not None
-            )
-            if not usable:
-                if adapter is not None:
-                    try:
-                        adapter._disconnect_sync()
-                    except Exception:
-                        pass
-                    _smpp_channel_adapter.pop(channel.id, None)
-                adapter = SMPPAdapter(channel)
-                if not adapter._connect_sync():
-                    err = adapter.last_error or "SMPP connection failed"
-                    return False, None, err
-                _smpp_channel_adapter[channel.id] = adapter
-                logger.info(f"SMPP 新建并绑定连接: channel={channel.channel_code} id={channel.id}")
-
-            ok, mid, err = adapter._send_sync(sms_log)
-            if ok:
-                if cluster_lock_held:
-                    # 多 worker 时必须在释放 Redis 锁前断开 TCP，否则下一进程 bind 时上游会话仍被占用 → ESME 13
-                    try:
-                        adapter._disconnect_sync()
-                    except Exception:
-                        pass
-                    _smpp_channel_adapter.pop(channel.id, None)
-                    with _smpp_cleanup_lock:
-                        ent = _smpp_disconnect_map.get(channel.id)
-                        if ent and ent[0] is adapter:
-                            _smpp_disconnect_map.pop(channel.id, None)
-                    logger.warning(
-                        f"SMPP 集群锁模式已断开连接（{channel.channel_code}），"
-                        f"本连接无法继续接收 deliver_sm；若依赖 SMPP 推送 DLR，请 "
-                        f"worker-sms --concurrency=1 且 SMPP_REDIS_CLUSTER_LOCK=false，或配置上游 HTTP report/回调"
-                    )
-                else:
-                    _smpp_schedule_delayed_disconnect(adapter, channel.id, channel)
-                    logger.debug(f"SMPP 复用连接发送成功: channel={channel.channel_code} id={channel.id}")
-            else:
-                # 发送失败时连接可能已不可用，关闭并移出池，避免后续任务死复用
-                try:
-                    adapter._disconnect_sync()
-                except Exception:
-                    pass
-                _smpp_channel_adapter.pop(channel.id, None)
-                with _smpp_cleanup_lock:
-                    ent = _smpp_disconnect_map.get(channel.id)
-                    if ent and ent[0] is adapter:
-                        _smpp_disconnect_map.pop(channel.id, None)
-            return ok, mid, err
 
 
 _worker_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -293,6 +82,7 @@ def _get_worker_loop() -> asyncio.AbstractEventLoop:
         with _worker_loop_lock:
             if _worker_loop is None or _worker_loop.is_closed():
                 _worker_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(_worker_loop)
     return _worker_loop
 
 
@@ -362,218 +152,7 @@ def send_sms_task(self, message_id: str, http_credentials: dict = None):
             return {"success": False, "error": str(e)}
 
 
-def _send_via_smpp_batch_sync(
-    sms_logs: list, channel: Channel
-) -> list:
-    """
-    批量 SMPP 发送：在同一连接上使用窗口化发送多条消息。
-    返回 [(sms_log, success, upstream_message_id, error_message), ...]
-    """
-    from app.workers.adapters.smpp_adapter import SMPPAdapter
 
-    window_size = int(getattr(settings, "SMPP_WINDOW_SIZE", 10) or 10)
-
-    with _smpp_cross_process_lock(channel.id) as cluster_lock_held:
-        lock = _get_smpp_channel_lock(channel.id)
-        with lock:
-            adapter = _smpp_channel_adapter.get(channel.id)
-            usable = (
-                adapter is not None
-                and getattr(adapter, "connected", False)
-                and getattr(adapter, "client", None) is not None
-            )
-            if not usable:
-                if adapter is not None:
-                    try:
-                        adapter._disconnect_sync()
-                    except Exception:
-                        pass
-                    _smpp_channel_adapter.pop(channel.id, None)
-                adapter = SMPPAdapter(channel)
-                if not adapter._connect_sync():
-                    err = adapter.last_error or "SMPP connection failed"
-                    return [(log, False, None, err) for log in sms_logs]
-                _smpp_channel_adapter[channel.id] = adapter
-                logger.info(
-                    f"SMPP 批量发送新建连接: channel={channel.channel_code} id={channel.id}"
-                )
-
-            results = adapter._send_batch_sync(sms_logs, window_size=window_size)
-
-            # 判断是否有成功的发送
-            any_success = any(ok for _, ok, _, _ in results)
-
-            if any_success:
-                if cluster_lock_held:
-                    try:
-                        adapter._disconnect_sync()
-                    except Exception:
-                        pass
-                    _smpp_channel_adapter.pop(channel.id, None)
-                    with _smpp_cleanup_lock:
-                        ent = _smpp_disconnect_map.get(channel.id)
-                        if ent and ent[0] is adapter:
-                            _smpp_disconnect_map.pop(channel.id, None)
-                else:
-                    _smpp_schedule_delayed_disconnect(adapter, channel.id, channel)
-            else:
-                # 全部失败，断开并移出池
-                try:
-                    adapter._disconnect_sync()
-                except Exception:
-                    pass
-                _smpp_channel_adapter.pop(channel.id, None)
-                with _smpp_cleanup_lock:
-                    ent = _smpp_disconnect_map.get(channel.id)
-                    if ent and ent[0] is adapter:
-                        _smpp_disconnect_map.pop(channel.id, None)
-
-            return results
-
-
-@celery_app.task(name='send_sms_batch_smpp_task', bind=True, max_retries=1)
-def send_sms_batch_smpp_task(self, message_ids: list):
-    """
-    批量 SMPP 短信发送任务：一次处理多条消息，窗口化发送。
-
-    Args:
-        message_ids: 消息ID列表
-    """
-    logger.info(f"SMPP 批量发送任务: {len(message_ids)} 条消息")
-
-    try:
-        result = _run_async(_send_sms_batch_async(message_ids))
-        return result
-    except Exception as e:
-        logger.error(f"SMPP 批量发送任务异常: {e}", exc_info=e)
-        # 失败时将每条消息标记为失败
-        for mid in message_ids:
-            try:
-                _run_async(_mark_failed(mid, str(e)))
-            except Exception:
-                pass
-        return {"success": False, "error": str(e), "count": len(message_ids)}
-
-
-async def _send_sms_batch_async(message_ids: list) -> dict:
-    """
-    批量 SMPP 发送的异步实现：
-    1. 从 DB 加载所有 sms_log 和对应 channel
-    2. 按 channel 分组
-    3. 调用 _send_via_smpp_batch_sync 窗口化发送
-    4. 更新每条记录的状态
-    """
-    db = _get_worker_session()
-    try:
-        # 1. 批量查询所有 sms_log
-        result = await db.execute(
-            select(SMSLog).where(SMSLog.message_id.in_(message_ids))
-        )
-        sms_logs = list(result.scalars().all())
-
-        if not sms_logs:
-            logger.warning(f"SMPP 批量发送: 无有效消息记录")
-            return {"success": True, "sent": 0, "failed": 0}
-
-        # 2. 收集 channel_ids 并批量查询通道
-        channel_ids = {log.channel_id for log in sms_logs if log.channel_id}
-        channels_result = await db.execute(
-            select(Channel).where(Channel.id.in_(channel_ids))
-        )
-        channel_map = {ch.id: ch for ch in channels_result.scalars().all()}
-
-        # 3. 按通道分组
-        grouped: dict = {}  # channel_id -> [(sms_log, channel)]
-        no_channel = []
-        for log in sms_logs:
-            ch = channel_map.get(log.channel_id)
-            if not ch:
-                no_channel.append(log)
-                continue
-            grouped.setdefault(ch.id, (ch, []))
-            grouped[ch.id][1].append(log)
-
-        # 处理无通道的消息
-        for log in no_channel:
-            log.status = 'failed'
-            log.error_message = "No available channel"
-            logger.error(f"SMPP 批量: 无可用通道: {log.message_id}")
-
-        sent_count = 0
-        failed_count = len(no_channel)
-
-        # 4. 按通道批量发送
-        for channel_id, (channel, logs) in grouped.items():
-            # TPS 限速检查（整批检查剩余配额）
-            from app.utils.rate_limiter import acquire_send_slot
-            max_tps = channel.max_tps or 100
-            allowed, wait_ms = acquire_send_slot(channel.id, max_tps)
-            if not allowed:
-                # 限速时回退到单条重试（通过原有 send_sms_task 路径）
-                logger.info(
-                    f"SMPP 批量: 通道 {channel.channel_code} 限速，"
-                    f"{len(logs)} 条回退单条重试"
-                )
-                for log in logs:
-                    send_sms_task.apply_async(
-                        args=[log.message_id, None],
-                        queue='sms_send_smpp',
-                        countdown=round(wait_ms / 1000, 2),
-                    )
-                continue
-
-            # 更新所有消息状态为 sent（发送中）
-            for log in logs:
-                log.status = 'sent'
-                log.sent_time = datetime.now()
-            await db.commit()
-
-            # 同步执行批量 SMPP 发送
-            loop = asyncio.get_running_loop()
-            batch_results = await loop.run_in_executor(
-                None, _send_via_smpp_batch_sync, logs, channel
-            )
-
-            # 处理结果
-            for log, success, upstream_mid, error_msg in batch_results:
-                if success:
-                    if upstream_mid:
-                        log.upstream_message_id = upstream_mid
-                    log.status = 'sent'
-                    log.sent_time = datetime.now()
-                    sent_count += 1
-                    logger.info(f"SMPP 批量发送成功: {log.message_id} -> {upstream_mid}")
-                else:
-                    log.status = 'failed'
-                    log.error_message = error_msg or "SMPP batch send failed"
-                    failed_count += 1
-                    logger.error(
-                        f"SMPP 批量发送失败: {log.message_id}, {error_msg}"
-                    )
-
-            await db.commit()
-
-            # 更新批次进度
-            batch_ids = {log.batch_id for log in logs if log.batch_id}
-            for bid in batch_ids:
-                await _update_batch_progress(db, bid)
-
-        logger.info(
-            f"SMPP 批量发送完成: 总计={len(sms_logs)}, "
-            f"成功={sent_count}, 失败={failed_count}"
-        )
-        return {
-            "success": True,
-            "total": len(sms_logs),
-            "sent": sent_count,
-            "failed": failed_count,
-        }
-
-    except Exception as e:
-        logger.error(f"SMPP 批量发送异常: {e}", exc_info=e)
-        raise
-    finally:
-        await db.close()
 
 
 async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _current_queue: str = 'sms_send') -> dict:
@@ -649,10 +228,8 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
             success = await _send_via_virtual(sms_log, channel)
         elif channel.protocol == 'HTTP':
             success = await _send_via_http(sms_log, channel, http_credentials)
-        elif channel.protocol == 'SMPP':
-            success = await _send_via_smpp(sms_log, channel)
         else:
-            logger.warning(f"不支持的协议: {channel.protocol}")
+            logger.warning(f"不支持的协议或已被上游拦截路由: {channel.protocol}")
             success = False
 
         # 发送成功后立刻提交：submit_sm_resp 写入的 upstream_message_id 必须先落库。
@@ -708,119 +285,13 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
 
         # 更新批次进度
         if sms_log.batch_id:
-            await _update_batch_progress(db, sms_log.batch_id)
+            await update_batch_progress(db, sms_log.batch_id)
         
         return {"success": success, "message_id": message_id, "status": sms_log.status}
     finally:
         await db.close()
 
 
-async def _update_batch_progress(db, batch_id: int):
-    """更新批次的发送进度和状态"""
-    try:
-        from app.modules.sms.sms_batch import SmsBatch, BatchStatus
-        from sqlalchemy import func as sa_func
-
-        stats = await db.execute(
-            select(
-                SMSLog.status,
-                sa_func.count().label('cnt')
-            ).where(SMSLog.batch_id == batch_id).group_by(SMSLog.status)
-        )
-        counts = {row.status: row.cnt for row in stats}
-        log_total = sum(counts.values())
-        sent = counts.get('sent', 0) + counts.get('delivered', 0)
-        failed = counts.get('failed', 0) + counts.get('expired', 0)
-        done = sent + failed
-
-        batch_result = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
-        batch = batch_result.scalar_one_or_none()
-        if not batch:
-            return
-
-        total = batch.total_count or log_total
-        pending_cnt = counts.get('pending', 0) + counts.get('queued', 0)
-
-        batch.success_count = sent
-        batch.failed_count = failed
-        batch.processing_count = total - done
-        batch.progress = int(done * 100 / max(total, 1))
-
-        if log_total >= total and done >= log_total:
-            if failed == 0:
-                batch.status = BatchStatus.COMPLETED
-            elif sent == 0:
-                batch.status = BatchStatus.FAILED
-            else:
-                batch.status = BatchStatus.COMPLETED
-                batch.error_message = f"部分失败: {failed}/{total}"
-            batch.completed_at = datetime.now()
-        elif log_total >= total and pending_cnt > 0 and pending_cnt <= total * 0.02:
-            # 仅虚拟通道：少量 pending 多为「countdown 模拟提交/DLR」在 Worker 重启后丢失，可收口为 expired。
-            # 真实通道（HTTP/SMPP）待发为 queued：任务仍在 RabbitMQ sms_send/sms_send_smpp 中排队属常态，
-            # 若此处一并过期会误杀队列尾部，并出现「Worker restart…」类与真实回执无关的 error_message。
-            from sqlalchemy import update as _sa_upd
-
-            pend_rows = (
-                await db.execute(
-                    select(SMSLog.message_id, Channel.protocol)
-                    .select_from(SMSLog)
-                    .outerjoin(Channel, SMSLog.channel_id == Channel.id)
-                    .where(
-                        SMSLog.batch_id == batch_id,
-                        SMSLog.status.in_(["pending", "queued"]),
-                    )
-                )
-            ).all()
-            all_virtual_pending = bool(pend_rows) and all(
-                r.protocol == "VIRTUAL" for r in pend_rows
-            )
-            if not all_virtual_pending:
-                logger.warning(
-                    f"批次存在非虚拟待发(≤2%)，跳过自动过期（避免误杀真实通道队列尾部）: "
-                    f"batch={batch_id}, pending={pending_cnt}"
-                )
-                batch.status = BatchStatus.PROCESSING
-                batch.completed_at = None
-            else:
-                now_ts = datetime.now()
-                virt_ids = [r.message_id for r in pend_rows]
-                await db.execute(
-                    _sa_upd(SMSLog)
-                    .where(SMSLog.message_id.in_(virt_ids))
-                    .values(
-                        status="expired",
-                        error_message=_mimic_smpp_expired_dlr_message(),
-                        sent_time=now_ts,
-                    )
-                )
-                await db.commit()
-                stats2 = await db.execute(
-                    select(SMSLog.status, sa_func.count().label('cnt'))
-                    .where(SMSLog.batch_id == batch_id).group_by(SMSLog.status)
-                )
-                counts2 = {r.status: r.cnt for r in stats2}
-                sent2 = counts2.get('sent', 0) + counts2.get('delivered', 0)
-                failed2 = counts2.get('failed', 0) + counts2.get('expired', 0)
-                batch.success_count = sent2
-                batch.failed_count = failed2
-                batch.processing_count = 0
-                batch.progress = 100
-                batch.status = BatchStatus.COMPLETED
-                batch.completed_at = datetime.now()
-                batch.error_message = f"部分失败: {failed2}/{total}" if failed2 > 0 else None
-                logger.info(f"批次虚拟通道兜底完成: batch={batch_id}, 清理 {pending_cnt} 条遗留 pending")
-        elif log_total >= total and batch.status == BatchStatus.COMPLETED:
-            pass
-        else:
-            batch.status = BatchStatus.PROCESSING
-            batch.completed_at = None
-            batch.error_message = None
-
-        await db.commit()
-
-    except Exception as e:
-        logger.warning(f"更新批次进度失败: batch_id={batch_id}, {e}")
 
 
 async def _send_via_virtual(sms_log: SMSLog, channel: Channel) -> bool:
@@ -1026,36 +497,6 @@ async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: di
         return False
 
 
-async def _send_via_smpp(sms_log: SMSLog, channel: Channel) -> bool:
-    """
-    通过 SMPP 发送短信（同 Worker 进程内按 channel_id 复用连接，避免上游单会话限制导致连续失败）
-    """
-    smpp_success = False
-    try:
-        logger.info(f"通过SMPP发送短信: {sms_log.message_id} via {channel.channel_code}")
-        loop = asyncio.get_running_loop()
-        success, channel_message_id, error_message = await loop.run_in_executor(
-            None, _send_via_smpp_sync, sms_log, channel
-        )
-        smpp_success = success
-
-        if success:
-            if channel_message_id:
-                sms_log.upstream_message_id = channel_message_id
-            logger.info(f"SMPP发送成功: {sms_log.message_id} -> {channel_message_id}")
-            return True
-        sms_log.error_message = error_message or "SMPP send failed"
-        logger.error(f"SMPP发送失败: {sms_log.message_id}, 错误: {error_message}")
-        return False
-
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"SMPP发送异常: {error_msg}", exc_info=e)
-        if sms_log:
-            sms_log.error_message = error_msg
-        return False
-
-
 async def _mark_failed(message_id: str, error_message: str):
     """标记短信为失败状态"""
     db = _get_worker_session()
@@ -1118,6 +559,10 @@ async def _process_dlr_async(dlr_data: dict):
         
         await db.commit()
         logger.info(f"DLR处理完成: {message_id}, 状态: {status}")
+
+        # [重要] 回执更新后同步批次进度
+        if sms_log.batch_id:
+            await update_batch_progress(db, sms_log.batch_id)
         
         # 注水触发（delivered 时）
         if status == 'delivered' and sms_log.account_id:
@@ -1864,7 +1309,7 @@ async def _do_virtual_dlr(message_id: str, channel_id: int):
             await db.commit()
 
             if sms_log.batch_id:
-                await _update_batch_progress(db, sms_log.batch_id)
+                await update_batch_progress(db, sms_log.batch_id)
 
             return {"success": True, "message_id": message_id, "status": new_status}
     except Exception as e:

@@ -24,6 +24,23 @@ services:
     networks:
       - smsc-network
 
+  # 数据库连接池代理
+  proxysql:
+    image: proxysql/proxysql:2.6.3
+    container_name: smsc-proxysql
+    volumes:
+      - ./proxysql.cnf:/etc/proxysql.cnf:ro
+      - proxysql_data:/var/lib/proxysql
+    ports:
+      - "6033:6033"
+      - "6032:6032" # 管理端口
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
   # Redis缓存
   redis:
     image: redis:7.0-alpine
@@ -87,8 +104,8 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
-      DATABASE_HOST: mysql
-      DATABASE_PORT: 3306
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
       DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
@@ -145,8 +162,8 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
-      DATABASE_HOST: mysql
-      DATABASE_PORT: 3306
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
       DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
@@ -188,8 +205,8 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
-      DATABASE_HOST: mysql
-      DATABASE_PORT: 3306
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
       DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
@@ -232,8 +249,8 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
-      DATABASE_HOST: mysql
-      DATABASE_PORT: 3306
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
       DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
@@ -274,8 +291,8 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
-      DATABASE_HOST: mysql
-      DATABASE_PORT: 3306
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
       DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
@@ -312,8 +329,8 @@ services:
     environment:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
-      DATABASE_HOST: mysql
-      DATABASE_PORT: 3306
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
       DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
@@ -400,8 +417,8 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
-      DATABASE_HOST: mysql
-      DATABASE_PORT: 3306
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
       DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
@@ -426,6 +443,30 @@ services:
     networks:
       - smsc-network
 
+  # 高并发 Go SMPP 网关 (Phase 2 优化)
+  smpp-gateway:
+    build:
+      context: ./go-smpp-gateway
+      dockerfile: Dockerfile
+    container_name: smsc-smpp-gateway
+    environment:
+      TZ: Asia/Shanghai
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
+      DATABASE_USER: ${MYSQL_USER:-smsuser}
+      DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+      DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-smsc_mq}:${RABBITMQ_PASSWORD:-smsc_mq_pass}@rabbitmq:5672/
+    depends_on:
+      proxysql:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+
 volumes:
   mysql_data:
     driver: local
@@ -440,6 +481,8 @@ volumes:
   import_uploads:
     driver: local
   private_library_uploads:
+    driver: local
+  proxysql_data:
     driver: local
 
 networks:
