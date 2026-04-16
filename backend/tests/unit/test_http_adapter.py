@@ -226,7 +226,7 @@ class TestHTTPPayloadTemplates:
         
         payload = adapter._build_payload(mock_sms_log)
         
-        assert payload["phone_number"] == mock_sms_log.phone_number
+        assert payload["phone_number"] == "8613800138000"
         assert payload["message"] == mock_sms_log.message
         assert payload["sender_id"] == mock_sms_log.sender_id
         assert payload["message_id"] == mock_sms_log.message_id
@@ -241,7 +241,7 @@ class TestHTTPPayloadTemplates:
         
         payload = adapter._build_payload(mock_sms_log)
         
-        assert payload["To"] == mock_sms_log.phone_number
+        assert payload["To"] == "8613800138000"
         assert payload["From"] == mock_sms_log.sender_id
         assert payload["Body"] == mock_sms_log.message
     
@@ -255,9 +255,21 @@ class TestHTTPPayloadTemplates:
         
         payload = adapter._build_payload(mock_sms_log)
         
-        assert payload["to"] == mock_sms_log.phone_number
+        assert payload["to"] == "8613800138000"
         assert payload["from"] == mock_sms_log.sender_id
         assert payload["text"] == mock_sms_log.message
+
+    @pytest.mark.unit
+    def test_twilio_payload_keep_plus_when_disabled(self, mock_http_channel, mock_sms_log):
+        """strip_leading_plus 为 false 时保留 E.164 前导 +"""
+        from app.workers.adapters.http_adapter import HTTPAdapter
+
+        mock_http_channel.config_json = json.dumps(
+            {"payload_template": "twilio", "strip_leading_plus": False}
+        )
+        adapter = HTTPAdapter(mock_http_channel)
+        payload = adapter._build_payload(mock_sms_log)
+        assert payload["To"] == "+8613800138000"
 
 
 class TestHTTPHeaders:

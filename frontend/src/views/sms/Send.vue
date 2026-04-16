@@ -33,7 +33,9 @@
         </div>
         <div class="stat-info">
           <span class="stat-value">{{ stats.success_rate }}%</span>
-          <span class="stat-label">{{ $t('smsSend.successRate') }}</span>
+          <el-tooltip :content="$t('smsSend.successRateTooltip')" placement="top" :show-after="400">
+            <span class="stat-label stat-label-hint">{{ $t('smsSend.successRate') }}</span>
+          </el-tooltip>
         </div>
       </div>
       <div class="stat-card">
@@ -2576,6 +2578,10 @@ onUnmounted(() => clearInterval(timeInterval))
 .stat-info { display: flex; flex-direction: column; gap: 2px; }
 .stat-value { font-size: 22px; font-weight: 700; color: var(--text-primary); }
 .stat-label { font-size: 12px; color: var(--text-tertiary); }
+.stat-label-hint {
+  cursor: help;
+  border-bottom: 1px dashed var(--text-tertiary);
+}
 
 .page-grid { display: grid; grid-template-columns: 1fr 320px; gap: 24px; }
 .form-panel { display: flex; flex-direction: column; background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 16px; overflow: hidden; }

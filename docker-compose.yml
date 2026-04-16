@@ -69,8 +69,11 @@ services:
     ports:
       - "5672:5672"   # AMQP端口
       - "15672:15672" # 管理界面
+      - "15692:15692" # Prometheus 插件指标（供 Prometheus 抓取）
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      # 启用 rabbitmq_prometheus，与 prometheus/prometheus.yml 中 rabbitmq job 一致
+      - ./docker/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
@@ -175,7 +178,7 @@ services:
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
       DLR_SENT_TIMEOUT_HOURS: ${DLR_SENT_TIMEOUT_HOURS:-72}
       DLR_PULL_HTTP_TIMEOUT_SECONDS: ${DLR_PULL_HTTP_TIMEOUT_SECONDS:-60}
-      # OKCC 语音余额全量同步：Beat 调度，由此 Worker 执行（队列 celery）
+      # OKCC 语音余额全量同步：Beat 调度，由此 Worker 执行（队列 integrations）
       OKCC_BEAT_SYNC_ENABLED: ${OKCC_BEAT_SYNC_ENABLED:-true}
       OKCC_BEAT_SYNC_INTERVAL_SECONDS: ${OKCC_BEAT_SYNC_INTERVAL_SECONDS:-300}
     volumes:
@@ -190,7 +193,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-8} -Q celery,sms_dlr,data_tasks
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-8} -Q celery,sms_dlr,data_tasks,webhook_tasks,integrations
     restart: unless-stopped
     networks:
       - smsc-network
@@ -239,8 +242,11 @@ services:
     networks:
       - smsc-network
 
-  # 专用 SMPP 短信发送 Worker（线程池模式，同进程内共享 SMPP 连接，避免并发 bind 冲突）
+  # 专用 SMPP 短信发送 Worker（线程池；与 smpp-gateway 同队列会争抢消息，生产勿与 Go 网关同时启用）
+  # 默认不启动：docker compose --profile legacy-smpp-python up -d
   worker-sms-smpp:
+    profiles:
+      - legacy-smpp-python
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -374,7 +380,7 @@ services:
     networks:
       - smsc-network
 
-  # Prometheus监控
+  # Prometheus 监控（生产默认启用；极简/边缘环境可自行停服或拆 overlay）
   prometheus:
     image: prom/prometheus:latest
     container_name: smsc-prometheus
@@ -390,12 +396,12 @@ services:
     networks:
       - smsc-network
 
-  # Grafana可视化
+  # Grafana 可视化（生产务必在 .env 设置 GRAFANA_ADMIN_PASSWORD）
   grafana:
     image: grafana/grafana:latest
     container_name: smsc-grafana
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-changeme_set_in_env}
       GF_USERS_ALLOW_SIGN_UP: false
     ports:
       - "3000:3000"

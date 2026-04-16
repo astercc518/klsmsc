@@ -382,17 +382,23 @@ async def _do_buy_send_async(order_id, batch_id, account_id, number_ids,
                     queued += 1
             logger.info(f"[buy-send-async] order={order_id}, 入队 {queued}/{len(message_ids)}")
 
-            # 7. 入队完成后更新批次状态为 completed
+            # 7. 入队完成后：按 sms_logs 汇总批次计数（勿用入队数伪造 success_count，否则与列表回执拆列不一致）
+            from app.modules.sms.batch_utils import update_batch_progress
+
+            await update_batch_progress(db, batch_id)
             batch_result2 = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
             sms_batch2 = batch_result2.scalar_one_or_none()
             if sms_batch2:
-                sms_batch2.success_count = queued
-                sms_batch2.failed_count = len(message_ids) - queued
+                # 订单侧「任务已提交」仍展示为已完成，但成功/失败数以日志为准，随 Worker/DLR 继续刷新
                 sms_batch2.status = BatchStatus.COMPLETED
                 sms_batch2.completed_at = datetime.now()
                 sms_batch2.progress = 100
                 await db.commit()
-                logger.info(f"[buy-send-async] batch={batch_id} 状态更新为 completed, success={queued}, failed={len(message_ids)-queued}")
+                logger.info(
+                    f"[buy-send-async] batch={batch_id} 已标记完成(订单维度); "
+                    f"queued={queued}/{len(message_ids)}, success_count={sms_batch2.success_count}, "
+                    f"failed_count={sms_batch2.failed_count}"
+                )
 
             return {"order_id": order_id, "total": len(message_ids), "queued": queued}
 

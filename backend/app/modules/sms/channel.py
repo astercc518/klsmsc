@@ -79,7 +79,31 @@ class Channel(Base):
         nullable=True,
         comment="虚拟通道配置 JSON: {delivery_rate, fail_rate, pending_rate, dlr_delay_min, dlr_delay_max, fail_codes}",
     )
-    
+    config_json = Column(
+        Text,
+        nullable=True,
+        comment="HTTP/SMPP 扩展 JSON：如 strip_leading_plus、payload_template、auth_type",
+    )
+
+    def get_gateway_config(self) -> dict:
+        """解析 config_json，供网关/适配器读取 strip_leading_plus 等扩展项。"""
+        import json
+        raw = self.config_json
+        if not raw:
+            return {}
+        try:
+            if isinstance(raw, dict):
+                return dict(raw)
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return {}
+
+    def strip_leading_plus_for_submit(self) -> bool:
+        """提交到上游前是否去掉号码前导 +（默认 True）。"""
+        from app.utils.phone_utils import strip_leading_plus_enabled
+
+        return strip_leading_plus_enabled(self.get_gateway_config())
+
     def get_virtual_config(self) -> dict:
         """解析虚拟通道配置，返回带默认值的 dict（比例支持区间）"""
         import json

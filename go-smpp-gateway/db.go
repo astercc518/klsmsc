@@ -37,7 +37,7 @@ func GetChannelConfigs() ([]ChannelConfig, error) {
     query := "SELECT id, channel_code, protocol, host, port, username, password, " +
              "smpp_bind_mode, smpp_system_type, smpp_interface_version, " +
              "smpp_dlr_socket_hold_seconds, COALESCE(default_sender_id, '') as default_sender_id, " +
-             "max_tps, concurrency " +
+             "max_tps, concurrency, COALESCE(config_json, '') as config_json " +
              "FROM channels WHERE protocol='SMPP' AND status='active' AND is_deleted=0"
     err := db.Select(&configs, query)
     return configs, err

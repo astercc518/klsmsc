@@ -3,6 +3,7 @@ global:
   evaluation_interval: 15s
   external_labels:
     cluster: 'smsc-cluster'
+    # 生产环境建议在部署流水线中通过替换或 relabel 改为 production
     environment: 'development'
 
 # 告警规则文件

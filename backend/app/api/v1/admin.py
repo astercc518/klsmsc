@@ -85,7 +85,9 @@ class ChannelCreateRequest(BaseModel):
     dlr_sent_timeout_hours: Optional[int] = Field(None, ge=4, le=720)
     banned_words: Optional[str] = None
     virtual_config: Optional[dict] = None
-    
+    # 与 channels.config_json 对应：strip_leading_plus、payload_template 等
+    gateway_config: Optional[dict] = None
+
     @field_validator('protocol')
     @classmethod
     def validate_protocol(cls, v: str) -> str:
@@ -126,6 +128,7 @@ class ChannelUpdateRequest(BaseModel):
     dlr_sent_timeout_hours: Optional[int] = Field(None, ge=4, le=720)
     banned_words: Optional[str] = None
     virtual_config: Optional[dict] = None
+    gateway_config: Optional[dict] = None
 
 
 class PricingCreateRequest(BaseModel):
@@ -1467,6 +1470,7 @@ async def list_channels_admin(
                 "banned_words": getattr(ch, "banned_words", None),
                 "default_sender_id": ch.default_sender_id,
                 "virtual_config": ch.get_virtual_config() if ch.protocol == "VIRTUAL" else None,
+                "gateway_config": ch.get_gateway_config(),
                 "supplier": supplier_map.get(ch.id),
                 "created_at": ch.created_at.isoformat() if ch.created_at else None
             }
@@ -1531,6 +1535,7 @@ async def get_channel_admin(
             "banned_words": getattr(ch, "banned_words", None),
             "default_sender_id": ch.default_sender_id,
             "virtual_config": ch.get_virtual_config() if ch.protocol == "VIRTUAL" else None,
+            "gateway_config": ch.get_gateway_config(),
             "supplier": supplier_info,
             "supplier_id": supplier_info["id"] if supplier_info else None,
             "created_at": ch.created_at.isoformat() if ch.created_at else None,
@@ -1591,7 +1596,11 @@ async def create_channel(
     if request.virtual_config and request.protocol == 'VIRTUAL':
         import json
         channel.virtual_config = json.dumps(request.virtual_config, ensure_ascii=False)
-    
+
+    if request.gateway_config:
+        import json
+        channel.config_json = json.dumps(request.gateway_config, ensure_ascii=False)
+
     db.add(channel)
     await db.commit()
     await db.refresh(channel)
@@ -1680,6 +1689,9 @@ async def update_channel(
     if "virtual_config" in updated_fields:
         import json
         channel.virtual_config = json.dumps(request.virtual_config, ensure_ascii=False) if request.virtual_config else None
+    if "gateway_config" in updated_fields:
+        import json
+        channel.config_json = json.dumps(request.gateway_config, ensure_ascii=False) if request.gateway_config else None
 
     # 更新供应商关联（仅当请求中显式包含 supplier_id 时处理，传 null 表示清除）
     if 'supplier_id' in updated_fields:

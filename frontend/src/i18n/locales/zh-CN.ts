@@ -298,9 +298,23 @@ export default {
     senderIdPlaceholder: '留空使用默认',
     startSend: '开始发送',
     status: '状态',
-    successCount: '成功',
-    successRate: '成功率',
+    successCount: '通道已接受',
+    channelAcceptedTooltip:
+      '「已发送」+「已送达」条数之和（与 SmsBatch.success_count 一致）：不含仍处「待发/队列」的条数；表示通道侧已接单或已确认送达，不等同于「仅终态回执已送达」列。',
+    deliveredReceiptCount: '已送达(回执)',
+    awaitingReceiptCount: '待终态回执',
+    deliveredReceiptTooltip:
+      '系统已收到「已送达」类终态回执并写入状态的条数。若与上游门户不一致，多为回传 ID 不匹配或格式未解析（见日志「DLR 状态未识别」）。',
+    awaitingReceiptTooltip:
+      '含「待发/队列中」(pending、queued) 与「已发送」(sent)：尚未在系统中记为「已送达」或失败终态的条数；入队后未下发前也会计入。细查以发送记录单条状态为准。',
+    successRate: '终态回执送达率',
+    successRateTooltip:
+      '本列仅按「已送达(回执)」÷ 任务总数，表示终态成功回执比例，可对照上游门户送达统计。「通道已接受」为已发送+已送达条数（发送侧闭环），数值常高于本列；请勿把「通道已接受」当成手机送达率。',
+    listPollHint:
+      '存在「待处理 / 处理中」任务时，列表每 15 秒自动静默刷新；切回浏览器页签时也会刷新。若已部署新前端仍显示旧列名，请强制刷新(Ctrl+F5)或重建前端镜像。',
     taskList: '发送任务列表',
+    listMetricClarify:
+      '「通道已接受」= 日志中已发送+已送达条数（不含仅排队/待发）。「待终态回执」含待发、队列中、已发送待 DLR，不等于手机已收。「终态回执送达率」= 已送达÷总数；细查请用发送记录或导出 CSV。',
     taskName: '任务名称',
     taskNamePlaceholder: '如：2026年1月营销活动',
     taskSendRecords: '任务发送记录',
@@ -2604,7 +2618,9 @@ export default {
     smsCount: '短信条数',
     smsPreview: '短信预览',
     successDelivered: '成功送达',
-    successRate: '成功率',
+    successRate: '今日送达率',
+    successRateTooltip:
+      '口径：今日内状态为「已送达」的条数 ÷ 今日有提交记录的条数。与「发送任务」列表中的「通道已接受」「终态回执送达率」不是同一概念：后者仅计终态成功回执，前者含已发送待回执。',
     title: '发送短信',
     todayCost: '今日消费',
     todaySent: '今日发送',

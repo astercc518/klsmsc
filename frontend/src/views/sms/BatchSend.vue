@@ -57,20 +57,51 @@
           <h3 class="panel-title">{{ $t('batchSend.taskList') }}</h3>
           <p class="panel-desc">{{ $t('batchSend.taskSourceHint') }}</p>
         </div>
-        <el-button @click="loadBatches" :icon="Refresh" size="small">{{ $t('common.refresh') }}</el-button>
+        <el-tooltip :content="$t('batchSend.listPollHint')" placement="top">
+          <el-button :icon="Refresh" size="small" @click="onManualRefresh">{{ $t('common.refresh') }}</el-button>
+        </el-tooltip>
       </div>
-      
+
+      <el-alert type="info" :closable="false" show-icon class="batch-metric-hint">
+        {{ $t('batchSend.listMetricClarify') }}
+      </el-alert>
+
       <el-empty v-if="!loading && batches.length === 0" :description="$t('batchSend.emptyList')" class="task-empty" />
       <el-table v-else :data="batches" v-loading="loading" stripe class="task-table-inner">
         <el-table-column prop="id" :label="$t('batchSend.batchIdCol')" width="72" />
         <el-table-column prop="batch_name" :label="$t('batchSend.batchName')" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="total_count" :label="$t('batchSend.totalCount')" width="80" />
-        <el-table-column prop="success_count" :label="$t('batchSend.successCount')" width="80">
+        <el-table-column prop="total_count" :label="$t('batchSend.totalCount')" width="72" />
+        <el-table-column prop="success_count" width="88">
+          <template #header>
+            <el-tooltip :content="$t('batchSend.channelAcceptedTooltip')" placement="top" :show-after="400">
+              <span class="batch-col-header">{{ $t('batchSend.successCount') }}</span>
+            </el-tooltip>
+          </template>
           <template #default="{ row }">
-            <span style="color: #67c23a; font-weight: bold">{{ row.success_count }}</span>
+            <span style="color: #409eff; font-weight: bold">{{ row.success_count }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="failed_count" :label="$t('batchSend.failedCount')" width="80">
+        <el-table-column prop="delivered_count" width="104" align="center">
+          <template #header>
+            <el-tooltip :content="$t('batchSend.deliveredReceiptTooltip')" placement="top" :show-after="400">
+              <span class="batch-col-header">{{ $t('batchSend.deliveredReceiptCount') }}</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <span style="color: #67c23a; font-weight: bold">{{ batchDeliveredCount(row) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="sent_awaiting_receipt_count" width="100" align="center">
+          <template #header>
+            <el-tooltip :content="$t('batchSend.awaitingReceiptTooltip')" placement="top" :show-after="400">
+              <span class="batch-col-header">{{ $t('batchSend.awaitingReceiptCount') }}</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <span :class="batchSentAwaitingCount(row) > 0 ? 'awaiting-receipt' : ''">{{ batchSentAwaitingCount(row) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="failed_count" :label="$t('batchSend.failedCount')" width="72">
           <template #default="{ row }">
             <span v-if="row.failed_count > 0" style="color: #f56c6c; font-weight: bold">{{ row.failed_count }}</span>
             <span v-else>0</span>
@@ -81,10 +112,15 @@
             <el-progress :percentage="row.progress" :status="row.status === 'completed' ? 'success' : undefined" />
           </template>
         </el-table-column>
-        <el-table-column :label="$t('batchSend.successRate')" width="120" align="center">
+        <el-table-column width="140" align="center">
+          <template #header>
+            <el-tooltip :content="$t('batchSend.successRateTooltip')" placement="top" :show-after="400">
+              <span class="batch-rate-header">{{ $t('batchSend.successRate') }}</span>
+            </el-tooltip>
+          </template>
           <template #default="{ row }">
-            <span v-if="row.total_count > 0" :class="getSuccessRateClass(row)">
-              {{ ((row.success_count / row.total_count) * 100).toFixed(1) }}%
+            <span v-if="row.total_count > 0" :class="getDeliveryRateClass(row)">
+              {{ batchDeliveryRatePercent(row) }}
             </span>
             <span v-else class="text-muted">-</span>
           </template>
@@ -184,7 +220,9 @@
             <el-tag size="small" :type="batchStatusTagType(detailBatch.status)">{{ batchStatusLabel(detailBatch.status) }}</el-tag>
             <span class="summary-meta">
               {{ $t('batchSend.totalCount') }} {{ detailBatch.total_count }} · {{ $t('batchSend.successCount') }}
-              {{ detailBatch.success_count }} · {{ $t('batchSend.failedCount') }} {{ detailBatch.failed_count }} ·
+              {{ detailBatch.success_count }} · {{ $t('batchSend.deliveredReceiptCount') }}
+              {{ batchDeliveredCount(detailBatch) }} · {{ $t('batchSend.awaitingReceiptCount') }}
+              {{ batchSentAwaitingCount(detailBatch) }} · {{ $t('batchSend.failedCount') }} {{ detailBatch.failed_count }} ·
               {{ $t('batchSend.progress') }} {{ detailBatch.progress }}%
             </span>
             <span class="summary-meta">{{ $t('batchSend.createdAtLocal') }} {{ formatBatchDate(detailBatch.created_at) }}</span>
@@ -305,7 +343,7 @@ phone,name,code<br>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -368,9 +406,31 @@ const templates = ref<any[]>([])
 /** 正在导出 CSV 的任务 id，用于按钮 loading */
 const exportingBatchId = ref<number | null>(null)
 
-function getSuccessRateClass(row: SmsBatch): string {
+/** 回执已送达条数（缺省兼容旧后端） */
+function batchDeliveredCount(row: SmsBatch & Record<string, unknown>): number {
+  const v = row.delivered_count ?? row.deliveredCount
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+/** 仍为 sent、等待终态回执的条数 */
+function batchSentAwaitingCount(row: SmsBatch & Record<string, unknown>): number {
+  const v = row.sent_awaiting_receipt_count ?? row.sentAwaitingReceiptCount
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+/** 回执送达率展示字符串 */
+function batchDeliveryRatePercent(row: SmsBatch): string {
+  if (row.total_count <= 0) return '-'
+  const d = batchDeliveredCount(row as SmsBatch & Record<string, unknown>)
+  return `${((d / row.total_count) * 100).toFixed(1)}%`
+}
+
+function getDeliveryRateClass(row: SmsBatch): string {
   if (row.total_count <= 0) return 'text-muted'
-  const rate = (row.success_count / row.total_count) * 100
+  const d = batchDeliveredCount(row as SmsBatch & Record<string, unknown>)
+  const rate = (d / row.total_count) * 100
   if (rate >= 90) return 'rate-high'
   if (rate >= 60) return 'rate-mid'
   return 'rate-low'
@@ -398,22 +458,52 @@ function canRetryFailedBatch(row: SmsBatch & Record<string, unknown>): boolean {
   return true
 }
 
-const loadBatches = async () => {
-  loading.value = true
+/** 存在处理中/待处理批次时定时拉列表，避免用户以为「页面不更新」 */
+const LIST_POLL_MS = 15000
+let listPollTimer: ReturnType<typeof setInterval> | null = null
+
+function stopListPoll() {
+  if (listPollTimer != null) {
+    clearInterval(listPollTimer)
+    listPollTimer = null
+  }
+}
+
+function maybeStartListPoll() {
+  stopListPoll()
+  const need = batches.value.some(
+    (b) => b.status === 'processing' || b.status === 'pending'
+  )
+  if (!need) return
+  listPollTimer = setInterval(() => {
+    void loadBatches(true)
+    void loadStats()
+  }, LIST_POLL_MS)
+}
+
+const loadBatches = async (silent = false) => {
+  if (!silent) loading.value = true
   try {
     const res = await getBatches({ page: pagination.page, page_size: pagination.pageSize })
     batches.value = res.items
     pagination.total = res.total
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || t('common.failed'))
+    if (!silent) ElMessage.error(error.response?.data?.detail || t('common.failed'))
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
+    maybeStartListPoll()
   }
 }
 
 function onPageSizeChange() {
   pagination.page = 1
   loadBatches()
+}
+
+/** 手动刷新：列表 + 顶部统计 */
+function onManualRefresh() {
+  void loadBatches(false)
+  void loadStats()
 }
 
 const loadStats = async () => {
@@ -662,16 +752,55 @@ const resetUploadForm = () => {
   fileList.value = []
 }
 
+function onVisibilityRefresh() {
+  if (document.visibilityState !== 'visible') return
+  void loadBatches(true)
+  void loadStats()
+}
+
 onMounted(() => {
   loadBatches()
   loadStats()
   loadTemplates()
+  document.addEventListener('visibilitychange', onVisibilityRefresh)
+})
+
+onUnmounted(() => {
+  stopListPoll()
+  document.removeEventListener('visibilitychange', onVisibilityRefresh)
 })
 </script>
 
 <style scoped>
 .batch-send-page {
   width: 100%;
+}
+
+/* 列表上方：通道接受 vs 终态回执 vs 手机送达 说明 */
+.batch-metric-hint {
+  margin: 0 0 14px;
+  align-items: flex-start;
+}
+
+.batch-metric-hint :deep(.el-alert__content) {
+  line-height: 1.55;
+  font-size: 13px;
+}
+
+/* 表头「终态回执送达率」悬停说明 */
+.batch-rate-header {
+  cursor: help;
+  border-bottom: 1px dashed var(--el-text-color-secondary);
+}
+
+.batch-col-header {
+  cursor: help;
+  border-bottom: 1px dashed var(--el-text-color-secondary);
+}
+
+.awaiting-receipt {
+  color: #e6a23c;
+  font-weight: 600;
 }
 
 /* 统计卡片 */

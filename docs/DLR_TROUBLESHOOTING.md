@@ -19,6 +19,13 @@
 
 前端「发送记录 → 短信详情」中已用「通道回执 / 已提交上游」等文案与 Tooltip 区分上述两个阶段；排查请以 `sms_logs.status`、`delivery_time` 及日志为准。
 
+### 发送任务列表（批次）新字段与部署
+
+- **接口**：`GET /batches`、`GET /batches/{id}` 的响应中会多出 **`delivered_count`**（`delivered` 条数）、**`sent_awaiting_receipt_count`**（**pending + queued + sent**，含购数并发送入队后尚未下发、或已送通道待终态回执）。列表页的「通道已接受 / 已送达(回执) / 待终态回执 / 终态回执送达率」依赖上述字段。购数并发送路径**不得**用入队数覆盖 `SmsBatch.success_count`，应与 `update_batch_progress` 一致（见 `data_worker`）。
+- **上线要求**：**API 与前端需同时发布**。只更前端时新列多为 0 或与真实回执脱节；只更后端时旧前端不会展示拆列。
+- **发布后**：管理后台若仍像旧版，对浏览器做一次 **强制刷新（Ctrl+F5）** 或重建前端镜像。
+- **「待终态回执」长期偏大**：在「发送记录」里按单条看 `status`；对照服务日志是否出现 **`DLR 状态未识别`** 或 **`DLR 找不到对应记录`**，再扩展 `dlr_handler` 解析字段或 `upstream_message_id` 匹配规则。
+
 ## 原因说明
 
 系统在短信提交成功后先标记为 `sent`（已发送），等待上游通道的 DLR（Delivery Report）回执后才会更新为 `delivered`（已送达）或 `failed`（失败）。

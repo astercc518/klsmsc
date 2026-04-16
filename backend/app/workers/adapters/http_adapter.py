@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
 from app.utils.logger import get_logger
+from app.utils.phone_utils import format_sms_dest_phone, strip_leading_plus_enabled
 
 logger = get_logger(__name__)
 
@@ -28,7 +29,14 @@ class HTTPAdapter:
             except:
                 return {}
         return {}
-    
+
+    def _dest_phone_for_payload(self, phone: str | None) -> str:
+        """按通道 config_json.strip_leading_plus 格式化目的号码。"""
+        return format_sms_dest_phone(
+            phone,
+            strip_leading_plus=strip_leading_plus_enabled(self.config),
+        )
+
     async def send(self, sms_log: SMSLog) -> tuple[bool, Optional[str], Optional[str]]:
         """
         发送短信
@@ -110,7 +118,7 @@ class HTTPAdapter:
         if template == 'kaola':
             account = (self.channel.username or '').strip()
             password = (self.channel.password or self.channel.api_key or '').strip()
-            mobile = sms_log.phone_number.lstrip('+') if sms_log.phone_number else ''
+            mobile = self._dest_phone_for_payload(sms_log.phone_number)
             return {
                 "action": "send",
                 "account": account,
@@ -121,19 +129,19 @@ class HTTPAdapter:
             }
         elif template == 'twilio':
             return {
-                "To": sms_log.phone_number,
+                "To": self._dest_phone_for_payload(sms_log.phone_number),
                 "From": sender,
                 "Body": sms_log.message,
             }
         elif template == 'nexmo':
             return {
-                "to": sms_log.phone_number,
+                "to": self._dest_phone_for_payload(sms_log.phone_number),
                 "from": sender,
                 "text": sms_log.message,
             }
         else:
             return {
-                "phone_number": sms_log.phone_number,
+                "phone_number": self._dest_phone_for_payload(sms_log.phone_number),
                 "message": sms_log.message,
                 "sender_id": sender,
                 "message_id": sms_log.message_id,

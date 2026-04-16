@@ -62,6 +62,16 @@ celery_app.conf.task_queues = {
         'exchange': 'web_automation',
         'routing_key': 'web_automation',
     },
+    # 与通用 celery 队列隔离：Webhook 洪峰不拖慢批量 chunk
+    'webhook_tasks': {
+        'exchange': 'webhook_tasks',
+        'routing_key': 'webhook_tasks',
+    },
+    # 外部集成（OKCC 等）单独队列，便于限流与扩容
+    'integrations': {
+        'exchange': 'integrations',
+        'routing_key': 'integrations',
+    },
 }
 
 # 任务路由 - 数据业务
@@ -77,8 +87,9 @@ celery_app.conf.task_routes.update({
 celery_app.conf.task_routes.update({
     'process_batch': {'queue': 'celery'},
     'process_batch_chunk': {'queue': 'celery'},
-    'send_webhook': {'queue': 'celery'},
-    'okcc_sync_balances_task': {'queue': 'celery'},
+    'inspect_batches_task': {'queue': 'celery'},
+    'send_webhook': {'queue': 'webhook_tasks'},
+    'okcc_sync_balances_task': {'queue': 'integrations'},
     'virtual_dlr_generate': {'queue': 'celery'},
     'virtual_dlr_batch_generate': {'queue': 'celery'},
     'virtual_submit_simulate': {'queue': 'celery'},

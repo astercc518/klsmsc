@@ -9,6 +9,10 @@ export interface SmsBatch {
   file_size: number | null
   total_count: number
   success_count: number
+  /** 回执终态：已送达（SMSLog delivered） */
+  delivered_count?: number
+  /** 通道已接受但仍为 sent：终态回执未到或解析失败（与上游门户可能暂时不一致） */
+  sent_awaiting_receipt_count?: number
   failed_count: number
   processing_count: number
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'

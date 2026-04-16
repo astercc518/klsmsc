@@ -32,6 +32,7 @@ def _get_http_client():
         )
     return _http_client
 from app.utils.logger import get_logger
+from app.utils.phone_utils import format_sms_dest_phone
 import asyncio
 
 logger = get_logger(__name__)
@@ -93,6 +94,7 @@ def send_sms_task(self, message_id: str, http_credentials: dict = None):
         result = _run_async(_send_sms_async(message_id, http_credentials, _current_queue=current_queue))
 
         if isinstance(result, dict) and result.get("_reroute_smpp"):
+            # 生产默认由 go-smpp-gateway 消费 sms_send_smpp；勿与 worker-sms-smpp 同队列并行（见 docs/运维/服务与队列矩阵.md）
             logger.info(f"SMPP 通道任务重路由到 sms_send_smpp 队列: {message_id}")
             send_sms_task.apply_async(
                 args=[message_id, http_credentials],
@@ -360,10 +362,11 @@ async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: di
             except json.JSONDecodeError:
                 logger.warning(f"通道api_key不是有效的JSON格式: {channel.api_key}")
         
-        # 处理手机号：去掉+号
-        mobile = sms_log.phone_number
-        if mobile.startswith('+'):
-            mobile = mobile[1:]
+        # 处理手机号：是否去前导 + 由通道 config_json.strip_leading_plus 控制（默认去 +）
+        mobile = format_sms_dest_phone(
+            sms_log.phone_number,
+            strip_leading_plus=channel.strip_leading_plus_for_submit(),
+        )
         
         # 按照上游接口格式构造请求参数
         # 格式: {"action":"send","account":"123456","password":"123456","mobile":"15100000000","content":"内容","extno":"10690","atTime":"2022-12-05 18:00:00"}

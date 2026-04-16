@@ -22,13 +22,9 @@ func main() {
         }
     }()
 
-    // 3. Start RabbitMQ Consumer
+    // 3. RabbitMQ 消费：断线/ Broker 重建后自动重连，避免 sms_send_smpp 无消费者
     rabbitURL := os.Getenv("RABBITMQ_URL")
-    go func() {
-        if err := StartConsumer(rabbitURL); err != nil {
-            log.Fatalf("RabbitMQ Consumer error: %v", err)
-        }
-    }()
+    go RunConsumerForever(rabbitURL)
 
     // 4. Start periodic configuration reload (every 5 minutes)
     go func() {

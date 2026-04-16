@@ -36,6 +36,12 @@ class SmsBatchResponse(BaseModel):
     success_count: int
     failed_count: int
     processing_count: int
+    # 按 SMSLog 实时聚合，与 SmsBatch.success_count（sent+delivered）口径拆分，便于与上游回执对照
+    delivered_count: int = Field(0, description="状态为 delivered 的条数（终态回执：已送达）")
+    sent_awaiting_receipt_count: int = Field(
+        0,
+        description="尚未终态送达的条数：sms_logs 中 pending+queued+sent（待发、队列中、已送通道待回执）",
+    )
     status: BatchStatus
     error_message: Optional[str]
     sender_id: Optional[str]
@@ -59,6 +65,8 @@ class SmsBatchResponse(BaseModel):
         "failed_count",
         "processing_count",
         "progress",
+        "delivered_count",
+        "sent_awaiting_receipt_count",
         mode="before",
     )
     @classmethod

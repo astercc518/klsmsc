@@ -1,6 +1,48 @@
 """
 电话号码工具函数
 """
+from typing import Any, Optional
+
+
+def strip_leading_plus_enabled(config: Optional[dict[str, Any]]) -> bool:
+    """
+    从通道扩展 JSON（channels.config_json）解析是否去掉号码前导「+」。
+    缺省为 True，与历史行为一致；仅当 strip_leading_plus 显式为假值时保留「+」。
+    """
+    if not config:
+        return True
+    v = config.get("strip_leading_plus")
+    if v is None:
+        return True
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("false", "0", "no", "off", ""):
+            return False
+        return True
+    return True
+
+
+def format_sms_dest_phone(phone: str | None, *, strip_leading_plus: bool) -> str:
+    """按通道策略格式化提交给上游的目的号码（是否去掉前导 +）。"""
+    if phone is None:
+        return ""
+    s = str(phone).strip()
+    if strip_leading_plus and s.startswith("+"):
+        return s[1:]
+    return s
+
+
+def e164_without_plus(phone: str | None) -> str:
+    """
+    提交给短信上游时去掉前导「+」。
+    库表与校验仍可使用带 + 的 E.164；仅外发 payload / SMPP 目的地址使用本函数。
+    等价于通道未关闭 strip 时的默认行为。
+    """
+    return format_sms_dest_phone(phone, strip_leading_plus=True)
 
 
 def export_phone_plain_digits(raw) -> str:

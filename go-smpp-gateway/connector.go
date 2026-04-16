@@ -1,9 +1,11 @@
 package main
 
 import (
+    "encoding/json"
     "fmt"
     "log"
     "regexp"
+    "strings"
     "sync"
     "time"
 
@@ -26,6 +28,44 @@ type sequenceData struct {
 }
 
 var manager *SMPPManager
+
+// destAddrNoPlus 去掉 E.164 前导 +，与 Python 侧 format_sms_dest_phone(strip=true) 一致
+func destAddrNoPlus(phone string) string {
+	if len(phone) > 0 && phone[0] == '+' {
+		return phone[1:]
+	}
+	return phone
+}
+
+// stripLeadingPlusFromConfigJSON 解析 channels.config_json 中的 strip_leading_plus；缺省为 true
+func stripLeadingPlusFromConfigJSON(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return true
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return true
+	}
+	v, ok := m["strip_leading_plus"]
+	if !ok || v == nil {
+		return true
+	}
+	switch x := v.(type) {
+	case bool:
+		return x
+	case float64:
+		return x != 0
+	case string:
+		s := strings.ToLower(strings.TrimSpace(x))
+		if s == "false" || s == "0" || s == "no" || s == "off" || s == "" {
+			return false
+		}
+		return true
+	default:
+		return true
+	}
+}
 
 func InitSMPPManager() {
     manager = &SMPPManager{
@@ -233,7 +273,11 @@ func (m *SMPPManager) SendSMS(logID int64, messageID string, phoneNumber string,
     s.SourceAddr = pdu.NewAddress()
     s.SourceAddr.SetAddress(cfg.DefaultSenderID)
     s.DestAddr = pdu.NewAddress()
-    s.DestAddr.SetAddress(phoneNumber)
+    destDigits := phoneNumber
+    if stripLeadingPlusFromConfigJSON(cfg.ConfigJSON) {
+        destDigits = destAddrNoPlus(phoneNumber)
+    }
+    s.DestAddr.SetAddress(destDigits)
     _ = s.Message.SetMessageWithEncoding(message, data.UCS2)
     s.RegisteredDelivery = 1
 
@@ -244,8 +288,8 @@ func (m *SMPPManager) SendSMS(logID int64, messageID string, phoneNumber string,
 
     m.sequenceMap.Store(s.SequenceNumber, sequenceData{messageID: messageID, logID: logID})
 
-    log.Printf("[SMPP-DEBUG] Submitting SM: channel=%s, sequence=%d, dest=%s, sender=%s, len=%d", 
-               cfg.ChannelCode, s.SequenceNumber, phoneNumber, cfg.DefaultSenderID, len(message))
+    log.Printf("[SMPP-DEBUG] Submitting SM: channel=%s, sequence=%d, dest=%s, sender=%s, len=%d",
+               cfg.ChannelCode, s.SequenceNumber, destDigits, cfg.DefaultSenderID, len(message))
 
     err := trans.Submit(s)
     if err != nil {

@@ -30,6 +30,7 @@
 ├── telegram_bot/            # Telegram 业务机器人
 ├── docs/                    # 文档与操作指南
 │   ├── SMS_API_接口文档.md  # 客户 HTTP / SMPP 对接说明
+│   ├── 运维/                # 部署与队列说明（服务矩阵等）
 │   └── guides/              # 客户/员工/管理员指南（Markdown + 截图）
 ├── scripts/                 # 数据库初始化等
 ├── docker-compose.yml
@@ -46,10 +47,21 @@ cp .env.example .env
 # 编辑 .env：至少配置 MYSQL_*、JWT_SECRET_KEY、CORS_ORIGINS、TELEGRAM_* 等
 ```
 
-### 2. 启动全部服务
+### 2. 启动服务
 
 ```bash
 docker compose up -d
+```
+
+**生产环境请注意**：在 `.env` 中设置强口令 **`GRAFANA_ADMIN_PASSWORD`**（以及 `JWT_SECRET_KEY`、数据库与 RabbitMQ 密码等），不要使用仓库内默认值上线。
+
+**可选 Profile**（详见 [docs/运维/服务与队列矩阵.md](docs/运维/服务与队列矩阵.md)）：
+
+- `legacy-smpp-python`：额外启动旧版 **worker-sms-smpp**。**不要**与 **smpp-gateway** 同时启用（二者会竞争消费 `sms_send_smpp`）。生产 SMPP 推荐只运行 **smpp-gateway**。
+
+```bash
+# 仅当明确需要旧版 Python SMPP Worker 且已关闭 Go 网关时：
+docker compose --profile legacy-smpp-python up -d
 ```
 
 ### 3. 常用端口
@@ -86,8 +98,15 @@ curl -s http://127.0.0.1:8000/health
 - **DLR 回调**：`DLR_CALLBACK_TOKEN`、`DLR_CALLBACK_OPEN`、`DLR_CALLBACK_IP_WHITELIST`
 - **SMPP 行为**：`SMPP_SUBMIT_RESP_WAIT_SECONDS`、`SMPP_DLR_SOCKET_HOLD_SECONDS`（见 compose 与 `.env.example`）
 - **对外 SMPP 展示**（管理端账号摘要）：`SMPP_SERVER_HOST`、`SMPP_SERVER_PORT`（在 `backend/app/config.py` 中可配置）
+- **监控**：`GRAFANA_ADMIN_PASSWORD`（Grafana 管理员密码，**生产必填强口令**）
 
 **切勿**将含真实密钥的 `.env` 提交到 Git。
+
+### 部署与队列说明
+
+运维侧服务职责、Celery 队列与 SMPP 约束见 **[docs/运维/服务与队列矩阵.md](docs/运维/服务与队列矩阵.md)**。队列拆分与 DLQ 规划见 **[docs/运维/队列与DLQ说明.md](docs/运维/队列与DLQ说明.md)**；生产演进建议见 **[docs/运维/生产部署演进.md](docs/运维/生产部署演进.md)**。
+
+**本次版本上线**：请按 **[docs/运维/上线检查清单.md](docs/运维/上线检查清单.md)** 执行（含 **必须重启 `worker`**、RabbitMQ 插件与验证项）。
 
 ## 本地开发（可选）
 

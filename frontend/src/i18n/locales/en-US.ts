@@ -298,9 +298,23 @@ export default {
     senderIdPlaceholder: '留空使用默认',
     startSend: 'Start Send',
     status: 'Status',
-    successCount: 'Success',
-    successRate: 'Success Rate',
+    successCount: 'Upstream accepted',
+    channelAcceptedTooltip:
+      'Sent + Delivered (same as SmsBatch.success_count). Excludes Pending/Queued only. Not the same as “Delivered (DLR)” only.',
+    deliveredReceiptCount: 'Delivered (DLR)',
+    awaitingReceiptCount: 'Awaiting final DLR',
+    deliveredReceiptTooltip:
+      'Messages whose status is Delivered after a terminal success receipt. If this disagrees with the carrier portal, common causes are ID mismatch or unrecognized DLR payloads (see logs for “DLR 状态未识别”).',
+    awaitingReceiptTooltip:
+      'Includes Pending/Queued (not yet sent or waiting worker) and Sent (awaiting final DLR). Anything not yet marked Delivered or terminal failed—see per-row status in Send Records.',
+    successRate: 'Terminal DLR delivered %',
+    successRateTooltip:
+      'This column is Delivered (DLR) ÷ batch total only—terminal success receipts, comparable to carrier delivered stats. “Upstream accepted” counts Sent+Delivered (send-side) and is often higher while DLRs lag; do not read it as handset delivery rate.',
+    listPollHint:
+      'While any batch is Pending or Processing, the list refreshes silently every 15s; also refreshes when you return to this browser tab. If column titles look stale after deploy, hard-refresh (Ctrl+F5) or rebuild the frontend image.',
     taskList: 'Task List',
+    listMetricClarify:
+      '"Upstream accepted" = Sent+Delivered in logs (excludes only Pending/Queued). "Awaiting final DLR" includes Pending/Queued/Sent—not handset receipt. "Terminal DLR delivered %" = Delivered ÷ total. Use Send Records or CSV per row.',
     taskName: 'Task Name',
     taskNamePlaceholder: 'Enter task name',
     taskSendRecords: 'Task send records',
@@ -2600,7 +2614,9 @@ export default {
     smsCount: 'SMS Count',
     smsPreview: 'SMS Preview',
     successDelivered: 'Delivered',
-    successRate: 'Success Rate',
+    successRate: "Today's delivery %",
+    successRateTooltip:
+      'Formula: Delivered today ÷ submitted today. Not the same as “Upstream accepted” or “Terminal DLR delivered %” on the batch task list (those split channel accept vs final receipts).',
     title: 'Send SMS',
     todayCost: 'Today Cost',
     todaySent: 'Today Sent',

@@ -20,6 +20,8 @@ type ChannelConfig struct {
     DefaultSenderID        string    `db:"default_sender_id"`
     MaxTPS                 int       `db:"max_tps"`
     Concurrency            int       `db:"concurrency"`
+    // 与 Python channels.config_json 一致，含 strip_leading_plus 等
+    ConfigJSON             string    `db:"config_json"`
 }
 
 // SMSLog represents the sms_logs record

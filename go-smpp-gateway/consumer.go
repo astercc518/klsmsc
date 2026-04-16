@@ -4,6 +4,8 @@ import (
     "encoding/json"
     "fmt"
     "log"
+    "sync"
+    "time"
 
     amqp "github.com/rabbitmq/amqp091-go"
     "github.com/google/uuid"
@@ -12,27 +14,46 @@ import (
 var (
     rabbitConn *amqp.Connection
     publishCh  *amqp.Channel
+    rabbitMu   sync.Mutex
 )
 
-func StartConsumer(url string) error {
-    var err error
-    rabbitConn, err = amqp.Dial(url)
-    if err != nil {
-        return err
+// closeRabbitMQLocked 关闭发布通道与连接（须在持有 rabbitMu 时调用）
+func closeRabbitMQLocked() {
+    if publishCh != nil {
+        _ = publishCh.Close()
+        publishCh = nil
     }
-    // We don't defer close here as we want to keep it global for publishing too
-    // But we should handle it in a shutdown hook if needed.
+    if rabbitConn != nil {
+        _ = rabbitConn.Close()
+        rabbitConn = nil
+    }
+}
 
-    publishCh, err = rabbitConn.Channel()
+// startSingleConsumerSession 建立连接、注册 sms_send_smpp 消费者并阻塞直到连接/通道结束
+func startSingleConsumerSession(url string) error {
+    conn, err := amqp.Dial(url)
     if err != nil {
-        return err
+        return fmt.Errorf("dial: %w", err)
+    }
+    pubCh, err := conn.Channel()
+    if err != nil {
+        _ = conn.Close()
+        return fmt.Errorf("publish channel: %w", err)
     }
 
-    ch, err := rabbitConn.Channel()
+    rabbitMu.Lock()
+    closeRabbitMQLocked()
+    rabbitConn = conn
+    publishCh = pubCh
+    rabbitMu.Unlock()
+
+    ch, err := conn.Channel()
     if err != nil {
-        return err
+        rabbitMu.Lock()
+        closeRabbitMQLocked()
+        rabbitMu.Unlock()
+        return fmt.Errorf("consume channel: %w", err)
     }
-    defer ch.Close()
 
     q, err := ch.QueueDeclare(
         "sms_send_smpp", // name
@@ -43,7 +64,11 @@ func StartConsumer(url string) error {
         nil,             // arguments
     )
     if err != nil {
-        return err
+        _ = ch.Close()
+        rabbitMu.Lock()
+        closeRabbitMQLocked()
+        rabbitMu.Unlock()
+        return fmt.Errorf("queue declare: %w", err)
     }
 
     msgs, err := ch.Consume(
@@ -56,7 +81,11 @@ func StartConsumer(url string) error {
         nil,    // args
     )
     if err != nil {
-        return err
+        _ = ch.Close()
+        rabbitMu.Lock()
+        closeRabbitMQLocked()
+        rabbitMu.Unlock()
+        return fmt.Errorf("consume: %w", err)
     }
 
     log.Printf("RabbitMQ Consumer started. Waiting for messages...")
@@ -65,13 +94,29 @@ func StartConsumer(url string) error {
         processTask(d)
     }
 
-    return nil
+    _ = ch.Close()
+    rabbitMu.Lock()
+    closeRabbitMQLocked()
+    rabbitMu.Unlock()
+    return fmt.Errorf("deliveries channel closed")
+}
+
+// RunConsumerForever Broker 重启或网络闪断后自动重连，避免 sms_send_smpp 长期无消费者
+func RunConsumerForever(url string) {
+    const reconnectDelay = 5 * time.Second
+    for {
+        err := startSingleConsumerSession(url)
+        log.Printf("RabbitMQ consumer session ended: %v; reconnecting in %v", err, reconnectDelay)
+        time.Sleep(reconnectDelay)
+    }
 }
 
 // PublishCeleryTask dispatches a task to the Python worker via RabbitMQ
 func PublishCeleryTask(queue string, taskName string, args []interface{}) error {
+    rabbitMu.Lock()
+    defer rabbitMu.Unlock()
     if publishCh == nil {
-        return fmt.Errorf("RabbitMQ publish channel not initialized")
+        return fmt.Errorf("RabbitMQ publish channel not ready (broker reconnecting)")
     }
 
     taskID := uuid.New().String()

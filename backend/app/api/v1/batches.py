@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Q
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, update
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 import csv
 import os
@@ -29,6 +29,57 @@ from app.utils.logger import get_logger
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+
+def _smslog_counts_to_response_patch(m: Dict[str, int], batch_total: int = 0) -> Dict[str, int]:
+    """
+    将单批 sms_logs 按状态计数转为列表接口覆盖字段。
+    当该批存在至少一条日志时，用日志重算 success/failed/processing/progress，修正 data_worker 曾用入队数覆盖 success_count 等问题。
+    """
+    log_total = sum(m.values())
+    dlv = m.get("delivered", 0)
+    pq = m.get("pending", 0) + m.get("queued", 0)
+    st = m.get("sent", 0)
+    fl = m.get("failed", 0) + m.get("expired", 0)
+    patch: Dict[str, int] = {
+        "delivered_count": dlv,
+        "sent_awaiting_receipt_count": pq + st,
+    }
+    if log_total > 0:
+        patch["success_count"] = st + dlv
+        patch["failed_count"] = fl
+        patch["processing_count"] = pq
+        tot = max(int(batch_total or 0), log_total, 1)
+        # 与 batch_utils 一致：已进入终态或通道已接受发送的条数占比
+        done = dlv + st + fl
+        patch["progress"] = min(100, int(done * 100 / tot))
+    return patch
+
+
+async def _smslog_batch_display_patches(
+    db: AsyncSession, batch_ids: List[int], batch_total_by_id: Optional[Dict[int, int]] = None
+) -> Dict[int, Dict[str, int]]:
+    """按批次聚合 sms_logs，生成 model_copy(update=...) 用的字段字典。"""
+    if not batch_ids:
+        return {}
+    stmt = (
+        select(SMSLog.batch_id, SMSLog.status, func.count(SMSLog.id))
+        .where(SMSLog.batch_id.in_(batch_ids))
+        .group_by(SMSLog.batch_id, SMSLog.status)
+    )
+    rows = (await db.execute(stmt)).all()
+    acc: Dict[int, Dict[str, int]] = {int(bid): {} for bid in batch_ids}
+    for batch_id, status, cnt in rows:
+        if batch_id is None:
+            continue
+        acc.setdefault(int(batch_id), {})[str(status or "")] = int(cnt or 0)
+    totals = batch_total_by_id or {}
+    return {
+        int(bid): _smslog_counts_to_response_patch(
+            acc.get(int(bid), {}), totals.get(int(bid), 0)
+        )
+        for bid in batch_ids
+    }
 
 
 def _mask_phone_for_export(phone: Optional[str]) -> str:
@@ -207,9 +258,15 @@ async def list_batches(
         
         result = await db.execute(query)
         batches = result.scalars().all()
-        
-        items = [SmsBatchResponse.model_validate(b, from_attributes=True) for b in batches]
-        
+
+        ids = [b.id for b in batches]
+        total_by_id = {int(b.id): int(b.total_count or 0) for b in batches}
+        patches = await _smslog_batch_display_patches(db, ids, total_by_id)
+        items = []
+        for b in batches:
+            base = SmsBatchResponse.model_validate(b, from_attributes=True)
+            items.append(base.model_copy(update=patches.get(b.id, {})))
+
         return SmsBatchListResponse(
             total=total,
             items=items,
@@ -326,7 +383,11 @@ async def get_batch(
         raise HTTPException(status_code=404, detail="批次不存在")
 
     try:
-        return SmsBatchResponse.model_validate(batch, from_attributes=True)
+        patches = await _smslog_batch_display_patches(
+            db, [batch.id], {int(batch.id): int(batch.total_count or 0)}
+        )
+        base = SmsBatchResponse.model_validate(batch, from_attributes=True)
+        return base.model_copy(update=patches.get(batch.id, {}))
     except Exception as e:
         logger.exception(f"批次详情序列化失败 batch_id={batch_id}: {e}")
         raise HTTPException(status_code=500, detail="批次数据格式异常，请联系管理员查看日志")
