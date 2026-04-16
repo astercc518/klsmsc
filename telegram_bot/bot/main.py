@@ -21,7 +21,7 @@ except ImportError:
     from config import settings
 
 import asyncio
-import aiomysql
+from bot.services.api_client import APIClient
 from telegram.ext import ApplicationBuilder, PicklePersistence, CommandHandler, MessageHandler, TypeHandler, filters, ContextTypes
 from telegram import Update
 from bot.utils import logger
@@ -48,35 +48,25 @@ from bot.handlers.data_ops import data_handlers
 # 语音/数据开户处理器
 from bot.handlers.account_opening import opening_handlers, handle_tech_reply_in_group
 
-async def get_bot_token_from_db() -> str:
-    """从数据库 system_config 读取 Bot Token"""
+async def get_bot_token_from_api() -> str:
+    """从内部 API 读取 Bot Token"""
     try:
-        conn = await aiomysql.connect(
-            host=os.environ.get("DATABASE_HOST", "mysql"),
-            port=int(os.environ.get("DATABASE_PORT", 3306)),
-            user=os.environ.get("DATABASE_USER", "smsuser"),
-            password=os.environ.get("DATABASE_PASSWORD", "smspass123"),
-            db=os.environ.get("DATABASE_NAME", "sms_system"),
-        )
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT config_value FROM system_config WHERE config_key = 'telegram_bot_token'"
-            )
-            row = await cur.fetchone()
-        conn.close()
-        if row and row[0]:
-            logger.info("从数据库读取到 Bot Token")
-            return row[0]
+        client = APIClient()
+        res = await client.get_internal_settings()
+        token = res.get("token")
+        if token:
+            logger.info("从 API 读取到 Bot Token")
+            return token
     except Exception as e:
-        logger.warning(f"从数据库读取 Bot Token 失败: {e}")
+        logger.warning(f"从 API 读取 Bot Token 失败: {e}")
     return ""
 
 
 def resolve_bot_token() -> str:
-    """优先数据库 → 回退环境变量"""
-    db_token = asyncio.get_event_loop().run_until_complete(get_bot_token_from_db())
-    if db_token:
-        return db_token
+    """优先 API → 回退环境变量"""
+    api_token = asyncio.get_event_loop().run_until_complete(get_bot_token_from_api())
+    if api_token:
+        return api_token
     logger.info("使用环境变量中的 Bot Token")
     return settings.TELEGRAM_BOT_TOKEN
 

@@ -207,6 +207,39 @@ class PrivateLibrarySummary(Base):
     )
 
 
+class DataStockSummary(Base):
+    """
+    公海数据汇总表（写时维护）：按国家+运营商+维度聚合，
+    用于秒级展示公海库存分布，避免对千万级 data_numbers 做 GROUP BY。
+    """
+
+    __tablename__ = "data_stock_summaries"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    country_code = Column(String(10), nullable=False, index=True)
+    carrier = Column(String(50), nullable=False, default="Unknown")
+    source = Column(String(50), nullable=True, default="")
+    purpose = Column(String(50), nullable=True, default="")
+    freshness = Column(String(20), nullable=True, default="history")
+    status = Column(String(20), nullable=True, default="active")
+    batch_id = Column(String(50), nullable=True, default=None)
+    total_count = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "country_code",
+            "carrier",
+            "source",
+            "purpose",
+            "freshness",
+            "status",
+            "batch_id",
+            name="uq_stock_dims",
+        ),
+    )
+
+
 class DataPricingTemplate(Base):
     """定价模板 - 按国家×来源×用途×时效定义售价和成本"""
     __tablename__ = 'data_pricing_templates'

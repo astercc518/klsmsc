@@ -1842,35 +1842,20 @@ async def channel_test_send(
 
     try:
         if channel.protocol == "SMPP":
-            from app.workers.adapters.smpp_adapter import SMPPAdapter
-            adapter = SMPPAdapter(channel)
-
-            connected = await adapter.connect()
-            if not connected:
-                sms_log.status = "failed"
-                sms_log.error_message = adapter.last_error or "SMPP连接失败"
-                await db.commit()
-                return {
-                    "success": False,
-                    "message": sms_log.error_message,
-                    "details": {
-                        "channel": channel.channel_code,
-                        "protocol": "SMPP",
-                        "host": f"{channel.host}:{channel.port}",
-                        "message_id": test_message_id,
-                    },
-                }
-
-            success, channel_msg_id, error = await adapter.send(sms_log)
-            # transceiver 模式下不立即断开，加入延迟断开队列以接收 DLR（与正常发送流程一致）
-            if success and getattr(adapter, 'client', None) and getattr(adapter, '_bind_mode', '') in ('transceiver', 'receiver'):
-                try:
-                    from app.workers.sms_worker import _smpp_schedule_delayed_disconnect
-                    _smpp_schedule_delayed_disconnect(adapter, channel.id, channel)
-                except Exception:
-                    await adapter.disconnect()
-            else:
-                await adapter.disconnect()
+            # SMPP 发送已迁移至 Go Gateway；API 进程内不再内嵌 Python SMPP 适配器
+            sms_log.status = "failed"
+            sms_log.error_message = "SMPP 测试发送已改为由独立网关处理，请通过网关或实际下发任务验证"
+            await db.commit()
+            return {
+                "success": False,
+                "message": sms_log.error_message,
+                "details": {
+                    "channel": channel.channel_code,
+                    "protocol": "SMPP",
+                    "host": f"{channel.host}:{channel.port}",
+                    "message_id": test_message_id,
+                },
+            }
 
         elif channel.protocol == "HTTP":
             from app.workers.adapters.http_adapter import HTTPAdapter
@@ -1998,39 +1983,23 @@ async def _run_channel_check(channel) -> dict:
     
     try:
         if channel.protocol == "SMPP":
-            from app.workers.adapters.smpp_adapter import SMPPAdapter
-            adapter = SMPPAdapter(channel)
-            
-            connected = await adapter.connect()
+            # 与测试发送一致：不在 API 进程内做 SMPP bind，避免依赖已移除的 Python 适配器
             latency_ms = int((time.time() - start_time) * 1000)
-            
             details = {
                 "channel": channel.channel_code,
                 "protocol": "SMPP",
                 "host": channel.host,
                 "port": channel.port,
-                "bind_mode": adapter._bind_mode,
-                "system_type": adapter._system_type or "(empty)",
                 "latency_ms": latency_ms,
+                "hint": "请在 Go SMPP Gateway / worker-sms-smpp 侧验证连通性",
             }
-            
-            if connected:
-                await adapter.disconnect()
-                return {
-                    "success": True,
-                    "status": "online",
-                    "message": f"SMPP连接正常 (bind_mode={adapter._bind_mode})",
-                    "details": details,
-                }
-            else:
-                details["error"] = adapter.last_error or "Unknown"
-                return {
-                    "success": False,
-                    "status": "offline",
-                    "message": adapter.last_error or "SMPP连接失败",
-                    "details": details,
-                }
-                
+            return {
+                "success": False,
+                "status": "unknown",
+                "message": "SMPP 连接检测已迁移，API 内不再执行 bind",
+                "details": details,
+            }
+
         elif channel.protocol == "HTTP":
             if not channel.api_url:
                 return {

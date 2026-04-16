@@ -14,37 +14,10 @@ from app.workers.celery_app import celery_app
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
 from app.database import AsyncSessionLocal
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from app.config import settings
-
-_worker_engine = None
-_worker_session_factory = None
+# 进程内单例 httpx 客户端，复用 TCP/TLS 连接
 _http_client = None
 
-
-def _get_worker_engine():
-    """进程级单例引擎，避免每次任务新建连接池"""
-    global _worker_engine, _worker_session_factory
-    if _worker_engine is None:
-        from sqlalchemy.pool import NullPool
-        _worker_engine = create_async_engine(
-            settings.SQLALCHEMY_DATABASE_URL,
-            echo=False,
-            poolclass=NullPool,
-        )
-        _worker_session_factory = async_sessionmaker(
-            _worker_engine, class_=AsyncSession, expire_on_commit=False
-        )
-    return _worker_engine, _worker_session_factory
-
-def _get_worker_session():
-    """复用进程级引擎的会话"""
-    _, factory = _get_worker_engine()
-    return factory()
-
-
 def _get_http_client():
-    """进程级单例 httpx 客户端，复用 TCP/TLS 连接"""
     global _http_client
     import httpx
     if _http_client is None or _http_client.is_closed:
@@ -71,31 +44,37 @@ from app.modules.sms.batch_utils import update_batch_progress, _mimic_smpp_expir
 
 
 
-_worker_loop: Optional[asyncio.AbstractEventLoop] = None
-_worker_loop_lock = threading.Lock()
-
-
-def _get_worker_loop() -> asyncio.AbstractEventLoop:
-    """进程级单例事件循环，确保 async engine 连接池始终绑定同一 loop"""
-    global _worker_loop
-    if _worker_loop is None or _worker_loop.is_closed():
-        with _worker_loop_lock:
-            if _worker_loop is None or _worker_loop.is_closed():
-                _worker_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(_worker_loop)
-    return _worker_loop
-
-
-_run_async_lock = threading.Lock()
-
-
 def _run_async(coro):
-    """在 Celery 同步 worker 中安全地执行异步协程。
-    prefork 模式下复用进程级事件循环；threads 模式下多线程共享时用锁串行化。
+    """在 Celery 同步 worker 中安全地执行异步协程，始终使用全新事件循环。
+    这是最稳妥的模式，彻底避免 'Event loop is closed' 错误。
     """
-    loop = _get_worker_loop()
-    with _run_async_lock:
+    loop = asyncio.new_event_loop()
+    try:
         return loop.run_until_complete(coro)
+    finally:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+
+
+def _make_session():
+    """为 Worker 任务创建独立的数据库引擎和会话（避免跨事件循环复用连接池）"""
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from sqlalchemy.pool import NullPool
+    
+    eng = create_async_engine(
+        settings.SQLALCHEMY_DATABASE_URL, 
+        echo=False,
+        poolclass=NullPool,
+        pool_pre_ping=True, 
+        pool_recycle=600,
+    )
+    factory = async_sessionmaker(
+        eng, class_=AsyncSession,
+        expire_on_commit=False, 
+        autocommit=False, 
+        autoflush=False
+    )
+    return eng, factory
 
 
 @celery_app.task(name='send_sms_task', bind=True, max_retries=3)
@@ -164,12 +143,13 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
         http_credentials: HTTP通道凭据（可选），包含 username 和 password
         _current_queue: 当前任务所在队列，用于 SMPP 通道重路由判断
     """
-    db = _get_worker_session()
+    eng, Session = _make_session()
     try:
-        # 查询短信记录
-        result = await db.execute(
-            select(SMSLog).where(SMSLog.message_id == message_id)
-        )
+        async with Session() as db:
+            # 查询短信记录
+            result = await db.execute(
+                select(SMSLog).where(SMSLog.message_id == message_id)
+            )
         sms_log = result.scalar_one_or_none()
         
         if not sms_log:
@@ -229,7 +209,8 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
         elif channel.protocol == 'HTTP':
             success = await _send_via_http(sms_log, channel, http_credentials)
         else:
-            logger.warning(f"不支持的协议或已被上游拦截路由: {channel.protocol}")
+            # SMPP 协议由 Go Gateway 处理。如果在此处捕获到，说明重路由逻辑或者队列配置有误。
+            logger.error(f"非预期路径：{channel.protocol} 协议尝试在 Python Worker 发送")
             success = False
 
         # 发送成功后立刻提交：submit_sm_resp 写入的 upstream_message_id 必须先落库。
@@ -289,7 +270,7 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
         
         return {"success": success, "message_id": message_id, "status": sms_log.status}
     finally:
-        await db.close()
+        await eng.dispose()
 
 
 
@@ -499,11 +480,12 @@ async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: di
 
 async def _mark_failed(message_id: str, error_message: str):
     """标记短信为失败状态"""
-    db = _get_worker_session()
+    eng, Session = _make_session()
     try:
-        result = await db.execute(
-            select(SMSLog).where(SMSLog.message_id == message_id)
-        )
+        async with Session() as db:
+            result = await db.execute(
+                select(SMSLog).where(SMSLog.message_id == message_id)
+            )
         sms_log = result.scalar_one_or_none()
         if sms_log:
             sms_log.status = 'failed'
@@ -511,7 +493,7 @@ async def _mark_failed(message_id: str, error_message: str):
             await db.commit()
             logger.info(f"已标记为失败: {message_id}")
     finally:
-        await db.close()
+        await eng.dispose()
 
 
 @celery_app.task(name='process_dlr_task')
@@ -537,61 +519,62 @@ async def _process_dlr_async(dlr_data: dict):
     """
     异步处理DLR
     """
-    db = _get_worker_session()
+    eng, Session = _make_session()
     try:
-        message_id = dlr_data.get('message_id')
-        status = dlr_data.get('status')
-        
-        result = await db.execute(
-            select(SMSLog).where(SMSLog.message_id == message_id)
-        )
-        sms_log = result.scalar_one_or_none()
-        
-        if not sms_log:
-            logger.warning(f"DLR对应的短信记录不存在: {message_id}")
-            return
-        
-        sms_log.status = status
-        if status == 'delivered':
-            sms_log.delivery_time = datetime.now()
-        elif status == 'failed':
-            sms_log.error_message = dlr_data.get('error_message', 'Delivery failed')
-        
-        await db.commit()
-        logger.info(f"DLR处理完成: {message_id}, 状态: {status}")
+        async with Session() as db:
+            message_id = dlr_data.get('message_id')
+            status = dlr_data.get('status')
+            
+            result = await db.execute(
+                select(SMSLog).where(SMSLog.message_id == message_id)
+            )
+            sms_log = result.scalar_one_or_none()
+            
+            if not sms_log:
+                logger.warning(f"DLR对应的短信记录不存在: {message_id}")
+                return
+            
+            sms_log.status = status
+            if status == 'delivered':
+                sms_log.delivery_time = datetime.now()
+            elif status == 'failed':
+                sms_log.error_message = dlr_data.get('error_message', 'Delivery failed')
+            
+            await db.commit()
+            logger.info(f"DLR处理完成: {message_id}, 状态: {status}")
 
-        # [重要] 回执更新后同步批次进度
-        if sms_log.batch_id:
-            await update_batch_progress(db, sms_log.batch_id)
-        
-        # 注水触发（delivered 时）
-        if status == 'delivered' and sms_log.account_id:
+            # [重要] 回执更新后同步批次进度
+            if sms_log.batch_id:
+                await update_batch_progress(db, sms_log.batch_id)
+            
+            # 注水触发（delivered 时）
+            if status == 'delivered' and sms_log.account_id:
+                try:
+                    from app.utils.water_trigger import trigger_water_single
+                    await trigger_water_single(
+                        db, sms_log.id, sms_log.message,
+                        sms_log.country_code, sms_log.account_id,
+                        channel_id=sms_log.channel_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"DLR注水触发异常: {e}")
+
             try:
-                from app.utils.water_trigger import trigger_water_single
-                await trigger_water_single(
-                    db, sms_log.id, sms_log.message,
-                    sms_log.country_code, sms_log.account_id,
-                    channel_id=sms_log.channel_id,
+                from app.workers.webhook_worker import trigger_webhook
+                await trigger_webhook(
+                    message_id,
+                    status,
+                    {
+                        'phone_number': sms_log.phone_number,
+                        'country_code': sms_log.country_code,
+                        'error_message': dlr_data.get('error_message') if status == 'failed' else None
+                    },
+                    account_id=sms_log.account_id,
                 )
             except Exception as e:
-                logger.warning(f"DLR注水触发异常: {e}")
-
-        try:
-            from app.workers.webhook_worker import trigger_webhook
-            await trigger_webhook(
-                message_id,
-                status,
-                {
-                    'phone_number': sms_log.phone_number,
-                    'country_code': sms_log.country_code,
-                    'error_message': dlr_data.get('error_message') if status == 'failed' else None
-                },
-                account_id=sms_log.account_id,
-            )
-        except Exception as e:
-            logger.warning(f"触发Webhook失败: {str(e)}")
+                logger.warning(f"触发Webhook失败: {str(e)}")
     finally:
-        await db.close()
+        await eng.dispose()
 
 
 @celery_app.task(name='process_smpp_dlr_task', max_retries=3)
@@ -607,26 +590,27 @@ def process_smpp_dlr_task(channel_id: int, upstream_id: str, new_status: str, st
 
 
 async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status: str, stat: str, err: str, dest_addr: str, source_addr: str, receipted_message_id: str):
-    db = _get_worker_session()
+    eng, Session = _make_session()
     try:
-        def _expand_id_candidates(raw: str) -> list:
-            upstream_id_str = str(raw).strip()
-            if not upstream_id_str:
-                return []
-            cands = [upstream_id_str]
-            if any(x in upstream_id_str.upper() for x in "ABCDEF"):
-                cands.append(upstream_id_str.upper())
-                cands.append(upstream_id_str.lower())
-            try:
-                if upstream_id_str.startswith("0x") or upstream_id_str.startswith("0X"):
-                    cands.append(str(int(upstream_id_str, 16)))
-                elif upstream_id_str.isdigit():
-                    cands.append(hex(int(upstream_id_str)))
-                elif all(c in "0123456789abcdefABCDEF" for c in upstream_id_str):
-                    cands.append(str(int(upstream_id_str, 16)))
-            except (ValueError, TypeError):
-                pass
-            return list(dict.fromkeys(cands))
+        async with Session() as db:
+            def _expand_id_candidates(raw: str) -> list:
+                upstream_id_str = str(raw).strip()
+                if not upstream_id_str:
+                    return []
+                cands = [upstream_id_str]
+                if any(x in upstream_id_str.upper() for x in "ABCDEF"):
+                    cands.append(upstream_id_str.upper())
+                    cands.append(upstream_id_str.lower())
+                try:
+                    if upstream_id_str.startswith("0x") or upstream_id_str.startswith("0X"):
+                        cands.append(str(int(upstream_id_str, 16)))
+                    elif upstream_id_str.isdigit():
+                        cands.append(hex(int(upstream_id_str)))
+                    elif all(c in "0123456789abcdefABCDEF" for c in upstream_id_str):
+                        cands.append(str(int(upstream_id_str, 16)))
+                except (ValueError, TypeError):
+                    pass
+                return list(dict.fromkeys(cands))
 
         candidate_ids = []
         for piece in (upstream_id, receipted_message_id):
@@ -692,6 +676,10 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
         await db.commit()
         logger.info(f"SMPP DLR 更新成功: {sms_log.message_id} -> {new_status}")
 
+        # [重要] 回执更新后同步批次进度
+        if sms_log.batch_id:
+            await update_batch_progress(db, sms_log.batch_id)
+
         if new_status == "delivered" and sms_log.account_id:
             try:
                 from app.utils.water_trigger import trigger_water_single
@@ -745,29 +733,27 @@ def fetch_dlr_reports_task():
 async def _fetch_dlr_reports_async():
     """
     异步拉取 DLR 报告
-
-    支持多种上游格式（JSON/XML），使用统一的 DLR 处理模块。
-    系统配置 dlr_report_url_override（JSON）可覆盖通道的 report URL，格式：
-    {"KAOLA_PH_HTTP": "https://xxx/report"} 或 {"KAOLA_PH_HTTP": {"url": "https://...", "method": "POST"}}
+    ...
     """
     import httpx
     from app.core.dlr_handler import detect_and_parse_dlr, process_dlr_reports
     from app.modules.common.system_config import SystemConfig
 
-    db = _get_worker_session()
+    eng, Session = _make_session()
     try:
-        # 读取 DLR report URL 覆盖配置（系统配置 -> dlr_report_url_override，类型 json）
-        url_overrides = {}
-        try:
-            cfg_res = await db.execute(
-                select(SystemConfig).where(SystemConfig.config_key == 'dlr_report_url_override')
-            )
-            cfg = cfg_res.scalar_one_or_none()
-            if cfg and cfg.config_value:
-                raw = cfg.config_value
-                url_overrides = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        except (json.JSONDecodeError, TypeError):
-            pass
+        async with Session() as db:
+            # 读取 DLR report URL 覆盖配置（系统配置 -> dlr_report_url_override，类型 json）
+            url_overrides = {}
+            try:
+                cfg_res = await db.execute(
+                    select(SystemConfig).where(SystemConfig.config_key == 'dlr_report_url_override')
+                )
+                cfg = cfg_res.scalar_one_or_none()
+                if cfg and cfg.config_value:
+                    raw = cfg.config_value
+                    url_overrides = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         # HTTP 通道：有 api_url 的参与拉取
         http_result = await db.execute(
@@ -880,7 +866,7 @@ async def _fetch_dlr_reports_async():
         logger.info(f"DLR 拉取完成: 成功={total_success}, 失败={total_fail}, 总计={total}")
         return {"success": True, "updated": total, "delivered": total_success, "failed": total_fail}
     finally:
-        await db.close()
+        await eng.dispose()
 
 
 def _build_dlr_pull_url(channel: Channel, url_override: Optional[str] = None) -> str:
@@ -981,9 +967,10 @@ async def _dlr_timeout_check_async():
     from datetime import timedelta
     from sqlalchemy import and_, update
 
-    db = _get_worker_session()
+    eng, Session = _make_session()
     try:
-        default_h = int(getattr(settings, "DLR_SENT_TIMEOUT_HOURS", 72) or 72)
+        async with Session() as db:
+            default_h = int(getattr(settings, "DLR_SENT_TIMEOUT_HOURS", 72) or 72)
         default_h = max(4, min(default_h, 720))
 
         ch_result = await db.execute(
@@ -1057,7 +1044,7 @@ async def _dlr_timeout_check_async():
 
         return {"success": True, "expired": expired_count}
     finally:
-        await db.close()
+        await eng.dispose()
 
 
 # ============ 虚拟通道回执生成任务 ============
@@ -1125,7 +1112,7 @@ async def _do_virtual_submit(message_ids: list, channel_id: int, batch_id: int =
                 await db.commit()
 
             if batch_id:
-                await _update_batch_progress(db, batch_id)
+                await update_batch_progress(db, batch_id)
 
         logger.info(
             f"虚拟通道提交模拟完成: batch={batch_id}, updated={updated}/{len(message_ids)}"
@@ -1230,7 +1217,7 @@ async def _do_virtual_dlr_batch(message_ids: list, channel_id: int, batch_id: in
                 await db.commit()
 
             if batch_id:
-                await _update_batch_progress(db, batch_id)
+                await update_batch_progress(db, batch_id)
 
             # 注水触发：对 delivered 消息按概率调度点击任务
             if delivered_items:

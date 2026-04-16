@@ -22,6 +22,7 @@ from app.modules.data.models import (
 )
 from app.utils.logger import get_logger
 from app.api.v1.data.helpers import calculate_stock, compute_freshness
+from app.modules.data.stock_summary_sync import update_stock_summary_from_batch
 import asyncio
 import csv
 import io
@@ -111,9 +112,10 @@ def _make_session():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.config import settings
 
+    from sqlalchemy.pool import NullPool
     eng = create_async_engine(
         settings.SQLALCHEMY_DATABASE_URL, echo=False,
-        pool_size=2, max_overflow=3,
+        poolclass=NullPool,
         pool_pre_ping=True, pool_recycle=600,
     )
     factory = async_sessionmaker(eng, class_=AsyncSession,
@@ -384,9 +386,13 @@ async def _do_buy_send_async(order_id, batch_id, account_id, number_ids,
             batch_result2 = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
             sms_batch2 = batch_result2.scalar_one_or_none()
             if sms_batch2:
+                sms_batch2.success_count = queued
+                sms_batch2.failed_count = len(message_ids) - queued
                 sms_batch2.status = BatchStatus.COMPLETED
+                sms_batch2.completed_at = datetime.now()
+                sms_batch2.progress = 100
                 await db.commit()
-                logger.info(f"[buy-send-async] batch={batch_id} 状态更新为 completed")
+                logger.info(f"[buy-send-async] batch={batch_id} 状态更新为 completed, success={queued}, failed={len(message_ids)-queued}")
 
             return {"order_id": order_id, "total": len(message_ids), "queued": queued}
 
@@ -803,6 +809,14 @@ async def _do_import(batch_id: str, file_path: str, ext: str,
             import_batch.status = "completed"
             import_batch.completed_at = datetime.now()
             await db.commit()
+
+            # 增量更新全局库存汇总
+            if valid_count > 0:
+                try:
+                    await update_stock_summary_from_batch(db, batch_id, delta=1)
+                    await db.commit()
+                except Exception as e:
+                    logger.warning(f"[{batch_id}] 导入后汇总同步失败: {e}")
 
             product_code = None
             stock_for_product = valid_count

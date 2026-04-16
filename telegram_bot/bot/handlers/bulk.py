@@ -5,16 +5,14 @@ import os
 import aiofiles
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler
-from bot.utils import get_session, logger
-from app.core.pricing import PricingEngine
-from app.core.audit import AuditService
-from app.utils.validator import Validator
-from app.modules.common.account import Account
-from sqlalchemy import select
+from bot.utils import logger, send_and_log
+from bot.services.api_client import APIClient
 
 # States
 FILE_UPLOADED = 1
 CONTENT_RECEIVED = 2
+
+api = APIClient()
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """取消操作"""
@@ -39,32 +37,31 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await doc.get_file()
     
     # 保存文件
-    # 路径: /tmp/smsc_batches/{account_id}_{ts}.txt
     os.makedirs("/tmp/smsc_batches", exist_ok=True)
     file_path = f"/tmp/smsc_batches/{account_id}_{doc.file_unique_id}.txt"
     await file.download_to_drive(file_path)
     
-    # 简单解析统计 (这里应该异步处理，避免阻塞)
-    # 为了演示直接处理
-    valid_count = 0
-    total_count = 0
-    
+    # 解析号码
+    phones = []
     async with aiofiles.open(file_path, mode='r') as f:
         async for line in f:
             line = line.strip()
             if line:
-                total_count += 1
                 # 简单验证
                 if line.isdigit() or line.startswith('+'):
-                    valid_count += 1
+                    phones.append(line)
     
+    if not phones:
+        await update.message.reply_text("❌ 文件中未找到有效号码。")
+        return ConversationHandler.END
+
     context.user_data['bulk_file'] = file_path
-    context.user_data['bulk_valid_count'] = valid_count
+    context.user_data['bulk_phones'] = phones
+    context.user_data['bulk_valid_count'] = len(phones)
     
     await update.message.reply_text(
         f"📄 **文件接收成功**\n"
-        f"总行数: {total_count}\n"
-        f"有效号码: **{valid_count}**\n\n"
+        f"有效号码: **{len(phones)}**\n\n"
         f"请直接发送 **短信内容**:",
         parse_mode='Markdown'
     )
@@ -73,42 +70,23 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理文案输入"""
-    content = update.message.text
+    content = update.message.text.strip()
     account_id = context.user_data.get('account_id')
-    valid_count = context.user_data.get('bulk_valid_count')
-    file_path = context.user_data.get('bulk_file')
+    phones = context.user_data.get('bulk_phones')
     
     if not content:
         await update.message.reply_text("内容不能为空")
         return FILE_UPLOADED
         
-    # 验证内容
-    is_valid, err, info = Validator.validate_content(content)
-    if not is_valid:
-        await update.message.reply_text(f"❌ 文案违规: {err}")
+    # 调用后端进行验证与估价
+    res = await api.bulk_validate(account_id, content, phones)
+    if not res.get("success"):
+        await update.message.reply_text(f"❌ 验证失败: {res.get('msg', '未知错误')}")
         return FILE_UPLOADED
-        
-    parts = info['parts']
-    encoding = info['encoding']
     
-    # 估算费用
-    # 取一个参考单价 (例如取该账户 CN 价格，或默认)
-    # 实际应该遍历文件里所有号码算，太慢。
-    # 简化：取该账户的默认 AccountPricing (如果有)，否则取 global default
-    
-    estimated_price = 0.05 # Fallback
-    currency = "USD"
-    
-    async with get_session() as db:
-        # 获取账户默认配置 (假设大部分发CN)
-        # 这里为了演示，先取一个固定值或查 AccountPricing
-        pricing_engine = PricingEngine(db)
-        # 模拟查询
-        price_info = await pricing_engine.get_price(1, 'CN', account_id=account_id)
-        if price_info:
-            estimated_price = price_info['price']
-            
-    total_cost = valid_count * parts * estimated_price
+    data = res
+    total_cost = data.get('total_cost')
+    parts = data.get('parts')
     
     context.user_data['bulk_content'] = content
     context.user_data['bulk_cost'] = total_cost
@@ -116,8 +94,8 @@ async def handle_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"💰 **订单确认**\n\n"
-        f"👥 号码数: {valid_count}\n"
-        f"📝 内容: {content[:20]}... ({info['length']}字, {encoding})\n"
+        f"👥 号码数: {data.get('valid_count')}\n"
+        f"📝 内容: {content[:20]}... ({data.get('length')}字, {data.get('encoding')})\n"
         f"🧩 条数: {parts} 条/人\n"
         f"💵 预估总价: **${total_cost:.2f}**\n\n"
         f"发送 /confirm 确认提交，或 /cancel 取消。",
@@ -129,35 +107,24 @@ async def handle_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def confirm_batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """确认提交"""
     account_id = context.user_data.get('account_id')
-    file_path = context.user_data.get('bulk_file')
+    phones = context.user_data.get('bulk_phones')
     content = context.user_data.get('bulk_content')
     total_cost = context.user_data.get('bulk_cost')
-    valid_count = context.user_data.get('bulk_valid_count')
     
-    import uuid
-    batch_id = f"BATCH_{uuid.uuid4().hex[:8].upper()}"
+    res = await api.create_mass_task(
+        account_id=account_id,
+        content=content,
+        phone_numbers=phones,
+        total_cost=total_cost
+    )
     
-    async with get_session() as db:
-        audit_service = AuditService(db)
-        batch = await audit_service.submit_batch(
-            account_id=account_id,
-            file_path=file_path,
-            content=content,
-            total_count=valid_count,
-            total_cost=total_cost,
-            batch_id=batch_id
-        )
-        
-        status_msg = "✅ **已通过自动审核，正在发送**" if batch.status == 'sending' else "⏳ **已提交人工审核**"
-        
+    if res.get("success"):
         await update.message.reply_text(
             f"🚀 **提交成功**\n"
-            f"批次号: `{batch_id}`\n"
-            f"{status_msg}",
+            f"批次号: `{res.get('batch_id')}`\n"
+            f"⏳ **已入库待处理**",
             parse_mode='Markdown'
         )
-        
-        # TODO: 如果 pending_audit，通知销售
         
     return ConversationHandler.END
 

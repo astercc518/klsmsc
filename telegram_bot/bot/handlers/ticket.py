@@ -9,16 +9,8 @@ from datetime import datetime
 import uuid
 import os
 
-# 导入数据库相关
-from app.database import AsyncSessionLocal
-from app.modules.common.ticket import Ticket, TicketReply
-from app.modules.common.account import Account
-from bot.utils import get_session, get_valid_customer_binding_and_account
-from app.modules.common.admin_user import AdminUser
-from app.modules.common.account_template import AccountTemplate
-from sqlalchemy import select, func
-
-# Staff Group ID
+# 导入服务相关
+from bot.services.api_client import APIClient
 from bot.utils import get_group_ids
 
 # 对话状态
@@ -45,22 +37,24 @@ def generate_ticket_no() -> str:
 
 
 async def get_user_account(tg_id: int):
-    """获取用户绑定的有效账户（未删除且非 closed）"""
-    async with get_session() as db:
-        _, account = await get_valid_customer_binding_and_account(db, tg_id)
-        return account
+    """获取用户绑定的有效账户"""
+    client = APIClient()
+    res = await client.get_binding_internal(tg_id=tg_id)
+    if res.get("success") and res.get("account"):
+        # 兼容旧代码，将字典转为简易对象或直接返回字典
+        from types import SimpleNamespace
+        return SimpleNamespace(**res["account"])
+    return None
 
 
 async def get_admin_user(tg_id: int):
     """获取绑定的管理员"""
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(
-            select(AdminUser).where(
-            AdminUser.tg_id == tg_id,
-            AdminUser.status == 'active'
-        )
-        )
-        return result.scalar_one_or_none()
+    client = APIClient()
+    res = await client.get_admin_internal(tg_id=tg_id)
+    if res.get("success") and res.get("admin"):
+        from types import SimpleNamespace
+        return SimpleNamespace(**res["admin"])
+    return None
 
 
 async def ticket_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -158,55 +152,56 @@ async def ticket_desc_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # 创建工单
     try:
-        async with AsyncSessionLocal() as session:
-            ticket = Ticket(
-                ticket_no=generate_ticket_no(),
-                account_id=account_id, # 管理员创建时可能为空，或者后续增加选择客户的逻辑
-                tg_user_id=str(update.effective_user.id),
-                ticket_type=context.user_data['ticket_type'],
-                priority='normal',
-                title=context.user_data['ticket_title'],
-                description=desc,
-                status='open',
-                created_by_type=user_type,
-                created_by_id=user_db_id
-            )
-            session.add(ticket)
-            await session.commit()
-            await session.refresh(ticket)
-            
-            await update.message.reply_text(
-                f"✅ *工单创建成功*\n\n"
-                f"工单号: `{ticket.ticket_no}`\n"
-                f"类型: {TICKET_TYPES.get(ticket.ticket_type, '其他')}\n"
-                f"标题: {ticket.title}\n\n"
-                f"我们会尽快处理您的工单，您可以使用 /tickets 查看工单状态。",
-                parse_mode='Markdown'
-            )
-            
-            # 通知技术群
-            gids = await get_group_ids()
-            staff_gid = gids.get('tech_group_id') or gids.get('admin_group_id')
-            if staff_gid:
-                try:
-                    admin_text = (
-                        f"🆕 *新工单通知*\n"
-                        f"------------------\n"
-                        f"工单号: `{ticket.ticket_no}`\n"
-                        f"类型: {TICKET_TYPES.get(ticket.ticket_type, '其他')}\n"
-                        f"标题: {ticket.title}\n"
-                        f"用户: `{update.effective_user.id}`\n"
-                        f"描述: {desc}\n"
-                    )
-                    keyboard = [[InlineKeyboardButton("🙋‍♂️ 接单", callback_data=f"take_ticket_{ticket.id}")]]
-                    await context.bot.send_message(
-                        chat_id=staff_gid,
-                        text=admin_text,
-                        reply_markup=InlineKeyboardMarkup(keyboard),
-                        parse_mode='Markdown'
-                    )
-                except Exception as e:
-                    logger.error(f"通知技术群失败: {e}")
+        client = APIClient()
+        res = await client.create_ticket_internal(
+            ticket_no=generate_ticket_no(),
+            account_id=account_id,
+            tg_user_id=update.effective_user.id,
+            ticket_type=context.user_data['ticket_type'],
+            priority='normal',
+            title=context.user_data['ticket_title'],
+            description=desc,
+            created_by_type=user_type,
+            created_by_id=user_db_id
+        )
+        
+        if not res.get("success"):
+            await update.message.reply_text(f"❌ 创建工单失败: {res.get('message')}")
+            return ConversationHandler.END
+
+        t_no = res.get("ticket_no")
+        await update.message.reply_text(
+            f"✅ *工单创建成功*\n\n"
+            f"工单号: `{t_no}`\n"
+            f"类型: {TICKET_TYPES.get(context.user_data['ticket_type'], '其他')}\n"
+            f"标题: {context.user_data['ticket_title']}\n\n"
+            f"我们会尽快处理您的工单，您可以使用 /tickets 查看工单状态。",
+            parse_mode='Markdown'
+        )
+        
+        # 通知技术群
+        gids = await get_group_ids()
+        staff_gid = gids.get('tech_group_id') or gids.get('admin_group_id')
+        if staff_gid:
+            try:
+                admin_text = (
+                    f"🆕 *新工单通知*\n"
+                    f"------------------\n"
+                    f"工单号: `{t_no}`\n"
+                    f"类型: {TICKET_TYPES.get(context.user_data['ticket_type'], '其他')}\n"
+                    f"标题: {context.user_data['ticket_title']}\n"
+                    f"用户: `{update.effective_user.id}`\n"
+                    f"描述: {desc}\n"
+                )
+                keyboard = [[InlineKeyboardButton("🙋‍♂️ 接单", callback_data=f"take_ticket_{res.get('ticket_id')}")]]
+                await context.bot.send_message(
+                    chat_id=staff_gid,
+                    text=admin_text,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                logger.error(f"通知技术群失败: {e}")
             
     except Exception as e:
         logger.error(f"创建工单失败: {e}")
@@ -237,59 +232,54 @@ async def list_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        async with AsyncSessionLocal() as session:
-            query = select(Ticket).order_by(Ticket.created_at.desc()).limit(10)
-            
-            if admin:
-                # 管理员可以看到分配给自己的工单，或者所有未分配的？
-                # 简单起见，管理员看到分配给自己的 + 自己创建的
-                query = query.where(
-                    (Ticket.assigned_to == admin.id) | 
-                    (Ticket.created_by_id == admin.id) & (Ticket.created_by_type == 'admin')
-                )
-            else:
-                query = query.where(Ticket.account_id == account.id)
-                
-            result = await session.execute(query)
-            tickets = result.scalars().all()
-            
-            if not tickets:
-                await update.message.reply_text(
-                    "📭 您还没有相关工单记录。\n\n"
-                    "使用 /ticket 创建新工单。"
-                )
-                return
-            
-            # 状态映射
-            status_map = {
-                'open': '⏳ 待处理',
-                'assigned': '👤 已分配',
-                'in_progress': '🔄 处理中',
-                'pending_user': '💬 等待回复',
-                'resolved': '✅ 已解决',
-                'closed': '🔒 已关闭',
-                'cancelled': '❌ 已取消'
-            }
-            
-            title_prefix = "我的工单 (管理员)" if admin else "我的工单"
-            text = f"📋 *{title_prefix}*\n\n"
-            for t in tickets:
-                status = status_map.get(t.status, t.status)
-                created = t.created_at.strftime('%m/%d %H:%M') if t.created_at else '-'
-                text += f"• `{t.ticket_no}`\n"
-                text += f"  {t.title[:30]}{'...' if len(t.title) > 30 else ''}\n"
-                text += f"  {status} | {created}\n\n"
-            
-            # 添加按钮
-            keyboard = [
-                [InlineKeyboardButton("➕ 创建新工单", callback_data="new_ticket")],
-            ]
-            
+        client = APIClient()
+        res = await client.get_tickets_internal(
+            account_id=account.id if account else None,
+            admin_id=admin.id if admin else None
+        )
+        
+        if not res.get("success"):
+            await update.message.reply_text(f"❌ 获取工单列表失败: {res.get('message')}")
+            return
+
+        tickets = res.get("tickets", [])
+        if not tickets:
             await update.message.reply_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
+                "📭 您还没有相关工单记录。\n\n"
+                "使用 /ticket 创建新工单。"
             )
+            return
+        
+        # 状态映射
+        status_map = {
+            'open': '⏳ 待处理',
+            'assigned': '👤 已分配',
+            'in_progress': '🔄 处理中',
+            'pending_user': '💬 等待回复',
+            'resolved': '✅ 已解决',
+            'closed': '🔒 已关闭',
+            'cancelled': '❌ 已取消'
+        }
+        
+        title_prefix = "我的工单 (管理员)" if admin else "我的工单"
+        text = f"📋 *{title_prefix}*\n\n"
+        for t in tickets:
+            status = status_map.get(t['status'], t['status'])
+            created = t.get('created_at', '-')[:16].replace('T', ' ')
+            text += f"• `{t['ticket_no']}`\n"
+            text += f"  {t['title'][:30]}{'...' if len(t['title']) > 30 else ''}\n"
+            text += f"  {status} | {created}\n\n"
+        
+        # 添加按钮
+        keyboard = [
+            [InlineKeyboardButton("➕ 创建新工单", callback_data="new_ticket")],
+        ]
+        
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
     except Exception as e:
         logger.error(f"获取工单列表失败: {e}")
         await update.message.reply_text("❌ 获取工单列表失败，请稍后重试。")
@@ -311,86 +301,73 @@ async def view_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        async with AsyncSessionLocal() as session:
-            query = select(Ticket).where(Ticket.ticket_no == ticket_no)
-            
-            # 权限控制
-            if not admin:
-                query = query.where(Ticket.account_id == account.id)
-            
-            result = await session.execute(query)
-            ticket = result.scalar_one_or_none()
-            
-            if not ticket:
-                await update.message.reply_text("❌ 工单不存在或无权查看。")
-                return
-            
-            # 获取回复
-            # ... (rest of the function)
-            replies_result = await session.execute(
-                select(TicketReply)
-                .where(
-                    TicketReply.ticket_id == ticket.id,
-                    TicketReply.is_internal == False
+        client = APIClient()
+        res = await client.get_ticket_detail_internal(
+            ticket_no=ticket_no,
+            account_id=account.id if account else None
+        )
+        
+        if not res.get("success"):
+            await update.message.reply_text(f"❌ 获取工单详情失败: {res.get('message')}")
+            return
+
+        ticket = res.get("ticket")
+        replies = res.get("replies", [])
+        
+        status_map = {
+            'open': '⏳ 待处理',
+            'assigned': '👤 已分配',
+            'in_progress': '🔄 处理中',
+            'pending_user': '💬 等待回复',
+            'resolved': '✅ 已解决',
+            'closed': '🔒 已关闭'
+        }
+        
+        text = f"📋 *工单详情*\n\n"
+        text += f"工单号: `{ticket['ticket_no']}`\n"
+        text += f"类型: {TICKET_TYPES.get(ticket['ticket_type'], '其他')}\n"
+        text += f"状态: {status_map.get(ticket['status'], ticket['status'])}\n"
+        text += f"标题: {ticket['title']}\n\n"
+        text += f"*描述:*\n{ticket.get('description') or '无'}\n\n"
+        
+        if ticket.get("resolution"):
+            text += f"*解决方案:*\n{ticket['resolution']}\n\n"
+        
+        if replies:
+            text += f"*沟通记录 ({len(replies)}):*\n"
+            for r in replies[-5:]:  # 只显示最近5条
+                author = "客服" if r['reply_by_type'] == 'admin' else "我"
+                time = r['created_at'][:16].replace('T', ' ') if r.get('created_at') else ''
+                text += f"[{author}] {time}\n{r['content'][:100]}{'...' if len(r['content']) > 100 else ''}\n\n"
+        
+        # 如果工单未关闭，显示回复按钮
+        keyboard = []
+        if ticket['status'] not in ['closed', 'cancelled', 'resolved']:
+            keyboard.append([
+                InlineKeyboardButton("💬 回复工单", callback_data=f"reply_ticket_{ticket['id']}")
+            ])
+        
+        # 管理员操作按钮
+        if admin:
+            admin_buttons = []
+            if ticket['status'] == 'open':
+                admin_buttons.append(
+                    InlineKeyboardButton("🙋‍♂️ 接单", callback_data=f"take_ticket_{ticket['id']}")
                 )
-                .order_by(TicketReply.created_at.asc())
-            )
-            replies = replies_result.scalars().all()
             
-            status_map = {
-                'open': '⏳ 待处理',
-                'assigned': '👤 已分配',
-                'in_progress': '🔄 处理中',
-                'pending_user': '💬 等待回复',
-                'resolved': '✅ 已解决',
-                'closed': '🔒 已关闭'
-            }
+            if ticket['status'] in ['assigned', 'in_progress', 'pending_user'] and ticket.get('assigned_to') == admin.id:
+                admin_buttons.append(
+                    InlineKeyboardButton("✅ 解决", callback_data=f"resolve_ticket_{ticket['id']}")
+                )
             
-            text = f"📋 *工单详情*\n\n"
-            text += f"工单号: `{ticket.ticket_no}`\n"
-            text += f"类型: {TICKET_TYPES.get(ticket.ticket_type, '其他')}\n"
-            text += f"状态: {status_map.get(ticket.status, ticket.status)}\n"
-            text += f"标题: {ticket.title}\n\n"
-            text += f"*描述:*\n{ticket.description or '无'}\n\n"
-            
-            if ticket.resolution:
-                text += f"*解决方案:*\n{ticket.resolution}\n\n"
-            
-            if replies:
-                text += f"*沟通记录 ({len(replies)}):*\n"
-                for r in replies[-5:]:  # 只显示最近5条
-                    author = "客服" if r.reply_by_type == 'admin' else "我"
-                    time = r.created_at.strftime('%m/%d %H:%M') if r.created_at else ''
-                    text += f"[{author}] {time}\n{r.content[:100]}{'...' if len(r.content) > 100 else ''}\n\n"
-            
-            # 如果工单未关闭，显示回复按钮
-            keyboard = []
-            if ticket.status not in ['closed', 'cancelled', 'resolved']:
-                keyboard.append([
-                    InlineKeyboardButton("💬 回复工单", callback_data=f"reply_ticket_{ticket.id}")
-                ])
-            
-            # 管理员操作按钮
-            if admin:
-                admin_buttons = []
-                if ticket.status == 'open':
-                    admin_buttons.append(
-                        InlineKeyboardButton("🙋‍♂️ 接单", callback_data=f"take_ticket_{ticket.id}")
-                    )
-                
-                if ticket.status in ['assigned', 'in_progress', 'pending_user'] and ticket.assigned_to == admin.id:
-                    admin_buttons.append(
-                        InlineKeyboardButton("✅ 解决", callback_data=f"resolve_ticket_{ticket.id}")
-                    )
-                
-                if admin_buttons:
-                    keyboard.append(admin_buttons)
-            
-            await update.message.reply_text(
-                text,
-                reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
-                parse_mode='Markdown'
-            )
+            if admin_buttons:
+                keyboard.append(admin_buttons)
+        
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
+            parse_mode='Markdown'
+        )
     except Exception as e:
         logger.error(f"获取工单详情失败: {e}")
         await update.message.reply_text("❌ 获取工单详情失败，请稍后重试。")
@@ -416,30 +393,18 @@ async def ticket_action_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     try:
-        async with AsyncSessionLocal() as session:
-            ticket = await session.get(Ticket, ticket_id)
-            if not ticket:
-                await context.bot.send_message(chat_id=user_id, text="❌ 工单不存在。")
-                return
-            
-            if action == 'take':
-                if ticket.status != 'open':
-                    await context.bot.send_message(chat_id=user_id, text=f"❌ 工单状态已变更 ({ticket.status})。")
-                    return
-                ticket.status = 'assigned'
-                ticket.assigned_to = admin.id
-                ticket.assigned_at = datetime.now()
-                await session.commit()
-                await context.bot.send_message(chat_id=user_id, text=f"✅ 您已接单 (工单号: {ticket.ticket_no})")
-                
-            elif action == 'resolve':
-                ticket.status = 'resolved'
-                ticket.resolved_at = datetime.now()
-                ticket.resolved_by = admin.id
-                # 简单处理，不要求输入解决方案
-                ticket.resolution = "通过Telegram Bot标记解决"
-                await session.commit()
-                await context.bot.send_message(chat_id=user_id, text=f"✅ 工单已标记为解决 (工单号: {ticket.ticket_no})")
+        client = APIClient()
+        res = await client.ticket_action_internal(
+            ticket_id=ticket_id,
+            action=action,
+            admin_id=admin.id
+        )
+        
+        if res.get("success"):
+            label = "已接单" if action == 'take' else "已标记解决"
+            await context.bot.send_message(chat_id=user_id, text=f"✅ 您{label} (工单号: {res.get('ticket_no')})")
+        else:
+            await context.bot.send_message(chat_id=user_id, text=f"❌ 操作失败: {res.get('message')}")
                 
     except Exception as e:
         logger.error(f"工单操作失败: {e}")
@@ -521,36 +486,34 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        from app.modules.sms.sms_log import SMSLog
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(SMSLog)
-                .where(SMSLog.account_id == account.id)
-                .order_by(SMSLog.submit_time.desc())
-                .limit(10)
-            )
-            logs = result.scalars().all()
-            
-            if not logs:
-                await update.message.reply_text("📭 暂无发送记录。")
-                return
-            
-            status_icons = {
-                'pending': '⏳',
-                'sent': '📤',
-                'delivered': '✅',
-                'failed': '❌'
-            }
-            
-            text = "📋 *最近发送记录*\n\n"
-            for log in logs:
-                icon = status_icons.get(log.status, '❓')
-                time = log.submit_time.strftime('%m/%d %H:%M') if log.submit_time else '-'
-                phone = log.phone_number[:8] + '****' if log.phone_number else '-'
-                text += f"{icon} `{phone}` | {time}\n"
-                text += f"   {log.message[:30]}{'...' if len(log.message or '') > 30 else ''}\n\n"
-            
-            await update.message.reply_text(text, parse_mode='Markdown')
+        client = APIClient()
+        res = await client.get_sms_history_internal(account_id=account.id)
+        
+        if not res.get("success"):
+            await update.message.reply_text(f"❌ 获取记录失败: {res.get('message')}")
+            return
+
+        logs = res.get("logs", [])
+        if not logs:
+            await update.message.reply_text("📭 暂无发送记录。")
+            return
+        
+        status_icons = {
+            'pending': '⏳',
+            'sent': '📤',
+            'delivered': '✅',
+            'failed': '❌'
+        }
+        
+        text = "📋 *最近发送记录*\n\n"
+        for log in logs:
+            icon = status_icons.get(log['status'], '❓')
+            time = log['submit_time'][:16].replace('T', ' ') if log.get('submit_time') else '-'
+            phone = log['phone_number'][:8] + '****' if log.get('phone_number') else '-'
+            text += f"{icon} `{phone}` | {time}\n"
+            text += f"   {log['message'][:30]}{'...' if len(log.get('message') or '') > 30 else ''}\n\n"
+        
+        await update.message.reply_text(text, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"获取发送历史失败: {e}")
         await update.message.reply_text("❌ 获取发送历史失败，请稍后重试。")

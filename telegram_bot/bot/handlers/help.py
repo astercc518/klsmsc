@@ -1,35 +1,16 @@
-"""
-帮助命令处理器 - 根据用户角色显示不同帮助
-"""
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from loguru import logger
-from app.database import AsyncSessionLocal
-from app.modules.common.admin_user import AdminUser
-from bot.utils import get_valid_customer_binding_and_account
-from sqlalchemy import select
+from bot.utils import logger
+from bot.services.api_client import APIClient
 
+api = APIClient()
 
 async def get_user_role(tg_id: int) -> str:
     """获取用户角色"""
-    async with AsyncSessionLocal() as session:
-        # 检查是否是管理员/销售
-        admin_result = await session.execute(
-            select(AdminUser).where(
-            AdminUser.tg_id == tg_id,
-            AdminUser.status == 'active'
-        )
-        )
-        admin = admin_result.scalar_one_or_none()
-        if admin:
-            return admin.role  # super_admin, admin, sales, finance, tech
-        
-        # 检查是否是绑定的有效客户账户
-        _, account = await get_valid_customer_binding_and_account(session, tg_id)
-        if account:
-            return "customer"
-        
-        return 'guest'
+    res = await api.get_user_role(tg_id)
+    if res.get("success"):
+        return res.get("role", "guest")
+    return "guest"
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):

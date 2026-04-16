@@ -17,6 +17,7 @@ celery_app = Celery(
         'app.workers.webhook_worker',
         'app.workers.okcc_worker',
         'app.workers.web_worker',
+        'app.workers.batch_inspector',
     ]
 )
 
@@ -37,7 +38,6 @@ celery_app.conf.update(
 # 任务路由
 celery_app.conf.task_routes = {
     'send_sms_task': {'queue': 'sms_send'},
-    'send_sms_batch_smpp_task': {'queue': 'sms_send_smpp'},
     'process_dlr_task': {'queue': 'sms_dlr'},
     'process_smpp_dlr_task': {'queue': 'sms_dlr'},
     'fetch_dlr_reports_task': {'queue': 'sms_dlr'},
@@ -49,10 +49,6 @@ celery_app.conf.task_queues = {
     'sms_send': {
         'exchange': 'sms_send',
         'routing_key': 'sms_send',
-    },
-    'sms_send_smpp': {
-        'exchange': 'sms_send_smpp',
-        'routing_key': 'sms_send_smpp',
     },
     'sms_dlr': {
         'exchange': 'sms_dlr',
@@ -117,6 +113,11 @@ celery_app.conf.beat_schedule = {
     'dlr-timeout-check-every-10min': {
         'task': 'dlr_timeout_check_task',
         'schedule': 600.0,
+    },
+    # 每5分钟巡检一次卡死的批次
+    'inspect-stuck-batches-5min': {
+        'task': 'inspect_batches_task',
+        'schedule': 300.0,
     },
 }
 

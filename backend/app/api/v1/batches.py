@@ -469,7 +469,7 @@ async def retry_batch_failed(
     - 数据仓库购数并发送（批次名 DataSend- 开头）：购数时已含短信费用，重发不再扣费，沿用原记录计费字段。
     """
     from app.api.v1.sms import _refund_line_charge
-    from app.workers.sms_worker import _update_batch_progress
+    from app.modules.sms.batch_utils import update_batch_progress
 
     q_batch = select(SmsBatch).where(
         SmsBatch.id == batch_id,
@@ -603,7 +603,7 @@ async def retry_batch_failed(
 
         retried += 1
 
-    await _update_batch_progress(db, batch_id)
+    await update_batch_progress(db, batch_id)
 
     msg = f"已重发 {retried} 条"
     if skipped:
@@ -632,7 +632,7 @@ async def requeue_batch_queued(
     用于 Worker 曾无法连接数据库等异常：任务已从 RabbitMQ 消费但库未更新，
     修复部署后可通过本接口补投递。
     """
-    from app.workers.sms_worker import _update_batch_progress
+    from app.modules.sms.batch_utils import update_batch_progress
 
     q_batch = select(SmsBatch).where(
         SmsBatch.id == batch_id,
@@ -678,7 +678,7 @@ async def requeue_batch_queued(
             if len(err_lines) < max_err_show:
                 err_lines.append(f"{sms_log.message_id}: 加入发送队列失败")
 
-    await _update_batch_progress(db, batch_id)
+    await update_batch_progress(db, batch_id)
 
     msg = f"已重新入队 {retried} 条"
     if skipped:

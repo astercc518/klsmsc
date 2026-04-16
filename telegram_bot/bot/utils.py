@@ -1,32 +1,12 @@
 import sys
 import os
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Dict
 
 # 将 backend 目录添加到 path，以便可以直接引用 app 模块
-# Docker中 backend 挂载在 /backend
-current_dir = os.path.dirname(os.path.abspath(__file__))
+from loguru import logger
 
-# 首先尝试 Docker 环境的路径
-docker_backend_path = "/backend"
-# 本地开发环境的路径
-local_backend_path = os.path.abspath(os.path.join(current_dir, "../../../backend"))
-
-# 添加到 sys.path
-for path in [docker_backend_path, local_backend_path]:
-    if os.path.exists(path) and path not in sys.path:
-        sys.path.insert(0, path)
-
-# 尝试引用 app
-try:
-    from app.database import AsyncSessionLocal as async_session_maker
-    from app.utils.logger import get_logger
-except ImportError as e:
-    print(f"Failed to import app. sys.path: {sys.path}")
-    print(f"Docker backend exists: {os.path.exists(docker_backend_path)}")
-    print(f"Local backend exists: {os.path.exists(local_backend_path)}")
-    raise
-
-logger = get_logger(__name__)
+# 不需要再添加 backend 到 sys.path，所有交互应通过 APIClient 进行
+# logger 使用 loguru 直接初始化
 
 async def log_outgoing_message(user_id: int, content: str, chat_id: Optional[int] = None):
     """记录发出消息异步助手"""
@@ -51,29 +31,6 @@ async def edit_and_log(query: Any, text: str, **kwargs):
     asyncio.create_task(log_outgoing_message(user_id, text, chat_id))
     return message
 
-async def get_db_session():
-    """获取数据库会话"""
-    async with async_session_maker() as session:
-        yield session
-
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def get_session():
-    async with async_session_maker() as session:
-        try:
-            yield session
-        except Exception as e:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
-
-
-
-from sqlalchemy import select
-
-
 def dedupe_country_codes_from_templates(raw_codes: list) -> list[str]:
     """
     开户模板国家列表去重：同一国家码只保留一条（避免 distinct(country_code, country_name) 产生重复按钮），
@@ -93,61 +50,38 @@ def dedupe_country_codes_from_templates(raw_codes: list) -> list[str]:
 
 async def get_group_ids() -> dict:
     """
-    从 system_config 读取各 TG 群组 ID（优先数据库，回退环境变量）
+    从后端 API 读取各 TG 群组 ID（回退环境变量）
     返回 {'tech_group_id': '...', 'billing_group_id': '...', 'admin_group_id': '...'}
     """
-    from app.modules.common.system_config import SystemConfig
+    from bot.services.api_client import APIClient
+    
+    # 基础环境变量回退
     ids = {
         'admin_group_id': os.getenv('TELEGRAM_ADMIN_GROUP_ID', ''),
         'tech_group_id': os.getenv('STAFF_GROUP_ID', ''),
         'billing_group_id': '',
     }
+    
     try:
-        async with async_session_maker() as session:
-            result = await session.execute(
-                select(SystemConfig.config_key, SystemConfig.config_value).where(
-                    SystemConfig.config_key.in_([
-                        'telegram_admin_group_id',
-                        'telegram_tech_group_id',
-                        'telegram_billing_group_id',
-                    ])
-                )
-            )
-            for k, v in result.fetchall():
-                if v and v.strip():
-                    if k == 'telegram_admin_group_id':
-                        ids['admin_group_id'] = v.strip()
-                    elif k == 'telegram_tech_group_id':
-                        ids['tech_group_id'] = v.strip()
-                    elif k == 'telegram_billing_group_id':
-                        ids['billing_group_id'] = v.strip()
+        api = APIClient()
+        settings = await api.get_internal_settings()
+        if settings:
+            if settings.get('admin_group_id'):
+                ids['admin_group_id'] = settings['admin_group_id']
+            if settings.get('tech_group_id'):
+                ids['tech_group_id'] = settings['tech_group_id']
+            if settings.get('billing_group_id'):
+                ids['billing_group_id'] = settings['billing_group_id']
     except Exception as e:
-        logger.warning(f"读取群组ID配置失败，使用环境变量: {e}")
+        logger.warning(f"从 API 读取群组 ID 配置失败，使用环境变量: {e}")
+        
     return ids
 
-
-async def get_valid_customer_binding_and_account(
-    db: Any, tg_id: int
-) -> Tuple[Optional[Any], Optional[Any]]:
-    """
-    解析 TG 用户可用的短信客户账户：须未删除且非 closed。
-    与 handlers/auth.py 中 /start 校验一致。
-    """
-    from app.modules.common.account import Account
-    from app.modules.common.telegram_binding import TelegramBinding
-
-    r = await db.execute(select(TelegramBinding).where(TelegramBinding.tg_id == tg_id))
-    bindings = list(r.scalars().all())
-    for b in bindings:
-        acc_r = await db.execute(
-            select(Account).where(
-                Account.id == b.account_id,
-                Account.status != "closed",
-                Account.is_deleted == False,  # noqa: E712
-            )
-        )
-        acc = acc_r.scalar_one_or_none()
-        if acc:
-            return b, acc
-
-    return None, None
+async def get_user_binding_internal(tg_id: int) -> Optional[Dict]:
+    """通过 API 获取用户绑定信息"""
+    from bot.services.api_client import APIClient
+    api = APIClient()
+    user_info = await api.verify_user(tg_id)
+    if user_info and user_info.get("role") == "customer":
+        return user_info
+    return None

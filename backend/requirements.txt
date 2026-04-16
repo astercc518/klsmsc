@@ -42,9 +42,6 @@ click==8.1.7
 pytz==2023.3
 email-validator==2.1.0
 
-# SMPP协议支持
-smpplib==2.2.4
-
 # Playwright 浏览器自动化（注水 worker 使用）
 playwright==1.52.0
 playwright-stealth>=1.0.6

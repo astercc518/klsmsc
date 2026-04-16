@@ -1,7 +1,3 @@
-"""
-销售管理 Handler - 支持交互式开户模板选择
-"""
-import json
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes, 
@@ -9,13 +5,9 @@ from telegram.ext import (
     ConversationHandler, 
     CallbackQueryHandler
 )
-from bot.utils import get_session, logger, dedupe_country_codes_from_templates
+from bot.utils import logger, dedupe_country_codes_from_templates
 from bot.handlers.menu import COUNTRY_NAMES
-from app.modules.common.admin_user import AdminUser
-from app.modules.common.account_template import AccountTemplate
-from app.core.auth import AuthService
-from app.core.invitation import InvitationService
-from sqlalchemy import select, update, func
+from bot.services.api_client import APIClient
 
 # 对话状态
 SELECT_BIZ_TYPE, SELECT_COUNTRY, SELECT_TEMPLATE, INPUT_PRICE, CONFIRM = range(5)
@@ -36,35 +28,14 @@ async def bind_sales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username, password = args[0], args[1]
     tg_id = user.id
     
-    async with get_session() as db:
-        # 验证账号
-        query = select(AdminUser).where(
-            AdminUser.username == username,
-            AdminUser.status == 'active'
-        )
-        result = await db.execute(query)
-        admin = result.scalar_one_or_none()
-        
-        if not admin:
-            await update.message.reply_text("❌ 用户名不存在")
-            return
-            
-        if not AuthService.verify_password(password, admin.password_hash):
-            await update.message.reply_text("❌ 密码错误")
-            return
-            
-        if admin.role not in ['sales', 'super_admin', 'admin']:
-            await update.message.reply_text("❌ 该账号不是销售角色")
-            return
-            
-        # 绑定 TG ID
-        admin.tg_id = tg_id
-        await db.commit()
-        
-        await update.message.reply_text(f"✅ 绑定成功！欢迎销售 **{admin.real_name}**", parse_mode='Markdown')
+    api = APIClient()
+    res = await api.bind_sales(username, password, tg_id)
+    
+    if res.get("success"):
+        await update.message.reply_text(f"✅ 绑定成功！欢迎销售 **{res.get('real_name')}**", parse_mode='Markdown')
+    else:
+        await update.message.reply_text(f"❌ 绑定失败: {res.get('msg', '未知错误')}")
 
-
-# ============ 交互式邀请码生成 ============
 
 async def invite_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -73,21 +44,15 @@ async def invite_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     tg_id = user.id
     
-    async with get_session() as db:
-        # 验证是否为销售
-        query = select(AdminUser).where(
-            AdminUser.tg_id == tg_id,
-            AdminUser.status == 'active'
-        )
-        result = await db.execute(query)
-        sales = result.scalar_one_or_none()
-        
-        if not sales:
-            await update.message.reply_text("❌ 您尚未绑定销售账号，请先使用 `/bind_sales`", parse_mode='Markdown')
-            return ConversationHandler.END
-        
-        context.user_data['sales_id'] = sales.id
-        context.user_data['sales_name'] = sales.real_name
+    api = APIClient()
+    user_info = await api.verify_user(tg_id)
+    
+    if not user_info or user_info.get("role") not in ['sales', 'super_admin', 'admin']:
+        await update.message.reply_text("❌ 您尚未绑定销售账号，请先使用 `/bind_sales`", parse_mode='Markdown')
+        return ConversationHandler.END
+    
+    context.user_data['sales_id'] = user_info.get("user_id")
+    context.user_data['sales_name'] = user_info.get("real_name")
     
     # 显示业务类型选择
     keyboard = [
@@ -126,16 +91,15 @@ async def select_biz_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
     
     # 获取该业务类型下的所有国家
-    async with get_session() as db:
-        result = await db.execute(
-            select(AccountTemplate.country_code).where(
-                AccountTemplate.business_type == biz_type,
-                AccountTemplate.status == "active",
-                AccountTemplate.country_code.isnot(None),
-            )
-        )
-        raw_codes = [r[0] for r in result.all()]
-        country_codes = dedupe_country_codes_from_templates(raw_codes)
+    api = APIClient()
+    res = await api.get_sales_templates(biz_type=biz_type)
+    if not res.get("success"):
+        await query.edit_message_text(f"❌ 获取模板失败: {res.get('msg')}")
+        return ConversationHandler.END
+        
+    templates = res.get("templates", [])
+    raw_codes = [t.get("country_code") for t in templates if t.get("country_code")]
+    country_codes = dedupe_country_codes_from_templates(raw_codes)
     
     if not country_codes:
         await query.edit_message_text(
@@ -143,6 +107,9 @@ async def select_biz_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
     
+    # 存储模板供后续使用以减少请求
+    context.user_data['available_templates'] = templates
+
     # 显示国家选择
     keyboard = []
     row = []
@@ -193,31 +160,20 @@ async def select_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     country_code = data.replace("country_", "").strip().upper()
     context.user_data['country_code'] = country_code
-    biz_type = context.user_data['business_type']
     
-    # 获取该国家的所有模板
-    async with get_session() as db:
-        result = await db.execute(
-            select(AccountTemplate)
-            .where(
-                AccountTemplate.business_type == biz_type,
-                func.upper(AccountTemplate.country_code) == country_code,
-                AccountTemplate.status == "active"
-            )
-            .order_by(AccountTemplate.template_name)
-        )
-        templates = result.scalars().all()
+    templates = context.user_data.get('available_templates', [])
+    filtered_templates = [t for t in templates if t.get("country_code", "").upper() == country_code]
     
-    if not templates:
+    if not filtered_templates:
         await query.edit_message_text(f"❌ 该国家暂无可用模板")
         return ConversationHandler.END
     
     # 显示模板选择
     keyboard = []
-    for tpl in templates:
-        price_str = f"${float(tpl.default_price):.4f}" if tpl.default_price else "待定"
-        label = f"{tpl.template_name} ({price_str})"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"tpl_{tpl.id}")])
+    for tpl in filtered_templates:
+        price_str = f"${float(tpl.get('default_price')):.4f}" if tpl.get('default_price') else "待定"
+        label = f"{tpl.get('template_name')} ({price_str})"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"tpl_{tpl.get('id')}")])
     keyboard.append([InlineKeyboardButton("⬅️ 返回", callback_data="back_to_country")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -236,20 +192,12 @@ async def select_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     if data == "back_to_country":
-        # 返回国家选择
+        # 复用 select_biz_type 的逻辑显示国家列表
         biz_type = context.user_data['business_type']
         biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
-        
-        async with get_session() as db:
-            result = await db.execute(
-                select(AccountTemplate.country_code).where(
-                    AccountTemplate.business_type == biz_type,
-                    AccountTemplate.status == "active",
-                    AccountTemplate.country_code.isnot(None),
-                )
-            )
-            raw_codes = [r[0] for r in result.all()]
-            country_codes = dedupe_country_codes_from_templates(raw_codes)
+        templates = context.user_data.get('available_templates', [])
+        raw_codes = [t.get("country_code") for t in templates if t.get("country_code")]
+        country_codes = dedupe_country_codes_from_templates(raw_codes)
         
         keyboard = []
         row = []
@@ -272,23 +220,18 @@ async def select_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SELECT_COUNTRY
     
     template_id = int(data.replace("tpl_", ""))
-    
-    # 获取模板详情
-    async with get_session() as db:
-        result = await db.execute(
-            select(AccountTemplate).where(AccountTemplate.id == template_id)
-        )
-        tpl = result.scalar_one_or_none()
+    templates = context.user_data.get('available_templates', [])
+    tpl = next((t for t in templates if t.get("id") == template_id), None)
     
     if not tpl:
         await query.edit_message_text("❌ 模板不存在")
         return ConversationHandler.END
     
     context.user_data['template_id'] = template_id
-    context.user_data['template_name'] = tpl.template_name
-    context.user_data['template_code'] = tpl.template_code
-    context.user_data['default_price'] = float(tpl.default_price) if tpl.default_price else 0.05
-    context.user_data['supplier_group_id'] = tpl.supplier_group_id
+    context.user_data['template_name'] = tpl.get('template_name')
+    context.user_data['template_code'] = tpl.get('template_code')
+    context.user_data['default_price'] = float(tpl.get('default_price')) if tpl.get('default_price') else 0.05
+    context.user_data['supplier_group_id'] = tpl.get('supplier_group_id')
     
     # 询问是否使用默认价格
     default_price = context.user_data['default_price']
@@ -301,7 +244,7 @@ async def select_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text(
         f"💵 **设置价格**\n\n"
-        f"模板: {tpl.template_name}\n"
+        f"模板: {tpl.get('template_name')}\n"
         f"默认价格: ${default_price:.4f}\n\n"
         f"请选择价格方案：",
         reply_markup=reply_markup,
@@ -318,26 +261,15 @@ async def input_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     if data == "back_to_template":
         # 返回模板选择
-        biz_type = context.user_data['business_type']
         country_code = context.user_data['country_code']
-        
-        async with get_session() as db:
-            result = await db.execute(
-                select(AccountTemplate)
-                .where(
-                    AccountTemplate.business_type == biz_type,
-                    func.upper(AccountTemplate.country_code) == country_code,
-                    AccountTemplate.status == "active"
-                )
-                .order_by(AccountTemplate.template_name)
-            )
-            templates = result.scalars().all()
+        templates = context.user_data.get('available_templates', [])
+        filtered_templates = [t for t in templates if t.get("country_code", "").upper() == country_code]
         
         keyboard = []
-        for tpl in templates:
-            price_str = f"${float(tpl.default_price):.4f}" if tpl.default_price else "待定"
-            label = f"{tpl.template_name} ({price_str})"
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"tpl_{tpl.id}")])
+        for tpl in filtered_templates:
+            price_str = f"${float(tpl.get('default_price')):.4f}" if tpl.get('default_price') else "待定"
+            label = f"{tpl.get('template_name')} ({price_str})"
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"tpl_{tpl.get('id')}")])
         keyboard.append([InlineKeyboardButton("⬅️ 返回", callback_data="back_to_country")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -447,6 +379,7 @@ async def generate_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     country_code = context.user_data['country_code']
     template_id = context.user_data['template_id']
     template_code = context.user_data['template_code']
+    template_name = context.user_data['template_name']
     final_price = context.user_data.get('final_price', context.user_data['default_price'])
     supplier_group_id = context.user_data.get('supplier_group_id')
     
@@ -456,13 +389,18 @@ async def generate_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "business_type": biz_type,
         "template_id": template_id,
         "template_code": template_code,
+        "template_name": template_name,
         "supplier_group_id": supplier_group_id
     }
     
-    async with get_session() as db:
-        service = InvitationService(db)
-        code = await service.create_code(sales_id, config)
+    api = APIClient()
+    res = await api.create_invitation(sales_id, config)
     
+    if not res.get("success"):
+        await query.edit_message_text(f"❌ 生成失败: {res.get('msg')}")
+        return ConversationHandler.END
+        
+    code = res.get("code")
     import os
     bot_username = os.getenv('TELEGRAM_BOT_USERNAME', 'kaolachbot')
     invite_link = f"https://t.me/{bot_username}?start={code}"
@@ -490,7 +428,6 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
-# 导入额外的过滤器
 from telegram.ext import MessageHandler, filters
 
 # 创建对话处理器

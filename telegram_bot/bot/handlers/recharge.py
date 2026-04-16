@@ -1,8 +1,3 @@
-"""
-充值申请处理器
-"""
-import uuid
-from datetime import datetime
 from telegram import Update
 from telegram.ext import (
     ContextTypes,
@@ -11,10 +6,8 @@ from telegram.ext import (
     MessageHandler,
     filters
 )
-from bot.utils import get_session, get_valid_customer_binding_and_account, logger, send_and_log
-from app.modules.common.recharge_order import RechargeOrder
-from app.modules.common.account import Account
-from sqlalchemy import select
+from bot.utils import logger, send_and_log
+from bot.services.api_client import APIClient
 
 # 会话状态
 AMOUNT, PROOF = range(2)
@@ -25,19 +18,19 @@ async def recharge_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     tg_id = user.id
     
-    async with get_session() as db:
-        _, acc = await get_valid_customer_binding_and_account(db, tg_id)
-        if not acc:
-            context.user_data.pop("account_id", None)
-            await send_and_log(
-                context,
-                tg_id,
-                "❌ 未绑定有效账户或该账户已停用/删除。\n\n"
-                "请先使用邀请链接激活账户，或发送 /start 查看状态"
-            )
-            return ConversationHandler.END
-        context.user_data["account_id"] = acc.id
-        account_id = acc.id
+    api = APIClient()
+    user_info = await api.verify_user(tg_id)
+    if not user_info or user_info.get("role") != "customer":
+        await send_and_log(
+            context,
+            tg_id,
+            "❌ 未绑定有效账户或该账户已停用/删除。\n\n"
+            "请先使用邀请链接激活账户，或发送 /start 查看状态"
+        )
+        return ConversationHandler.END
+    
+    account_id = user_info.get("account_id")
+    context.user_data["account_id"] = account_id
 
     logger.info(f"用户 {tg_id} 开始充值申请，账户: {account_id}")
     
@@ -123,47 +116,37 @@ async def submit_recharge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount = context.user_data.get('recharge_amount')
     proof = context.user_data.get('recharge_proof')
     
-    # 生成订单号
-    order_no = f"RCH_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6].upper()}"
-    
-    async with get_session() as db:
-        # 获取账户信息
-        acc_result = await db.execute(
-            select(Account).where(Account.id == account_id)
-        )
-        account = acc_result.scalar_one_or_none()
-
-        if not account or account.is_deleted or account.status == "closed":
-            await update.message.reply_text("❌ 账户不存在或已停用，请联系客服")
-            return ConversationHandler.END
-
-        # 创建充值工单
-        order = RechargeOrder(
-            order_no=order_no,
+    try:
+        api = APIClient()
+        res = await api.create_recharge_order(
             account_id=account_id,
             amount=amount,
-            currency="USD",
-            payment_proof=proof,
-            status="pending"
+            payment_proof=proof
         )
-        db.add(order)
-        await db.commit()
         
+        if not res.get("success"):
+            await update.message.reply_text(f"❌ 提交审核失败: {res.get('msg', '未知错误')}")
+            return ConversationHandler.END
+
+        order_no = res.get("order_no")
         logger.info(f"充值工单已创建: {order_no}, 账户: {account_id}, 金额: ${amount}")
     
-    await send_and_log(
-        context,
-        update.effective_user.id,
-        f"✅ **充值申请已提交！**\n\n"
-        f"📋 工单号: `{order_no}`\n"
-        f"💰 金额: ${amount:.2f} USD\n"
-        f"📎 凭证: {'已上传' if proof else '未上传'}\n"
-        f"📊 状态: 待审核\n\n"
-        f"财务审核通过后，余额将自动到账。\n"
-        f"您会收到通知消息。\n\n"
-        f"发送 /balance 查询当前余额",
-        parse_mode='Markdown'
-    )
+        await send_and_log(
+            context,
+            update.effective_user.id,
+            f"✅ **充值申请已提交！**\n\n"
+            f"📋 工单号: `{order_no}`\n"
+            f"💰 金额: ${amount:.2f} USD\n"
+            f"📎 凭证: {'已上传' if proof else '未上传'}\n"
+            f"📊 状态: 待审核\n\n"
+            f"财务审核通过后，余额将自动到账。\n"
+            f"您会收到通知消息。\n\n"
+            f"发送 /balance 查询当前余额",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"提交充值申请失败: {e}")
+        await update.message.reply_text("❌ 提交充值申请失败，请稍后重试")
     
     # 清理数据
     context.user_data.pop('recharge_amount', None)

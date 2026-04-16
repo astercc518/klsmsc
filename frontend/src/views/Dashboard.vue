@@ -5,10 +5,10 @@
     <template v-else>
       <AdminDashboard v-if="isStaff" />
       <CustomerDashboard v-else />
-    </template>
-  </div>
+            </template>
+      </div>
 
-</template>
+    </template>
 
 <script setup lang='ts'>
 
@@ -23,9 +23,9 @@ onMounted(() => {
     const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1'
     const adminToken = localStorage.getItem('admin_token')
     if (!isImpersonateMode && adminToken) {
-        isStaff.value = true
+      isStaff.value = true
     } else {
-        isStaff.value = false
+      isStaff.value = false
     }
     loading.value = false
 })

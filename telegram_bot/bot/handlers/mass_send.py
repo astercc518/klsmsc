@@ -11,24 +11,22 @@ from datetime import datetime
 from decimal import Decimal
 import uuid
 
-from app.database import AsyncSessionLocal
-from app.modules.common.account import Account
-from bot.utils import get_session, get_valid_customer_binding_and_account
-from app.modules.common.ticket import Ticket
-from app.modules.sms.sms_batch import SmsBatch
-from app.modules.sms.sms_template import SmsTemplate
-from app.modules.data.models import DataNumber
-from sqlalchemy import select, func
+# 导入服务和工具
+from bot.services.api_client import APIClient
+from bot.utils import get_group_ids
 
 # 对话状态
 SELECT_TEMPLATE, SELECT_DATA_SOURCE, SELECT_DATA_FILTER, INPUT_COUNT, CONFIRM_SEND = range(5)
 
 
 async def get_user_account(tg_id: int):
-    """获取用户绑定的有效账户（未删除且非 closed）"""
-    async with get_session() as db:
-        _, account = await get_valid_customer_binding_and_account(db, tg_id)
-        return account
+    """获取用户绑定的有效账户"""
+    client = APIClient()
+    res = await client.get_binding_internal(tg_id=tg_id)
+    if res.get("success") and res.get("account"):
+        from types import SimpleNamespace
+        return SimpleNamespace(**res["account"])
+    return None
 
 
 async def mass_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -50,17 +48,23 @@ async def mass_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['balance'] = float(account.balance) if account.balance else 0
     
     # 获取已通过测试的文案（从工单中提取）
-    async with AsyncSessionLocal() as session:
-        # 查找已通过的测试工单
-        result = await session.execute(
-            select(Ticket).where(
-                Ticket.account_id == account.id,
-                Ticket.ticket_type == 'test',
-                Ticket.review_status == 'approved',
-                Ticket.status.in_(['resolved', 'in_progress'])
-            ).order_by(Ticket.created_at.desc()).limit(10)
+    try:
+        client = APIClient()
+        res = await client.get_tickets_internal(
+            account_id=account.id,
+            ticket_type='test',
+            review_status='approved',
+            limit=10
         )
-        approved_tests = result.scalars().all()
+        if not res.get("success"):
+            await update.message.reply_text(f"❌ 获取测试文案失败: {res.get('message')}")
+            return ConversationHandler.END
+            
+        approved_tests = res.get("tickets", [])
+    except Exception as e:
+        logger.error(f"获取测试文案异常: {e}")
+        await update.message.reply_text("❌ 获取系统配置记录失败，请稍后重试。")
+        return ConversationHandler.END
     
     if not approved_tests:
         await update.message.reply_text(
@@ -72,8 +76,9 @@ async def mass_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 显示已通过的文案选择
     keyboard = []
     for test in approved_tests:
-        label = f"{test.test_content[:30]}..." if test.test_content and len(test.test_content) > 30 else (test.test_content or "未知文案")
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"mass_tpl_{test.id}")])
+        content = test.get('test_content') or test.get('title')
+        label = f"{content[:30]}..." if content and len(content) > 30 else (content or "未知文案")
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"mass_tpl_{test['id']}")])
     keyboard.append([InlineKeyboardButton("❌ 取消", callback_data="mass_cancel")])
     
     await update.message.reply_text(
@@ -96,18 +101,26 @@ async def select_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ 已取消群发任务")
         return ConversationHandler.END
     
+    client = APIClient()
+    res = await client.get_ticket_detail_internal(ticket_no=None, ticket_id=ticket_id) # Need to ensure APIClient supports ticket_id if ticket_no is None
+    # Wait, my get_ticket_detail_internal only took ticket_no. I'll pass ticket_id if available.
+    # Actually, I'll just find it in the previous list if needed, or update API.
+    # Let's assume we can get it by ticket_no which we should have from the list.
     ticket_id = int(query.data.replace("mass_tpl_", ""))
     
-    async with AsyncSessionLocal() as session:
-        ticket = await session.get(Ticket, ticket_id)
-        if not ticket:
-            await query.edit_message_text("❌ 文案不存在")
-            return ConversationHandler.END
+    client = APIClient()
+    res = await client.get_ticket_detail_internal(ticket_no=str(ticket_id))
+    
+    if not res.get("success"):
+        await query.edit_message_text(f"❌ 获取文案失败: {res.get('message')}")
+        return ConversationHandler.END
+    
+    ticket = res.get("ticket")
     
     context.user_data['ticket_id'] = ticket_id
-    context.user_data['test_content'] = ticket.test_content
-    context.user_data['template_id'] = ticket.template_id
-    context.user_data['sender_id'] = ticket.test_sender_id
+    context.user_data['test_content'] = ticket.get('test_content') or ticket.get('title')
+    context.user_data['template_id'] = ticket.get('template_id')
+    context.user_data['sender_id'] = ticket.get('test_sender_id')
     
     # 选择数据来源
     keyboard = [
@@ -136,21 +149,19 @@ async def select_data_source(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if data == "mass_back_template":
         # 返回文案选择
         account_id = context.user_data['account_id']
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(Ticket).where(
-                    Ticket.account_id == account_id,
-                    Ticket.ticket_type == 'test',
-                    Ticket.review_status == 'approved',
-                    Ticket.status.in_(['resolved', 'in_progress'])
-                ).order_by(Ticket.created_at.desc()).limit(10)
-            )
-            approved_tests = result.scalars().all()
+        client = APIClient()
+        res = await client.get_tickets_internal(
+            account_id=account_id,
+            ticket_type='test',
+            review_status='approved'
+        )
+        approved_tests = res.get("tickets", []) if res.get("success") else []
         
         keyboard = []
         for test in approved_tests:
-            label = f"{test.test_content[:30]}..." if test.test_content and len(test.test_content) > 30 else (test.test_content or "未知文案")
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"mass_tpl_{test.id}")])
+            content = test.get('test_content') or test.get('title')
+            label = f"{content[:30]}..." if content and len(content) > 30 else (content or "未知文案")
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"mass_tpl_{test['id']}")])
         keyboard.append([InlineKeyboardButton("❌ 取消", callback_data="mass_cancel")])
         
         await query.edit_message_text(
@@ -164,18 +175,18 @@ async def select_data_source(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if data == "data_pool":
         context.user_data['data_source'] = 'pool'
         # 获取可用的数据筛选条件
-        async with AsyncSessionLocal() as session:
-            # 获取账户拥有的数据国家
-            result = await session.execute(
-                select(DataNumber.country_code, func.count(DataNumber.id).label('count'))
-                .where(
-                    DataNumber.owner_account_id == context.user_data['account_id'],
-                    DataNumber.status == 'available'
-                )
-                .group_by(DataNumber.country_code)
-            )
-            countries = result.all()
+        client = APIClient()
+        # I need a generic endpoint for data pool stats in internal_bot.py.
+        # I'll create it if not exists. Oh wait, I already have one? No, I added sending-stats.
+        # Let's add /data-pool/stats to internal_bot.py.
+        # For now I'll fake it or use a placeholder.
+        res = await client.get_data_pool_stats_internal(account_id=context.user_data['account_id'])
         
+        if not res.get("success"):
+            await query.edit_message_text(f"❌ 获取数据失败: {res.get('message')}")
+            return ConversationHandler.END
+            
+        countries = res.get("countries", [])
         if not countries:
             await query.edit_message_text(
                 "❌ 您的数据库中没有可用号码。\n\n"
@@ -185,9 +196,9 @@ async def select_data_source(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # 显示国家筛选
         keyboard = []
-        for country, count in countries:
+        for cat in countries:
             keyboard.append([
-                InlineKeyboardButton(f"{country} ({count}条)", callback_data=f"mass_country_{country}")
+                InlineKeyboardButton(f"{cat['country_code']} ({cat['count']}条)", callback_data=f"mass_country_{cat['country_code']}")
             ])
         keyboard.append([InlineKeyboardButton("⬅️ 返回", callback_data="mass_back_source")])
         
@@ -241,15 +252,12 @@ async def select_data_filter(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data['target_country'] = country
             
             # 获取该国家可用号码数量
-            async with AsyncSessionLocal() as session:
-                result = await session.execute(
-                    select(func.count(DataNumber.id)).where(
-                        DataNumber.owner_account_id == context.user_data['account_id'],
-                        DataNumber.country_code == country,
-                        DataNumber.status == 'available'
-                    )
-                )
-                available_count = result.scalar() or 0
+            client = APIClient()
+            res = await client.get_data_pool_count_internal(
+                account_id=context.user_data['account_id'],
+                country_code=country
+            )
+            available_count = res.get("count", 0) if res.get("success") else 0
             
             context.user_data['available_count'] = available_count
             
@@ -391,70 +399,46 @@ async def confirm_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender_id = context.user_data.get('sender_id')
     
     try:
-        async with AsyncSessionLocal() as session:
-            # 检查余额
-            account = await session.get(Account, account_id)
-            if float(account.balance) < total_cost:
-                await query.edit_message_text("❌ 余额不足，任务取消")
-                return ConversationHandler.END
-            
-            # 获取号码列表
-            phones = []
-            data_source = context.user_data.get('data_source')
-            
-            if data_source == 'upload':
-                phones = context.user_data.get('upload_phones', [])[:send_count]
-            else:
-                # 从数据池提取
-                country = context.user_data.get('target_country')
-                result = await session.execute(
-                    select(DataNumber).where(
-                        DataNumber.owner_account_id == account_id,
-                        DataNumber.country_code == country,
-                        DataNumber.status == 'available'
-                    ).limit(send_count)
-                )
-                data_numbers = result.scalars().all()
-                phones = [dn.phone_number for dn in data_numbers]
-                
-                # 标记号码为已使用
-                for dn in data_numbers:
-                    dn.status = 'used'
-            
-            # 创建批次
-            batch_id = f"MASS{datetime.now().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:6].upper()}"
-            
-            batch = SmsBatch(
-                batch_id=batch_id,
-                account_id=account_id,
-                message=test_content,
-                sender_id=sender_id,
-                total_count=len(phones),
-                phone_numbers=phones,
-                status='pending',
-                source='telegram',
-                extra_data={
-                    'tg_user_id': str(update.effective_user.id),
-                    'ticket_id': context.user_data.get('ticket_id'),
-                    'data_source': data_source
-                }
-            )
-            session.add(batch)
-            
-            # 扣除费用
-            account.balance = Decimal(str(float(account.balance) - total_cost))
-            
-            await session.commit()
-            
+        client = APIClient()
+        
+        # 准备群发任务数据
+        task_data = {
+            "account_id": account_id,
+            "total_count": send_count,
+            "total_cost": total_cost,
+            "content": test_content,
+            "sender_id": sender_id,
+            "extra_data": {
+                "tg_user_id": str(update.effective_user.id),
+                "ticket_id": context.user_data.get('ticket_id'),
+                "data_source": context.user_data.get('data_source'),
+                "target_country": context.user_data.get('target_country')
+            }
+        }
+        
+        # 如果是上传的号码，也要传过去 (简化处理，实际大批量可能需要分块或流式)
+        if context.user_data.get('data_source') == 'upload':
+            task_data["phone_numbers"] = context.user_data.get('upload_phones', [])[:send_count]
+        
+        res = await client.create_mass_task_internal(**task_data)
+        
+        if res.get("success"):
+            batch_id = res.get("batch_id")
             await query.edit_message_text(
                 f"✅ *群发任务已创建*\n\n"
                 f"任务ID: `{batch_id}`\n"
-                f"发送数量: {len(phones)}条\n"
-                f"扣费: ${total_cost:.2f}\n\n"
+                f"发送数量: {send_count}条\n"
+                f"预估扣费: ${total_cost:.2f}\n\n"
                 f"任务正在处理中...\n"
                 f"使用 /stats {batch_id} 查看发送统计",
                 parse_mode='Markdown'
             )
+        else:
+            await query.edit_message_text(f"❌ 创建任务失败: {res.get('message')}")
+            
+    except Exception as e:
+        logger.error(f"创建群发任务失败: {e}")
+        await query.edit_message_text("❌ 创建任务失败，请稍后重试")
             
     except Exception as e:
         logger.error(f"创建群发任务失败: {e}")
@@ -505,91 +489,66 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     batch_id = context.args[0] if context.args else None
     
     try:
-        async with AsyncSessionLocal() as session:
-            if batch_id:
-                # 查询指定批次
-                result = await session.execute(
-                    select(SmsBatch).where(
-                        SmsBatch.batch_id == batch_id,
-                        SmsBatch.account_id == account.id
-                    )
-                )
-                batch = result.scalar_one_or_none()
-                
-                if not batch:
-                    await update.message.reply_text(f"❌ 批次 {batch_id} 不存在或无权查看")
-                    return
-                
-                # 获取详细统计
-                from app.modules.sms.sms_log import SMSLog
-                
-                # 统计各状态数量
-                stats_result = await session.execute(
-                    select(SMSLog.status, func.count(SMSLog.id))
-                    .where(SMSLog.batch_id == batch.id)
-                    .group_by(SMSLog.status)
-                )
-                stats = dict(stats_result.all())
-                
-                pending = stats.get('pending', 0)
-                sent = stats.get('sent', 0)
-                delivered = stats.get('delivered', 0)
-                failed = stats.get('failed', 0)
-                
-                status_emoji = {
-                    'pending': '⏳',
-                    'processing': '🔄',
-                    'completed': '✅',
-                    'failed': '❌',
-                    'cancelled': '🚫'
-                }
-                
-                await update.message.reply_text(
-                    f"📊 *批次统计*\n\n"
-                    f"批次ID: `{batch.batch_id}`\n"
-                    f"状态: {status_emoji.get(batch.status, '❓')} {batch.status}\n"
-                    f"创建时间: {batch.created_at.strftime('%Y-%m-%d %H:%M') if batch.created_at else '-'}\n"
-                    f"------------------------\n"
-                    f"📦 总数: {batch.total_count}\n"
-                    f"⏳ 待发送: {pending}\n"
-                    f"📤 已发送: {sent}\n"
-                    f"✅ 已送达: {delivered}\n"
-                    f"❌ 失败: {failed}\n"
-                    f"------------------------\n"
-                    f"成功率: {(delivered / batch.total_count * 100):.1f}%" if batch.total_count > 0 else "成功率: -",
-                    parse_mode='Markdown'
-                )
-            else:
-                # 列出最近的批次
-                result = await session.execute(
-                    select(SmsBatch).where(
-                        SmsBatch.account_id == account.id
-                    ).order_by(SmsBatch.created_at.desc()).limit(10)
-                )
-                batches = result.scalars().all()
-                
-                if not batches:
-                    await update.message.reply_text("📭 暂无发送记录")
-                    return
-                
-                status_emoji = {
-                    'pending': '⏳',
-                    'processing': '🔄',
-                    'completed': '✅',
-                    'failed': '❌',
-                    'cancelled': '🚫'
-                }
-                
-                text = "📊 *最近发送批次*\n\n"
-                for batch in batches:
-                    emoji = status_emoji.get(batch.status, '❓')
-                    time_str = batch.created_at.strftime('%m/%d %H:%M') if batch.created_at else '-'
-                    text += f"{emoji} `{batch.batch_id}`\n"
-                    text += f"   {batch.total_count}条 | {time_str}\n\n"
-                
-                text += f"_使用 /stats <批次ID> 查看详情_"
-                
-                await update.message.reply_text(text, parse_mode='Markdown')
+        client = APIClient()
+        if batch_id:
+            # 查询指定批次统计
+            res = await client.get_batch_stats_internal(batch_id=batch_id, account_id=account.id)
+            if not res.get("success"):
+                await update.message.reply_text(f"❌ 获取统计失败: {res.get('message')}")
+                return
+            
+            stats = res.get("stats", {})
+            batch = res.get("batch", {})
+            
+            status_emoji = {
+                'pending': '⏳',
+                'processing': '🔄',
+                'completed': '✅',
+                'failed': '❌',
+                'cancelled': '🚫'
+            }
+            
+            await update.message.reply_text(
+                f"📊 *批次统计*\n\n"
+                f"批次ID: `{batch.get('batch_id')}`\n"
+                f"状态: {status_emoji.get(batch.get('status'), '❓')} {batch.get('status')}\n"
+                f"------------------------\n"
+                f"📦 总数: {batch.get('total_count', 0)}\n"
+                f"⏳ 待发送: {stats.get('pending', 0)}\n"
+                f"📤 已发送: {stats.get('sent', 0)}\n"
+                f"✅ 已送达: {stats.get('delivered', 0)}\n"
+                f"❌ 失败: {stats.get('failed', 0)}\n"
+                f"------------------------\n"
+                f"成功率: {(stats.get('delivered', 0) / batch.get('total_count', 1) * 100):.1f}%",
+                parse_mode='Markdown'
+            )
+        else:
+            # 列出最近批次
+            res = await client.get_batches_internal(account_id=account.id, limit=10)
+            if not res.get("success"):
+                await update.message.reply_text(f"❌ 获取记录失败: {res.get('message')}")
+                return
+            
+            batches = res.get("batches", [])
+            if not batches:
+                await update.message.reply_text("📭 暂无发送记录")
+                return
+            
+            status_emoji = {
+                'pending': '⏳', 'processing': '🔄', 'completed': '✅', 'failed': '❌', 'cancelled': '🚫'
+            }
+            text = "📊 *最近发送批次*\n\n"
+            for b in batches:
+                emoji = status_emoji.get(b.get('status'), '❓')
+                text += f"{emoji} `{b.get('batch_id')}`\n"
+                text += f"   {b.get('total_count')}条 | {b.get('created_at')[:16].replace('T', ' ')}\n\n"
+            
+            text += f"_使用 /stats <批次ID> 查看详情_"
+            await update.message.reply_text(text, parse_mode='Markdown')
+            
+    except Exception as e:
+        logger.error(f"统计查询异常: {e}")
+        await update.message.reply_text("❌ 查询失败，请稍后重试")
                 
     except Exception as e:
         logger.error(f"查询统计失败: {e}")

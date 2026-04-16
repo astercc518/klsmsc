@@ -37,6 +37,7 @@ from app.utils.logger import get_logger
 from app.utils.phone_utils import export_phone_plain_digits
 from app.schemas.data import NumberBatchTagRequest, NumberBatchStatusRequest
 from app.api.v1.data.helpers import serialize_number, compute_freshness
+from app.modules.data.stock_summary_sync import update_stock_summary_from_batch, refresh_public_stock_summary
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -803,6 +804,12 @@ async def delete_import_batch(
         )
         result = await db.execute(stmt)
         deleted_numbers = result.rowcount
+        # 扣减全局库存汇总
+        try:
+            await update_stock_summary_from_batch(db, batch_id, delta=-1)
+        except Exception as e:
+            logger.warning(f"[{batch_id}] 删除时汇总同步失败: {e}")
+
         # 再删任务记录
         del_stmt = delete(DataImportBatch).where(DataImportBatch.batch_id == batch_id)
         r = await db.execute(del_stmt)
@@ -851,6 +858,10 @@ async def clear_all_data(
     # 4. 软删除所有数据商品
     r4 = await db.execute(update(DataProduct).where(or_(DataProduct.is_deleted == False, DataProduct.is_deleted.is_(None))).values(is_deleted=True))
     deleted_products = r4.rowcount
+
+    # 5. 清空公海汇总表
+    from app.modules.data.models import DataStockSummary
+    await db.execute(delete(DataStockSummary))
     await db.commit()
 
     logger.warning(f"清空全部: 订单关联{deleted_order_numbers}条, 号码{deleted_numbers}条, 任务{deleted_batches}个, 商品{deleted_products}个")

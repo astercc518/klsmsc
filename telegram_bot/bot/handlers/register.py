@@ -12,16 +12,12 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
-from bot.utils import get_session, logger
-from bot.handlers.menu import get_main_menu_customer, get_back_menu
-from app.modules.common.account import Account
-from app.modules.common.telegram_binding import TelegramBinding
-from app.modules.common.telegram_user import TelegramUser
-from app.core.auth import AuthService
-from sqlalchemy import select
-from sqlalchemy.dialects.mysql import insert as mysql_insert
-import secrets
 import re
+
+from bot.utils import logger
+from bot.handlers.menu import get_main_menu_customer, get_back_menu
+from bot.services.api_client import APIClient
+
 
 # 会话状态
 REG_NAME, REG_EMAIL, REG_PASSWORD, REG_CONFIRM = range(4)
@@ -32,14 +28,13 @@ _CANCEL_KB = InlineKeyboardMarkup([
     [InlineKeyboardButton("❌ 取消注册", callback_data="reg_cancel")]
 ])
 
+api = APIClient()
+
 
 async def _is_already_bound(tg_id: int) -> bool:
     """检查用户是否已有绑定账户"""
-    async with get_session() as db:
-        result = await db.execute(
-            select(TelegramBinding).where(TelegramBinding.tg_id == tg_id)
-        )
-        return result.scalar_one_or_none() is not None
+    user_info = await api.verify_user(tg_id)
+    return user_info.get("valid", False)
 
 
 async def register_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -121,16 +116,6 @@ async def recv_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return REG_EMAIL
 
-    # 检查邮箱是否已注册
-    async with get_session() as db:
-        result = await db.execute(select(Account).where(Account.email == email))
-        if result.scalar_one_or_none():
-            await update.message.reply_text(
-                "❌ 该邮箱已被注册，请使用其他邮箱或绑定已有账户。",
-                reply_markup=_CANCEL_KB,
-            )
-            return REG_EMAIL
-
     context.user_data["reg_email"] = email
 
     await update.message.reply_text(
@@ -203,70 +188,25 @@ async def confirm_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("⏳ 正在创建账户...")
 
     try:
-        async with get_session() as db:
-            # 再次检查邮箱唯一性
-            dup = await db.execute(select(Account).where(Account.email == email))
-            if dup.scalar_one_or_none():
-                await query.edit_message_text(
-                    "❌ 该邮箱已被注册，请使用 /register 重试。",
-                    reply_markup=get_back_menu(),
-                )
-                _clear_reg_data(context)
-                return ConversationHandler.END
-
-            api_key = f"ak_{secrets.token_hex(30)}"
-            api_secret = secrets.token_hex(32)
-
-            # 新开短信账户默认赠送 1 USD
-            new_account = Account(
-                account_name=name,
-                email=email,
-                password_hash=AuthService.hash_password(password),
-                balance=1.0,
-                currency="USD",
-                status="active",
-                api_key=api_key,
-                api_secret=api_secret,
-                tg_id=tg_id,
-                tg_username=tg_username,
+        result = await api.register_internal(
+            name=name,
+            email=email,
+            password=password,
+            tg_id=tg_id,
+            tg_username=tg_username
+        )
+        
+        if not result.get("success"):
+            await query.edit_message_text(
+                f"❌ 注册失败: {result.get('message', '未知错误')}\n\n请稍后使用 /register 重试。",
+                reply_markup=get_back_menu(),
             )
-            db.add(new_account)
-            await db.flush()
+            _clear_reg_data(context)
+            return ConversationHandler.END
 
-            # 新开短信账户赠送 1U：记录余额日志
-            from app.modules.common.balance_log import BalanceLog
-            db.add(BalanceLog(
-                account_id=new_account.id,
-                change_type='deposit',
-                amount=1.0,
-                balance_after=1.0,
-                description='新开短信账户赠送',
-            ))
-
-            # 创建 TelegramBinding
-            db.add(TelegramBinding(
-                tg_id=tg_id,
-                account_id=new_account.id,
-                is_active=True,
-            ))
-
-            # 创建/更新 TelegramUser
-            stmt = mysql_insert(TelegramUser).values(
-                tg_id=tg_id,
-                username=tg_username,
-                account_id=new_account.id,
-            )
-            stmt = stmt.on_duplicate_key_update(
-                username=tg_username,
-                account_id=new_account.id,
-            )
-            await db.execute(stmt)
-
-            await db.commit()
-
-            account_id = new_account.id
-            logger.info(f"TG注册成功: account_id={account_id}, tg={tg_id}")
-
+        account_id = result.get("account_id")
+        api_key = result.get("api_key")
+        
         # 设置用户会话
         context.user_data["account_id"] = account_id
         context.user_data["user_type"] = "customer"
@@ -286,7 +226,7 @@ async def confirm_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"TG注册失败: {e}", exc_info=True)
         await query.edit_message_text(
-            f"❌ 注册失败: {str(e)}\n\n请稍后使用 /register 重试。",
+            f"❌ 注册异常: {str(e)}\n\n请稍后使用 /register 重试。",
             reply_markup=get_back_menu(),
         )
 

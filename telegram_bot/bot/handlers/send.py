@@ -1,6 +1,3 @@
-"""
-发送短信处理器
-"""
 from telegram import Update
 from telegram.ext import (
     ContextTypes,
@@ -11,19 +8,20 @@ from telegram.ext import (
 )
 from loguru import logger
 from bot.services.api_client import APIClient
-from bot.utils import get_session, get_valid_customer_binding_and_account, send_and_log
+from bot.utils import send_and_log
 
 # 会话状态
 PHONE, MESSAGE = range(2)
 
+api = APIClient()
 
 async def send_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """开始发送短信"""
     user = update.effective_user
 
     # 检查是否已绑定账户
-    account = await get_user_account(user.id)
-    if not account or not account.api_key:
+    account_info = await get_user_account(user.id)
+    if not account_info:
         await send_and_log(
             context,
             user.id,
@@ -32,8 +30,8 @@ async def send_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    context.user_data['account_id'] = account.id
-    context.user_data['account_api_key'] = account.api_key
+    context.user_data['account_id'] = account_info.get('id')
+    context.user_data['account_api_key'] = account_info.get('api_key')
     
     logger.info(f"用户 {user.id} 开始发送短信")
     
@@ -107,9 +105,10 @@ async def send_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ 正在发送...")
     
     try:
-        api_client = APIClient()
         api_key = context.user_data.get('account_api_key')
-        result = await api_client.send_sms(
+        # 此处 send_sms 使用公网 API 发送，保持原样。若需改用 internal_bot 的 submit_sms_approval，可在此处替换。
+        # 考虑到 send.py 主要是为了方便单个测试，我们保留原有的 send_sms 逻辑。
+        result = await api.send_sms(
             api_key=api_key,
             phone_number=context.user_data['phone'],
             message=message
@@ -179,8 +178,9 @@ def send_conversation():
 
 
 async def get_user_account(tg_id: int):
-    """获取用户绑定的有效账户（未删除且非 closed）"""
-    async with get_session() as db:
-        _, account = await get_valid_customer_binding_and_account(db, tg_id)
-        return account
+    """获取用户绑定的有效账户"""
+    res = await api.get_customer_info(tg_id)
+    if res.get("success"):
+        return res.get("account")
+    return None
 

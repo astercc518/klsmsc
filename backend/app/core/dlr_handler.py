@@ -17,6 +17,7 @@ from enum import Enum
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.sms.sms_log import SMSLog
+from app.modules.sms.batch_utils import update_batch_progress
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -475,6 +476,14 @@ async def process_dlr_reports(
     except Exception as e:
         logger.error(f"[{source}] 提交 DLR 更新失败: {e}")
         await db.rollback()
+        return success_count, fail_count, affected_batch_ids
+
+    # [重要] 回执更新后同步受影响批次的进度
+    for b_id in affected_batch_ids:
+        try:
+            await update_batch_progress(db, b_id)
+        except Exception as e:
+            logger.warning(f"[{source}] 更新批次 {b_id} 进度失败: {e}")
     
     return success_count, fail_count, affected_batch_ids
 

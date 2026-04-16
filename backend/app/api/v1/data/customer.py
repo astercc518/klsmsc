@@ -70,8 +70,8 @@ from app.modules.data.private_upload_parse import (
 from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache as _invalidate_my_numbers_summary_cache
 from app.utils.phone_utils import export_phone_plain_digits
 from app.utils.country_code import normalize_country_code
-from app.utils.account_country_restrict import account_country_iso
 from app.modules.data.data_account import DataAccount
+from app.modules.data.stock_summary_sync import update_stock_summary_delta, update_stock_summary_from_batch
 from app.modules.common.account import Account
 from app.modules.common.package import AccountPackage
 from app.core.auth import get_current_account
@@ -89,6 +89,7 @@ from app.api.v1.data.helpers import (
     compute_freshness,
 )
 from app.utils.sms_template import render_sms_variables, sms_template_has_variables
+from app.utils.account_country_restrict import account_country_iso
 from app.utils.cache import get_cache_manager
 
 logger = get_logger(__name__)
@@ -391,6 +392,22 @@ async def get_available_carriers(
     account: Account = Depends(get_current_account),
 ):
     """获取可用的运营商列表（去重后的 carrier 值）"""
+    cache_manager = await get_cache_manager()
+    cache_key = f"data:public_carriers:{country_code or 'all'}"
+    if not country_code:
+        # 如果是按账户国家锁定的，也打入缓存 key
+        da_result = await db.execute(
+            select(DataAccount).where(DataAccount.account_id == account.id)
+        )
+        da = da_result.scalar_one_or_none()
+        if da and da.country_code:
+            cache_key = f"data:public_carriers:{da.country_code}"
+            country_code = da.country_code
+
+    cached = await cache_manager.get(cache_key)
+    if cached:
+        return {"success": True, "carriers": cached}
+
     query = select(DataNumber.carrier, func.count(DataNumber.id).label("cnt")).where(
         DataNumber.status == 'active',
         DataNumber.account_id.is_(None),
@@ -399,24 +416,19 @@ async def get_available_carriers(
         DataNumber.carrier != 'Unknown',
     )
 
-    # 如果有国家过滤或客户绑定了国家
     if country_code:
         query = query.where(DataNumber.country_code == country_code)
-    else:
-        da_result = await db.execute(
-            select(DataAccount).where(DataAccount.account_id == account.id)
-        )
-        da = da_result.scalar_one_or_none()
-        if da and da.country_code:
-            query = query.where(DataNumber.country_code == da.country_code)
 
     query = query.group_by(DataNumber.carrier).order_by(func.count(DataNumber.id).desc())
     result = await db.execute(query)
     rows = result.fetchall()
+    
+    carriers_list = [{"name": row[0], "count": row[1]} for row in rows]
+    await cache_manager.set(cache_key, carriers_list, ttl=300)
 
     return {
         "success": True,
-        "carriers": [{"name": row[0], "count": row[1]} for row in rows],
+        "carriers": carriers_list,
     }
 
 
@@ -715,6 +727,26 @@ async def buy_to_stock(
         )
     )
     locked_ids = [r[0] for r in lid_res.all()]
+
+    # 扣减全局库存汇总
+    if locked_ids:
+        # 获取要扣减的维度分布
+        dim_q = select(
+            DataNumber.country_code, DataNumber.carrier, DataNumber.source,
+            DataNumber.purpose, DataNumber.data_date, func.count().label("cnt")
+        ).where(DataNumber.id.in_(locked_ids)).group_by(
+            DataNumber.country_code, DataNumber.carrier, DataNumber.source,
+            DataNumber.purpose, DataNumber.data_date
+        )
+        dim_res = await db.execute(dim_q)
+        from app.api.v1.data.helpers import compute_freshness
+        for drow in dim_res.fetchall():
+            await update_stock_summary_delta(
+                db, country_code=drow[0], carrier=drow[1], source=drow[2],
+                purpose=drow[3], freshness=compute_freshness(drow[4]),
+                delta=-int(drow[5])
+            )
+
     await _pls_bump_purchased_for_number_ids(db, account.id, locked_ids)
     await pls_prune_non_positive(db, account.id)
 

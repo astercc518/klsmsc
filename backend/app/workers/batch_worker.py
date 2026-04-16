@@ -36,11 +36,11 @@ def _get_worker_session():
     """复用进程级单例引擎，避免每次任务新建连接池"""
     global _worker_engine, _worker_session_factory
     if _worker_engine is None:
+        from sqlalchemy.pool import NullPool
         _worker_engine = create_async_engine(
             settings.SQLALCHEMY_DATABASE_URL,
             echo=False,
-            pool_size=5,
-            max_overflow=10,
+            poolclass=NullPool,
             pool_pre_ping=True,
             pool_recycle=600,
         )
@@ -437,15 +437,18 @@ async def _do_process_chunk(
                         succeeded += 1
                         continue
                     batch_index = start_offset + i + 1
+                    phone_number = str(phone_number).strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
                     is_valid, err_msg, phone_info = Validator.validate_phone_number(phone_number)
                     if not is_valid:
+                        logger.warning(f"分片预检失败 (格式错误): batch={batch_id}, phone={phone_number}, error={err_msg}")
                         failed += 1
                         continue
                     cc = phone_info['country_code']
                     if batch_account:
                         try:
                             assert_sms_destination_allowed(batch_account, cc)
-                        except AccountCountryNotAllowedError:
+                        except AccountCountryNotAllowedError as e:
+                            logger.warning(f"分片预检失败 (国家限制): batch={batch_id}, phone={phone_number}, country={cc}, error={e.message}")
                             failed += 1
                             continue
                     raw_body = rot_messages[(batch_index - 1) % len(rot_messages)] if use_rotate else message
@@ -539,8 +542,10 @@ async def _do_process_chunk(
                         continue
                     batch_index = start_offset + i + 1
                     try:
+                        phone_number = str(phone_number).strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
                         is_valid, err_msg, phone_info = Validator.validate_phone_number(phone_number)
                         if not is_valid:
+                            logger.warning(f"分片预检失败 (格式错误): batch={batch_id}, phone={phone_number}, error={err_msg}")
                             failed += 1
                             continue
 
@@ -548,7 +553,8 @@ async def _do_process_chunk(
                         if batch_account:
                             try:
                                 assert_sms_destination_allowed(batch_account, country_code)
-                            except AccountCountryNotAllowedError:
+                            except AccountCountryNotAllowedError as e:
+                                logger.warning(f"分片预检失败 (国家限制): batch={batch_id}, phone={phone_number}, country={country_code}, error={e.message}")
                                 failed += 1
                                 continue
 
@@ -576,6 +582,7 @@ async def _do_process_chunk(
                             route_cache[country_code] = ch
                         channel = route_cache[country_code]
                         if not channel:
+                            logger.warning(f"分片预检失败 (无可用通道): batch={batch_id}, phone={phone_number}, country={country_code}")
                             failed += 1
                             continue
 

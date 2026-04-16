@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.data.models import (
-    DataNumber, DataPricingTemplate,
+    DataNumber, DataPricingTemplate, DataStockSummary,
     SOURCE_LABELS, PURPOSE_LABELS, FRESHNESS_LABELS,
 )
 
@@ -88,6 +88,23 @@ def build_filter_query(filter_criteria: dict, public_only: bool = False):
 
 async def calculate_stock(db: AsyncSession, filter_criteria: dict, public_only: bool = False) -> int:
     """计算符合条件的号码数量"""
+    # 尝试从汇总表快速读取（仅限公海、且筛选维度简单时）
+    if public_only and not any(k in filter_criteria for k in ('tags', 'exclude_used_days')):
+        q = select(func.sum(DataStockSummary.total_count)).where(DataStockSummary.status == 'active')
+        if filter_criteria.get('country'):
+            q = q.where(DataStockSummary.country_code == filter_criteria['country'])
+        if filter_criteria.get('carrier'):
+            q = q.where(DataStockSummary.carrier == filter_criteria['carrier'])
+        if filter_criteria.get('source'):
+            q = q.where(DataStockSummary.source == filter_criteria['source'])
+        if filter_criteria.get('purpose'):
+            q = q.where(DataStockSummary.purpose == filter_criteria['purpose'])
+        if filter_criteria.get('freshness'):
+            q = q.where(DataStockSummary.freshness == filter_criteria['freshness'])
+        
+        result = await db.execute(q)
+        return int(result.scalar() or 0)
+
     query = build_filter_query(filter_criteria, public_only=public_only)
     count_query = select(func.count()).select_from(query.subquery())
     result = await db.execute(count_query)
@@ -95,11 +112,40 @@ async def calculate_stock(db: AsyncSession, filter_criteria: dict, public_only: 
 
 
 async def calculate_stock_with_carriers(
-    db: AsyncSession, filter_criteria: dict, public_only: bool = True
+    db: AsyncSession, filter_criteria: dict = {}, public_only: bool = True
 ) -> tuple:
     """计算精确库存（含时效过滤）并返回运营商分布。
     返回 (total_stock, carrier_list) 其中 carrier_list = [{"name": str, "count": int}, ...]
     """
+    # 尝试从汇总表快速读取
+    if public_only and not any(k in filter_criteria for k in ('tags', 'exclude_used_days')):
+        q = select(DataStockSummary.carrier, func.sum(DataStockSummary.total_count)).where(
+            DataStockSummary.status == 'active'
+        )
+        if filter_criteria.get('country'):
+            q = q.where(DataStockSummary.country_code == filter_criteria['country'])
+        if filter_criteria.get('carrier'):
+            q = q.where(DataStockSummary.carrier == filter_criteria['carrier'])
+        if filter_criteria.get('source'):
+            q = q.where(DataStockSummary.source == filter_criteria['source'])
+        if filter_criteria.get('purpose'):
+            q = q.where(DataStockSummary.purpose == filter_criteria['purpose'])
+        if filter_criteria.get('freshness'):
+            q = q.where(DataStockSummary.freshness == filter_criteria['freshness'])
+        if filter_criteria.get('batch_id'):
+            q = q.where(DataStockSummary.batch_id == filter_criteria['batch_id'])
+        
+        q = q.group_by(DataStockSummary.carrier)
+        result = await db.execute(q)
+        carriers = []
+        total = 0
+        for row in result.fetchall():
+            name = row[0] or "Unknown"
+            cnt = int(row[1])
+            carriers.append({"name": name, "count": cnt})
+            total += cnt
+        return total, carriers
+
     query = build_filter_query(filter_criteria, public_only=public_only)
     carrier_q = query.with_only_columns(
         DataNumber.carrier, func.count().label("cnt")

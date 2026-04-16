@@ -14,14 +14,8 @@ from telegram.ext import (
     ContextTypes, CallbackQueryHandler,
     ConversationHandler, MessageHandler, filters
 )
-from bot.utils import get_session, logger, dedupe_country_codes_from_templates
-from app.modules.common.admin_user import AdminUser
-from app.modules.common.account_template import AccountTemplate
-from app.modules.common.account import Account
-from app.modules.common.ticket import Ticket, TicketReply
-from app.core.auth import AuthService
-from sqlalchemy import select, desc, func
-from app.database import AsyncSessionLocal
+from bot.utils import logger, dedupe_country_codes_from_templates
+from bot.services.api_client import APIClient
 
 from bot.utils import get_group_ids
 
@@ -71,22 +65,16 @@ async def opening_start(update: Update, context: ContextTypes.DEFAULT_TYPE, biz_
     query = update.callback_query
     tg_id = query.from_user.id
 
-    async with get_session() as db:
-        admin_result = await db.execute(
-            select(AdminUser).where(
-                AdminUser.tg_id == tg_id,
-                AdminUser.status == 'active'
-            )
-        )
-        admin = admin_result.scalar_one_or_none()
+    client = APIClient()
+    verify = await client.verify_bot_user(tg_id)
+    
+    if not verify.get("authorized") or verify.get("role") not in ('sales', 'super_admin', 'admin'):
+        await query.edit_message_text("❌ 仅销售/管理员可使用此功能")
+        return None
 
-        if not admin or admin.role not in ('sales', 'super_admin', 'admin'):
-            await query.edit_message_text("❌ 仅销售/管理员可使用此功能")
-            return None
-
-        context.user_data['opening_sales_id'] = admin.id
-        context.user_data['opening_sales_name'] = admin.real_name or admin.username
-        context.user_data['opening_sales_tg_id'] = tg_id
+    context.user_data['opening_sales_id'] = verify.get("id") # 假设为员工 ID
+    context.user_data['opening_sales_role'] = verify.get("role")
+    context.user_data['opening_sales_tg_id'] = tg_id
 
     # 清理上次的多选状态
     for k in ('opening_selected', 'opening_available_templates',
@@ -128,16 +116,10 @@ async def handle_select_biz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def _show_country_list(query, context, biz_type):
     """展示国家列表"""
-    async with get_session() as db:
-        result = await db.execute(
-            select(AccountTemplate.country_code).where(
-                AccountTemplate.business_type == biz_type,
-                AccountTemplate.status == "active",
-                AccountTemplate.country_code.isnot(None),
-            )
-        )
-        raw_codes = [r[0] for r in result.all()]
-        country_codes = dedupe_country_codes_from_templates(raw_codes)
+    client = APIClient()
+    templates = await client.get_templates_internal(biz_type=biz_type)
+    raw_codes = [t.get("country_code") for t in templates if t.get("country_code")]
+    country_codes = dedupe_country_codes_from_templates(raw_codes)
 
     if not country_codes:
         biz_label = BIZ_LABELS.get(biz_type, biz_type)
@@ -209,17 +191,8 @@ async def handle_select_country(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def _show_voice_multi_select(query, context, cc):
     """加载语音线路并展示多选列表"""
-    async with get_session() as db:
-        result = await db.execute(
-            select(AccountTemplate)
-            .where(
-                AccountTemplate.business_type == 'voice',
-                func.upper(AccountTemplate.country_code) == cc,
-                AccountTemplate.status == "active"
-            )
-            .order_by(AccountTemplate.template_name)
-        )
-        templates = result.scalars().all()
+    client = APIClient()
+    templates = await client.get_templates_internal(biz_type='voice', country_code=cc)
 
     if not templates:
         await query.edit_message_text("❌ 该国家暂无语音线路模板")
@@ -227,16 +200,16 @@ async def _show_voice_multi_select(query, context, cc):
 
     avail = {}
     for tpl in templates:
-        pr = tpl.pricing_rules or {}
-        avail[tpl.id] = {
-            'id': tpl.id,
-            'name': tpl.template_name,
-            'code': tpl.template_code,
-            'cost_price': float(tpl.default_price) if tpl.default_price else 0,
+        pr = tpl.get("pricing_rules") or {}
+        avail[tpl.get("id")] = {
+            'id': tpl.get("id"),
+            'name': tpl.get("name"),
+            'code': tpl.get("code"),
+            'cost_price': float(tpl.get("price", 0)),
             'billing_model': pr.get('billing_model', ''),
             'line_desc': pr.get('line_desc', ''),
             'pricing_rules': pr,
-            'country_name': tpl.country_name or _country_label(cc),
+            'country_name': _country_label(cc),
         }
     context.user_data['opening_available_templates'] = avail
     await _render_voice_keyboard(query, context, cc)
@@ -445,17 +418,8 @@ async def handle_back_voice_select(update: Update, context: ContextTypes.DEFAULT
 
 async def _show_data_template_list(query, context, cc, biz_type):
     """数据开户 — 展示单选模板列表"""
-    async with get_session() as db:
-        result = await db.execute(
-            select(AccountTemplate)
-            .where(
-                AccountTemplate.business_type == biz_type,
-                func.upper(AccountTemplate.country_code) == cc,
-                AccountTemplate.status == "active"
-            )
-            .order_by(AccountTemplate.template_name)
-        )
-        templates = result.scalars().all()
+    client = APIClient()
+    templates = await client.get_templates_internal(biz_type=biz_type, country_code=cc)
 
     if not templates:
         await query.edit_message_text("❌ 该国家暂无可用模板")
@@ -463,8 +427,8 @@ async def _show_data_template_list(query, context, cc, biz_type):
 
     keyboard = []
     for tpl in templates:
-        price_str = f"${float(tpl.default_price):.4f}" if tpl.default_price else "待定"
-        pr = tpl.pricing_rules or {}
+        price_str = f"${float(tpl.get('price', 0)):.4f}" if tpl.get('price') else "待定"
+        pr = tpl.get("pricing_rules") or {}
         extra = ""
         src = pr.get('source', '')
         purpose = pr.get('purpose', '')
@@ -473,10 +437,10 @@ async def _show_data_template_list(query, context, cc, biz_type):
         if purpose:
             extra += f"-{purpose}"
 
-        label = f"{tpl.template_name} ({price_str}{extra})"
+        label = f"{tpl.get('name')} ({price_str}{extra})"
         if len(label) > 60:
             label = label[:57] + "..."
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"open_tpl_{tpl.id}")])
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"open_tpl_{tpl.get('id')}")])
     keyboard.append([InlineKeyboardButton("⬅️ 返回", callback_data="open_back_country")])
 
     biz_label = BIZ_LABELS.get(biz_type, biz_type)
@@ -498,23 +462,20 @@ async def handle_select_template(update: Update, context: ContextTypes.DEFAULT_T
         return await _show_country_list(query, context, biz_type)
 
     tpl_id = int(data.replace("open_tpl_", ""))
-
-    async with get_session() as db:
-        result = await db.execute(
-            select(AccountTemplate).where(AccountTemplate.id == tpl_id)
-        )
-        tpl = result.scalar_one_or_none()
+    client = APIClient()
+    templates = await client.get_templates_internal()
+    tpl = next((t for t in templates if t.get("id") == tpl_id), None)
 
     if not tpl:
         await query.edit_message_text("❌ 模板不存在")
         return
 
-    context.user_data['opening_template_id'] = tpl.id
-    context.user_data['opening_template_name'] = tpl.template_name
-    context.user_data['opening_template_code'] = tpl.template_code
-    context.user_data['opening_country_name'] = tpl.country_name or _country_label(tpl.country_code)
-    context.user_data['opening_default_price'] = float(tpl.default_price) if tpl.default_price else 0
-    context.user_data['opening_pricing_rules'] = tpl.pricing_rules or {}
+    context.user_data['opening_template_id'] = tpl.get("id")
+    context.user_data['opening_template_name'] = tpl.get("name")
+    context.user_data['opening_template_code'] = tpl.get("code")
+    context.user_data['opening_country_name'] = tpl.get("country_name") or _country_label(tpl.get("country_code"))
+    context.user_data['opening_default_price'] = float(tpl.get("price", 0))
+    context.user_data['opening_pricing_rules'] = tpl.get("pricing_rules") or {}
 
     return await _show_data_confirm(query, context)
 
@@ -640,25 +601,22 @@ async def _submit_voice_order(query, context):
 
     try:
         # 1. 创建工单（不创建账户，等OKCC开户后再建）
-        async with AsyncSessionLocal() as session:
-            ticket = Ticket(
-                ticket_no=ticket_no,
-                tg_user_id=str(sales_tg_id),
-                ticket_type='registration',
-                priority='high',
-                category='voice',
-                title=f"{biz_label} 开户 - {country_name} - {line_summary}",
-                description=_build_voice_description(sales_name, country_name, cc, selected_lines),
-                status='open',
-                created_by_type='admin',
-                created_by_id=sales_id,
-                template_id=selected_lines[0]['template_id'] if selected_lines else None,
-                extra_data=extra_data,
-            )
-            session.add(ticket)
-            await session.commit()
-            await session.refresh(ticket)
-            ticket_id = ticket.id
+        client = APIClient()
+        res = await client.create_ticket_internal(
+            tg_id=sales_tg_id,
+            title=f"{biz_label} 开户 - {country_name} - {line_summary}",
+            description=_build_voice_description(sales_name, country_name, cc, selected_lines),
+            ticket_type='registration',
+            priority='high',
+            category='voice',
+            created_by_id=sales_id,
+            template_id=selected_lines[0]['template_id'] if selected_lines else None,
+            extra_data=extra_data
+        )
+        if not res.get("success"):
+            raise Exception(res.get("message", "Unknown error"))
+        ticket_id = res.get("ticket_id")
+        ticket_no = res.get("ticket_no") or ticket_no
 
         # 2. 发送到技术群
         group_ids = await get_group_ids()
@@ -676,13 +634,13 @@ async def _submit_voice_order(query, context):
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='HTML'
             )
-            async with AsyncSessionLocal() as session:
-                t = await session.get(Ticket, ticket_id)
-                if t:
-                    t.forwarded_to_group = target_group
-                    t.forwarded_message_id = sent_msg.message_id
-                    t.review_status = 'forwarded'
-                    await session.commit()
+            # 更新工单信息 (转发记录)
+            await client.reply_ticket_internal(
+                ticket_id=ticket_id,
+                tg_id=sales_tg_id,
+                content=f"[System] Forwarded to Tech Group {target_group}. MessageID: {sent_msg.message_id}",
+                is_internal=True
+            )
 
         # 3. 通知销售
         line_names = "\n".join(
@@ -763,9 +721,21 @@ async def _submit_data_order(query, context):
 
     try:
         # 1. 创建客户账户
-        account, plain_pwd, api_key = await _create_account_now(
-            biz_type, cc, sales_id, default_price=price
+        client = APIClient()
+        account_res = await client.create_account_internal(
+            biz_type=biz_type,
+            country_code=cc,
+            sales_id=sales_id,
+            default_price=price,
+            account_name=f"{biz_type.upper()}_{cc}_{secrets.token_hex(3).upper()}"
         )
+        if not account_res.get("success"):
+            raise Exception(account_res.get("message", "Account creation failed"))
+            
+        account_id = account_res.get("account_id")
+        plain_pwd = account_res.get("plain_password")
+        api_key = account_res.get("api_key")
+        full_account_name = account_res.get("account_name")
 
         extra_data = {
             "opening_type": biz_type,
@@ -778,36 +748,34 @@ async def _submit_data_order(query, context):
             "sales_id": sales_id,
             "sales_name": sales_name,
             "sales_tg_id": sales_tg_id,
-            "account_id": account.id,
-            "account_name": account.account_name,
+            "account_id": account_id,
+            "account_name": full_account_name,
         }
 
         # 2. 创建工单
-        async with AsyncSessionLocal() as session:
-            ticket = Ticket(
-                ticket_no=ticket_no,
-                tg_user_id=str(sales_tg_id),
-                ticket_type='registration',
-                priority='high',
-                category=biz_type,
-                title=f"{biz_label} 开户 - {country_name} - {tpl_name}",
-                description=(
-                    f"销售 {sales_name} 提交的{biz_label}开户申请\n"
-                    f"国家: {country_name} ({cc})\n"
-                    f"模板: {tpl_name}\n"
-                    f"成本价: ${price:.4f}\n"
-                    f"账户: {account.account_name}"
-                ),
-                status='open',
-                created_by_type='admin',
-                created_by_id=sales_id,
-                template_id=tpl_id,
-                extra_data=extra_data,
-            )
-            session.add(ticket)
-            await session.commit()
-            await session.refresh(ticket)
-            ticket_id = ticket.id
+        ticket_res = await client.create_ticket_internal(
+            tg_id=sales_tg_id,
+            title=f"{biz_label} 开户 - {country_name} - {tpl_name}",
+            description=(
+                f"销售 {sales_name} 提交的{biz_label}开户申请\n"
+                f"国家: {country_name} ({cc})\n"
+                f"模板: {tpl_name}\n"
+                f"成本价: ${price:.4f}\n"
+                f"账户: {full_account_name}"
+            ),
+            ticket_type='registration',
+            priority='high',
+            category=biz_type,
+            created_by_id=sales_id,
+            template_id=tpl_id,
+            account_id=account_id,
+            extra_data=extra_data,
+        )
+        if not ticket_res.get("success"):
+            raise Exception(ticket_res.get("message", "Ticket creation failed"))
+        
+        ticket_id = ticket_res.get("ticket_id")
+        ticket_no = ticket_res.get("ticket_no") or ticket_no
 
         # 3. 发送到技术群
         group_ids = await get_group_ids()
@@ -834,7 +802,7 @@ async def _submit_data_order(query, context):
                 f"{detail_text}"
                 f"销售: {sales_name}\n"
                 f"\n📋 <b>已自动创建账户</b>\n"
-                f"账户: <code>{account.account_name}</code>\n"
+                f"账户: <code>{full_account_name}</code>\n"
                 f"━━━━━━━━━━━━━━\n"
                 f"⚠️ 技术请开户完成后 <b>回复本消息</b> 并附上配置信息"
             )
@@ -848,13 +816,13 @@ async def _submit_data_order(query, context):
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='HTML'
             )
-            async with AsyncSessionLocal() as session:
-                t = await session.get(Ticket, ticket_id)
-                if t:
-                    t.forwarded_to_group = target_group
-                    t.forwarded_message_id = sent_msg.message_id
-                    t.review_status = 'forwarded'
-                    await session.commit()
+            # 更新工单信息
+            await client.reply_ticket_internal(
+                ticket_id=ticket_id,
+                tg_id=sales_tg_id,
+                content=f"[System] Forwarded to Tech Group {target_group}. MessageID: {sent_msg.message_id}",
+                is_internal=True
+            )
 
         # 4. 通知销售（含账户 + 登录信息）
         login_url = os.getenv('CUSTOMER_PORTAL_URL', 'https://www.kaolach.com')
@@ -866,7 +834,7 @@ async def _submit_data_order(query, context):
             f"模板: {tpl_name}\n\n"
             f"━━━━━━━━━━━━━━\n"
             f"📋 <b>客户账户信息</b>\n"
-            f"账户名: <code>{account.account_name}</code>\n"
+            f"账户名: <code>{full_account_name}</code>\n"
             f"密码: <code>{plain_pwd}</code>\n"
             f"API Key: <code>{api_key}</code>\n"
             f"登录: {login_url}\n"
@@ -896,39 +864,31 @@ async def handle_opening_take(update: Update, context: ContextTypes.DEFAULT_TYPE
     except ValueError:
         return
 
-    async with AsyncSessionLocal() as session:
-        admin_result = await session.execute(
-            select(AdminUser).where(AdminUser.tg_id == user.id, AdminUser.status == 'active')
-        )
-        admin = admin_result.scalar_one_or_none()
-        if not admin:
-            await context.bot.send_message(chat_id=user.id, text="❌ 您不是管理员，无法接单")
-            return
+    client = APIClient()
+    res = await client.take_ticket_internal(ticket_id=ticket_id, tg_id=user.id)
+    
+    if not res.get("success"):
+        error_msg = res.get("message", "Unknown error")
+        if res.get("status") == 403:
+             await context.bot.send_message(chat_id=user.id, text="❌ 您不是管理员，无法接单")
+        else:
+             await context.bot.send_message(chat_id=user.id, text=f"❌ 接单失败: {error_msg}")
+        return
 
-        ticket = await session.get(Ticket, ticket_id)
-        if not ticket:
-            return
+    admin_name = res.get("admin_name")
+    ticket_no = res.get("ticket_no")
 
-        if ticket.status not in ('open', 'assigned'):
-            await context.bot.send_message(chat_id=user.id, text=f"ℹ️ 工单状态已变更 ({ticket.status})")
-            return
+    old_text = query.message.text or query.message.caption or ""
+    new_text = old_text + f"\n\n✅ 已接单: {admin_name}"
+    try:
+        await query.edit_message_text(new_text, parse_mode='HTML')
+    except Exception:
+        pass
 
-        ticket.status = 'in_progress'
-        ticket.assigned_to = admin.id
-        ticket.assigned_at = datetime.now()
-        await session.commit()
-
-        old_text = query.message.text or query.message.caption or ""
-        new_text = old_text + f"\n\n✅ 已接单: {admin.real_name or admin.username}"
-        try:
-            await query.edit_message_text(new_text, parse_mode='HTML')
-        except Exception:
-            pass
-
-        await context.bot.send_message(
-            chat_id=user.id,
-            text=f"✅ 您已接单: {ticket.ticket_no}\n请开户完成后回复该消息附上客户账户信息。"
-        )
+    await context.bot.send_message(
+        chat_id=user.id,
+        text=f"✅ 您已接单: {ticket_no}\n请开户完成后回复该消息附上客户账户信息。"
+    )
 
 
 # ============================================================
@@ -963,204 +923,51 @@ async def handle_tech_reply_in_group(update: Update, context: ContextTypes.DEFAU
     ticket_no = ticket_no_match.group(0)
     tech_user = message.from_user
 
-    # 解析供应商凭据（OKCC 等外部系统），同时保存原始回复
-    creds = _parse_supplier_credentials(reply_text)
-    creds['raw_reply'] = reply_text.strip()
-
     try:
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(Ticket).where(Ticket.ticket_no == ticket_no)
+        client = APIClient()
+        res = await client.finalize_ticket_internal(
+            ticket_no=ticket_no,
+            tg_id=tech_user.id,
+            reply_text=reply_text
+        )
+        
+        if not res.get("success"):
+            logger.warning(f"Finalize failed for {ticket_no}: {res.get('message')}")
+            return
+
+        display_name = res.get("display_name")
+        sales_tg_id = res.get("sales_tg_id")
+        biz_type = res.get("biz_type")
+        biz_label = BIZ_LABELS.get(biz_type, biz_type)
+        country_name = res.get("country_name")
+        tpl_name = res.get("template_name")
+        creds = res.get("creds")
+        
+        # 转发销售
+        if sales_tg_id:
+            forward_text = _build_sales_info_card(
+                biz_label, ticket_no, country_name, tpl_name,
+                display_name, creds, reply_text
             )
-            ticket = result.scalar_one_or_none()
-            if not ticket:
-                return
-
-            if ticket.status in ('resolved', 'closed', 'cancelled'):
-                return
-
-            extra = ticket.extra_data or {}
-            sales_tg_id = extra.get('sales_tg_id')
-            biz_type = extra.get('opening_type', '')
-            biz_label = BIZ_LABELS.get(biz_type, biz_type)
-            country_name = extra.get('country_name', '')
-            cc = extra.get('country_code', '')
-            sales_name = extra.get('sales_name', '')
-            sales_id = extra.get('sales_id')
-
-            tpl_name = extra.get('template_name', '')
-            selected_lines = extra.get('selected_lines', [])
-            if selected_lines:
-                tpl_name = ", ".join(sl.get('template_name', '') for sl in selected_lines[:3])
-                if len(selected_lines) > 3:
-                    tpl_name += f" 等{len(selected_lines)}条"
-
-            tech_admin_result = await session.execute(
-                select(AdminUser).where(AdminUser.tg_id == tech_user.id, AdminUser.status == 'active')
-            )
-            tech_admin = tech_admin_result.scalar_one_or_none()
-            tech_name = tech_admin.real_name or tech_admin.username if tech_admin else f"TG:{tech_user.id}"
-
-            reply_record = TicketReply(
-                ticket_id=ticket.id,
-                reply_by_type='admin',
-                reply_by_id=tech_admin.id if tech_admin else None,
-                reply_by_name=tech_name,
-                content=reply_text,
-                is_internal=False,
-                is_solution=True,
-                source='telegram',
-            )
-            session.add(reply_record)
-
-            ticket.status = 'resolved'
-            ticket.resolved_at = datetime.now()
-            if tech_admin:
-                ticket.resolved_by = tech_admin.id
-            ticket.resolution = reply_text
-
-            # 根据业务类型处理账户
-            account = None
-            account_id = extra.get('account_id')
-
-            if biz_type == 'voice':
-                # 语音：对接外部OKCC系统，用OKCC客户名作为账户名
-                okcc_name = creds.get('client_name', '')
-                if not okcc_name:
-                    ent = creds.get('sections', {}).get('enterprise_login', {})
-                    okcc_name = ent.get('客户名', '') or ent.get('客户名', '')
-                acct_name = okcc_name or f"VOICE_{cc}_{secrets.token_hex(3).upper()}"
-
-                if account_id:
-                    account = await session.get(Account, account_id)
-                    if account:
-                        account.account_name = acct_name
-                        account.supplier_credentials = creds
-                        account.supplier_url = creds.get('system_url', '')
-                else:
-                    # 语音订单提交时未创建账户，此时创建
-                    sell_price = 0
-                    if selected_lines:
-                        sell_price = selected_lines[0].get('sell_price', 0)
-                    account = Account(
-                        account_name=acct_name,
-                        sales_id=sales_id,
-                        status='active',
-                        balance=0,
-                        rate_limit=1000,
-                        business_type='voice',
-                        services='voice',
-                        country_code=cc,
-                        unit_price=sell_price,
-                        supplier_url=creds.get('system_url', ''),
-                        supplier_credentials=creds,
-                    )
-                    session.add(account)
-                    await session.flush()
-                    # 更新工单 extra_data
-                    extra['account_id'] = account.id
-                    extra['account_name'] = acct_name
-                    ticket.extra_data = extra
-
-            else:
-                # 数据：已在提交时自动创建账户，补充供应商信息
-                if account_id and creds:
-                    account = await session.get(Account, account_id)
-                    if account:
-                        account.supplier_credentials = creds
-                        account.supplier_url = creds.get('system_url', '')
-
-            await session.commit()
-
-            display_name = ''
-            if account:
-                display_name = account.account_name
-            elif account_id:
-                display_name = extra.get('account_name', '')
-
-            # 构建销售信息卡
-            if sales_tg_id:
-                forward_text = _build_sales_info_card(
-                    biz_label, ticket_no, country_name, tpl_name,
-                    display_name, creds, reply_text
+            try:
+                await context.bot.send_message(
+                    chat_id=int(sales_tg_id),
+                    text=forward_text,
+                    parse_mode='HTML'
                 )
-                try:
-                    await context.bot.send_message(
-                        chat_id=int(sales_tg_id),
-                        text=forward_text,
-                        parse_mode='HTML'
-                    )
-                except Exception as e:
-                    logger.error(f"转发开户信息给销售失败: {e}")
+            except Exception as e:
+                logger.error(f"转发销售失败: {e}")
 
-            await message.reply_text(
-                f"✅ 开户信息已记录并转发给销售 {sales_name}\n"
-                f"工单 {ticket_no} 已自动完结。"
-                + (f"\n客户账户: {display_name}" if display_name else ""),
-            )
+        await message.reply_text(
+            f"✅ 开户信息已记录并转发给销售\n"
+            f"工单 {ticket_no} 已自动完结。"
+            + (f"\n客户账户: {display_name}" if display_name else ""),
+        )
 
     except Exception as e:
         logger.error(f"处理技术回复失败: {e}", exc_info=True)
 
 
-def _parse_supplier_credentials(text: str) -> dict:
-    """
-    解析技术回复中的供应商凭据，支持常见格式：
-    系统地址 / 客户名 / 用户名 / 密码 / 坐席号 / 域名 / 口令 / 送号规则
-    """
-    import re
-    creds = {}
-
-    # 提取 URL（系统地址）
-    url_match = re.search(r'https?://[^\s]+', text)
-    if url_match:
-        creds['system_url'] = url_match.group(0).rstrip('/')
-
-    # 通用键值提取（中文冒号 / 英文冒号均兼容）
-    kv_patterns = {
-        'client_name': r'客户名[：:]\s*(.+)',
-        'username': r'用户名[：:]\s*(.+)',
-        'password': r'密码[：:]\s*(.+)',
-        'agent_range': r'坐席号[：:]\s*(.+)',
-        'agent_password': r'口令[：:]\s*(.+)',
-        'domain': r'域名[：:]\s*(.+)',
-        'dial_rule': r'送号规则[：:]\s*(.+)',
-    }
-    for key, pattern in kv_patterns.items():
-        match = re.search(pattern, text)
-        if match:
-            val = match.group(1).strip()
-            if val:
-                creds[key] = val
-
-    # 如果有多段（企业客户登录 / 坐席注册 / 坐席登录），构建分段
-    sections = {}
-    current_section = None
-    for line in text.split('\n'):
-        line_s = line.strip().strip('-')
-        if not line_s:
-            continue
-        if '企业客户登录' in line_s:
-            current_section = 'enterprise_login'
-            sections[current_section] = {}
-        elif '坐席注册' in line_s:
-            current_section = 'agent_register'
-            sections[current_section] = {}
-        elif '坐席登录' in line_s:
-            current_section = 'agent_login'
-            sections[current_section] = {}
-        elif current_section and ('：' in line_s or ':' in line_s):
-            sep = '：' if '：' in line_s else ':'
-            parts = line_s.split(sep, 1)
-            if len(parts) == 2:
-                k, v = parts[0].strip(), parts[1].strip()
-                if k and v:
-                    sections[current_section][k] = v
-
-    if sections:
-        creds['sections'] = sections
-
-    return creds
 
 
 def _build_sales_info_card(biz_label, ticket_no, country_name, tpl_name,
@@ -1217,56 +1024,6 @@ def _build_sales_info_card(biz_label, ticket_no, country_name, tpl_name,
     return "\n".join(lines)
 
 
-async def _create_account_now(biz_type, cc, sales_id, selected_lines=None, default_price=0):
-    """
-    立即创建客户账户，返回 (account, plain_password, api_key)。
-    在提交订单时调用，而非等待技术回复。
-    """
-    if selected_lines:
-        price = selected_lines[0].get('sell_price', 0) or selected_lines[0].get('cost_price', 0)
-    else:
-        price = default_price
-
-    account_name = f"{biz_type.upper()}_{cc}_{secrets.token_hex(3).upper()}"
-    api_key_plain = secrets.token_hex(32)
-    plain_pwd = secrets.token_urlsafe(10)
-
-    async with AsyncSessionLocal() as session:
-        new_account = Account(
-            account_name=account_name,
-            sales_id=sales_id,
-            status='active',
-            balance=0,
-            api_key=api_key_plain,
-            password_hash=AuthService.hash_password(plain_pwd),
-            rate_limit=1000,
-            business_type=biz_type,
-            services=biz_type,
-            country_code=cc,
-            unit_price=price,
-        )
-        session.add(new_account)
-
-        if biz_type == 'data':
-            try:
-                await session.flush()
-                from app.modules.data.data_account import DataAccount
-                da = DataAccount(
-                    account_id=new_account.id,
-                    country_code=cc,
-                    balance=0,
-                    total_extracted=0,
-                    total_spent=0,
-                    status='active',
-                )
-                session.add(da)
-            except Exception as e:
-                logger.warning(f"创建数据子账户失败: {e}")
-
-        await session.commit()
-        await session.refresh(new_account)
-
-    return new_account, plain_pwd, api_key_plain
 
 
 # ============================================================
