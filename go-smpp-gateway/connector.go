@@ -74,7 +74,8 @@ func InitSMPPManager() {
     }
 }
 
-// ReloadChannels reloads configurations and establishes connections
+// ReloadChannels reloads configurations and establishes connections asynchronously.
+// It no longer holds the global lock during network I/O.
 func (m *SMPPManager) ReloadChannels() error {
     configs, err := GetChannelConfigs()
     if err != nil {
@@ -87,8 +88,6 @@ func (m *SMPPManager) ReloadChannels() error {
     }
 
     m.mu.Lock()
-    defer m.mu.Unlock()
-
     // 1. Identify and remove sessions for channels that are no longer active or were removed
     for id, conns := range m.connections {
         if _, exists := newConfigs[id]; !exists {
@@ -101,26 +100,23 @@ func (m *SMPPManager) ReloadChannels() error {
         }
     }
 
-    // 2. Process current configurations (add new or scale up)
+    // 2. Process current configurations: scaling down immediately, identifying pending additions
+    type task struct {
+        cfg    ChannelConfig
+        needed int
+    }
+    var tasks []task
+
     for id, cfg := range newConfigs {
         m.configs[id] = cfg
         currentConns := m.connections[id]
-        needed := cfg.Concurrency - len(currentConns)
+        diff := cfg.Concurrency - len(currentConns)
         
-        if needed > 0 {
-            log.Printf("Channel %s needs %d more sessions (current: %d, target: %d)", cfg.ChannelCode, needed, len(currentConns), cfg.Concurrency)
-            for i := 0; i < needed; i++ {
-                session, err := m.bindSession(cfg)
-                if err != nil {
-                    log.Printf("Failed to bind session for channel %s: %v", cfg.ChannelCode, err)
-                    continue
-                }
-                m.connections[id] = append(m.connections[id], session)
-                log.Printf("Successfully bound new session for channel %s", cfg.ChannelCode)
-            }
-        } else if needed < 0 {
-            // Scale down if concurrency was reduced
-            toClose := -needed
+        if diff > 0 {
+            tasks = append(tasks, task{cfg: cfg, needed: diff})
+        } else if diff < 0 {
+            // Scale down immediately if concurrency was reduced
+            toClose := -diff
             log.Printf("Channel %s reducing concurrency, closing %d sessions...", cfg.ChannelCode, toClose)
             for i := 0; i < toClose && len(m.connections[id]) > 0; i++ {
                 session := m.connections[id][0]
@@ -129,6 +125,34 @@ func (m *SMPPManager) ReloadChannels() error {
             }
         }
     }
+    m.mu.Unlock()
+
+    // 3. Process additions asynchronously in separate goroutines to avoid blocking the global lock
+    for _, t := range tasks {
+        for i := 0; i < t.needed; i++ {
+            go func(cfg ChannelConfig) {
+                // Network I/O (bind) happens outside the lock
+                session, err := m.bindSession(cfg)
+                if err != nil {
+                    log.Printf("Failed to bind async session for channel %s: %v", cfg.ChannelCode, err)
+                    return
+                }
+
+                m.mu.Lock()
+                defer m.mu.Unlock()
+                
+                // Re-check if the channel configuration still exists before adding the new session
+                if _, exists := m.configs[cfg.ID]; exists {
+                    m.connections[cfg.ID] = append(m.connections[cfg.ID], session)
+                    log.Printf("Successfully bound new async session for channel %s (total sessions: %d)", cfg.ChannelCode, len(m.connections[cfg.ID]))
+                } else {
+                    log.Printf("Channel %s was removed during async bind, closing new session", cfg.ChannelCode)
+                    _ = session.Close()
+                }
+            }(t.cfg)
+        }
+    }
+
     return nil
 }
 

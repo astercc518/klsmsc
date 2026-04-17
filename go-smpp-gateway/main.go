@@ -26,6 +26,11 @@ func main() {
     rabbitURL := os.Getenv("RABBITMQ_URL")
     go RunConsumerForever(rabbitURL)
 
+    // 3b. 管理端「真实 bind」探测（仅内网 + Token；供 Python API 调用）
+    if probeListen := os.Getenv("SMPP_PROBE_BIND_LISTEN"); probeListen != "" {
+        go startProbeBindServer(probeListen)
+    }
+
     // 4. Start periodic configuration reload (every 5 minutes)
     go func() {
         ticker := time.NewTicker(5 * time.Minute)

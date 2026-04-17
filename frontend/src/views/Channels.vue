@@ -726,6 +726,7 @@
         <div class="status-icon">
           <el-icon v-if="statusResult.status === 'online'"><CircleCheck /></el-icon>
           <el-icon v-else-if="statusResult.status === 'timeout'"><Clock /></el-icon>
+          <el-icon v-else-if="statusResult.status === 'unknown'"><InfoFilled /></el-icon>
           <el-icon v-else><CircleClose /></el-icon>
         </div>
         <div class="status-info">
@@ -781,7 +782,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Plus, Refresh, Search, Connection, CircleCheck, Promotion, Link, CircleClose, Loading, Clock, Position, User, Edit, Money, Monitor, More, View, Guide, Delete, ChatDotSquare, ArrowDown } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search, Connection, CircleCheck, Promotion, Link, CircleClose, Loading, Clock, Position, User, Edit, Money, Monitor, More, View, Guide, Delete, ChatDotSquare, ArrowDown, InfoFilled } from '@element-plus/icons-vue'
 import CountrySelect from '@/components/CountrySelect.vue'
 import { findCountryByDial, findCountryByIso } from '@/constants/countries'
 import { getChannels } from '@/api/channel'
@@ -2011,6 +2012,11 @@ onMounted(() => {
   border-color: rgba(230, 162, 60, 0.3);
 }
 
+.status-result.unknown {
+  background: rgba(144, 147, 153, 0.12);
+  border-color: rgba(144, 147, 153, 0.35);
+}
+
 .status-icon {
   font-size: 32px;
 }
@@ -2019,6 +2025,7 @@ onMounted(() => {
 .status-result.offline .status-icon,
 .status-result.error .status-icon { color: #f56c6c; }
 .status-result.timeout .status-icon { color: #e6a23c; }
+.status-result.unknown .status-icon { color: #909399; }
 
 .status-text {
   font-weight: 600;

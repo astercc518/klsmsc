@@ -1946,6 +1946,7 @@ async def channel_check_all_status(
             "total": 0,
             "online": 0,
             "offline": 0,
+            "unknown": 0,
             "results": [],
             "message": "暂无通道需要检测",
         }
@@ -1954,18 +1955,27 @@ async def channel_check_all_status(
     results = []
     online_count = 0
     offline_count = 0
-    
+    unknown_count = 0
+
     for channel in channels:
         check_result = await _run_channel_check(channel)
-        conn_status = "online" if check_result.get("status") == "online" else "offline"
+        raw = check_result.get("status") or "unknown"
+        if raw == "online":
+            conn_status = "online"
+        elif raw == "offline":
+            conn_status = "offline"
+        else:
+            conn_status = "unknown"
         channel.connection_status = conn_status
         channel.connection_checked_at = datetime.utcnow()
-        
+
         if conn_status == "online":
             online_count += 1
-        else:
+        elif conn_status == "offline":
             offline_count += 1
-        
+        else:
+            unknown_count += 1
+
         results.append({
             "channel_id": channel.id,
             "channel_code": channel.channel_code,
@@ -1982,35 +1992,236 @@ async def channel_check_all_status(
         "total": len(channels),
         "online": online_count,
         "offline": offline_count,
+        "unknown": unknown_count,
         "results": results,
-        "message": f"已检测 {len(channels)} 个通道，正常 {online_count} 个，异常 {offline_count} 个",
+        "message": (
+            f"已检测 {len(channels)} 个通道：在线 {online_count} 个，离线 {offline_count} 个"
+            + (
+                f"，未判定 {unknown_count} 个（多为 SMPP 未配网关 bind 探测、仅 TCP，或 bind/账号失败）"
+                if unknown_count
+                else ""
+            )
+        ),
+    }
+
+
+def _tcp_connect_probe(host: str, port: int, *, timeout: float = 5.0):
+    """
+    TCP 连通探测（含 DNS / IPv4+IPv6，与 AF_INET 手工 connect 相比误判更少）。
+    返回 (是否成功, 失败原因简述或 None)。
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    raw = (host or "").strip()
+    if not raw:
+        return False, "主机为空"
+    h = raw
+    p = int(port)
+    if "://" in raw:
+        pr = urlparse(raw)
+        if pr.hostname:
+            h = pr.hostname
+        if pr.port:
+            p = int(pr.port)
+    try:
+        sock = socket.create_connection((h, p), timeout=timeout)
+        sock.close()
+        return True, None
+    except socket.timeout:
+        return False, "连接超时"
+    except OSError as e:
+        return False, (str(e) or "网络错误")
+
+
+async def _smpp_bind_probe_via_gateway(channel) -> dict:
+    """
+    调用 go-smpp-gateway 的 POST /probe-bind 执行真实 SMPP bind（须配置 URL 与 Token）。
+    返回与 _run_channel_check 一致形态的结果字典。
+    """
+    import httpx
+
+    base = (settings.SMPP_GATEWAY_PROBE_URL or "").strip().rstrip("/")
+    token = (settings.SMPP_PROBE_TOKEN or "").strip()
+    url = f"{base}/probe-bind"
+    payload = {
+        "host": str(channel.host or "").strip(),
+        "port": int(channel.port),
+        "system_id": (channel.username or "").strip(),
+        "password": (channel.password or "").strip(),
+        "bind_mode": (channel.smpp_bind_mode or "transceiver").strip(),
+        "system_type": (channel.smpp_system_type or "").strip(),
+        "channel_ref": channel.channel_code,
+    }
+    timeout = httpx.Timeout(40.0, connect=8.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(
+            url,
+            json=payload,
+            headers={"X-Smpp-Probe-Token": token},
+        )
+    text = (resp.text or "")[:500]
+    try:
+        data = resp.json()
+    except Exception:
+        data = {}
+    msg = (data.get("message") if isinstance(data, dict) else None) or text or f"HTTP {resp.status_code}"
+    st = (data.get("status") if isinstance(data, dict) else None) or "offline"
+    ok = bool(isinstance(data, dict) and data.get("success"))
+    if resp.status_code == 401:
+        return {
+            "success": False,
+            "status": "offline",
+            "message": "探测服务拒绝认证，请核对 API 与 smpp-gateway 的 SMPP_PROBE_TOKEN 是否一致",
+        }
+    if resp.status_code >= 400 and not isinstance(data, dict):
+        return {
+            "success": False,
+            "status": "offline",
+            "message": f"探测服务 HTTP {resp.status_code}: {msg}",
+        }
+    return {
+        "success": ok,
+        "status": st if st in ("online", "offline", "unknown") else ("online" if ok else "offline"),
+        "message": msg,
     }
 
 
 async def _run_channel_check(channel) -> dict:
     """执行单通道连接检测，返回结果字典（不持久化）"""
     import time
-    
+
     start_time = time.time()
-    
+
     try:
         if channel.protocol == "SMPP":
-            # 与测试发送一致：不在 API 进程内做 SMPP bind，避免依赖已移除的 Python 适配器
-            latency_ms = int((time.time() - start_time) * 1000)
-            details = {
-                "channel": channel.channel_code,
-                "protocol": "SMPP",
-                "host": channel.host,
-                "port": channel.port,
-                "latency_ms": latency_ms,
-                "hint": "请在 Go SMPP Gateway / worker-sms-smpp 侧验证连通性",
-            }
-            return {
-                "success": False,
-                "status": "unknown",
-                "message": "SMPP 连接检测已迁移，API 内不再执行 bind",
-                "details": details,
-            }
+            if not channel.host or not channel.port:
+                latency_ms = int((time.time() - start_time) * 1000)
+                return {
+                    "success": False,
+                    "status": "offline",
+                    "message": "SMPP 未配置主机或端口",
+                    "details": {
+                        "channel": channel.channel_code,
+                        "protocol": "SMPP",
+                        "host": channel.host,
+                        "port": channel.port,
+                        "latency_ms": latency_ms,
+                    },
+                }
+            probe_base = (settings.SMPP_GATEWAY_PROBE_URL or "").strip()
+            probe_token = (settings.SMPP_PROBE_TOKEN or "").strip()
+            if probe_base and probe_token:
+                if not (channel.username and channel.password):
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    return {
+                        "success": False,
+                        "status": "offline",
+                        "message": "SMPP 未配置用户名(system_id)或密码，无法执行 bind 探测",
+                        "details": {
+                            "channel": channel.channel_code,
+                            "protocol": "SMPP",
+                            "host": channel.host,
+                            "port": channel.port,
+                            "latency_ms": latency_ms,
+                        },
+                    }
+                try:
+                    out = await _smpp_bind_probe_via_gateway(channel)
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    return {
+                        "success": out["success"],
+                        "status": out["status"],
+                        "message": out["message"],
+                        "details": {
+                            "channel": channel.channel_code,
+                            "protocol": "SMPP",
+                            "host": channel.host,
+                            "port": channel.port,
+                            "latency_ms": latency_ms,
+                            "probe": "gateway_bind",
+                        },
+                    }
+                except Exception as e:
+                    latency_ms = int((time.time() - start_time) * 1000)
+                    logger.opt(exception=True).warning(
+                        "SMPP 网关 bind 探测失败 channel={}: {}",
+                        channel.channel_code,
+                        str(e),
+                    )
+                    return {
+                        "success": False,
+                        "status": "offline",
+                        "message": f"SMPP 网关 bind 探测不可用: {str(e)}",
+                        "details": {
+                            "channel": channel.channel_code,
+                            "protocol": "SMPP",
+                            "host": channel.host,
+                            "port": channel.port,
+                            "latency_ms": latency_ms,
+                            "probe": "gateway_bind",
+                        },
+                    }
+            # 未同时配置网关 URL 与 Token：仅 TCP 兜底并提示如何启用真实 bind
+            try:
+                ok, err = _tcp_connect_probe(str(channel.host), int(channel.port), timeout=5.0)
+                latency_ms = int((time.time() - start_time) * 1000)
+                if probe_token:
+                    hint = (
+                        "已配置 SMPP_PROBE_TOKEN，但未配置 SMPP_GATEWAY_PROBE_URL，无法调用网关执行 bind；"
+                        "请在 API 环境设置 SMPP_GATEWAY_PROBE_URL（如 http://smpp-gateway:8090）并重启。"
+                    )
+                elif probe_base:
+                    hint = (
+                        "已配置 SMPP_GATEWAY_PROBE_URL，但未配置 SMPP_PROBE_TOKEN（或网关未设置同名变量），"
+                        "网关不会启动探测接口；请在 api 与 smpp-gateway 设置相同 SMPP_PROBE_TOKEN 后重启。"
+                    )
+                else:
+                    hint = (
+                        "未配置 SMPP_GATEWAY_PROBE_URL 与 SMPP_PROBE_TOKEN，无法执行真实 bind；"
+                        "请在 .env 为 api 与 smpp-gateway 设置相同 Token 与网关地址后重启。"
+                    )
+                if ok:
+                    return {
+                        "success": False,
+                        "status": "unknown",
+                        "message": f"{hint} TCP 可达 ({channel.host}:{channel.port})，不代表鉴权通过。",
+                        "details": {
+                            "channel": channel.channel_code,
+                            "protocol": "SMPP",
+                            "host": channel.host,
+                            "port": channel.port,
+                            "latency_ms": latency_ms,
+                            "probe": "tcp_only",
+                        },
+                    }
+                return {
+                    "success": False,
+                    "status": "offline",
+                    "message": f"{hint} TCP 不可达: {err}",
+                    "details": {
+                        "channel": channel.channel_code,
+                        "protocol": "SMPP",
+                        "host": channel.host,
+                        "port": channel.port,
+                        "latency_ms": latency_ms,
+                        "probe": "tcp_only",
+                    },
+                }
+            except Exception as e:
+                latency_ms = int((time.time() - start_time) * 1000)
+                return {
+                    "success": False,
+                    "status": "unknown",
+                    "message": f"SMPP 检测过程异常: {str(e)}",
+                    "details": {
+                        "channel": channel.channel_code,
+                        "protocol": "SMPP",
+                        "host": channel.host,
+                        "port": channel.port,
+                        "latency_ms": latency_ms,
+                    },
+                }
 
         elif channel.protocol == "HTTP":
             if not channel.api_url:
@@ -2026,18 +2237,26 @@ async def _run_channel_check(channel) -> dict:
                 }
             try:
                 from urllib.parse import urlparse
-                import socket
-                
+
                 parsed = urlparse(channel.api_url)
                 host = parsed.hostname
                 port = parsed.port or (443 if parsed.scheme == 'https' else 80)
-                
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(5)
-                try:
-                    sock.connect((host, port))
-                    sock.close()
+                if not host:
                     latency_ms = int((time.time() - start_time) * 1000)
+                    return {
+                        "success": False,
+                        "status": "offline",
+                        "message": "HTTP 地址中无有效主机名",
+                        "details": {
+                            "channel": channel.channel_code,
+                            "protocol": "HTTP",
+                            "api_url": channel.api_url,
+                            "latency_ms": latency_ms,
+                        },
+                    }
+                ok, err = _tcp_connect_probe(host, int(port), timeout=5.0)
+                latency_ms = int((time.time() - start_time) * 1000)
+                if ok:
                     return {
                         "success": True,
                         "status": "online",
@@ -2048,39 +2267,22 @@ async def _run_channel_check(channel) -> dict:
                             "api_url": channel.api_url,
                             "host": host,
                             "port": port,
-                            "latency_ms": latency_ms
-                        }
+                            "latency_ms": latency_ms,
+                        },
                     }
-                except socket.timeout:
-                    latency_ms = int((time.time() - start_time) * 1000)
-                    return {
-                        "success": False,
-                        "status": "offline",
-                        "message": f"HTTP接口连接超时 ({host}:{port})",
-                        "details": {
-                            "channel": channel.channel_code,
-                            "protocol": "HTTP",
-                            "api_url": channel.api_url,
-                            "host": host,
-                            "port": port,
-                            "latency_ms": latency_ms
-                        }
-                    }
-                except (socket.error, OSError) as e:
-                    latency_ms = int((time.time() - start_time) * 1000)
-                    return {
-                        "success": False,
-                        "status": "offline",
-                        "message": f"HTTP接口连接失败: {str(e)}",
-                        "details": {
-                            "channel": channel.channel_code,
-                            "protocol": "HTTP",
-                            "api_url": channel.api_url,
-                            "host": host,
-                            "port": port,
-                            "latency_ms": latency_ms
-                        }
-                    }
+                return {
+                    "success": False,
+                    "status": "offline",
+                    "message": f"HTTP 无法连通 ({host}:{port}): {err}",
+                    "details": {
+                        "channel": channel.channel_code,
+                        "protocol": "HTTP",
+                        "api_url": channel.api_url,
+                        "host": host,
+                        "port": port,
+                        "latency_ms": latency_ms,
+                    },
+                }
             except Exception as parse_err:
                 latency_ms = int((time.time() - start_time) * 1000)
                 return {
@@ -2145,12 +2347,18 @@ async def channel_check_status(
         raise HTTPException(status_code=404, detail="Channel not found")
     
     check_result = await _run_channel_check(channel)
-    
-    conn_status = "online" if check_result.get("status") == "online" else "offline"
+
+    raw = check_result.get("status") or "unknown"
+    if raw == "online":
+        conn_status = "online"
+    elif raw == "offline":
+        conn_status = "offline"
+    else:
+        conn_status = "unknown"
     channel.connection_status = conn_status
     channel.connection_checked_at = datetime.utcnow()
     await db.commit()
-    
+
     return check_result
 
 

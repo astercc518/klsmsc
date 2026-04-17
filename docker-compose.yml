@@ -128,6 +128,8 @@ services:
       TELEGRAM_STAFF_API_SECRET: ${TELEGRAM_STAFF_API_SECRET:-}
       PUBLIC_WEB_BASE_URL: ${PUBLIC_WEB_BASE_URL:-https://www.kaolach.com}
       DOCKER_PROXY_URL: http://docker-proxy:2375
+      SMPP_GATEWAY_PROBE_URL: ${SMPP_GATEWAY_PROBE_URL:-http://smpp-gateway:8090}
+      SMPP_PROBE_TOKEN: ${SMPP_PROBE_TOKEN:-}
     ports:
       - "8000:8000"
     volumes:
@@ -149,6 +151,8 @@ services:
       rabbitmq:
         condition: service_healthy
       docker-proxy:
+        condition: service_started
+      smpp-gateway:
         condition: service_started
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
@@ -463,6 +467,8 @@ services:
       DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-smsc_mq}:${RABBITMQ_PASSWORD:-smsc_mq_pass}@rabbitmq:5672/
+      SMPP_PROBE_BIND_LISTEN: ${SMPP_PROBE_BIND_LISTEN:-:8090}
+      SMPP_PROBE_TOKEN: ${SMPP_PROBE_TOKEN:-}
     depends_on:
       proxysql:
         condition: service_started

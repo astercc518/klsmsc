@@ -132,6 +132,10 @@ class Settings(BaseSettings):
     SMPP_SERVER_HOST: str = "www.kaolach.com"
     SMPP_SERVER_PORT: int = 2775
 
+    # 通道管理「真实 SMPP bind」：由 go-smpp-gateway 内网 HTTP 执行（须与网关 SMPP_PROBE_TOKEN 一致）
+    SMPP_GATEWAY_PROBE_URL: Optional[str] = None  # 例 http://smpp-gateway:8090
+    SMPP_PROBE_TOKEN: Optional[str] = None
+
     # SMPP：多 Celery 子进程会并发 bind，上游单会话时易 ESME 13。为 True 时用 Redis 全局锁串行化，
     # 且提交成功后立即断开 TCP 以释放 bind——会导致无法在同连接上收到 deliver_sm，送达多依赖 HTTP 拉取/回调。
     # 默认 False：配合 worker-sms --concurrency=1 可兼顾「单会话 bind」与 SMPP 长连收 DLR（延迟断开）。
