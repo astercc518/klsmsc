@@ -367,6 +367,24 @@ services:
     networks:
       - smsc-network
 
+  # 官网落地站快照（astercc518/kaolach）：供 Nginx 反代，替换原 Vue Landing 根路径体验
+  landing-preview:
+    build:
+      context: ./deploy/landing-preview
+      dockerfile: Dockerfile
+    image: smsc-landing-preview:latest
+    container_name: smsc-landing-preview
+    environment:
+      TZ: Asia/Shanghai
+      PREVIEW_BIND: "0.0.0.0"
+      PORT: "8787"
+      PREVIEW_BRAND_NAME: kaolach
+      LIVE_ORIGIN: "https://illyvoip.com"
+      PREVIEW_PROXY_MISS: "1"
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
   # 前端服务
   frontend:
     build:
@@ -380,6 +398,9 @@ services:
       - ./certs:/etc/nginx/certs:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      landing-preview:
+        condition: service_started
     restart: unless-stopped
     networks:
       - smsc-network

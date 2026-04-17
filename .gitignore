@@ -25,6 +25,9 @@ frontend/node_modules/
 frontend/dist/
 *.local
 
+# 落地站：若本地 git clone 调试，勿提交大体积快照（生产用 deploy/landing-preview Dockerfile 构建）
+/landing-kaolach/
+
 # 日志与备份
 scripts/backups/
 logs/
