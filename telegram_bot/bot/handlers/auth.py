@@ -95,12 +95,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg = resp.get("msg", "授权码无效或已过期")
                 await update.message.reply_text(
                     f"❌ {msg}\n\n请联系销售获取新的授权码。",
-                    reply_markup=get_main_menu_guest(),
+                    reply_markup=await get_main_menu_guest(),
                 )
                 return
 
         # 2. 验证用户身份 (Admin/Customer/Guest)
-        user_info = await api.verify_user(tg_id, username)
+        user_info = await api.verify_user(tg_id)
         
         if user_info.get("is_admin"):
             admin = user_info["admin"]
@@ -180,7 +180,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👋 欢迎使用 TG 业务助手\n\n"
             "支持短信、语音、数据三大业务\n\n"
             "请选择操作：",
-            reply_markup=get_main_menu_guest()
+            reply_markup=await get_main_menu_guest()
         )
 
     except Exception as e:

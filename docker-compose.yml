@@ -126,6 +126,8 @@ services:
       DLR_CALLBACK_TOKEN: ${DLR_CALLBACK_TOKEN:-}
       DLR_CALLBACK_IP_WHITELIST: ${DLR_CALLBACK_IP_WHITELIST:-}
       TELEGRAM_STAFF_API_SECRET: ${TELEGRAM_STAFF_API_SECRET:-}
+      # 游客户服：无在职员工 tg_username 时 internal_bot 兜底跳转（与 Bot 侧 TELEGRAM_CS_FALLBACK_URL 可同值）
+      TELEGRAM_CS_FALLBACK_URL: ${TELEGRAM_CS_FALLBACK_URL:-https://t.me/kaolachbot}
       PUBLIC_WEB_BASE_URL: ${PUBLIC_WEB_BASE_URL:-https://www.kaolach.com}
       DOCKER_PROXY_URL: http://docker-proxy:2375
       SMPP_GATEWAY_PROBE_URL: ${SMPP_GATEWAY_PROBE_URL:-http://smpp-gateway:8090}
@@ -352,6 +354,8 @@ services:
       STAFF_GROUP_ID: ${STAFF_GROUP_ID:-}
       API_BASE_URL: http://api:8000
       TELEGRAM_STAFF_API_SECRET: ${TELEGRAM_STAFF_API_SECRET:-}
+      # 游客户服按钮：API 失败或未配置轮询员工时的 t.me 链接（须 https）
+      TELEGRAM_CS_FALLBACK_URL: ${TELEGRAM_CS_FALLBACK_URL:-https://t.me/kaolachbot}
     volumes:
       - ./telegram_bot:/app
       - ./backend:/backend # 挂载 backend 代码以供复用

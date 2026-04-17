@@ -207,6 +207,88 @@ async def get_bot_settings(db: AsyncSession = Depends(get_db)):
         logger.error(f"获取Bot设置失败: {e}")
         raise HTTPException(status_code=500)
 
+
+# 游客户服 TG 轮询：Redis 全局计数，对在职且已填 tg_username 的员工顺序分配
+_GUEST_CS_STAFF_ROLES = ("sales", "tech", "admin", "finance", "super_admin")
+_GUEST_CS_RR_REDIS_KEY = "smsc:bot:guest_cs_staff_rr"
+
+
+def _parse_admin_tg_username(raw: object) -> Optional[str]:
+    """从后台字段解析 t.me 用户名（兼容 @xxx、https://t.me/xxx 等写法）。"""
+    if not raw:
+        return None
+    s = str(raw).strip().lstrip("@")
+    low = s.lower()
+    for prefix in (
+        "https://t.me/",
+        "http://t.me/",
+        "https://telegram.me/",
+        "http://telegram.me/",
+    ):
+        if low.startswith(prefix):
+            s = s[len(prefix) :].split("/")[0].split("?")[0].strip()
+            break
+    if not s:
+        return None
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9_]{4,31}$", s):
+        return s
+    return None
+
+
+@router.get("/guest/next-cs-staff-tg", dependencies=[Depends(verify_internal_secret)])
+async def guest_next_cs_staff_tg(db: AsyncSession = Depends(get_db)):
+    """返回下一个客服私聊链接（员工 tg_username 轮询）；无可用员工时用配置的兜底 URL。"""
+    fallback = (app_settings.TELEGRAM_CS_FALLBACK_URL or "https://t.me/kaolachbot").strip()
+    try:
+        result = await db.execute(
+            select(AdminUser.tg_username)
+            .where(
+                AdminUser.status == "active",
+                AdminUser.role.in_(_GUEST_CS_STAFF_ROLES),
+                AdminUser.tg_username.isnot(None),
+                AdminUser.tg_username != "",
+            )
+            .order_by(AdminUser.id)
+        )
+        usernames: list[str] = []
+        for (raw,) in result.all():
+            u = _parse_admin_tg_username(raw)
+            if u:
+                usernames.append(u)
+        if not usernames:
+            return {
+                "success": True,
+                "url": fallback,
+                "rotated": False,
+                "source": "fallback",
+                "hint_zh": "当前没有在职员工填写有效的 Telegram 用户名，无法分配到人工客服；已使用系统兜底链接。请联系管理员在后台为员工填写 tg_username，或配置 TELEGRAM_CS_FALLBACK_URL 为销售个人号。",
+            }
+
+        from app.utils.cache import get_redis_client
+
+        redis_client = await get_redis_client()
+        n = await redis_client.incr(_GUEST_CS_RR_REDIS_KEY)
+        idx = (int(n) - 1) % len(usernames)
+        picked = usernames[idx]
+        return {
+            "success": True,
+            "url": f"https://t.me/{picked}",
+            "username": picked,
+            "rotated": True,
+            "source": "staff",
+        }
+    except Exception as e:
+        logger.error(f"guest_next_cs_staff_tg 失败: {e}", exc_info=True)
+        fb = (app_settings.TELEGRAM_CS_FALLBACK_URL or "https://t.me/kaolachbot").strip()
+        return {
+            "success": False,
+            "url": fb,
+            "msg": str(e),
+            "source": "error",
+            "hint_zh": "分配客服链接时发生异常，已返回兜底链接，请稍后再试或联系管理员。",
+        }
+
+
 @router.get("/verify-user/{tg_id}", dependencies=[Depends(verify_internal_secret)])
 async def verify_bot_user(tg_id: int, db: AsyncSession = Depends(get_db)):
     """校验 TG 用户身份并返回其关联的账户信息"""

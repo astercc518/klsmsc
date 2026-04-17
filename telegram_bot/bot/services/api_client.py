@@ -1,6 +1,7 @@
 """
 后端API客户端
 """
+import os
 import httpx
 from typing import Dict, Optional
 from loguru import logger
@@ -21,7 +22,7 @@ class APIClient:
 
     async def _get(self, endpoint: str, params: dict = None) -> Dict:
         """内部 GET 请求封装"""
-        url = f"{self.base_url}/api/v1/internal_bot{endpoint}"
+        url = f"{self.base_url}/api/v1/internal/bot{endpoint}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, params=params, headers=self._get_internal_headers())
@@ -32,7 +33,7 @@ class APIClient:
 
     async def _post(self, endpoint: str, json: dict = None) -> Dict:
         """内部 POST 请求封装"""
-        url = f"{self.base_url}/api/v1/internal_bot{endpoint}"
+        url = f"{self.base_url}/api/v1/internal/bot{endpoint}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(url, json=json, headers=self._get_internal_headers())
@@ -169,7 +170,7 @@ class APIClient:
 
     async def get_internal_settings(self) -> Dict:
         """从后端获取 Bot 系统设置"""
-        url = f"{self.base_url}/api/v1/internal_bot/settings"
+        url = f"{self.base_url}/api/v1/internal/bot/settings"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
@@ -178,20 +179,88 @@ class APIClient:
             logger.error(f"获取内部设置失败: {e}")
             return {}
 
+    def _normalize_guest_cs_bundle(self, data: Dict) -> Dict:
+        """补全 source / url / hint_zh，兼容 FastAPI 403 的 {\"detail\":...} 与旧版无 source 响应。"""
+        if data.get("source") not in ("staff", "fallback", "error"):
+            if data.get("rotated") is True:
+                data["source"] = "staff"
+            elif data.get("success") is False or data.get("detail") is not None:
+                data["source"] = "error"
+                err = data.get("msg") or data.get("detail")
+                if isinstance(err, list):
+                    err = "; ".join(str(x) for x in err)
+                err_s = (str(err) if err else "").strip()[:300]
+                data.setdefault(
+                    "hint_zh",
+                    "无法从后端获取客服分配（内部接口拒绝或异常）。请检查：\n"
+                    "1）Bot 与 API 容器环境变量 TELEGRAM_STAFF_API_SECRET 必须完全一致；\n"
+                    "2）Bot 的 API_BASE_URL 须指向 api 服务（compose 内一般为 http://api:8000）。\n"
+                    f"服务端返回：{err_s or '无详情'}",
+                )
+            else:
+                data["source"] = "fallback"
+                data.setdefault(
+                    "hint_zh",
+                    data.get("hint_zh")
+                    or "未配置可轮询的员工 Telegram 用户名，已使用兜底链接。",
+                )
+
+        url = data.get("url")
+        if not url or not isinstance(url, str) or not str(url).strip().startswith("http"):
+            _u = (os.getenv("TELEGRAM_BOT_USERNAME") or "kaolachbot").strip().lstrip("@")
+            data["url"] = f"https://t.me/{_u}" if _u else "https://t.me/kaolachbot"
+        return data
+
+    async def get_next_guest_cs_staff_bundle(self) -> Dict:
+        """游客户服：轮询接口完整 JSON（含 source / hint_zh）。"""
+        data = await self._get("/guest/next-cs-staff-tg")
+        if not isinstance(data, dict):
+            return self._normalize_guest_cs_bundle(
+                {
+                    "success": False,
+                    "source": "error",
+                    "url": "",
+                    "hint_zh": "内部接口返回非 JSON 或为空",
+                }
+            )
+        return self._normalize_guest_cs_bundle(data)
+
+    async def get_next_guest_cs_staff_url(self) -> str:
+        """游客户服私聊链接（后端在职员工 tg_username 全局轮询）。"""
+        b = await self.get_next_guest_cs_staff_bundle()
+        return (b.get("url") or "").strip() or "https://t.me/kaolachbot"
+
     async def verify_user(self, tg_id: int) -> Dict:
-        """校验用户身份"""
-        url = f"{self.base_url}/api/v1/internal_bot/verify-user/{tg_id}"
+        """校验用户身份；将 internal_bot 扁平 JSON 转为各 handler 使用的 admin / account 嵌套结构。"""
+        url = f"{self.base_url}/api/v1/internal/bot/verify-user/{tg_id}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
-                return response.json()
+                result = response.json()
         except Exception as e:
             logger.error(f"校验用户失败: {e}")
-            return {"role": "guest", "is_admin": False}
+            return {"role": "guest", "is_admin": False, "valid": False}
+
+        if result.get("is_admin") and "admin" not in result:
+            result["admin"] = {
+                "id": result.get("user_id"),
+                "role": result.get("role"),
+                "username": result.get("username"),
+                "real_name": result.get("real_name"),
+            }
+        if result.get("role") == "customer" and result.get("valid") and "account" not in result:
+            result["account"] = {
+                "id": result.get("account_id"),
+                "account_name": result.get("account_name"),
+                "balance": result.get("balance", 0),
+                "currency": result.get("currency", "USD"),
+                "status": result.get("status"),
+            }
+        return result
 
     async def get_templates_internal(self, biz_type: str, country_code: Optional[str] = None) -> list:
         """获取模板列表"""
-        url = f"{self.base_url}/api/v1/internal_bot/templates"
+        url = f"{self.base_url}/api/v1/internal/bot/templates"
         params = {"biz_type": biz_type}
         if country_code:
             params["country_code"] = country_code
@@ -205,7 +274,7 @@ class APIClient:
 
     async def create_ticket_internal(self, tg_id: int, title: str, description: str, **kwargs) -> Dict:
         """创建工单"""
-        url = f"{self.base_url}/api/v1/internal_bot/tickets"
+        url = f"{self.base_url}/api/v1/internal/bot/tickets"
         payload = {
             "tg_id": tg_id,
             "title": title,
@@ -222,7 +291,7 @@ class APIClient:
 
     async def reply_ticket_internal(self, ticket_id: int, tg_id: int, content: str, is_internal: bool = False) -> Dict:
         """回复工单"""
-        url = f"{self.base_url}/api/v1/internal_bot/tickets/{ticket_id}/reply"
+        url = f"{self.base_url}/api/v1/internal/bot/tickets/{ticket_id}/reply"
         payload = {
             "tg_id": tg_id,
             "content": content,
@@ -238,7 +307,7 @@ class APIClient:
 
     async def take_ticket_internal(self, ticket_id: int, tg_id: int) -> Dict:
         """接单"""
-        url = f"{self.base_url}/api/v1/internal_bot/tickets/{ticket_id}/take"
+        url = f"{self.base_url}/api/v1/internal/bot/tickets/{ticket_id}/take"
         payload = {"tg_id": tg_id}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -250,7 +319,7 @@ class APIClient:
 
     async def finalize_ticket_internal(self, tg_id: int, reply_text: str, ticket_id: int = None, ticket_no: str = None) -> Dict:
         """完结开户工单"""
-        url = f"{self.base_url}/api/v1/internal_bot/tickets/finalize"
+        url = f"{self.base_url}/api/v1/internal/bot/tickets/finalize"
         payload = {
             "tg_id": tg_id, 
             "reply_text": reply_text,
@@ -267,7 +336,7 @@ class APIClient:
 
     async def get_admin_internal(self, tg_id: int) -> Dict:
         """获取管理员信息"""
-        url = f"{self.base_url}/api/v1/internal_bot/admins/{tg_id}"
+        url = f"{self.base_url}/api/v1/internal/bot/admins/{tg_id}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
@@ -278,7 +347,7 @@ class APIClient:
 
     async def get_tickets_internal(self, account_id: int = None, admin_id: int = None, ticket_type: str = None, review_status: str = None, limit: int = 10) -> Dict:
         """获取工单列表"""
-        url = f"{self.base_url}/api/v1/internal_bot/tickets"
+        url = f"{self.base_url}/api/v1/internal/bot/tickets"
         params = {"limit": limit}
         if account_id: params["account_id"] = account_id
         if admin_id: params["admin_id"] = admin_id
@@ -295,7 +364,7 @@ class APIClient:
 
     async def get_ticket_by_id_internal(self, ticket_id: int) -> Dict:
         """根据 ID 获取工单详情"""
-        url = f"{self.base_url}/api/v1/internal_bot/tickets/id/{ticket_id}"
+        url = f"{self.base_url}/api/v1/internal/bot/tickets/id/{ticket_id}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
@@ -306,7 +375,7 @@ class APIClient:
 
     async def ticket_action_internal(self, ticket_id: int, action: str, admin_tg_id: int, resolution: str = None) -> Dict:
         """执行工单动作 (take/resolve)"""
-        url = f"{self.base_url}/api/v1/internal_bot/tickets/{ticket_id}/action"
+        url = f"{self.base_url}/api/v1/internal/bot/tickets/{ticket_id}/action"
         payload = {"action": action, "admin_tg_id": admin_tg_id}
         if resolution: payload["resolution"] = resolution
         try:
@@ -324,7 +393,7 @@ class APIClient:
 
     async def get_sms_history_internal(self, account_id: int, limit: int = 10) -> Dict:
         """获取SMS历史记录"""
-        url = f"{self.base_url}/api/v1/internal_bot/sms-log"
+        url = f"{self.base_url}/api/v1/internal/bot/sms-log"
         params = {"account_id": account_id, "limit": limit}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -336,7 +405,7 @@ class APIClient:
 
     async def get_task_categories_internal(self) -> Dict:
         """获取任务分类"""
-        url = f"{self.base_url}/api/v1/internal_bot/task-categories"
+        url = f"{self.base_url}/api/v1/internal/bot/task-categories"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
@@ -347,7 +416,7 @@ class APIClient:
 
     async def get_sending_stats_internal(self, account_id: int) -> Dict:
         """获取发送统计信息"""
-        url = f"{self.base_url}/api/v1/internal_bot/sending-stats"
+        url = f"{self.base_url}/api/v1/internal/bot/sending-stats"
         params = {"account_id": account_id}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -359,7 +428,7 @@ class APIClient:
 
     async def create_mass_task_internal(self, **kwargs) -> Dict:
         """创建群发任务"""
-        url = f"{self.base_url}/api/v1/internal_bot/mass-tasks"
+        url = f"{self.base_url}/api/v1/internal/bot/mass-tasks"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(url, json=kwargs, headers=self._get_internal_headers())
@@ -370,7 +439,7 @@ class APIClient:
 
     async def get_data_pool_stats_internal(self, account_id: int) -> Dict:
         """获取数据池统计信息"""
-        url = f"{self.base_url}/api/v1/internal_bot/data-pool/stats"
+        url = f"{self.base_url}/api/v1/internal/bot/data-pool/stats"
         params = {"account_id": account_id}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -382,7 +451,7 @@ class APIClient:
 
     async def get_data_pool_count_internal(self, account_id: int, country_code: str) -> Dict:
         """获取指定国家数据数量"""
-        url = f"{self.base_url}/api/v1/internal_bot/data-pool/count"
+        url = f"{self.base_url}/api/v1/internal/bot/data-pool/count"
         params = {"account_id": account_id, "country_code": country_code}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -394,7 +463,7 @@ class APIClient:
 
     async def create_account_internal(self, biz_type: str, country_code: str, sales_id: int, **kwargs) -> Dict:
         """内部调用的开户接口"""
-        url = f"{self.base_url}/api/v1/internal_bot/accounts"
+        url = f"{self.base_url}/api/v1/internal/bot/accounts"
         payload = {
             "biz_type": biz_type,
             "country_code": country_code,
@@ -411,7 +480,7 @@ class APIClient:
 
     async def get_sms_approvals(self) -> list:
         """获取待审核短信"""
-        url = f"{self.base_url}/api/v1/internal_bot/sms-approvals"
+        url = f"{self.base_url}/api/v1/internal/bot/sms-approvals"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
@@ -422,7 +491,7 @@ class APIClient:
 
     async def action_sms_approval(self, approval_id: int, action: str, reason: Optional[str] = None) -> Dict:
         """审核短信操作"""
-        url = f"{self.base_url}/api/v1/internal_bot/sms-approvals/{approval_id}/action"
+        url = f"{self.base_url}/api/v1/internal/bot/sms-approvals/{approval_id}/action"
         payload = {"action": action, "reason": reason}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -434,7 +503,7 @@ class APIClient:
 
     async def get_sms_approval_detail(self, approval_id: int) -> Dict:
         """获取审核详情"""
-        url = f"{self.base_url}/api/v1/internal_bot/sms-approvals/{approval_id}"
+        url = f"{self.base_url}/api/v1/internal/bot/sms-approvals/{approval_id}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
@@ -445,7 +514,7 @@ class APIClient:
 
     async def get_test_countries(self, account_id: int) -> str:
         """获取测试国家"""
-        url = f"{self.base_url}/api/v1/internal_bot/accounts/{account_id}/test-countries"
+        url = f"{self.base_url}/api/v1/internal/bot/accounts/{account_id}/test-countries"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
@@ -457,7 +526,7 @@ class APIClient:
 
     async def get_recharge_orders(self, status: str = 'pending') -> list:
         """获取充值记录"""
-        url = f"{self.base_url}/api/v1/internal_bot/recharge-orders"
+        url = f"{self.base_url}/api/v1/internal/bot/recharge-orders"
         params = {"status": status}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -469,7 +538,7 @@ class APIClient:
 
     async def get_tickets(self, status: Optional[str] = None, tg_id: Optional[int] = None) -> list:
         """获取工单列表"""
-        url = f"{self.base_url}/api/v1/internal_bot/tickets"
+        url = f"{self.base_url}/api/v1/internal/bot/tickets"
         params = {}
         if status: params["status"] = status
         if tg_id: params["tg_id"] = tg_id
@@ -483,7 +552,7 @@ class APIClient:
 
     async def review_ticket_internal(self, ticket_no: str, action: str, user_name: str, note: str = None, chat_id: int = None) -> Dict:
         """审核测试工单"""
-        url = f"{self.base_url}/api/v1/internal_bot/tickets/{ticket_no}/review"
+        url = f"{self.base_url}/api/v1/internal/bot/tickets/{ticket_no}/review"
         payload = {"action": action, "user_name": user_name, "note": note, "chat_id": chat_id}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -495,7 +564,7 @@ class APIClient:
 
     async def submit_test_result_internal(self, ticket_no: str, success: bool, user_name: str, note: str = None) -> Dict:
         """提交测试结果"""
-        url = f"{self.base_url}/api/v1/internal_bot/tickets/{ticket_no}/test-result"
+        url = f"{self.base_url}/api/v1/internal/bot/tickets/{ticket_no}/test-result"
         payload = {"success": success, "user_name": user_name, "note": note}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -507,7 +576,7 @@ class APIClient:
 
     async def get_public_data_stats_internal(self, country_code: Optional[str] = None) -> Dict:
         """获取公海数据统计"""
-        url = f"{self.base_url}/api/v1/internal_bot/data-pool/public-stats"
+        url = f"{self.base_url}/api/v1/internal/bot/data-pool/public-stats"
         params = {}
         if country_code: params["country_code"] = country_code
         try:
@@ -520,7 +589,7 @@ class APIClient:
 
     async def extract_data_internal(self, tg_id: int, country_code: str, count: int) -> Dict:
         """提取公海数据到私有库"""
-        url = f"{self.base_url}/api/v1/internal_bot/data-pool/extract"
+        url = f"{self.base_url}/api/v1/internal/bot/data-pool/extract"
         payload = {"tg_id": tg_id, "country_code": country_code, "count": count}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -533,7 +602,7 @@ class APIClient:
 
     async def register_internal(self, name: str, email: str, password: str, tg_id: int, tg_username: Optional[str] = None) -> Dict:
         """从 Bot 注册新账户"""
-        url = f"{self.base_url}/api/v1/internal_bot/register"
+        url = f"{self.base_url}/api/v1/internal/bot/register"
         payload = {
             "name": name,
             "email": email,
@@ -551,7 +620,7 @@ class APIClient:
 
     async def get_template_internal(self, template_id: int) -> Dict:
         """获取账户模板详情"""
-        url = f"{self.base_url}/api/v1/internal_bot/templates/{template_id}"
+        url = f"{self.base_url}/api/v1/internal/bot/templates/{template_id}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
@@ -562,7 +631,7 @@ class APIClient:
 
     async def review_sms_approval_internal(self, approval_id: int, approved: bool, admin_tg_id: int = None) -> Dict:
         """处理短信内容审核"""
-        url = f"{self.base_url}/api/v1/internal_bot/sms-approvals/review"
+        url = f"{self.base_url}/api/v1/internal/bot/sms-approvals/review"
         payload = {
             "approval_id": approval_id,
             "approved": approved,
@@ -578,7 +647,7 @@ class APIClient:
 
     async def get_sms_approval_internal(self, approval_id: int) -> Dict:
         """获取短信审核详情"""
-        url = f"{self.base_url}/api/v1/internal_bot/sms-approvals/{approval_id}"
+        url = f"{self.base_url}/api/v1/internal/bot/sms-approvals/{approval_id}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
@@ -589,7 +658,7 @@ class APIClient:
 
     async def review_recharge_order_internal(self, order_id: int, approved: bool, admin_tg_id: int) -> Dict:
         """处理充值审批"""
-        url = f"{self.base_url}/api/v1/internal_bot/recharge-orders/{order_id}/review"
+        url = f"{self.base_url}/api/v1/internal/bot/recharge-orders/{order_id}/review"
         payload = {
             "approved": approved,
             "admin_tg_id": admin_tg_id
@@ -604,7 +673,7 @@ class APIClient:
 
     async def finalize_sms_send_internal(self, approval_id: int, message_id: str = None, error: str = None) -> Dict:
         """更新发送状态"""
-        url = f"{self.base_url}/api/v1/internal_bot/sms-approvals/{approval_id}/finalize-send"
+        url = f"{self.base_url}/api/v1/internal/bot/sms-approvals/{approval_id}/finalize-send"
         payload = {
             "message_id": message_id,
             "error": error
@@ -619,7 +688,7 @@ class APIClient:
 
     async def get_test_countries_internal(self, account_id: int) -> Dict:
         """获取账户测试国家"""
-        url = f"{self.base_url}/api/v1/internal_bot/accounts/{account_id}/test-countries"
+        url = f"{self.base_url}/api/v1/internal/bot/accounts/{account_id}/test-countries"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
@@ -630,7 +699,7 @@ class APIClient:
 
     async def get_system_stats_internal(self) -> Dict:
         """获取系统统计信息"""
-        url = f"{self.base_url}/api/v1/internal_bot/system-stats"
+        url = f"{self.base_url}/api/v1/internal/bot/system-stats"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
@@ -641,7 +710,7 @@ class APIClient:
 
     async def get_sales_stats_internal(self, tg_id: int) -> Dict:
         """获取销售统计信息"""
-        url = f"{self.base_url}/api/v1/internal_bot/sales-stats"
+        url = f"{self.base_url}/api/v1/internal/bot/sales-stats"
         params = {"tg_id": tg_id}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:

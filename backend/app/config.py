@@ -125,6 +125,9 @@ class Settings(BaseSettings):
     TELEGRAM_ADMIN_GROUP_ID: Optional[str] = None
     # 业务助手「销售快捷登录」：Bot 调用 /admin/telegram/sales-impersonate 时校验，须与 Bot 环境变量一致
     TELEGRAM_STAFF_API_SECRET: Optional[str] = None
+    # 业务 Bot 游客「联系客服」无可用员工 tg 时的默认跳转（t.me 或 https 链接）
+    # 游客户服兜底：勿用不存在的 @用户名；默认与落地页一致指向业务 Bot
+    TELEGRAM_CS_FALLBACK_URL: str = "https://t.me/kaolachbot"
     # 生成客户模拟登录链接用的前端基址（无尾斜杠）
     PUBLIC_WEB_BASE_URL: str = "https://www.kaolach.com"
 

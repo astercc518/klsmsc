@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, date
 import os
 import re
 import secrets
+from typing import Any
 
 api = APIClient()
 
@@ -183,8 +184,8 @@ def get_main_menu_tech():
     return InlineKeyboardMarkup(keyboard)
 
 
-def get_main_menu_guest():
-    """游客菜单 — 授权码开户为主入口"""
+async def get_main_menu_guest():
+    """游客菜单 — 授权码开户为主入口；「联系客服」用回调拉轮询链接，避免部分客户端 inline url 无反应"""
     keyboard = [
         [
             InlineKeyboardButton("🔑 输入授权码开户", callback_data="menu_enter_invite"),
@@ -195,6 +196,7 @@ def get_main_menu_guest():
         ],
         [
             InlineKeyboardButton("❓ 帮助", callback_data="menu_help"),
+            InlineKeyboardButton("💬 联系客服", callback_data="menu_guest_contact_cs"),
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -338,7 +340,39 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if data == "menu_help":
         await show_help(query, context)
         return
-    
+
+    # 游客户服：先 answer 再调后端轮询接口，用新消息下发可点链接（inline 直链 url 在部分客户端无反馈）
+    if data == "menu_guest_contact_cs":
+        await query.answer()
+        client = APIClient()
+        info = await client.get_next_guest_cs_staff_bundle()
+        cs_url = (info.get("url") or "").strip()
+        bot_u = (os.getenv("TELEGRAM_BOT_USERNAME") or "kaolachbot").strip().lstrip("@")
+        if not cs_url.startswith("https://"):
+            cs_url = f"https://t.me/{bot_u}" if bot_u else "https://t.me/kaolachbot"
+
+        src = info.get("source")
+        if src == "staff":
+            head = "💬 已按轮询为您分配当班客服，请打开 Telegram 私信："
+        elif src == "fallback":
+            hint = info.get("hint_zh") or ""
+            head = (
+                "⚠️ 未从公司员工中分配到带 Telegram 用户名的坐席，无法直接打开人工私信。\n"
+                f"{hint}\n"
+            )
+            if bot_u and bot_u.lower() in cs_url.lower():
+                head += "\n当前链接指向本业务 Bot，无法替代真人客服；请管理员在后台为员工填写 tg_username，或在服务器环境变量 TELEGRAM_CS_FALLBACK_URL 中填写销售个人 t.me 链接。\n"
+        else:
+            head = (info.get("hint_zh") or "暂时无法获取客服链接。") + "\n"
+
+        await query.message.reply_text(
+            f"{head}\n{cs_url}",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("➡️ 打开客服对话", url=cs_url)]]
+            ),
+        )
+        return
+
     # 查询余额
     if data == "menu_balance":
         await show_balance(query, context)
@@ -858,7 +892,7 @@ async def show_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "👋 欢迎使用 TG 业务助手\n\n"
             "您的账户未绑定或已停用，请使用授权码开户或重新绑定。\n\n"
-            "客服: @kaolach_admin",
+            "客服: 请使用主菜单「联系客服」或官网 https://www.kaolach.com/",
             reply_markup=get_back_menu()
         )
         return
@@ -920,7 +954,7 @@ async def show_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
             "👋 欢迎使用 TG 业务助手\n\n"
             "您的账户状态异常或已停用，请使用授权码开户或重新绑定。\n\n"
             "请选择操作：",
-            reply_markup=get_main_menu_guest()
+            reply_markup=await get_main_menu_guest()
         )
 
 
@@ -1484,42 +1518,42 @@ async def show_pending_tickets(query, context):
     # 查询待处理工单 (可以模糊 status 或者取 open)
     tickets = await client.get_tickets(status='open')
     # 也可以根据业务逻辑取 ['assigned', 'in_progress']，这里先取 open
-        
-        if not tickets:
-            await query.edit_message_text(
-                "📋 待处理工单\n\n"
-                "🎉 暂无待处理工单",
-                reply_markup=get_back_menu()
-            )
-            return
-        
-        priority_emoji = {
-            'urgent': '🔴',
-            'high': '🟠',
-            'normal': '🟢',
-            'low': '⚪'
-        }
-        
-        lines = [f"📋 待处理工单 ({len(tickets)}条)\n"]
-        
-        for t in tickets:
-            emoji = priority_emoji.get(t.get("priority"), '🟢')
-            type_label = {'test': '测试', 'technical': '技术', 'billing': '账务', 'feedback': '反馈'}.get(t.get("ticket_type"), t.get("ticket_type"))
-            lines.append(f"{emoji} {t.get('ticket_no')} [{type_label}] {t.get('title', '')[:12]}...")
-        
-        # 构建按钮
-        keyboard = []
-        for t in tickets[:5]:
-            keyboard.append([InlineKeyboardButton(
-                f"处理 {t.get('ticket_no')}", 
-                callback_data=f"process_ticket_{t.get('id')}"
-            )])
-        keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_main")])
-        
+
+    if not tickets:
         await query.edit_message_text(
-            "\n".join(lines),
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "📋 待处理工单\n\n"
+            "🎉 暂无待处理工单",
+            reply_markup=get_back_menu()
         )
+        return
+
+    priority_emoji = {
+        'urgent': '🔴',
+        'high': '🟠',
+        'normal': '🟢',
+        'low': '⚪'
+    }
+
+    lines = [f"📋 待处理工单 ({len(tickets)}条)\n"]
+
+    for t in tickets:
+        emoji = priority_emoji.get(t.get("priority"), '🟢')
+        type_label = {'test': '测试', 'technical': '技术', 'billing': '账务', 'feedback': '反馈'}.get(t.get("ticket_type"), t.get("ticket_type"))
+        lines.append(f"{emoji} {t.get('ticket_no')} [{type_label}] {t.get('title', '')[:12]}...")
+
+    # 构建按钮
+    keyboard = []
+    for t in tickets[:5]:
+        keyboard.append([InlineKeyboardButton(
+            f"处理 {t.get('ticket_no')}",
+            callback_data=f"process_ticket_{t.get('id')}"
+        )])
+    keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_main")])
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 
 async def show_pending_recharge(query, context):
@@ -1527,33 +1561,33 @@ async def show_pending_recharge(query, context):
     client = APIClient()
     # 查询待审核充值
     orders = await client.get_recharge_orders(status='pending')
-        
-        if not orders:
-            await query.edit_message_text(
-                "💳 待审核充值\n\n"
-                "🎉 暂无待审核充值申请",
-                reply_markup=get_back_menu()
-            )
-            return
-        
-        lines = [f"💳 待审核充值 ({len(orders)}笔)\n"]
-        
-        for order in orders:
-            lines.append(f"• {order.get('id')}: ${order.get('amount')} ({order.get('account_name')})")
-        
-        # 构建按钮
-        keyboard = []
-        for order in orders[:5]:
-            keyboard.append([
-                InlineKeyboardButton(f"✅ 通过 {order.get('id')}", callback_data=f"approve_recharge_{order.get('id')}"),
-                InlineKeyboardButton(f"❌ 拒绝", callback_data=f"reject_recharge_{order.get('id')}")
-            ])
-        keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_main")])
-        
+
+    if not orders:
         await query.edit_message_text(
-            "\n".join(lines),
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "💳 待审核充值\n\n"
+            "🎉 暂无待审核充值申请",
+            reply_markup=get_back_menu()
         )
+        return
+
+    lines = [f"💳 待审核充值 ({len(orders)}笔)\n"]
+
+    for order in orders:
+        lines.append(f"• {order.get('id')}: ${order.get('amount')} ({order.get('account_name')})")
+
+    # 构建按钮
+    keyboard = []
+    for order in orders[:5]:
+        keyboard.append([
+            InlineKeyboardButton(f"✅ 通过 {order.get('id')}", callback_data=f"approve_recharge_{order.get('id')}"),
+            InlineKeyboardButton(f"❌ 拒绝", callback_data=f"reject_recharge_{order.get('id')}")
+        ])
+    keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_main")])
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 
 async def show_pricing_menu(query, context, tg_id: int):
@@ -1964,14 +1998,10 @@ async def show_sales_stats(query, context):
 
 
 async def show_customer_tickets(query, context):
-    """显示销售的客户工单"""
-    tg_id = query.from_user.id
-    
-    async def show_sales_stats(query, context):
-    """显示销售业绩统计 (客户工单列表)"""
+    """显示销售的客户工单列表（数据来自销售统计接口）。"""
     tg_id = query.from_user.id
     client = APIClient()
-    
+
     res = await client.get_sales_stats_internal(tg_id)
     if not res:
         await query.answer("❌ 无法获取销售统计", show_alert=True)
@@ -2056,7 +2086,7 @@ async def _forward_message_media_as_fallback(
 
 async def _notify_customer_sms_approval_reply(
     context: ContextTypes.DEFAULT_TYPE,
-    approval: SmsContentApproval,
+    approval: Any,
     approved: bool,
     reply_note: str,
     *,
@@ -2513,7 +2543,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(
                 f"❌ 激活失败: {result.get('msg', '授权码无效或已过期')}\n\n请联系销售获取新的授权码。",
-                reply_markup=get_main_menu_guest(),
+                reply_markup=await get_main_menu_guest(),
             )
             context.user_data['waiting_for'] = None
         return
@@ -2626,7 +2656,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 通过 API 获取当前活跃绑定的 account_id
         verify = await api.verify_bot_user(tg_id)
         if not verify or not verify.get("account_id"):
-            await update.message.reply_text("❌ 未绑定有效账户，跳转至主菜单", reply_markup=get_main_menu_guest())
+            await update.message.reply_text("❌ 未绑定有效账户，跳转至主菜单", reply_markup=await get_main_menu_guest())
             context.user_data["waiting_for"] = None
             return
 

@@ -12,14 +12,13 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理/balance命令"""
     user = update.effective_user
     tg_id = user.id
-    username = user.username or user.first_name
-    
+
     logger.info(f"用户 {tg_id} 查询余额")
     
     await update.message.reply_text("⏳ 查询中...")
 
     try:
-        user_info = await api.verify_user(tg_id, username)
+        user_info = await api.verify_user(tg_id)
         
         if not user_info.get("account"):
             context.user_data.pop("account_id", None)
