@@ -396,7 +396,7 @@
           </el-col>
           <el-col :span="8">
             <el-form-item :label="$t('channels.rateControlWindow')" prop="rate_control_window">
-              <el-input-number v-model="form.rate_control_window" :min="10" :max="1000" :step="10" controls-position="right" style="width: 100%">
+              <el-input-number v-model="form.rate_control_window" :min="10" :max="600000" :step="10" controls-position="right" style="width: 100%">
                 <template #suffix>ms</template>
               </el-input-number>
             </el-form-item>
@@ -1150,6 +1150,9 @@ const handleCreate = () => {
     status: 'active',
     priority: 0,
     weight: 100,
+    max_tps: 100,
+    concurrency: 1,
+    rate_control_window: 1000,
     supplier_id: null,
     banned_words: '',
     virtual_config: defaultVirtualConfig(),
@@ -1174,6 +1177,9 @@ const handleEdit = async (row: any) => {
     status: row.status,
     priority: row.priority ?? 0,
     weight: row.weight ?? 100,
+    max_tps: row.max_tps ?? 100,
+    concurrency: row.concurrency ?? 1,
+    rate_control_window: row.rate_control_window ?? 1000,
     supplier_id: row.supplier?.id ?? null,
     banned_words: row.banned_words ?? '',
     virtual_config: row.virtual_config ? { ...defaultVirtualConfig(), ...row.virtual_config } : defaultVirtualConfig(),
@@ -1199,6 +1205,9 @@ const handleEdit = async (row: any) => {
         status: ch.status,
         priority: ch.priority ?? 0,
         weight: ch.weight ?? 100,
+        max_tps: ch.max_tps ?? 100,
+        concurrency: ch.concurrency ?? 1,
+        rate_control_window: ch.rate_control_window ?? 1000,
         supplier_id: ch.supplier_id ?? row.supplier?.id ?? null,
         banned_words: ch.banned_words ?? '',
         virtual_config: ch.virtual_config ? { ...defaultVirtualConfig(), ...ch.virtual_config } : defaultVirtualConfig(),
@@ -1399,109 +1408,135 @@ const handleDelete = async (row: any) => {
   }
 }
 
+/** 从 Axios 错误中解析后端 detail（含 FastAPI 422 数组），用于保存失败提示 */
+const formatRequestErrorMessage = (error: any): string => {
+  const d = error?.response?.data?.detail
+  if (Array.isArray(d)) {
+    return d
+      .map((it: any) => {
+        if (typeof it?.msg === 'string') {
+          const loc = Array.isArray(it.loc) ? it.loc.filter((x: any) => x !== 'body').join('.') : ''
+          return loc ? `${loc}: ${it.msg}` : it.msg
+        }
+        return typeof it === 'string' ? it : JSON.stringify(it)
+      })
+      .join('; ')
+  }
+  if (typeof d === 'string') return d
+  if (d && typeof d === 'object' && typeof d.message === 'string') return d.message
+  return error?.message || t('common.unknownError')
+}
+
 const submitForm = async () => {
   if (!formRef.value) return
-  
-  await formRef.value.validate(async (valid: boolean) => {
-    if (valid) {
-      submitting.value = true
-      try {
-        if (isEdit.value) {
-          const updatePayload: any = {
-            channel_name: form.channel_name,
-            max_tps: form.max_tps,
-            concurrency: form.concurrency,
-            rate_control_window: form.rate_control_window,
-            status: form.status,
-            host: form.protocol === 'SMPP' ? form.host : undefined,
-            port: form.protocol === 'SMPP' ? form.port : undefined,
-            username: form.username || undefined,
-            password: form.password || undefined,
-            api_url: form.protocol === 'HTTP' ? form.api_url : undefined,
-            api_key: form.protocol === 'HTTP' ? (form.api_key || undefined) : undefined,
-            default_sender_id: form.default_sender_id || undefined
-          }
-          updatePayload.supplier_id = form.supplier_id ?? null
-          updatePayload.banned_words = form.banned_words || null
-          if (form.protocol === 'VIRTUAL') {
-            updatePayload.virtual_config = form.virtual_config
-          }
-          await updateChannel(form.id, updatePayload)
-          ElMessage.success(t('common.updateSuccess'))
-        } else {
-          const nonEmptyRows = pricingRows.value.filter((r: any) => {
-            return (
-              (r.country_code && r.country_code.trim()) ||
-              (r.country_name && r.country_name.trim()) ||
-              (typeof r.price_per_sms === 'number' && r.price_per_sms !== 0)
-            )
-          })
-          for (const r of nonEmptyRows) {
-            if (!r.country_code || !r.country_name) {
-              throw new Error(t('channels.pricingRuleIncomplete'))
-            }
-          }
 
-          const createPayload: any = {
-            channel_code: form.channel_code,
-            channel_name: form.channel_name,
-            protocol: form.protocol,
-            host: form.protocol === 'SMPP' ? form.host : undefined,
-            port: form.protocol === 'SMPP' ? form.port : undefined,
-            username: form.username || undefined,
-            password: form.password || undefined,
-            api_url: form.protocol === 'HTTP' ? form.api_url : undefined,
-            api_key: form.protocol === 'HTTP' ? form.api_key : undefined,
-            default_sender_id: form.default_sender_id,
-            status: form.status,
-            max_tps: form.max_tps,
-            concurrency: form.concurrency,
-            rate_control_window: form.rate_control_window,
-            priority: 0,
-            weight: 100
-          }
-          if (form.supplier_id) {
-            createPayload.supplier_id = form.supplier_id
-          }
-          if (form.banned_words) {
-            createPayload.banned_words = form.banned_words
-          }
-          if (form.protocol === 'VIRTUAL') {
-            createPayload.virtual_config = form.virtual_config
-          }
-          const created = await createChannel(createPayload)
+  try {
+    await formRef.value.validate()
+  } catch {
+    ElMessage.warning(t('channels.formValidationFailed'))
+    return
+  }
 
-          const channelId = created?.channel_id
-          if (channelId && nonEmptyRows.length > 0) {
-            for (const r of nonEmptyRows) {
-              try {
-                await createPricing({
-                  channel_id: channelId,
-                  country_code: r.country_code,
-                  country_name: r.country_name,
-                  price_per_sms: r.price_per_sms,
-                  currency: r.currency || 'USD',
-                })
-              } catch (e) {
-                // ignore
-              }
-            }
-          }
-
-          ElMessage.success(t('common.createSuccess'))
-          await loadChannels()
-        }
-        formVisible.value = false
-        if (isEdit.value) {
-          loadChannels()
-        }
-      } catch (error: any) {
-        ElMessage.error((isEdit.value ? t('common.updateFailed') : t('common.createFailed')) + ': ' + (error.message || t('common.unknownError')))
-      } finally {
-        submitting.value = false
+  submitting.value = true
+  try {
+    if (isEdit.value) {
+      const updatePayload: any = {
+        channel_name: form.channel_name,
+        max_tps: form.max_tps,
+        concurrency: form.concurrency,
+        rate_control_window: form.rate_control_window,
+        status: form.status,
+        host: form.protocol === 'SMPP' ? form.host : undefined,
+        port: form.protocol === 'SMPP' ? form.port : undefined,
+        username: form.username || undefined,
+        password: form.password || undefined,
+        api_url: form.protocol === 'HTTP' ? form.api_url : undefined,
+        api_key: form.protocol === 'HTTP' ? (form.api_key || undefined) : undefined,
+        default_sender_id: form.default_sender_id || undefined
       }
+      updatePayload.supplier_id = form.supplier_id ?? null
+      updatePayload.banned_words = form.banned_words || null
+      if (form.protocol === 'VIRTUAL') {
+        updatePayload.virtual_config = form.virtual_config
+      }
+      await updateChannel(form.id, updatePayload)
+      ElMessage.success(t('common.updateSuccess'))
+    } else {
+      const nonEmptyRows = pricingRows.value.filter((r: any) => {
+        return (
+          (r.country_code && r.country_code.trim()) ||
+          (r.country_name && r.country_name.trim()) ||
+          (typeof r.price_per_sms === 'number' && r.price_per_sms !== 0)
+        )
+      })
+      for (const r of nonEmptyRows) {
+        if (!r.country_code || !r.country_name) {
+          throw new Error(t('channels.pricingRuleIncomplete'))
+        }
+      }
+
+      const createPayload: any = {
+        channel_code: form.channel_code,
+        channel_name: form.channel_name,
+        protocol: form.protocol,
+        host: form.protocol === 'SMPP' ? form.host : undefined,
+        port: form.protocol === 'SMPP' ? form.port : undefined,
+        username: form.username || undefined,
+        password: form.password || undefined,
+        api_url: form.protocol === 'HTTP' ? form.api_url : undefined,
+        api_key: form.protocol === 'HTTP' ? form.api_key : undefined,
+        default_sender_id: form.default_sender_id,
+        status: form.status,
+        max_tps: form.max_tps,
+        concurrency: form.concurrency,
+        rate_control_window: form.rate_control_window,
+        priority: 0,
+        weight: 100
+      }
+      if (form.supplier_id) {
+        createPayload.supplier_id = form.supplier_id
+      }
+      if (form.banned_words) {
+        createPayload.banned_words = form.banned_words
+      }
+      if (form.protocol === 'VIRTUAL') {
+        createPayload.virtual_config = form.virtual_config
+      }
+      const created = await createChannel(createPayload)
+
+      const channelId = created?.channel_id
+      if (channelId && nonEmptyRows.length > 0) {
+        for (const r of nonEmptyRows) {
+          try {
+            await createPricing({
+              channel_id: channelId,
+              country_code: r.country_code,
+              country_name: r.country_name,
+              price_per_sms: r.price_per_sms,
+              currency: r.currency || 'USD',
+            })
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
+
+      ElMessage.success(t('common.createSuccess'))
+      await loadChannels()
     }
-  })
+    formVisible.value = false
+    if (isEdit.value) {
+      await loadChannels()
+    }
+  } catch (error: any) {
+    ElMessage.error(
+      (isEdit.value ? t('common.updateFailed') : t('common.createFailed')) +
+        ': ' +
+        formatRequestErrorMessage(error)
+    )
+  } finally {
+    submitting.value = false
+  }
 }
 
 const getStatusType = (status: string) => {

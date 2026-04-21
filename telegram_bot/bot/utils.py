@@ -31,6 +31,11 @@ async def edit_and_log(query: Any, text: str, **kwargs):
     asyncio.create_task(log_outgoing_message(user_id, text, chat_id))
     return message
 
+def is_internal_staff_from_verify(user_info: Optional[Dict]) -> bool:
+    """判断 verify_user / verify_bot_user 返回的是否为员工（非绑定客户的 Telegram）。"""
+    return bool(user_info and user_info.get("is_admin"))
+
+
 def dedupe_country_codes_from_templates(raw_codes: list) -> list[str]:
     """
     开户模板国家列表去重：同一国家码只保留一条（避免 distinct(country_code, country_name) 产生重复按钮），

@@ -59,6 +59,21 @@
         >
           <el-switch v-model="uploadDetectCarrier" />
         </el-form-item>
+        <el-form-item label="下载加密">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+            <el-switch v-model="uploadEnablePassword" active-text="启用下载密码" />
+            <span style="color:var(--el-color-info); font-size:12px">开启后下载该批次数据需输入密码，发送短信不受影响</span>
+          </div>
+          <el-input
+            v-if="uploadEnablePassword"
+            v-model="uploadForm.export_password"
+            type="password"
+            placeholder="请设置下载密码（至少 4 位）"
+            show-password
+            style="margin-top:8px; max-width:300px"
+            clearable
+          />
+        </el-form-item>
         <el-form-item label="选择文件">
           <el-upload
             class="upload-demo"
@@ -216,6 +231,7 @@
             <template #header>
               <div class="card-header">
                 <div class="card-title">
+                  <el-icon v-if="g.is_encrypted" style="color:var(--el-color-warning); margin-right:4px; vertical-align:-2px" title="已加密，下载需密码"><Lock /></el-icon>
                   <span class="card-name">{{ getGroupName(g) }}</span>
                 </div>
                 <span class="card-count">{{ (carrierFilter ? (g.carriers?.find(c => c.name === carrierFilter)?.count || 0) : g.count).toLocaleString() }} 条</span>
@@ -301,7 +317,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ArrowDown, UploadFilled } from '@element-plus/icons-vue'
+import { ArrowDown, UploadFilled, Lock } from '@element-plus/icons-vue'
 import {
   getMyNumbersSummary,
   exportMyNumbers,
@@ -330,7 +346,9 @@ interface NumberGroup {
   unused_count: number
   carriers: { name: string, count: number }[]
   batch_id: string
+  batch_name: string | null
   remarks: string
+  is_encrypted: boolean
   first_at: string | null
   last_at: string | null
   /** 后端：manual | purchased | mixed */
@@ -383,12 +401,15 @@ function libraryOriginTagType(origin: string): 'success' | 'warning' | 'info' {
 }
 
 function getGroupName(group: any) {
+  // 优先使用上传时的文件名作为数据包名称，方便区分
+  if (group.batch_name) return group.batch_name
+
   const country = findCountryByIso(group.country_code)
   const countryName = country ? country.name : (group.country_code || '未知')
   const sourceName = group.source_label || group.source || '未知来源'
   const purposeName = group.purpose_label || group.purpose || '未知用途'
   const baseName = `${countryName}-${sourceName}-${purposeName}`
-  
+
   if (group.remarks && group.remarks !== '') {
     return `${baseName} (${group.remarks})`
   }
@@ -408,7 +429,9 @@ const uploadForm = ref({
   source: 'Manual Upload',
   purpose: 'Marketing',
   remarks: '',
+  export_password: '',
 })
+const uploadEnablePassword = ref(false)
 const uploadDetectCarrier = ref(true)
 const showUploadTasksDialog = ref(false)
 /** 与账户 country_code 一致（大写 ISO），打开上传弹窗时拉取 */
@@ -428,7 +451,9 @@ function resetForm() {
     source: 'Manual Upload',
     purpose: 'Marketing',
     remarks: '',
+    export_password: '',
   }
+  uploadEnablePassword.value = false
   uploadDetectCarrier.value = true
   uploadFile.value = null
   if (uploadRef.value) {
@@ -485,6 +510,9 @@ function buildUploadFormData(file?: File | Blob): FormData {
     formData.append('remarks', uploadForm.value.remarks)
   }
   formData.append('detect_carrier', uploadDetectCarrier.value ? 'true' : 'false')
+  if (uploadEnablePassword.value && uploadForm.value.export_password) {
+    formData.append('export_password', uploadForm.value.export_password)
+  }
   return formData
 }
 
@@ -743,14 +771,32 @@ async function onAbandonUploadTask(taskId: string) {
 }
 
 async function handleExport(g: NumberGroup, fmt: string) {
-  // 优先从 sessionStorage 获取（模拟登录模式），兜底从 localStorage 获取（正常登录）
   const impersonateApiKey = sessionStorage.getItem('impersonate_api_key')
   const localStorageApiKey = localStorage.getItem('api_key')
   const apiKey = (sessionStorage.getItem('impersonate_mode') === '1') ? impersonateApiKey : localStorageApiKey
-  
   if (!apiKey) return ElMessage.error('认证信息缺失，请重新登录')
 
-  // 构建下载 URL，将 api_key 作为参数传递以支持浏览器原生下载进度
+  // 若批次已加密，先弹框让用户输入密码
+  let exportPassword = ''
+  if (g.is_encrypted) {
+    try {
+      const { value } = await ElMessageBox.prompt(
+        '该数据包已设置下载密码，请输入密码后继续下载',
+        '🔒 加密数据包',
+        {
+          confirmButtonText: '确认下载',
+          cancelButtonText: '取消',
+          inputType: 'password',
+          inputPlaceholder: '请输入下载密码',
+          inputValidator: (v: string) => (v && v.length >= 1) || '请输入密码',
+        },
+      )
+      exportPassword = value
+    } catch {
+      return // 用户取消
+    }
+  }
+
   const baseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
   const apiPath = '/api/v1/data/my-numbers/export'
   const params = new URLSearchParams({
@@ -759,13 +805,11 @@ async function handleExport(g: NumberGroup, fmt: string) {
     source: g.source || '',
     purpose: g.purpose || '',
     batch_id: g.batch_id || '',
-    api_key: apiKey
+    api_key: apiKey,
   })
-  
-  const downloadUrl = `${baseUrl}${apiPath}?${params.toString()}`
-  
-  // 使用隐藏的 iframe 或 window.open 触发下载，避免 axios 占用过多内存
-  window.open(downloadUrl, '_blank')
+  if (exportPassword) params.set('export_password', exportPassword)
+
+  window.open(`${baseUrl}${apiPath}?${params.toString()}`, '_blank')
   ElMessage.success('正在开始下载，请查看浏览器下载管理器')
 }
 

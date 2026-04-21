@@ -364,14 +364,7 @@ async def _do_buy_send_async(order_id, batch_id, account_id, number_ids,
             except Exception as e:
                 logger.warning(f"[buy-send-async] PLS 更新失败（非致命）: {e}")
 
-            # 6. 更新订单状态
-            order_result = await db.execute(select(DataOrder).where(DataOrder.id == order_id))
-            order = order_result.scalar_one_or_none()
-            if order:
-                order.status = "completed"
-                order.executed_count = len(message_ids)
-                order.executed_at = datetime.now()
-
+            # 6. 订单状态在入队结果确认后再写，避免「库里有短信但一条都没进队列」仍标 completed
             await db.commit()
             logger.info(f"[buy-send-async] order={order_id}, 创建 {len(message_ids)} 条 SMS 记录")
 
@@ -382,6 +375,56 @@ async def _do_buy_send_async(order_id, batch_id, account_id, number_ids,
                     queued += 1
             logger.info(f"[buy-send-async] order={order_id}, 入队 {queued}/{len(message_ids)}")
 
+            # 6a. 按入队结果更新订单（与 sms_batches 语义一致，便于排障）
+            order_result = await db.execute(select(DataOrder).where(DataOrder.id == order_id))
+            order = order_result.scalar_one_or_none()
+            n_msgs = len(message_ids)
+            if order and n_msgs > 0:
+                order.executed_count = n_msgs
+                order.executed_at = datetime.now()
+                if queued == 0:
+                    order.status = "failed"
+                    prev = (order.cancel_reason or "").strip()
+                    hint = "购数并发送：全部短信入队失败，请检查 RabbitMQ 与 worker-sms"
+                    order.cancel_reason = f"{prev} | {hint}" if prev else hint
+                elif queued < n_msgs:
+                    order.status = "processing"
+                    prev = (order.cancel_reason or "").strip()
+                    hint = f"购数并发送：部分入队失败 {queued}/{n_msgs}，请检查 Broker 或对未入队记录重投"
+                    order.cancel_reason = f"{prev} | {hint}" if prev else hint
+                else:
+                    order.status = "completed"
+                    order.cancel_reason = None
+
+            # 6b. 整批同一虚拟通道时，在 sms_send 上分片补调度批量模拟回执（与 per-msg 任务同队列，防仅 worker-sms 时无人消费 celery）
+            if message_ids and sms_objects:
+                _cids = {s.channel_id for s in sms_objects if getattr(s, "channel_id", None)}
+                if len(_cids) == 1:
+                    _only_cid = next(iter(_cids))
+                    _prot_row = await db.execute(
+                        select(Channel.protocol).where(Channel.id == _only_cid)
+                    )
+                    _prot = _prot_row.scalar_one_or_none()
+                    # SQLAlchemy / Enum 可能返回非 str，str(Enum) 常为 "ChannelProtocol.VIRTUAL"，会导致误判跳过补调度
+                    _prot_raw = getattr(_prot, "value", _prot)
+                    _prot_raw = getattr(_prot_raw, "value", _prot_raw)
+                    if str(_prot_raw or "").upper() == "VIRTUAL":
+                        from app.workers.sms_worker import virtual_dlr_batch_generate_task as _vbatch_task
+
+                        _chunk_size = 500
+                        _nchunks = (len(message_ids) + _chunk_size - 1) // _chunk_size
+                        for _bi, _start in enumerate(range(0, len(message_ids), _chunk_size)):
+                            _chunk = message_ids[_start : _start + _chunk_size]
+                            _vbatch_task.apply_async(
+                                args=[_chunk, _only_cid, batch_id],
+                                countdown=min(600, 3 + _bi * 2),
+                                queue="sms_send",
+                            )
+                        logger.info(
+                            f"[buy-send-async] 虚拟通道已补调度 virtual_dlr_batch_generate: "
+                            f"batch={batch_id}, channel_id={_only_cid}, chunks={_nchunks}"
+                        )
+
             # 7. 入队完成后：按 sms_logs 汇总批次计数（勿用入队数伪造 success_count，否则与列表回执拆列不一致）
             from app.modules.sms.batch_utils import update_batch_progress
 
@@ -389,16 +432,36 @@ async def _do_buy_send_async(order_id, batch_id, account_id, number_ids,
             batch_result2 = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
             sms_batch2 = batch_result2.scalar_one_or_none()
             if sms_batch2:
-                # 订单侧「任务已提交」仍展示为已完成，但成功/失败数以日志为准，随 Worker/DLR 继续刷新
-                sms_batch2.status = BatchStatus.COMPLETED
-                sms_batch2.completed_at = datetime.now()
-                sms_batch2.progress = 100
-                await db.commit()
+                # 批次状态与 Celery 入队结果对齐；单条终态仍以 sms_logs 为准
+                if n_msgs == 0:
+                    sms_batch2.status = BatchStatus.FAILED
+                    sms_batch2.error_message = "无有效短信记录"
+                    sms_batch2.progress = 0
+                elif queued == 0:
+                    sms_batch2.status = BatchStatus.FAILED
+                    sms_batch2.error_message = (
+                        "全部短信入队失败：请检查 RabbitMQ、worker-sms 及 Broker 连通性"
+                    )
+                    sms_batch2.progress = 0
+                elif queued < n_msgs:
+                    sms_batch2.status = BatchStatus.PROCESSING
+                    sms_batch2.error_message = (
+                        f"部分入队失败：{queued}/{n_msgs}，请检查 Broker 或使用运维脚本对 pending 记录重投"
+                    )
+                    sms_batch2.progress = min(99, int(100 * queued / n_msgs)) if n_msgs else 0
+                else:
+                    # 入队成功 ≠ 发送完成：sms_log 仍为 queued/pending，实际发送（尤其 SMPP）尚未完成。
+                    # 此处仅标记为 PROCESSING，待 worker 发送后通过 update_batch_progress 自然转为 completed。
+                    sms_batch2.status = BatchStatus.PROCESSING
+                    sms_batch2.completed_at = None
+                    # progress 由 update_batch_progress 已按实际 sms_logs 计算，保留不覆盖
+                    sms_batch2.error_message = None
                 logger.info(
-                    f"[buy-send-async] batch={batch_id} 已标记完成(订单维度); "
-                    f"queued={queued}/{len(message_ids)}, success_count={sms_batch2.success_count}, "
+                    f"[buy-send-async] batch={batch_id} 状态={sms_batch2.status}; "
+                    f"入队 {queued}/{n_msgs}; success_count={sms_batch2.success_count}, "
                     f"failed_count={sms_batch2.failed_count}"
                 )
+            await db.commit()
 
             return {"order_id": order_id, "total": len(message_ids), "queued": queued}
 
@@ -1128,6 +1191,7 @@ async def _do_private_library_upload_task(task_id: str):
                 await db.commit()
                 return {"ok": False, "error": str(e)}
 
+            result_batch_id = result.get("batch_id")
             await db.execute(
                 sa_update(PrivateLibraryUploadTask)
                 .where(PrivateLibraryUploadTask.id == tid)
@@ -1138,11 +1202,30 @@ async def _do_private_library_upload_task(task_id: str):
                     total_unique=result.get("total", 0),
                     progress_percent=100,
                     stage="completed",
-                    result_batch_id=result.get("batch_id"),
+                    result_batch_id=result_batch_id,
                     completed_at=datetime.now(),
                 )
             )
             await db.commit()
+
+            # 将 batch_name（原始文件名）和 export_password_hash 写入对应的汇总行
+            if result_batch_id:
+                from app.modules.data.models import PrivateLibrarySummary
+                try:
+                    await db.execute(
+                        sa_update(PrivateLibrarySummary)
+                        .where(
+                            PrivateLibrarySummary.account_id == row.account_id,
+                            PrivateLibrarySummary.batch_id == result_batch_id,
+                        )
+                        .values(
+                            batch_name=(row.original_filename or "")[:255] or None,
+                            export_password_hash=row.export_password_hash,
+                        )
+                    )
+                    await db.commit()
+                except Exception as ex:
+                    logger.warning("私库上传写入 batch_name/export_password_hash 失败: %s", ex)
 
             # 与 run_private_library_upload 内失效互补：避免 Worker 连不上 Redis 时用户长期看到旧汇总
             try:

@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, date
 import os
 import re
 import secrets
+import html as html_escape
 from typing import Any
 
 api = APIClient()
@@ -251,11 +252,11 @@ async def show_pricing_all(query, context):
     tg_id = query.from_user.id
     client = APIClient()
     user_info = await client.verify_bot_user(tg_id)
-    if not user_info or not user_info.get("id"):
+    # verify-user 客户为 account_id / account.id，无顶层 id
+    acc_id = user_info.get("account_id") or (user_info.get("account") or {}).get("id")
+    if not user_info or user_info.get("role") != "customer" or not acc_id:
         await query.edit_message_text("❌ 无效绑定的账户", reply_markup=get_back_menu())
         return
-    
-    acc_id = user_info.get("id")
     res = await client.get_account_pricing(acc_id)
     if not res.get("success"):
         await query.edit_message_text(f"❌ {res.get('msg', '获取资费失败')}", reply_markup=get_back_menu())
@@ -341,9 +342,8 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await show_help(query, context)
         return
 
-    # 游客户服：先 answer 再调后端轮询接口，用新消息下发可点链接（inline 直链 url 在部分客户端无反馈）
+    # 游客户服：已在上方 answer；此处勿重复 answer
     if data == "menu_guest_contact_cs":
-        await query.answer()
         client = APIClient()
         info = await client.get_next_guest_cs_staff_bundle()
         cs_url = (info.get("url") or "").strip()
@@ -561,7 +561,6 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await send_knowledge_attachment(query, context, att_id)
         return
     if data == "kb_noop":
-        await query.answer()
         return
     
     # 游客输入授权码开户
@@ -655,21 +654,32 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         # 获取该国家的模板（* 代表全球通配）
         client = APIClient()
         all_templates = await client.get_templates_internal(biz_type=biz_type, country_code=country_code)
-        # 过滤 active (已经在 API 中过滤了，但保持一致性)
-        templates = [t for t in all_templates if t.get("status") == "active" or t.get("status") is None]
-        
+        # 过滤 active（列表接口与详情字段名见 internal_bot /templates）
+        templates = [
+            t for t in all_templates
+            if isinstance(t, dict) and (t.get("status") == "active" or t.get("status") is None)
+        ]
+
         if not templates:
             await query.edit_message_text(
                 f"❌ 该国家暂无可用模板",
                 reply_markup=get_back_menu()
             )
             return
-        
+
         keyboard = []
         for tpl in templates:
-            price = float(tpl.get("default_price", 0))
-            label = f"{tpl.get('template_name')}  ${price:.4f}"
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"tpl_{tpl.get('id')}")])
+            tname = (tpl.get("template_name") or tpl.get("name") or "").strip() or "未命名模板"
+            raw_price = tpl.get("default_price") if tpl.get("default_price") is not None else tpl.get("price", 0)
+            try:
+                price = float(raw_price or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            tid = tpl.get("id")
+            if tid is None:
+                continue
+            label = f"{tname}  ${price:.4f}"
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"tpl_{tid}")])
         keyboard.append([InlineKeyboardButton("🔙 返回", callback_data=f"biz_{biz_type}")])
 
         country_label = '全球（所有国家）' if country_code == '*' else COUNTRY_NAMES.get(country_code, country_code)
@@ -681,37 +691,69 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
-    
-    # 处理模板选择（邀请流程）
-        template_id = int(data.replace("tpl_", ""))
-        context.user_data['template_id'] = template_id
-        
+
+    # 处理模板选择（邀请流程；须与 country_ 同级，此前误写在 country_ 内 return 之后导致永不可达）
+    if data.startswith("tpl_"):
+        try:
+            template_id = int(data.replace("tpl_", "").strip())
+        except ValueError:
+            await query.edit_message_text("❌ 无效的模板选项", reply_markup=get_back_menu())
+            return
+        context.user_data["template_id"] = template_id
+
         client = APIClient()
         template = await client.get_template_internal(template_id)
-        
+
+        # 详情接口失败时，用当前国家下的模板列表回退（与列表字段 name/price 一致）
+        if not template or not template.get("id"):
+            biz_type = context.user_data.get("business_type", "sms")
+            cc = context.user_data.get("country_code")
+            lst = await client.get_templates_internal(biz_type=biz_type, country_code=cc)
+            tpl_row = next(
+                (t for t in (lst or []) if isinstance(t, dict) and int(t.get("id") or 0) == template_id),
+                None,
+            )
+            if tpl_row:
+                try:
+                    raw_p = tpl_row.get("default_price") if tpl_row.get("default_price") is not None else tpl_row.get("price", 0)
+                    price_fb = float(raw_p or 0)
+                except (TypeError, ValueError):
+                    price_fb = 0.0
+                template = {
+                    "id": tpl_row.get("id"),
+                    "template_name": tpl_row.get("template_name") or tpl_row.get("name"),
+                    "country_code": tpl_row.get("country_code"),
+                    "default_price": price_fb,
+                }
+
         if not template or not template.get("id"):
             await query.edit_message_text(
-                "❌ 模板不存在",
-                reply_markup=get_back_menu()
+                "❌ 模板不存在或暂时无法拉取详情，请返回上一步重新选择，或联系管理员检查模板 ID 与 internal API。",
+                reply_markup=get_back_menu(),
             )
             return
-        
+
         country_code = template.get("country_code")
-        template_name = template.get("template_name")
-        price = template.get("default_price", 0)
+        template_name = template.get("template_name") or template.get("name")
+        raw_price = template.get("default_price")
+        if raw_price is None:
+            raw_price = template.get("price", 0)
+        try:
+            price = float(raw_price or 0)
+        except (TypeError, ValueError):
+            price = 0.0
 
-        country_label = '全球（所有国家）' if country_code == '*' else COUNTRY_NAMES.get(country_code, country_code)
-        template_name = template_name or f"{country_label}标准版"
+        country_label = "全球（所有国家）" if country_code == "*" else COUNTRY_NAMES.get(country_code, country_code)
+        template_name = (template_name or "").strip() or f"{country_label}标准版"
 
-        context.user_data['template_info'] = {
-            'name': template_name,
-            'default_price': price,
-            'country': country_code,
+        context.user_data["template_info"] = {
+            "name": template_name,
+            "default_price": price,
+            "country": country_code,
         }
-        context.user_data['template_name'] = template_name
+        context.user_data["template_name"] = template_name
 
-        # 全球模板需要额外指定客户国家 + 价格
-        if country_code == '*':
+        if country_code == "*":
             await query.edit_message_text(
                 f"🎯 创建开户授权码\n\n"
                 f"📋 模板: {template_name}\n"
@@ -720,9 +762,9 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"例如: <code>中国 0.05</code>  或  <code>美国 0</code>\n\n"
                 f"输入 0 表示免费",
                 reply_markup=get_back_menu(),
-                parse_mode='HTML',
+                parse_mode="HTML",
             )
-            context.user_data['waiting_for'] = 'invite_country_price'
+            context.user_data["waiting_for"] = "invite_country_price"
             return
 
         await query.edit_message_text(
@@ -734,9 +776,9 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             f"例如: 0.05",
             reply_markup=get_back_menu()
         )
-        context.user_data['waiting_for'] = 'invite_price'
+        context.user_data["waiting_for"] = "invite_price"
         return
-    
+
     # 短信内容审核 - 通过
     if data.startswith("approve_sms_"):
         approval_id = int(data.replace("approve_sms_", ""))
@@ -766,7 +808,8 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 else:
                     await _notify_customer_rejected(context, approval)
             
-            await query.answer("已跳过，已通知客户")
+            if query.message:
+                await query.message.reply_text("✅ 已跳过，已通知客户")
         return
 
     # 客户点击「立即发送」执行审核通过的短信
@@ -884,8 +927,8 @@ async def show_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
     tg_id = query.from_user.id
     client = APIClient()
     
-    # 获取用户身份信息和业绩
-    user_info = await client.verify_bot_user(tg_id)
+    # 获取用户身份（销售主菜单不再内嵌本月业绩，见「业绩统计」）
+    user_info = await client.verify_bot_user(tg_id, include_monthly_performance=False)
     if not user_info:
         context.user_data.pop("account_id", None)
         context.user_data.pop("user_type", None)
@@ -916,15 +959,12 @@ async def show_main_menu(query, context: ContextTypes.DEFAULT_TYPE):
             msg = f"👋 {real_name}\n🔐 {role_label}\n\n请选择操作："
         else:
             menu = get_main_menu_sales()
-            monthly_profit = user_info.get("monthly_profit", 0.0)
-            monthly_comm = user_info.get("monthly_commission", 0.0)
-            
+            # 主菜单不展示本月业绩/佣金，避免首屏拉数；详情见「📊 业绩统计」
             msg = (
                 f"👋 姓名: {real_name}\n"
-                f"🔐 角色: {role_label}\n"
-                f"📊 本月预计业绩: ${monthly_profit:.2f}\n"
-                f"💰 本月预计佣金: ${monthly_comm:.2f}\n\n"
+                f"🔐 角色: {role_label}\n\n"
                 f"请选择操作：\n\n"
+                f"📈 本月业绩与佣金请点下方「📊 业绩统计」查看。\n\n"
                 f"📢 全行业短信群发，AI语音，渗透数据！\n"
                 f"所有信息以官网 https://www.kaolach.com/ 展示为准！"
             )
@@ -1138,11 +1178,8 @@ async def handle_okcc_refresh(query, context):
     res = await client.sync_okcc_balance(account_id)
     
     await handle_sales_quick_login(query, context, override_account_id=account_id, skip_okcc_sync=True)
-    if not res.get("success"):
-        try:
-            await query.answer(f"未能从 OKCC 更新余额: {res.get('msg')}", show_alert=True)
-        except Exception:
-            pass
+    if not res.get("success") and query.message:
+        await query.message.reply_text(f"⚠️ 未能从 OKCC 更新余额: {res.get('msg')}")
 
 
 async def handle_sales_quick_login(query, context, override_account_id=None, skip_okcc_sync: bool = False):
@@ -1289,13 +1326,17 @@ async def show_my_customers(query, context, biz_filter=None, page: int = 0):
     tg_id = query.from_user.id
     client = APIClient()
     
-    # 验证权限
-    admin_info = await client.verify_bot_user(tg_id)
+    # 验证权限（无需本月 sms_logs 聚合，避免与「我的客户」无关的 5s 级延迟）
+    admin_info = await client.verify_bot_user(tg_id, include_monthly_performance=False)
     if not admin_info or admin_info.get("role") not in ['sales', 'super_admin', 'admin']:
         await query.edit_message_text("❌ 无权限查看客户列表", reply_markup=get_back_menu())
         return
 
-    admin_id = admin_info.get("id")
+    # verify-user 员工主键为 user_id，与嵌套 admin.id 一致
+    admin_id = admin_info.get("user_id") or (admin_info.get("admin") or {}).get("id")
+    if not admin_id:
+        await query.edit_message_text("❌ 无法识别员工身份，请重新发送 /start", reply_markup=get_back_menu())
+        return
     res = await client.get_sales_customers(admin_id, biz_type=biz_filter or 'all', page=page)
     if not res.get("success"):
         await query.edit_message_text(f"❌ {res.get('msg', '获取客户列表失败')}", reply_markup=get_back_menu())
@@ -1347,18 +1388,48 @@ async def show_my_customers(query, context, biz_filter=None, page: int = 0):
         )
         return
 
-    # 客户列表 (简易版展示，由于 API 返回的是摘要)
-    lines = [f"👥 客户列表 ({biz_filter})\n"]
+    # 客户列表：账号、国家、默认通道、单价（短信为 $/条；语音/数据仅展示账户 unit_price 数值）
+    lines = [
+        f"👥 客户列表 ({biz_filter})\n",
+        "<i>账号 | 国家 | 通道 | 单价 | 余额</i>\n",
+    ]
+    unit_hint = "/条" if (biz_filter or "").lower() == "sms" else ""
     keyboard = []
     for c in customers:
-        lines.append(f"• {c.get('account_name')} (${c.get('balance'):.2f})")
-        keyboard.append([InlineKeyboardButton(f"🔐 快捷登录: {c.get('account_name')}", callback_data=f"sales_login_{c.get('id')}")])
-    
+        raw_cc = (c.get("country_code") or "").strip().upper()
+        country_label = COUNTRY_NAMES.get(raw_cc, raw_cc) if raw_cc else "-"
+        ch = (c.get("channel_name") or "").strip() or "未绑定"
+        if len(ch) > 22:
+            ch = ch[:20] + "…"
+        try:
+            up = float(c.get("unit_price") if c.get("unit_price") is not None else 0)
+        except (TypeError, ValueError):
+            up = 0.0
+        try:
+            bal = float(c.get("balance") if c.get("balance") is not None else 0)
+        except (TypeError, ValueError):
+            bal = 0.0
+        acct = c.get("account_name") or "-"
+        acct_e = html_escape.escape(str(acct))
+        country_e = html_escape.escape(str(country_label))
+        ch_e = html_escape.escape(str(ch))
+        lines.append(
+            f"• <b>{acct_e}</b>\n"
+            f"  🌍 {country_e}  📡 {ch_e}  💵 ${up:.4f}{html_escape.escape(unit_hint)}  💰 ${bal:.2f}"
+        )
+        btn_label = acct if len(acct) <= 28 else (acct[:26] + "…")
+        keyboard.append(
+            [InlineKeyboardButton(f"🔐 快捷登录: {btn_label}", callback_data=f"sales_login_{c.get('id')}")]
+        )
+
     # 简化分页处理 (如果需要可以做得更复杂)
     keyboard.append([InlineKeyboardButton("🔙 返回分类", callback_data="menu_my_customers")])
     keyboard.append([InlineKeyboardButton("🏠 返回主菜单", callback_data="menu_main")])
 
-    await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(keyboard))
+    body = "\n".join(lines)
+    if len(body) > 4000:
+        body = body[:3950] + "\n\n…(仅展示部分，请缩小筛选或联系管理员导出)"
+    await query.edit_message_text(body, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
 async def show_business_knowledge(query, context, category=None):
     """显示业务知识库 (通过 API)"""
@@ -1443,25 +1514,39 @@ async def show_knowledge_article(query, context, article_id: int):
 
 
 async def send_knowledge_attachment(query, context, attachment_id: int):
-    """发送知识库附件给用户（Telegram 文档）"""
+    """发送知识库附件给用户（Telegram 文档）
+
+    注意：handle_menu_callback 开头已对 callback 执行过 query.answer()，
+    此处禁止再次 answer，否则 Telegram 报错并中断，用户表现为「点击无反应」。
+    """
     from bot.services.api_client import APIClient
     from pathlib import Path
+
     api = APIClient()
+    raw = await api.get_knowledge_attachment(attachment_id)
+    if not raw.get("success"):
+        err = raw.get("msg", "无法获取附件信息")
+        if query.message:
+            await query.message.reply_text(f"❌ {err}")
+        return
 
-    await query.answer("正在发送文件...")
-
-    att = await api.get_knowledge_attachment(attachment_id)
-
-    if not att:
-        await query.answer("附件不存在", show_alert=True)
+    att = raw.get("attachment") or {}
+    rel_path = (att.get("file_path") or "").strip()
+    file_name = att.get("file_name") or "附件"
+    if not rel_path:
+        if query.message:
+            await query.message.reply_text("❌ 附件路径为空，请联系管理员检查知识库数据")
         return
 
     # 知识库文件路径（与 backend 一致）
     KNOWLEDGE_DIR = Path("/app/data/knowledge")
-    file_path = KNOWLEDGE_DIR / att.file_path
+    file_path = KNOWLEDGE_DIR / rel_path
 
     if not file_path.exists():
-        await query.answer("文件不存在或已删除", show_alert=True)
+        if query.message:
+            await query.message.reply_text(
+                f"❌ 服务器上未找到文件：{rel_path}\n请确认 Bot 容器已挂载 data/knowledge 与后台一致。"
+            )
         return
 
     try:
@@ -1469,13 +1554,13 @@ async def send_knowledge_attachment(query, context, attachment_id: int):
             await context.bot.send_document(
                 chat_id=query.message.chat_id,
                 document=f,
-                filename=att.file_name,
-                caption=f"📎 {att.file_name}",
+                filename=file_name,
+                caption=f"📎 {file_name}",
             )
-        await query.answer("已发送", show_alert=False)
     except Exception as e:
         logger.exception("发送知识附件失败: %s", e)
-        await query.answer("发送失败，请稍后重试", show_alert=True)
+        if query.message:
+            await query.message.reply_text("❌ 发送失败，请稍后重试或联系管理员。")
 
 
 async def show_commission(query, context):
@@ -1488,14 +1573,33 @@ async def show_commission(query, context):
         return
 
     admin_id = user_info.get("user_id")
-    # 实时计算本月业绩和佣金
+    # verify-user 已含本月业绩/佣金/提成比例，避免再打一遍 sales/stats
+    if "monthly_profit" in user_info:
+        monthly_profit = float(user_info["monthly_profit"])
+        monthly_comm = float(user_info.get("monthly_commission") or 0)
+        if "commission_rate" in user_info:
+            rate = float(user_info["commission_rate"])
+        elif monthly_profit:
+            rate = round((monthly_comm / monthly_profit) * 100, 2)
+        else:
+            rate = 0.0
+        await query.edit_message_text(
+            f"💰 我的佣金与业绩\n\n"
+            f"📊 本月预计业绩: ${monthly_profit:.2f}\n"
+            f"📈 本月预计佣金: ${monthly_comm:.2f}\n"
+            f"💵 当前提成比例: {rate:.1f}%\n\n"
+            f"💡 业绩统计仅包含真实通道已送达的消息利润。\n"
+            f"最终结算以每月15日财务核算为准。",
+            reply_markup=get_back_menu(),
+        )
+        return
+
     stats_resp = await api.get_sales_stats(admin_id)
-    
     if stats_resp.get("success"):
         monthly_profit = stats_resp["monthly_profit"]
         monthly_comm = stats_resp["monthly_commission"]
         rate = stats_resp.get("commission_rate", 0)
-        
+
         await query.edit_message_text(
             f"💰 我的佣金与业绩\n\n"
             f"📊 本月预计业绩: ${monthly_profit:.2f}\n"
@@ -1503,12 +1607,12 @@ async def show_commission(query, context):
             f"💵 当前提成比例: {float(rate):.1f}%\n\n"
             f"💡 业绩统计仅包含真实通道已送达的消息利润。\n"
             f"最终结算以每月15日财务核算为准。",
-            reply_markup=get_back_menu()
+            reply_markup=get_back_menu(),
         )
     else:
         await query.edit_message_text(
             f"❌ 获取佣金失败: {stats_resp.get('msg', '未知错误')}",
-            reply_markup=get_back_menu()
+            reply_markup=get_back_menu(),
         )
 
 
@@ -1573,7 +1677,9 @@ async def show_pending_recharge(query, context):
     lines = [f"💳 待审核充值 ({len(orders)}笔)\n"]
 
     for order in orders:
-        lines.append(f"• {order.get('id')}: ${order.get('amount')} ({order.get('account_name')})")
+        # 后端待审核列表字段为 username，兼容 account_name
+        acct = order.get("account_name") or order.get("username") or "-"
+        lines.append(f"• {order.get('id')}: ${order.get('amount')} ({acct})")
 
     # 构建按钮
     keyboard = []
@@ -1591,13 +1697,14 @@ async def show_pending_recharge(query, context):
 
 
 async def show_pricing_menu(query, context, tg_id: int):
-    """报价查询入口 - 仅销售/技术可用"""
+    """报价查询入口 - 销售/技术/管理员可用"""
     client = APIClient()
-    verify = await client.verify_bot_user(tg_id)
-    
-    if not verify.get("authorized") or verify.get("role") not in ['sales', 'super_admin', 'admin']:
+    verify = await client.verify_bot_user(tg_id, include_monthly_performance=False)
+
+    allowed_roles = ("sales", "super_admin", "admin", "tech")
+    if not verify.get("authorized") or verify.get("role") not in allowed_roles:
         await query.edit_message_text(
-            "❌ 仅销售/管理员可使用报价查询",
+            "❌ 仅销售/技术/管理员可使用报价查询",
             reply_markup=get_back_menu()
         )
         return
@@ -1711,7 +1818,9 @@ async def handle_sms_approval_callback(query, context, approval_id: int, approve
     # 1. 提交审核
     res = await client.review_sms_approval_internal(approval_id, approved, query.from_user.id)
     if not res.get("success"):
-        await query.answer(f"❌ 操作失败: {res.get('message', '未知错误')}", show_alert=True)
+        err = res.get("message", "未知错误")
+        if query.message:
+            await query.message.reply_text(f"❌ 操作失败: {err}")
         return
 
     # 2. 更新显示
@@ -1741,16 +1850,61 @@ async def handle_sms_approval_callback(query, context, approval_id: int, approve
         text=prompt,
         reply_markup=skip_keyboard,
     )
-    await query.answer(f"{'已通过' if approved else '已拒绝'}，请继续输入回复或跳过")
 
 
 async def show_pricing_by_biz_country(query, context, biz_type: str, country_code: str):
-    """显示指定业务类型+国家的报价"""
-    # 这里原本可能有很长的 SQL 逻辑，由于我们要去 DB 化，如果这个功能还需要，以后也要移到 API
-    # 暂时恢复一个占位或者尽量还原（由于之前误删，我尝试根据语境还原其基本结构）
-    await query.answer("该功能正在迁移中...")
+    """显示指定业务类型+国家的报价（走 internal/bot 报价详情接口）"""
+    biz_label = BIZ_LABELS.get(biz_type, biz_type)
+    country_label = COUNTRY_NAMES.get(country_code, country_code)
+    client = APIClient()
+    res = await client.get_pricing_detail(biz_type, country_code)
 
+    if not res.get("success"):
+        await query.edit_message_text(
+            f"❌ 查询失败: {res.get('msg', '未知错误')}",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔙 返回", callback_data=f"pricing_biz_{biz_type}")]]
+            ),
+        )
+        return
 
+    rates = res.get("rates") or []
+    if not rates:
+        await query.edit_message_text(
+            f"📋 {biz_label} · {country_label} ({country_code})\n\n暂无供应商报价。",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔙 返回国家列表", callback_data=f"pricing_biz_{biz_type}")]]
+            ),
+        )
+        return
+
+    lines = [f"📋 {biz_label} · {country_label} ({country_code})\n"]
+    for r in rates[:25]:
+        sn = r.get("supplier_name") or "-"
+        cp = r.get("cost_price")
+        bm = (r.get("billing_model") or "").strip()
+        note = (r.get("note") or "").strip()[:120]
+        try:
+            cp_f = float(cp)
+            cp_s = f"{cp_f:.6f}".rstrip("0").rstrip(".")
+        except (TypeError, ValueError):
+            cp_s = str(cp)
+        lines.append(f"• {sn}\n  成本: {cp_s} USD  计费: {bm or '-'}")
+        if note:
+            lines.append(f"  备注: {note}")
+    if len(rates) > 25:
+        lines.append(f"\n(共 {len(rates)} 条，仅展示前 25 条)")
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3950] + "\n\n...(内容过长已截断)"
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🔙 返回国家列表", callback_data=f"pricing_biz_{biz_type}")]]
+        ),
+    )
 
 
 async def execute_approved_sms(query, context, approval_id: int):
@@ -1760,19 +1914,23 @@ async def execute_approved_sms(query, context, approval_id: int):
     
     approval_data = await client.get_sms_approval_internal(approval_id)
     if not approval_data:
-        await query.answer("❌ 记录不存在", show_alert=True)
+        if query.message:
+            await query.message.reply_text("❌ 记录不存在")
         return
         
     if str(approval_data.get("tg_user_id")) != str(tg_id):
-        await query.answer("❌ 无权操作", show_alert=True)
+        if query.message:
+            await query.message.reply_text("❌ 无权操作")
         return
         
     if approval_data.get("status") != 'approved':
-        await query.answer("该短信未通过审核或已发送", show_alert=True)
+        if query.message:
+            await query.message.reply_text("该短信未通过审核或已发送")
         return
         
     if approval_data.get("message_id"):
-        await query.answer("该短信已发送", show_alert=True)
+        if query.message:
+            await query.message.reply_text("该短信已发送")
         return
         
     # 只审核文案时无号码，需先让用户填写
@@ -1780,7 +1938,6 @@ async def execute_approved_sms(query, context, approval_id: int):
     content = approval_data.get("content")
     
     if not (phone or (phone and phone.strip())):
-        await query.answer()
         context.user_data['waiting_for'] = 'sms_approval_phone'
         context.user_data['pending_approval_id'] = approval_id
         await query.edit_message_text(
@@ -1793,8 +1950,6 @@ async def execute_approved_sms(query, context, approval_id: int):
             ]),
         )
         return
-        
-    await query.answer("正在发送...")
     
     # 调用 API 发送 (原有逻辑维持 APIClient.send_sms，但后续更新也要 API)
     send_result = await client.send_sms(
@@ -1954,7 +2109,8 @@ async def show_system_stats(query, context):
     """显示系统统计"""
     stats = await api.get_system_stats_internal()
     if not stats:
-        await query.answer("❌ 无法获取系统统计", show_alert=True)
+        if query.message:
+            await query.message.reply_text("❌ 无法获取系统统计")
         return
         
     await query.edit_message_text(
@@ -1970,13 +2126,17 @@ async def show_system_stats(query, context):
 async def show_sales_stats(query, context):
     """显示销售业绩统计"""
     tg_id = query.from_user.id
-    
-    user_info = await api.verify_user(tg_id)
+
+    # 仅鉴权与取 admin_id；跳过 verify-user 内本月 sms_logs 聚合（与 get_sales_stats 重复，曾导致约双倍延迟）
+    user_info = await api.verify_user(tg_id, include_monthly_performance=False)
     if not user_info or not user_info.get("is_admin"):
         await query.edit_message_text("❌ 无法获取统计信息", reply_markup=get_back_menu())
         return
 
-    admin_id = user_info.get("user_id")
+    admin_id = user_info.get("user_id") or (user_info.get("admin") or {}).get("id")
+    if not admin_id:
+        await query.edit_message_text("❌ 无法识别员工身份", reply_markup=get_back_menu())
+        return
     resp = await api.get_sales_stats(admin_id)
     
     if resp.get("success"):
@@ -2004,7 +2164,8 @@ async def show_customer_tickets(query, context):
 
     res = await client.get_sales_stats_internal(tg_id)
     if not res:
-        await query.answer("❌ 无法获取销售统计", show_alert=True)
+        if query.message:
+            await query.message.reply_text("❌ 无法获取销售统计")
         return
         
     tickets = res.get("tickets", [])
@@ -2588,16 +2749,13 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"请选择操作："
                 )
             else:
-                # 销售角色，获取统计
-                stats = await api.get_sales_stats(admin.get("id"))
                 menu = get_main_menu_sales()
                 msg = (
                     f"✅ 绑定成功！\n\n"
                     f"👋 姓名: {admin.get('username')}\n"
-                    f"🔐 角色: {role_label}\n"
-                    f"📊 本月预计业绩: ${stats.get('monthly_profit', 0.0):.2f}\n"
-                    f"💰 本月预计佣金: ${stats.get('monthly_commission', 0.0):.2f}\n\n"
+                    f"🔐 角色: {role_label}\n\n"
                     f"请选择操作：\n\n"
+                    f"📈 本月业绩与佣金请点下方「📊 业绩统计」查看。\n\n"
                     f"📢 全行业短信群发，AI语音，渗透数据！\n"
                     f"所有信息以官网 https://www.kaolach.com/ 展示为准！"
                 )
@@ -2860,7 +3018,8 @@ _sms_approval_media_filters = filters.ChatType.GROUPS & ~filters.VOICE & (
 menu_handlers = [
     CallbackQueryHandler(
         handle_menu_callback,
-        pattern=r'^(?!menu_register$|reg_)(?:sales_login_|okcc_refresh_|menu_|biz_|kb_|ticket_type_|country_|tpl_|pricing_|approve_|reject_|send_approved_sms_|sms_approval_skip_|process_|ticket_detail_|close_ticket_|back_|my_cust_)'
+        # kb_ 不能覆盖 kb_dl_*（第三字符为 d）；kb_noop 同理，须单独列出
+        pattern=r'^(?!menu_register$|reg_)(?:sales_login_|okcc_refresh_|menu_|biz_|kb_|kb_dl_|kb_noop|ticket_type_|country_|tpl_|pricing_|approve_|reject_|send_approved_sms_|sms_approval_skip_|process_|ticket_detail_|close_ticket_|back_|my_cust_)'
     ),
     # 短信审核回复：图片与图片类文档需在 TEXT 之外单独处理
     MessageHandler(

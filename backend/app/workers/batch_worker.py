@@ -147,7 +147,12 @@ async def _do_process_batch(batch_id: int):
         success_count = 0
         failed_count = 0
         commit_batch = []
-        COMMIT_EVERY = 50
+        COMMIT_EVERY = 500
+
+        # 进程内缓存：同一批次中相同国家/通道组合无需重复查库/Redis
+        _route_cache: dict = {}   # country_code -> Channel
+        _channel: Optional[object] = None  # 最近一次使用的通道（用于剩余处理）
+        _chunk_deducted: float = 0.0  # 当前 chunk 已扣款总额（用于汇总 BalanceLog）
 
         try:
             with open(batch.file_path, 'r', encoding=detected_enc, errors='replace') as f:
@@ -156,7 +161,7 @@ async def _do_process_batch(batch_id: int):
                 for i, row in enumerate(reader):
                     total_rows = i + 1
 
-                    if i % 200 == 0 and i > 0:
+                    if i % 2000 == 0 and i > 0:
                         batch.progress = min(99, int(success_count * 100 / max(total_rows, 1)))
                         batch.success_count = success_count
                         batch.failed_count = failed_count
@@ -186,16 +191,27 @@ async def _do_process_batch(batch_id: int):
                         continue
 
                     try:
-                        channel = await routing_engine.select_channel(country_code)
+                        # 进程内路由缓存：同一国家只查一次（路由引擎自身有 Redis 缓存，
+                        # 这里再加一层 dict 缓存，省去 Redis 网络往返）
+                        if country_code not in _route_cache:
+                            _route_cache[country_code] = await routing_engine.select_channel(
+                                country_code, account_id=batch.account_id
+                            )
+                        channel = _route_cache[country_code]
+                        _channel = channel
                         if not channel:
                             failed_count += 1
                             continue
 
+                        # skip_balance_log=True：跳过每条短信的 SELECT/INSERT/flush/Redis，
+                        # 由下方 commit 点统一写一条汇总 BalanceLog（500 条 → 1 条）
                         charge_result = await pricing_engine.calculate_and_charge(
                             account_id=batch.account_id,
                             channel_id=channel.id,
                             country_code=country_code,
-                            message=content
+                            message=content,
+                            channel=channel,
+                            skip_balance_log=True,
                         )
 
                         message_id = f"MSG_{int(time.time()*1000)}_{i}_{batch.id}"
@@ -215,37 +231,22 @@ async def _do_process_batch(batch_id: int):
                             submit_time=datetime.now()
                         )
                         db.add(sms_log)
-                        commit_batch.append((message_id, charge_result.get("total_cost", 0)))
+                        _chunk_cost = charge_result.get("total_cost", 0)
+                        _chunk_deducted += _chunk_cost
+                        commit_batch.append((message_id, _chunk_cost))
 
                         if len(commit_batch) >= COMMIT_EVERY:
-                            await db.flush()
-                            await db.commit()
-                            _proto = str(channel.protocol).upper()
-                            logger.info(f"DEBUG: 批次 {batch.id} 提交点, 原始协议={channel.protocol}, 转换协议={_proto}, 数量={len(commit_batch)}")
-                            if 'SMPP' in _proto:
-                                # SMPP 批量入队（窗口化）
-                                smpp_mids = [mid for mid, _ in commit_batch]
-                                from app.config import settings as _cfg
-                                _win = int(getattr(_cfg, 'SMPP_WINDOW_SIZE', 10) or 10)
-                                for _i in range(0, len(smpp_mids), _win):
-                                    _chunk = smpp_mids[_i:_i + _win]
-                                    if QueueManager.queue_sms_batch(_chunk):
-                                        success_count += len(_chunk)
-                                    else:
-                                        # 回退单条（异常处理）
-                                        for _m in _chunk:
-                                            if not QueueManager.queue_sms(_m):
-                                                failed_count += 1
-                                            else:
-                                                success_count += 1
-                            else:
-                                for mid, cost in commit_batch:
-                                    if QueueManager.queue_sms(mid):
-                                        success_count += 1
-                                    else:
-                                        await _refund_single(db, batch.account_id, cost, mid)
-                                        failed_count += 1
+                            await _flush_commit_chunk(
+                                db, batch, channel, commit_batch,
+                                _chunk_deducted,
+                            )
+                            s, f = await _queue_commit_batch(
+                                db, batch.account_id, channel, commit_batch,
+                            )
+                            success_count += s
+                            failed_count += f
                             commit_batch.clear()
+                            _chunk_deducted = 0.0
 
                     except (InsufficientBalanceError, PricingNotFoundError, Exception) as e:
                         logger.warning(f"处理行 {i} 失败: {e}")
@@ -260,33 +261,11 @@ async def _do_process_batch(batch_id: int):
             return
 
         # 处理剩余
-        if commit_batch:
-            await db.flush()
-            await db.commit()
-            _proto = str(channel.protocol).upper()
-            logger.info(f"DEBUG: 批次 {batch.id} 结束点, 原始协议={channel.protocol}, 转换协议={_proto}, 数量={len(commit_batch)}")
-            if 'SMPP' in _proto:
-                # SMPP 批量入队（窗口化）
-                smpp_mids = [mid for mid, _ in commit_batch]
-                from app.config import settings as _cfg
-                _win = int(getattr(_cfg, 'SMPP_WINDOW_SIZE', 10) or 10)
-                for _i in range(0, len(smpp_mids), _win):
-                    _chunk = smpp_mids[_i:_i + _win]
-                    if QueueManager.queue_sms_batch(_chunk):
-                        success_count += len(_chunk)
-                    else:
-                        for _m in _chunk:
-                            if not QueueManager.queue_sms(_m):
-                                failed_count += 1
-                            else:
-                                success_count += 1
-            else:
-                for mid, cost in commit_batch:
-                    if QueueManager.queue_sms(mid):
-                        success_count += 1
-                    else:
-                        await _refund_single(db, batch.account_id, cost, mid)
-                        failed_count += 1
+        if commit_batch and _channel:
+            await _flush_commit_chunk(db, batch, _channel, commit_batch, _chunk_deducted)
+            s, f = await _queue_commit_batch(db, batch.account_id, _channel, commit_batch)
+            success_count += s
+            failed_count += f
             commit_batch.clear()
 
         if total_rows == 0:
@@ -296,14 +275,20 @@ async def _do_process_batch(batch_id: int):
             return
 
         batch.total_count = total_rows
-        batch.success_count = success_count
-        batch.failed_count = failed_count
-        batch.status = BatchStatus.COMPLETED
-        batch.completed_at = datetime.now()
-        batch.progress = 100
+        from app.modules.sms.batch_utils import update_batch_progress
+
+        await update_batch_progress(db, batch_id)
+        await db.refresh(batch)
+        # success_count 此处为入队成功条数，勿写入批次表；终态仅由 sms_logs 与 update_batch_progress 决定
+        if batch.status not in (BatchStatus.COMPLETED, BatchStatus.FAILED, BatchStatus.CANCELLED):
+            batch.status = BatchStatus.PROCESSING
+            batch.completed_at = None
         await db.commit()
 
-        logger.info(f"批次处理完成: batch_id={batch_id}, total={total_rows}, success={success_count}, failed={failed_count}")
+        logger.info(
+            f"批次 CSV 入队完成: batch_id={batch_id}, total={total_rows}, "
+            f"入队成功(本地计数)={success_count}, 入队失败(本地计数)={failed_count}"
+        )
 
     except Exception as e:
         logger.exception(f"处理批次异常: {e}")
@@ -334,6 +319,77 @@ async def _refund_single(db, account_id: int, amount: float, message_id: str):
         ))
     except Exception as e:
         logger.error(f"退款失败: {message_id}, {e}")
+
+
+async def _flush_commit_chunk(db, batch, channel, commit_batch: list, chunk_deducted: float):
+    """
+    flush + commit 当前 chunk，并写入一条汇总 BalanceLog + 更新 Redis 余额缓存。
+    取代原来每条短信单独 SELECT/INSERT/flush/Redis，500 条短信只做 1 次。
+    """
+    from app.modules.common.balance_log import BalanceLog
+    from app.utils.cache import get_cache_manager
+
+    await db.flush()
+    await db.commit()
+
+    if chunk_deducted > 0:
+        try:
+            bal_row = await db.execute(select(Account.balance).where(Account.id == batch.account_id))
+            balance_after = bal_row.scalar()
+            db.add(BalanceLog(
+                account_id=batch.account_id,
+                change_type='charge',
+                amount=-chunk_deducted,
+                balance_after=float(balance_after) if balance_after is not None else 0.0,
+                description=f"Batch {batch.id} charge: {len(commit_batch)} SMS",
+            ))
+            await db.commit()
+
+            cache_manager = await get_cache_manager()
+            await cache_manager.set(
+                f"account:{batch.account_id}:balance",
+                float(balance_after) if balance_after is not None else 0.0,
+                ttl=60,
+            )
+        except Exception as e:
+            logger.warning(f"批次 BalanceLog 写入失败(非致命): batch={batch.id}, {e}")
+
+    _proto = str(channel.protocol).upper() if channel else "HTTP"
+    logger.info(f"批次 {batch.id} commit chunk: 协议={_proto}, 数量={len(commit_batch)}, 扣款={chunk_deducted:.4f}")
+
+
+async def _queue_commit_batch(db, account_id: int, channel, commit_batch: list) -> tuple[int, int]:
+    """
+    将 commit_batch 中的消息批量入队，返回 (success_count, failed_count)。
+    """
+    success = 0
+    failed = 0
+    _proto = str(channel.protocol).upper() if channel else "HTTP"
+
+    if 'SMPP' in _proto:
+        smpp_mids = [mid for mid, _ in commit_batch]
+        from app.config import settings as _cfg
+        _win = int(getattr(_cfg, 'SMPP_WINDOW_SIZE', 10) or 10)
+        for _i in range(0, len(smpp_mids), _win):
+            _chunk = smpp_mids[_i:_i + _win]
+            if QueueManager.queue_sms_batch_smpp(_chunk):
+                success += len(_chunk)
+            else:
+                for _m in _chunk:
+                    if QueueManager.queue_smpp_gateway(_m):
+                        success += 1
+                    else:
+                        failed += 1
+    else:
+        mids = [mid for mid, _ in commit_batch]
+        costs = {mid: cost for mid, cost in commit_batch}
+        ok_ids, fail_ids = QueueManager.queue_sms_bulk(mids)
+        success += len(ok_ids)
+        for mid in fail_ids:
+            await _refund_single(db, account_id, costs.get(mid, 0), mid)
+            failed += 1
+
+    return success, failed
 
 
 # ============ 大批量分片处理 ============
@@ -698,12 +754,12 @@ async def _do_process_chunk(
                         if is_virtual_channel:
                             succeeded += len(virtual_message_ids)
                         if smpp_mids:
-                            if QueueManager.queue_sms_batch(smpp_mids):
+                            if QueueManager.queue_sms_batch_smpp(smpp_mids):
                                 succeeded += len(smpp_mids)
                             else:
                                 # 回退单条
                                 for _m in smpp_mids:
-                                    if QueueManager.queue_sms(_m):
+                                    if QueueManager.queue_smpp_gateway(_m):
                                         succeeded += 1
                                     else:
                                         failed += 1
@@ -758,11 +814,11 @@ async def _do_process_chunk(
                                         succeeded += len(commit_batch)
                                     elif 'SMPP' in _proto:
                                         _mids = [m for m, _ in commit_batch]
-                                        if QueueManager.queue_sms_batch(_mids):
+                                        if QueueManager.queue_sms_batch_smpp(_mids):
                                             succeeded += len(_mids)
                                         else:
                                             for _m in _mids:
-                                                if QueueManager.queue_sms(_m):
+                                                if QueueManager.queue_smpp_gateway(_m):
                                                     succeeded += 1
                                                 else:
                                                     failed += 1
@@ -790,11 +846,11 @@ async def _do_process_chunk(
                                 succeeded += len(commit_batch)
                             elif 'SMPP' in _proto:
                                 _mids = [m for m, _ in commit_batch]
-                                if QueueManager.queue_sms_batch(_mids):
+                                if QueueManager.queue_sms_batch_smpp(_mids):
                                     succeeded += len(_mids)
                                 else:
                                     for _m in _mids:
-                                        if QueueManager.queue_sms(_m):
+                                        if QueueManager.queue_smpp_gateway(_m):
                                             succeeded += 1
                                         else:
                                             failed += 1
@@ -810,29 +866,20 @@ async def _do_process_chunk(
                         if remaining_failed > 0:
                             failed += remaining_failed
 
-            total_logs = (await db.execute(
-                select(func.count()).select_from(SMSLog).where(SMSLog.batch_id == batch_id)
-            )).scalar() or 0
+            # 分片写库/入队完成后：按 sms_logs 真实状态汇总批次。
+            # 禁止把「入队成功条数」累加到 success_count，否则会出现「批次 completed 且 success=总量但全是 queued」的假象（如批次 246/247）。
+            from app.modules.sms.batch_utils import update_batch_progress
 
-            result = await db.execute(
-                select(SmsBatch).where(SmsBatch.id == batch_id)
+            _total_logs = (
+                await db.execute(
+                    select(func.count()).select_from(SMSLog).where(SMSLog.batch_id == batch_id)
+                )
+            ).scalar() or 0
+            logger.info(
+                f"分片收尾: batch={batch_id}, offset={start_offset}, "
+                f"本片入队统计 succeeded={succeeded}, failed={failed}, 累计 sms_logs={_total_logs}"
             )
-            batch = result.scalar_one_or_none()
-            if batch:
-                # 累加成功/失败计数 (需要使用原子更新，但此处先简单累加)
-                batch.success_count += succeeded
-                batch.failed_count += failed
-                
-                # 计算进度
-                total_processed = batch.success_count + batch.failed_count
-                if total_processed >= batch.total_count:
-                    batch.progress = 100
-                    batch.status = BatchStatus.COMPLETED
-                    batch.completed_at = datetime.now()
-                else:
-                    batch.progress = min(99, int(total_processed * 100 / max(batch.total_count, 1)))
-                
-                await db.commit()
+            await update_batch_progress(db, batch_id)
 
         if is_virtual_channel and virtual_message_ids and virtual_channel_id:
             from app.workers.celery_app import celery_app as _celery
@@ -861,6 +908,7 @@ async def _do_process_chunk(
                 "virtual_submit_simulate",
                 args=[virtual_message_ids, virtual_channel_id, batch_id],
                 countdown=submit_delay + submit_jitter,
+                queue="sms_send",
             )
 
             # 阶段2：模拟回执延迟 (sent → delivered/failed)，在提交完成后再等待
@@ -869,6 +917,7 @@ async def _do_process_chunk(
                 "virtual_dlr_batch_generate",
                 args=[virtual_message_ids, virtual_channel_id, batch_id],
                 countdown=dlr_delay,
+                queue="sms_send",
             )
             logger.info(
                 f"虚拟通道两阶段任务已创建: batch={batch_id}, offset={start_offset}, "

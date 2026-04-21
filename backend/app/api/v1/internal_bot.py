@@ -1,5 +1,5 @@
 from typing import Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Header, Body
+from fastapi import APIRouter, Depends, HTTPException, Header, Body, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
@@ -290,7 +290,14 @@ async def guest_next_cs_staff_tg(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/verify-user/{tg_id}", dependencies=[Depends(verify_internal_secret)])
-async def verify_bot_user(tg_id: int, db: AsyncSession = Depends(get_db)):
+async def verify_bot_user(
+    tg_id: int,
+    include_monthly_performance: bool = Query(
+        True,
+        description="为 false 时跳过本月业绩大表统计，仅返回身份与提成比例，供 Bot 首屏秒开",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
     """校验 TG 用户身份并返回其关联的账户信息"""
     try:
         # 1. 检查是否是管理员/销售
@@ -307,30 +314,32 @@ async def verify_bot_user(tg_id: int, db: AsyncSession = Depends(get_db)):
                 "is_admin": True,
                 "status": admin.status
             }
-            # 如果是销售/财务，计算本月业绩
+            # 如果是销售/财务/超管：始终返回提成比例；本月业绩仅在大表统计开启时计算
             if admin.role in ['sales', 'finance', 'super_admin']:
-                from datetime import date
-                from sqlalchemy import text
-                rate = float(admin.commission_rate or 0) / 100.0
-                first_day = date.today().replace(day=1).strftime('%Y-%m-%d 00:00:00')
-                
-                sql = text("""
-                    SELECT SUM(l.profit * l.message_count) 
-                    FROM sms_logs l
-                    JOIN accounts acc ON l.account_id = acc.id
-                    JOIN channels ch ON l.channel_id = ch.id
-                    WHERE acc.sales_id = :sales_id 
-                      AND l.submit_time >= :start_time
-                      AND l.status = 'delivered'
-                      AND ch.protocol != 'VIRTUAL'
-                """)
-                try:
-                    res_comm = await db.execute(sql, {"sales_id": admin.id, "start_time": first_day})
-                    total_profit = float(res_comm.scalar() or 0)
-                    res_data["monthly_profit"] = total_profit
-                    res_data["monthly_commission"] = total_profit * rate
-                except Exception as e:
-                    logger.error(f"Backend failed to calc commission for admin_id={admin.id}: {e}")
+                res_data["commission_rate"] = float(admin.commission_rate or 0)
+                if include_monthly_performance:
+                    from datetime import date
+                    from sqlalchemy import text
+                    rate = float(admin.commission_rate or 0) / 100.0
+                    first_day = date.today().replace(day=1).strftime('%Y-%m-%d 00:00:00')
+
+                    sql = text("""
+                        SELECT SUM(l.profit * l.message_count) 
+                        FROM sms_logs l
+                        JOIN accounts acc ON l.account_id = acc.id
+                        JOIN channels ch ON l.channel_id = ch.id
+                        WHERE acc.sales_id = :sales_id 
+                          AND l.submit_time >= :start_time
+                          AND l.status = 'delivered'
+                          AND ch.protocol != 'VIRTUAL'
+                    """)
+                    try:
+                        res_comm = await db.execute(sql, {"sales_id": admin.id, "start_time": first_day})
+                        total_profit = float(res_comm.scalar() or 0)
+                        res_data["monthly_profit"] = total_profit
+                        res_data["monthly_commission"] = total_profit * rate
+                    except Exception as e:
+                        logger.error(f"Backend failed to calc commission for admin_id={admin.id}: {e}")
             return res_data
 
         # 2. 检查是否是客户绑定
@@ -1660,9 +1669,9 @@ async def bot_register(req: RegisterRequest, db: AsyncSession = Depends(get_db),
         await db.rollback()
         logger.exception("Bot注册异常")
         return {"success": False, "message": f"服务器内部错误: {str(e)}"}
-@router.get("/templates/{template_id}")
-async def get_template_detail(template_id: int, db: AsyncSession = Depends(get_db), token: str = Depends(verify_internal_secret)):
-    """获取账户模板详情"""
+@router.get("/templates/{template_id}", dependencies=[Depends(verify_internal_secret)])
+async def get_template_detail(template_id: int, db: AsyncSession = Depends(get_db)):
+    """获取账户模板详情（鉴权与 GET /templates 列表一致）"""
     from app.modules.common.account_template import AccountTemplate
     result = await db.execute(select(AccountTemplate).where(AccountTemplate.id == template_id))
     template = result.scalar_one_or_none()
@@ -1991,9 +2000,10 @@ async def get_sales_customers(
     page_size: int = 20,
     db: AsyncSession = Depends(get_db)
 ):
-    """获取销售名下的客户列表"""
+    """获取销售名下的客户列表（含国家码、默认通道名、账户单价）"""
     try:
-        from app.modules.common.account import Account
+        from app.modules.common.account import Account, AccountChannel
+        from app.modules.sms.channel import Channel
         from sqlalchemy import func
         query = select(Account).where(
             Account.sales_id == admin_id,
@@ -2016,21 +2026,47 @@ async def get_sales_customers(
         
         res = await db.execute(query.order_by(Account.created_at.desc()).offset(page * page_size).limit(page_size))
         accounts = res.scalars().all()
-        
+
+        # 批量解析默认通道名称（优先 is_default，其次 priority 升序取第一条）
+        account_ids = [a.id for a in accounts]
+        channel_by_account: dict = {}
+        if account_ids:
+            ch_rows = (
+                await db.execute(
+                    select(AccountChannel, Channel)
+                    .join(Channel, AccountChannel.channel_id == Channel.id)
+                    .where(AccountChannel.account_id.in_(account_ids))
+                    .order_by(
+                        AccountChannel.account_id,
+                        AccountChannel.is_default.desc(),
+                        AccountChannel.priority.asc(),
+                        AccountChannel.id.asc(),
+                    )
+                )
+            ).all()
+            for ac, ch in ch_rows:
+                if ac.account_id not in channel_by_account:
+                    channel_by_account[ac.account_id] = ch.channel_name or ch.channel_code or ""
+
+        customers = []
+        for a in accounts:
+            customers.append({
+                "id": a.id,
+                "account_name": a.account_name,
+                "business_type": a.business_type,
+                "balance": float(a.balance),
+                "status": a.status,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+                "country_code": (a.country_code or "").strip() or None,
+                "channel_name": channel_by_account.get(a.id) or None,
+                "unit_price": float(a.unit_price) if a.unit_price is not None else 0.0,
+            })
+
         return {
             "success": True,
             "total": total,
             "type_counts": type_counts,
-            "customers": [
-                {
-                    "id": a.id,
-                    "account_name": a.account_name,
-                    "business_type": a.business_type,
-                    "balance": float(a.balance),
-                    "status": a.status,
-                    "created_at": a.created_at.isoformat() if a.created_at else None
-                } for a in accounts
-            ]
+            "customers": customers,
         }
     except Exception as e:
         logger.error(f"获取客户列表失败: {e}")
@@ -2292,7 +2328,8 @@ async def get_pricing_detail_internal(biz_type: str, country_code: str, db: Asyn
                 "supplier_name": s.supplier_name,
                 "cost_price": float(sr.cost_price),
                 "billing_model": sr.billing_model,
-                "note": sr.note
+                # 模型字段为 remark，Bot 侧仍用 note 键展示
+                "note": (sr.remark or "") if sr.remark is not None else "",
             })
         return {"success": True, "rates": rates}
     except Exception as e:
@@ -2573,8 +2610,9 @@ async def activate_invitation_internal(data: dict, db: AsyncSession = Depends(ge
 
 @router.get("/sales/stats/{sales_id}", dependencies=[Depends(verify_internal_secret)])
 async def get_sales_stats_internal(sales_id: int, db: AsyncSession = Depends(get_db)):
-    """获取销售业绩统计"""
+    """获取销售业绩统计（短时 Redis 缓存 + 建议索引见 alembic r6s7t8u9v0w1）"""
     try:
+        import json
         from app.modules.common.admin_user import AdminUser
         from app.modules.common.account import Account
         from sqlalchemy import func, select, text
@@ -2590,6 +2628,20 @@ async def get_sales_stats_internal(sales_id: int, db: AsyncSession = Depends(get
         today = datetime.now()
         first_day_dt = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         first_day_str = first_day_dt.strftime('%Y-%m-%d 00:00:00')
+        month_tag = first_day_dt.strftime("%Y%m")
+        cache_key = f"bot:sales_stats:v1:{sales_id}:{month_tag}".encode("utf-8")
+
+        # 重复打开「业绩统计」时直接走缓存，减轻 sms_logs 压力（TTL 短，数据大致新鲜）
+        try:
+            from app.utils.cache import get_redis_client
+            r = await get_redis_client()
+            cached = await r.get(cache_key)
+            if cached:
+                data = json.loads(cached.decode("utf-8"))
+                if isinstance(data, dict) and data.get("success"):
+                    return data
+        except Exception as e:
+            logger.warning(f"销售统计缓存读取失败，将直连数据库: {e}")
         
         # 我的客户数
         total_cust_res = await db.execute(
@@ -2627,16 +2679,23 @@ async def get_sales_stats_internal(sales_id: int, db: AsyncSession = Depends(get
         
         res_comm = await db.execute(sql, {"sales_id": sales_id, "start_time": first_day_str})
         total_profit = float(res_comm.scalar() or 0)
-        
-        return {
+
+        result = {
             "success": True,
             "monthly_profit": total_profit,
             "monthly_commission": total_profit * rate,
-            "commission_rate": admin.commission_rate,
+            "commission_rate": float(admin.commission_rate or 0),
             "total_customers": total_customers,
             "new_customers": new_customers,
-            "total_balance": total_balance
+            "total_balance": total_balance,
         }
+        try:
+            from app.utils.cache import get_redis_client
+            r = await get_redis_client()
+            await r.setex(cache_key, 90, json.dumps(result).encode("utf-8"))
+        except Exception as e:
+            logger.warning(f"销售统计缓存写入失败: {e}")
+        return result
     except Exception as e:
         logger.error(f"获取销售统计失败: {e}")
         return {"success": False, "msg": str(e)}

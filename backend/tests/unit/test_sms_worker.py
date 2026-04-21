@@ -268,3 +268,194 @@ def test_celery_task_retry_config():
     
     # 验证最大重试次数
     assert send_sms_task.max_retries == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_virtual_dlr_single_updates_sent_to_terminal(db_session, test_account):
+    """虚拟回执单条：_do_virtual_dlr 将 sent 推进为终态（delivered/failed/expired）"""
+    from unittest.mock import AsyncMock, patch
+    from app.modules.sms.sms_log import SMSLog
+    from app.modules.sms.channel import Channel
+    from app.workers.sms_worker import _do_virtual_dlr
+
+    channel = Channel(
+        channel_code="VIRT-UNIT-01",
+        channel_name="虚拟单条测试",
+        protocol="VIRTUAL",
+        default_sender_id="TEST",
+        priority=0,
+        weight=100,
+        status="active",
+        virtual_config='{"delivery_rate_min":100,"delivery_rate_max":100,"fail_rate_min":0,"fail_rate_max":0}',
+    )
+    db_session.add(channel)
+    await db_session.flush()
+
+    mid = "msg_virt_unit_single"
+    now = datetime.now()
+    sms_log = SMSLog(
+        id=910001,
+        message_id=mid,
+        account_id=test_account.id,
+        channel_id=channel.id,
+        phone_number="+84901234567",
+        country_code="VN",
+        message="test",
+        message_count=1,
+        status="sent",
+        cost_price=0.01,
+        selling_price=0.05,
+        currency="USD",
+        submit_time=now,
+        sent_time=now,
+    )
+    db_session.add(sms_log)
+    await db_session.commit()
+
+    from sqlalchemy.ext.asyncio import AsyncEngine
+    from tests.conftest import test_engine as _async_engine
+
+    with patch("sqlalchemy.ext.asyncio.create_async_engine", return_value=_async_engine):
+        with patch.object(AsyncEngine, "dispose", new=AsyncMock()):
+            with patch("app.workers.webhook_worker.trigger_webhook", new=AsyncMock()):
+                with patch("app.utils.water_trigger.trigger_water_single", new=AsyncMock()):
+                    out = await _do_virtual_dlr(mid, channel.id)
+
+    assert out.get("success") is True
+    assert out.get("status") == "delivered"
+    await db_session.refresh(sms_log)
+    assert sms_log.status == "delivered"
+    assert sms_log.delivery_time is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_virtual_dlr_batch_updates_sent_rows(db_session, test_account):
+    """虚拟回执批量：_do_virtual_dlr_batch 将多条 sent 推进终态"""
+    from unittest.mock import AsyncMock, patch
+    from app.modules.sms.sms_log import SMSLog
+    from app.modules.sms.channel import Channel
+    from app.workers.sms_worker import _do_virtual_dlr_batch
+
+    channel = Channel(
+        channel_code="VIRT-UNIT-02",
+        channel_name="虚拟批量测试",
+        protocol="VIRTUAL",
+        default_sender_id="TEST",
+        priority=0,
+        weight=100,
+        status="active",
+        virtual_config='{"delivery_rate_min":100,"delivery_rate_max":100,"fail_rate_min":0,"fail_rate_max":0}',
+    )
+    db_session.add(channel)
+    await db_session.flush()
+
+    now = datetime.now()
+    mids = []
+    for i in range(3):
+        mid = f"msg_virt_unit_batch_{i}"
+        mids.append(mid)
+        db_session.add(
+            SMSLog(
+                id=910010 + i,
+                message_id=mid,
+                account_id=test_account.id,
+                channel_id=channel.id,
+                phone_number=f"+8490123456{i}",
+                country_code="VN",
+                message="t",
+                message_count=1,
+                status="sent",
+                cost_price=0.01,
+                selling_price=0.05,
+                currency="USD",
+                submit_time=now,
+                sent_time=now,
+            )
+        )
+    await db_session.commit()
+
+    from sqlalchemy.ext.asyncio import AsyncEngine
+    from tests.conftest import test_engine as _async_engine
+
+    with patch("sqlalchemy.ext.asyncio.create_async_engine", return_value=_async_engine):
+        with patch.object(AsyncEngine, "dispose", new=AsyncMock()):
+            with patch("app.workers.webhook_worker.trigger_webhook", new=AsyncMock()):
+                with patch("app.utils.water_trigger.trigger_water_for_delivered", new=AsyncMock()):
+                    out = await _do_virtual_dlr_batch(mids, channel.id, batch_id=None)
+
+    assert out["delivered"] == 3
+    assert out["failed"] == 0
+    assert out["expired"] == 0
+
+    from sqlalchemy import select
+
+    for mid in mids:
+        r2 = await db_session.execute(select(SMSLog.status).where(SMSLog.message_id == mid))
+        assert r2.scalar_one() == "delivered"
+
+
+@pytest.mark.unit
+def test_virtual_dlr_tasks_routed_to_sms_send():
+    """确认 Celery 路由：虚拟回执相关任务走 sms_send（与 worker-sms 一致）"""
+    from app.workers.celery_app import celery_app
+
+    routes = celery_app.conf.task_routes
+    assert routes.get("virtual_dlr_generate") == {"queue": "sms_send"}
+    assert routes.get("virtual_dlr_batch_generate") == {"queue": "sms_send"}
+    assert routes.get("virtual_submit_simulate") == {"queue": "sms_send"}
+    assert routes.get("repair_virtual_batch_dlr") == {"queue": "sms_send"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_via_virtual_schedules_celery_on_sms_send_queue(db_session, test_account):
+    """虚拟发送：入队 virtual_dlr_generate 且显式 queue=sms_send"""
+    from unittest.mock import MagicMock, patch
+    from app.modules.sms.sms_log import SMSLog
+    from app.modules.sms.channel import Channel
+    from app.workers.sms_worker import _send_via_virtual
+
+    channel = Channel(
+        channel_code="VIRT-UNIT-03",
+        channel_name="虚拟调度测试",
+        protocol="VIRTUAL",
+        default_sender_id="TEST",
+        priority=0,
+        weight=100,
+        status="active",
+    )
+    db_session.add(channel)
+    await db_session.flush()
+
+    sms_log = SMSLog(
+        id=910020,
+        message_id="msg_virt_queue_chk",
+        account_id=test_account.id,
+        channel_id=channel.id,
+        phone_number="+84900000000",
+        country_code="VN",
+        message="x",
+        message_count=1,
+        status="sent",
+        cost_price=0.01,
+        selling_price=0.05,
+        currency="USD",
+        submit_time=datetime.now(),
+    )
+    db_session.add(sms_log)
+    await db_session.commit()
+
+    mock_celery = MagicMock()
+
+    with patch("app.workers.celery_app.celery_app", mock_celery):
+        ok = await _send_via_virtual(sms_log, channel)
+
+    assert ok is True
+    mock_celery.send_task.assert_called_once()
+    call_kw = mock_celery.send_task.call_args
+    assert call_kw[0][0] == "virtual_dlr_generate"
+    assert call_kw[1].get("queue") == "sms_send"
+    assert call_kw[1]["args"][0] == "msg_virt_queue_chk"
+    assert call_kw[1]["args"][1] == channel.id

@@ -3,13 +3,12 @@
 """
 from decimal import Decimal
 from typing import Dict, List, Optional
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.sms.country_pricing import CountryPricing
 from app.modules.common.account_pricing import AccountPricing
 from app.modules.common.account import Account
 from app.modules.sms.channel import Channel
-from app.modules.sms.supplier import SupplierChannel, SupplierRate
 from app.modules.common.balance_log import BalanceLog
 from app.utils.errors import InsufficientBalanceError, PricingNotFoundError
 from app.utils.sms_segment import count_sms_parts as _count_sms_parts_impl
@@ -35,50 +34,79 @@ class PricingEngine:
         channel: Optional[Channel] = None,
     ) -> Decimal:
         """
-        解析上游成本单价（每条）。
-        优先级：SupplierRate（通道关联供应商 + 国家 + sms）> Channel.cost_rate > 0。
-        使用 get_country_variants() 做 ISO2/区号/中文名 全等价匹配。
+        解析短信发送成本单价（每条），以通道侧配置为准（与供应商费率表解耦）。
+
+        优先级：
+        1) country_pricing：该通道 + 国家的 price_per_sms（按 effective_date 取最新；国家码优先匹配规范化 ISO2）；
+        2) country_pricing 国家通配 country_code = '*'；
+        3) channels.cost_rate（通道表单「成本价」）；
+        若均为 0 或未配置则返回 0 并打日志。
+
+        结果缓存 1 小时，大批量场景下同通道+国家组合只查一次库。
         """
+        cache_manager = await get_cache_manager()
+        cache_key = f"base_cost:{channel_id}:{country_code}"
+        cached = await cache_manager.get(cache_key)
+        if cached is not None:
+            return Decimal(str(cached))
+
         if channel is None:
             ch_row = await self.db.execute(select(Channel).where(Channel.id == channel_id))
             channel = ch_row.scalar_one_or_none()
 
-        codes = get_country_variants(country_code)
-        if codes:
-            sc_row = await self.db.execute(
-                select(SupplierChannel.supplier_id).where(
-                    SupplierChannel.channel_id == channel_id,
-                    SupplierChannel.status == 'active',
-                )
-            )
-            supplier_ids = [r[0] for r in sc_row.all()]
-            for sid in supplier_ids:
-                rate_row = await self.db.execute(
-                    select(SupplierRate.cost_price)
-                    .where(
-                        SupplierRate.supplier_id == sid,
-                        SupplierRate.business_type == 'sms',
-                        SupplierRate.status == 'active',
-                        SupplierRate.country_code.in_(codes),
-                    )
-                    .order_by(SupplierRate.id.desc())
-                    .limit(1)
-                )
-                cp = rate_row.scalar_one_or_none()
-                if cp is not None and float(cp) > 0:
-                    return Decimal(str(cp))
+        variants = get_country_variants(country_code)
+        iso_upper = (normalize_country_code(country_code) or "").strip().upper()
+        ordered_codes: List[str] = []
+        if iso_upper:
+            ordered_codes.append(iso_upper)
+        for c in variants or []:
+            cu = str(c).strip().upper()
+            if cu and cu not in ordered_codes:
+                ordered_codes.append(cu)
 
-        fallback = Decimal(str(channel.cost_rate)) if (channel and channel.cost_rate) else Decimal('0')
-        if fallback <= 0:
-            logger.warning(
-                "成本单价为 0: channel_id=%s, country=%s, suppliers=%s — 请检查供应商费率或通道 cost_rate 配置",
-                channel_id, country_code,
-                [r[0] for r in (await self.db.execute(
-                    select(SupplierChannel.supplier_id).where(
-                        SupplierChannel.channel_id == channel_id, SupplierChannel.status == 'active')
-                )).all()] if channel_id else [],
+        for cc in ordered_codes:
+            row = await self.db.execute(
+                select(CountryPricing.price_per_sms)
+                .where(
+                    CountryPricing.channel_id == channel_id,
+                    func.upper(CountryPricing.country_code) == cc,
+                )
+                .order_by(CountryPricing.effective_date.desc())
+                .limit(1)
             )
-        return fallback
+            p = row.scalar_one_or_none()
+            if p is not None and float(p) > 0:
+                result = Decimal(str(p))
+                await cache_manager.set(cache_key, str(result), ttl=3600)
+                return result
+
+        row_w = await self.db.execute(
+            select(CountryPricing.price_per_sms)
+            .where(
+                CountryPricing.channel_id == channel_id,
+                CountryPricing.country_code == '*',
+            )
+            .order_by(CountryPricing.effective_date.desc())
+            .limit(1)
+        )
+        pw = row_w.scalar_one_or_none()
+        if pw is not None and float(pw) > 0:
+            result = Decimal(str(pw))
+            await cache_manager.set(cache_key, str(result), ttl=3600)
+            return result
+
+        if channel and channel.cost_rate and float(channel.cost_rate) > 0:
+            result = Decimal(str(channel.cost_rate))
+            await cache_manager.set(cache_key, str(result), ttl=3600)
+            return result
+
+        logger.warning(
+            "成本单价为 0: channel_id=%s, country=%s — 请在后台配置 country_pricing 或通道 cost_rate",
+            channel_id,
+            country_code,
+        )
+        await cache_manager.set(cache_key, "0", ttl=300)
+        return Decimal('0')
     
     async def calculate_and_charge(
         self,
@@ -86,39 +114,42 @@ class PricingEngine:
         channel_id: int,
         country_code: str,
         message: str,
-        mnc: Optional[str] = None
+        mnc: Optional[str] = None,
+        channel: Optional[Channel] = None,
+        skip_balance_log: bool = False,
     ) -> Dict:
         """
-        计算费用并扣款（使用原子操作防止并发超扣）
+        计算费用并扣款（使用原子操作防止并发超扣）。
+
+        channel          — 由调用方传入可避免重复查库（批量场景）。
+        skip_balance_log — True 时跳过 BalanceLog INSERT、balance SELECT、db.flush()
+                           及 Redis 缓存写入，由调用方在 commit 点统一处理；
+                           适用于大批量循环，可将每条 ~4 次 DB 操作降为 1 次。
         """
         try:
             # 1. 计算短信条数
             message_count = self._count_sms_parts(message)
             logger.debug(f"短信条数: {message_count}")
-            
-            # 2. 查询销售价格 (Selling Price) - 传入 account_id
+
+            # 2. 查询销售价格（带 Redis 缓存，同账户+通道+国家只查一次库）
             price_info = await self.get_price(channel_id, country_code, mnc, account_id)
             if not price_info:
                 raise PricingNotFoundError(country_code, channel_id)
-            
+
             price_per_sms = Decimal(str(price_info['price']))
             currency = price_info['currency']
-            
-            # 3. 成本单价：供应商国家费率 SupplierRate（如孟加拉 0.0066）优先，其次通道 cost_rate
-            channel_result = await self.db.execute(
-                select(Channel).where(Channel.id == channel_id)
-            )
-            channel = channel_result.scalar_one_or_none()
+
+            # 3. 成本单价（带 Redis 缓存，调用方若已有 channel 则无需再查库）
             base_cost_per_sms = await self.resolve_base_cost_per_sms(
                 channel_id, country_code, channel
             )
-            
+
             # 4. 计算总费用
             total_sell_price = price_per_sms * message_count
             total_base_cost = base_cost_per_sms * message_count
-            
-            logger.info(f"计费: Sell={total_sell_price}, Cost={total_base_cost}")
-            
+
+            logger.debug(f"计费: Sell={total_sell_price}, Cost={total_base_cost}")
+
             # 5. 原子扣减余额：WHERE balance >= total 防止并发超扣
             stmt = (
                 update(Account)
@@ -129,7 +160,7 @@ class PricingEngine:
                 .values(balance=Account.balance - total_sell_price)
             )
             result = await self.db.execute(stmt)
-            
+
             if result.rowcount == 0:
                 # 扣减失败：账户不存在或余额不足
                 acct_result = await self.db.execute(
@@ -142,13 +173,27 @@ class PricingEngine:
                     required=float(total_sell_price),
                     available=float(row[0])
                 )
-            
-            # 6. 查询扣减后的余额用于记录日志
+
+            if skip_balance_log:
+                # 批量模式：跳过 SELECT balance / BalanceLog INSERT / flush / Redis
+                # 由调用方在每个 commit 点统一写一条汇总 BalanceLog 并更新缓存
+                return {
+                    'success': True,
+                    'total_cost': float(total_sell_price),
+                    'total_base_cost': float(total_base_cost),
+                    'message_count': message_count,
+                    'price_per_sms': float(price_per_sms),
+                    'base_cost_per_sms': float(base_cost_per_sms),
+                    'currency': currency,
+                    'balance_after': None,
+                }
+
+            # 6. 查询扣减后的余额用于日志（单条发送路径保留）
             acct_result = await self.db.execute(
                 select(Account.balance).where(Account.id == account_id)
             )
             balance_after = acct_result.scalar()
-            
+
             # 7. 记录余额变动
             balance_log = BalanceLog(
                 account_id=account_id,
@@ -158,14 +203,14 @@ class PricingEngine:
                 description=f"SMS charge: {message_count} parts to {country_code} ({currency})"
             )
             self.db.add(balance_log)
-            
+
             await self.db.flush()
-            
+
             # 更新余额缓存
             cache_manager = await get_cache_manager()
             balance_cache_key = f"account:{account_id}:balance"
             await cache_manager.set(balance_cache_key, float(balance_after), ttl=60)
-            
+
             return {
                 'success': True,
                 'total_cost': float(total_sell_price),
@@ -174,9 +219,9 @@ class PricingEngine:
                 'price_per_sms': float(price_per_sms),
                 'base_cost_per_sms': float(base_cost_per_sms),
                 'currency': currency,
-                'balance_after': float(balance_after)
+                'balance_after': float(balance_after),
             }
-            
+
         except (InsufficientBalanceError, PricingNotFoundError):
             raise
         except Exception as e:

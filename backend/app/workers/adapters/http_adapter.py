@@ -37,6 +37,25 @@ class HTTPAdapter:
             strip_leading_plus=strip_leading_plus_enabled(self.config),
         )
 
+    def _resolve_payload_template(self) -> str:
+        """解析最终 payload 模板名（与 _build_payload 逻辑一致）。"""
+        template = self.config.get("payload_template", "auto")
+        if template == "auto":
+            api_url = self.channel.api_url or ""
+            if "kaola" in api_url.lower():
+                return "kaola"
+            if "twilio" in api_url.lower():
+                return "twilio"
+            if "nexmo" in api_url.lower():
+                return "nexmo"
+            return "default"
+        return template
+
+    @staticmethod
+    def _kaola_status_is_success(value) -> bool:
+        """Kaola 等通道：status 为 0 / \"0\" 表示成功。"""
+        return value == 0 or value == "0" or value == "00"
+
     async def send(self, sms_log: SMSLog) -> tuple[bool, Optional[str], Optional[str]]:
         """
         发送短信
@@ -97,21 +116,8 @@ class HTTPAdapter:
     
     def _build_payload(self, sms_log: SMSLog) -> dict:
         """构造请求payload"""
-        # 根据通道配置或API地址自动检测格式
-        template = self.config.get('payload_template', 'auto')
-        
-        # 自动检测：根据api_url判断通道类型
-        if template == 'auto':
-            api_url = self.channel.api_url or ''
-            if 'kaola' in api_url.lower():
-                template = 'kaola'
-            elif 'twilio' in api_url.lower():
-                template = 'twilio'
-            elif 'nexmo' in api_url.lower():
-                template = 'nexmo'
-            else:
-                template = 'default'
-        
+        template = self._resolve_payload_template()
+
         # SMSLog 模型无 sender_id 字段，优先从 channel 配置获取
         sender = getattr(sms_log, 'sender_id', None) or self.channel.default_sender_id or ''
 
@@ -198,19 +204,60 @@ class HTTPAdapter:
         return None
     
     def _check_response_success(self, response: dict) -> bool:
-        """检查响应是否表示成功"""
-        # Kaola格式：status=0 表示成功
-        if 'status' in response:
-            return response['status'] == 0
-        
-        # 其他常见格式
-        if 'code' in response:
-            return response['code'] in [0, 200, '0', '200', 'OK', 'success']
-        if 'success' in response:
-            return response['success'] == True
-        if 'result' in response:
-            return response['result'] in [0, 'success', 'ok', True]
-        
-        # 默认认为成功（HTTP 200 已经通过了）
-        return True
+        """检查响应是否表示成功（避免仅因 HTTP 200 + 任意 JSON 误判成功）。"""
+        template = self._resolve_payload_template()
+
+        # Kaola：必须有 status 且为成功取值；不得在无 status 时默认成功
+        if template == "kaola":
+            if "status" in response:
+                return self._kaola_status_is_success(response["status"])
+            return False
+
+        # Vonage / Nexmo：以 messages[0].status 为准（\"0\" 为成功）
+        if template == "nexmo":
+            messages = response.get("messages")
+            if isinstance(messages, list) and messages:
+                m0 = messages[0]
+                if isinstance(m0, dict) and "status" in m0:
+                    return str(m0["status"]) == "0"
+            return False
+
+        # 常见业务字段（顺序敏感：先处理明确语义）
+        if "code" in response:
+            return response["code"] in [0, 200, "0", "200", "OK", "success"]
+        if "success" in response:
+            return response["success"] is True
+        if "result" in response:
+            return response["result"] in [0, "success", "ok", True]
+
+        # 泛型 status：兼容字符串 ok / 数值 0 / 200 等（非 Kaola 模板）
+        if "status" in response:
+            s = response["status"]
+            if isinstance(s, str):
+                sl = s.lower()
+                if sl in ("success", "ok", "true"):
+                    return True
+                if sl in ("error", "failed", "false"):
+                    return False
+                if s in ("0", "00"):
+                    return True
+                # 其余字符串视为非成功，避免误报
+                return False
+            if isinstance(s, (int, float)):
+                return s in (0, 200)
+
+        # default：有通道回执 ID 视为已受理；仅 raw_response 时仅接受极简正文
+        if template == "default":
+            if self._extract_message_id(response) is not None:
+                return True
+            if len(response) == 1 and "raw_response" in response:
+                text = str(response.get("raw_response") or "").strip().lower()
+                return text in ("ok", "success", '{"ok":true}')
+            return False
+
+        # twilio：成功响应通常含 sid；错误体常含 code 且已在上方处理
+        if template == "twilio":
+            return self._extract_message_id(response) is not None
+
+        return False
 

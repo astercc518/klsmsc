@@ -492,6 +492,9 @@ services:
       DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-smsc_mq}:${RABBITMQ_PASSWORD:-smsc_mq_pass}@rabbitmq:5672/
+      # Go 网关消费 sms_send_smpp：并行 worker 数与 Rabbit QoS prefetch（与 channels.concurrency 配合调压）
+      SMPP_GATEWAY_WORKERS: ${SMPP_GATEWAY_WORKERS:-32}
+      SMPP_GATEWAY_PREFETCH: ${SMPP_GATEWAY_PREFETCH:-32}
       SMPP_PROBE_BIND_LISTEN: ${SMPP_PROBE_BIND_LISTEN:-:8090}
       SMPP_PROBE_TOKEN: ${SMPP_PROBE_TOKEN:-}
     depends_on:

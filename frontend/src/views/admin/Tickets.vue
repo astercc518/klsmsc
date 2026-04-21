@@ -565,7 +565,7 @@ const loadTickets = async () => {
 
 const loadAdminList = async () => {
   try {
-    const res = await request.get('/admin/users')
+    const res = await request.get('/admin/users', { params: { include_monthly_stats: false } })
     if (res.users) {
       adminList.value = res.users.filter((u: any) => u.status === 'active')
     }

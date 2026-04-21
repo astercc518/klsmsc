@@ -624,7 +624,9 @@ const showOffboardDialog = async (row: Staff) => {
         unused_invite_count: res.unused_invite_count ?? 0
       }
     }
-    const salesRes = await request.get('/admin/users', { params: { role: 'sales', status: 'active' } })
+    const salesRes = await request.get('/admin/users', {
+      params: { role: 'sales', status: 'active', include_monthly_stats: false },
+    })
     activeSalesList.value = (salesRes?.users || []).filter((s: Staff) => s.id !== row.id)
   } catch (e: any) {
     ElMessage.error(e.message || t('staff.loadFailed'))

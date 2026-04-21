@@ -6,6 +6,9 @@ from sqlalchemy import select, func as sa_func, update as _sa_upd
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.sms_batch import SmsBatch, BatchStatus
 from app.modules.sms.channel import Channel
+# 预注册关联表元数据，避免 ORM 在部分入口（仅 import batch_utils）时外键解析失败
+from app.modules.sms.sms_template import SmsTemplate  # noqa: F401
+from app.modules.common.account import Account  # noqa: F401
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -61,6 +64,15 @@ async def update_batch_progress(db, batch_id: int):
         batch.failed_count = failed
         batch.processing_count = max(0, total - done)
         batch.progress = min(100, int(done * 100 / max(total, 1)))
+
+        # 纠偏：历史代码曾把「仅入队」误标为 completed；若仍有待发或在途未计入 done，必须回退为 processing
+        if batch.status == BatchStatus.COMPLETED and (pending_cnt > 0 or done < log_total):
+            batch.status = BatchStatus.PROCESSING
+            batch.completed_at = None
+            logger.warning(
+                f"批次 {batch_id} 从 completed 回退为 processing："
+                f"pending+queued={pending_cnt}, done={done}, log_total={log_total}, total={total}"
+            )
 
         # 状态切换逻辑
         if log_total >= total and done >= log_total:

@@ -39,8 +39,10 @@ class MessageService:
                 "extra_data": extra_data
             }
 
+            secret = os.environ.get("TELEGRAM_STAFF_API_SECRET") or ""
+            headers = {"X-Internal-Token": secret} if secret else {}
             async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.post(url, json=payload)
+                response = await client.post(url, json=payload, headers=headers)
                 if response.status_code != 200:
                     logger.warning(f"记录Telegram消息API返回失败: {response.status_code}")
                     return False
@@ -48,6 +50,14 @@ class MessageService:
         except Exception as e:
             logger.error(f"发送Telegram留痕消息到API失败: {e}")
             return False
+
+    @staticmethod
+    async def log_incoming_background(update: Any) -> None:
+        """后台执行入站留痕，避免阻塞 Bot 主处理链（降低回复延迟）。"""
+        try:
+            await MessageService.log_incoming(update)
+        except Exception as e:
+            logger.warning("入站消息留痕失败(已忽略): {}", e)
 
     @staticmethod
     async def log_incoming(update: Any):

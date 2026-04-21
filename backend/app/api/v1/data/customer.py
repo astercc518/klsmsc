@@ -35,6 +35,9 @@ from pathlib import Path
 from collections import defaultdict
 from decimal import Decimal
 from pydantic import BaseModel, Field
+from passlib.context import CryptContext
+
+_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 from app.database import get_db
 from app.modules.data.models import (
@@ -1832,10 +1835,27 @@ async def export_my_numbers(
     source: Optional[str] = None,
     purpose: Optional[str] = None,
     batch_id: Optional[str] = Query(None),
+    export_password: Optional[str] = Query(None, description="下载密码（若该批次设置了加密则必填）"),
     db: AsyncSession = Depends(get_db),
     account: Account = Depends(get_current_account),
 ):
-    """导出我的私有库号码（私库分表 + 公海购入绑定行）"""
+    """导出我的私有库号码（私库分表 + 公海购入绑定行）。若批次已加密，需提供正确下载密码。"""
+    # 密码保护验证：仅当指定 batch_id 时生效（全量导出不受单批次密码限制）
+    if batch_id:
+        pwd_row = await db.execute(
+            select(PrivateLibrarySummary.export_password_hash)
+            .where(
+                PrivateLibrarySummary.account_id == account.id,
+                PrivateLibrarySummary.batch_id == batch_id,
+                PrivateLibrarySummary.export_password_hash.isnot(None),
+            )
+            .limit(1)
+        )
+        stored_hash = pwd_row.scalar_one_or_none()
+        if stored_hash:
+            if not export_password or not _pwd_ctx.verify(export_password, stored_hash):
+                raise HTTPException(403, "该数据包已加密，请提供正确的下载密码")
+
     u = _my_numbers_union_subquery(
         account.id,
         country=country,
@@ -2034,12 +2054,14 @@ async def create_my_numbers_upload_task(
     purpose: Optional[str] = Form("Social"),
     remarks: Optional[str] = Form(None),
     detect_carrier: bool = Form(True),
+    export_password: Optional[str] = Form(None, description="下载密码（可选）；设置后导出该批次需验证密码"),
     db: AsyncSession = Depends(get_db),
     account: Account = Depends(get_current_account),
 ):
     """
     创建私库异步上传任务：文件落盘后加入 Celery 队列，通过 GET /my-numbers/upload-tasks/{task_id} 轮询进度。
     需运行消费 data_tasks 队列的 Celery Worker。
+    export_password 设置后，该批次号码导出时需提供正确密码（SMS 发送不受影响）。
     """
     fname = file.filename or ""
     if not fname.lower().endswith((".csv", ".txt")):
@@ -2047,6 +2069,14 @@ async def create_my_numbers_upload_task(
 
     content = await file.read()
     _assert_private_upload_country_matches_account(account, country_code)
+
+    # 密码校验：不允许过短
+    if export_password is not None:
+        export_password = export_password.strip()
+        if export_password and len(export_password) < 4:
+            raise HTTPException(400, "下载密码至少需要 4 位")
+
+    export_password_hash = _pwd_ctx.hash(export_password) if export_password else None
 
     task_id = f"PLU-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
     _PRIVATE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -2063,6 +2093,7 @@ async def create_my_numbers_upload_task(
         purpose=purpose,
         remarks=remarks,
         detect_carrier=bool(detect_carrier),
+        export_password_hash=export_password_hash,
         status="pending",
         stage="queued",
         progress_percent=0,

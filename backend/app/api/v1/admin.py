@@ -1854,18 +1854,38 @@ async def channel_test_send(
 
     try:
         if channel.protocol == "SMPP":
-            # SMPP 发送已迁移至 Go Gateway；API 进程内不再内嵌 Python SMPP 适配器
-            sms_log.status = "failed"
-            sms_log.error_message = "SMPP 测试发送已改为由独立网关处理，请通过网关或实际下发任务验证"
+            # 直投 sms_send_smpp，与 Worker 重投格式一致，由 Go gateway 消费；不依赖 worker-sms 抢 sms_send
             await db.commit()
+
+            from app.utils.queue import QueueManager
+            ok = QueueManager.queue_smpp_gateway(test_message_id, None)
+            if not ok:
+                await db.refresh(sms_log)
+                sms_log.status = "failed"
+                sms_log.error_message = (
+                    "测试任务加入发送队列失败，请检查 RabbitMQ、smpp-gateway 是否运行及网络可达"
+                )
+                await db.commit()
+                return {
+                    "success": False,
+                    "message": sms_log.error_message,
+                    "details": {
+                        "channel": channel.channel_code,
+                        "protocol": "SMPP",
+                        "host": f"{channel.host}:{channel.port}",
+                        "message_id": test_message_id,
+                    },
+                }
+
             return {
-                "success": False,
-                "message": sms_log.error_message,
+                "success": True,
+                "message": "测试任务已加入发送队列，SMPP 由网关异步下发，请在发送记录中查看结果",
                 "details": {
                     "channel": channel.channel_code,
                     "protocol": "SMPP",
                     "host": f"{channel.host}:{channel.port}",
                     "message_id": test_message_id,
+                    "phone": request.phone,
                 },
             }
 
@@ -3566,6 +3586,10 @@ async def get_admin_daily_stats(
 async def list_admin_users(
     role: Optional[str] = None,
     status: Optional[str] = None,
+    include_monthly_stats: bool = Query(
+        True,
+        description="为 false 时跳过本月 sms_logs 聚合，避免大数据量下请求过慢导致网关/Cloudflare 522",
+    ),
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -3584,24 +3608,31 @@ async def list_admin_users(
     if role:
         query = query.where(AdminUser.role == role)
     
-    # 获取本月起始时间
-    first_day = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    
-    from app.modules.sms.sms_log import SMSLog
-    from app.modules.sms.channel import Channel
-    comm_query = (
-        select(Account.sales_id, func.sum(SMSLog.profit * SMSLog.message_count).label("total_profit"))
-        .join(SMSLog, Account.id == SMSLog.account_id)
-        .join(Channel, SMSLog.channel_id == Channel.id)
-        .where(and_(
-            SMSLog.submit_time >= first_day,
-            SMSLog.status == 'delivered',
-            Channel.protocol != 'VIRTUAL'
-        ))
-        .group_by(Account.sales_id)
-    )
-    comm_result = await db.execute(comm_query)
-    comm_map = {r.sales_id: float(r.total_profit or 0) for r in comm_result}
+    comm_map: dict = {}
+    if include_monthly_stats:
+        # 获取本月起始时间
+        first_day = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        from app.modules.sms.sms_log import SMSLog
+        from app.modules.sms.channel import Channel
+
+        # 从 SMSLog 起表，便于命中 (submit_time, status, account_id) 等索引，减少全表扫描
+        comm_query = (
+            select(Account.sales_id, func.sum(SMSLog.profit * SMSLog.message_count).label("total_profit"))
+            .select_from(SMSLog)
+            .join(Account, SMSLog.account_id == Account.id)
+            .join(Channel, SMSLog.channel_id == Channel.id)
+            .where(
+                and_(
+                    SMSLog.submit_time >= first_day,
+                    SMSLog.status == "delivered",
+                    Channel.protocol != "VIRTUAL",
+                )
+            )
+            .group_by(Account.sales_id)
+        )
+        comm_result = await db.execute(comm_query)
+        comm_map = {r.sales_id: float(r.total_profit or 0) for r in comm_result}
     
     result = await db.execute(query)
     users = result.scalars().all()

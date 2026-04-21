@@ -660,6 +660,7 @@ export default {
     fault: '故障',
     fillCountryCodeRequired: '请填写国家代码',
     fillCountryRequired: '请填写国家信息',
+    formValidationFailed: '表单校验未通过，请检查标红项或必填项',
     host: '主机',
     hostPlaceholder: '如：sms.example.com',
     httpAccountPlaceholder: 'HTTP账号',

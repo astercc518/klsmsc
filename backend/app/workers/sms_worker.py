@@ -11,6 +11,7 @@ from sqlalchemy import select, and_, or_
 from celery.exceptions import Retry
 
 from app.workers.celery_app import celery_app
+from app.config import settings
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
 from app.database import AsyncSessionLocal
@@ -40,6 +41,7 @@ logger = get_logger(__name__)
 
 # 从工具类导入
 from app.modules.sms.batch_utils import update_batch_progress, _mimic_smpp_expired_dlr_message
+from app.modules.sms.sms_batch import SmsBatch
 
 
 
@@ -89,17 +91,25 @@ def send_sms_task(self, message_id: str, http_credentials: dict = None):
     """
     logger.info(f"开始处理短信发送任务: {message_id}")
     current_queue = (self.request.delivery_info or {}).get('routing_key', 'sms_send')
-    
+
     try:
         result = _run_async(_send_sms_async(message_id, http_credentials, _current_queue=current_queue))
 
         if isinstance(result, dict) and result.get("_reroute_smpp"):
             # 生产默认由 go-smpp-gateway 消费 sms_send_smpp；勿与 worker-sms-smpp 同队列并行（见 docs/运维/服务与队列矩阵.md）
             logger.info(f"SMPP 通道任务重路由到 sms_send_smpp 队列: {message_id}")
-            send_sms_task.apply_async(
-                args=[message_id, http_credentials],
-                queue='sms_send_smpp',
-            )
+            try:
+                send_sms_task.apply_async(
+                    args=[message_id, http_credentials],
+                    queue='sms_send_smpp',
+                )
+            except Exception as e:
+                logger.error(
+                    f"SMPP 重投 sms_send_smpp 失败: {message_id}, {e}",
+                    exc_info=e,
+                )
+                _run_async(_mark_failed(message_id, f"SMPP重投sms_send_smpp失败: {e}"))
+                return {"success": False, "error": str(e)}
             return {"success": True, "rerouted": "sms_send_smpp"}
 
         if isinstance(result, dict) and result.get("_rate_limited"):
@@ -152,125 +162,152 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
             result = await db.execute(
                 select(SMSLog).where(SMSLog.message_id == message_id)
             )
-        sms_log = result.scalar_one_or_none()
+            sms_log = result.scalar_one_or_none()
         
-        if not sms_log:
-            logger.error(f"短信记录不存在: {message_id}")
-            return {"success": False, "error": "Message not found"}
+            if not sms_log:
+                logger.error(f"短信记录不存在: {message_id}")
+                return {"success": False, "error": "Message not found"}
+
+            # 批次已取消：不再入队 SMPP / 不再发 HTTP，待发记录直接失败（避免队列残留任务仍打到通道）
+            if sms_log.batch_id:
+                _bs = (
+                    await db.execute(select(SmsBatch.status).where(SmsBatch.id == sms_log.batch_id))
+                ).scalar_one_or_none()
+                _bsv = getattr(_bs, "value", _bs)
+                if _bsv == "cancelled" and sms_log.status in ("pending", "queued"):
+                    sms_log.status = "failed"
+                    sms_log.error_message = "批次已取消"
+                    await db.commit()
+                    if sms_log.batch_id:
+                        await update_batch_progress(db, sms_log.batch_id)
+                    logger.info(f"批次已取消，跳过发送: batch={sms_log.batch_id}, message_id={message_id}")
+                    return {"success": True, "message_id": message_id, "status": "failed", "skipped": True}
+
+            # 已为终态则不再走发送逻辑（避免与批量虚拟回执等竞态把 delivered 覆盖回 sent）
+            if sms_log.status in ("delivered", "failed", "expired"):
+                logger.info(f"短信已终态，跳过发送任务: {message_id}, status={sms_log.status}")
+                return {"success": True, "message_id": message_id, "status": sms_log.status, "skipped": True}
+
+            # 查询通道（若未指定则自动路由）
+            channel = None
+            if sms_log.channel_id:
+                result = await db.execute(
+                    select(Channel).where(Channel.id == sms_log.channel_id)
+                )
+                channel = result.scalar_one_or_none()
+
+            if not channel:
+                try:
+                    from app.core.router import RoutingEngine
+                    router = RoutingEngine(db)
+                    country = sms_log.country_code or "PH"
+                    channel = await router.select_channel(country)
+                    if channel:
+                        sms_log.channel_id = channel.id
+                except Exception as route_err:
+                    logger.warning(f"自动路由失败: {message_id}, {route_err}")
+
+            if not channel:
+                logger.error(f"无可用通道: {message_id}, channel_id={sms_log.channel_id}")
+                sms_log.status = 'failed'
+                sms_log.error_message = "No available channel"
+                await db.commit()
+                return {"success": False, "error": "No available channel"}
         
-        # 查询通道（若未指定则自动路由）
-        channel = None
-        if sms_log.channel_id:
-            result = await db.execute(
-                select(Channel).where(Channel.id == sms_log.channel_id)
-            )
-            channel = result.scalar_one_or_none()
+            logger.info(f"使用通道: {channel.channel_code} ({channel.protocol})")
 
-        if not channel:
-            try:
-                from app.core.router import RoutingEngine
-                router = RoutingEngine(db)
-                country = sms_log.country_code or "PH"
-                channel = await router.select_channel(country)
-                if channel:
-                    sms_log.channel_id = channel.id
-            except Exception as route_err:
-                logger.warning(f"自动路由失败: {message_id}, {route_err}")
-
-        if not channel:
-            logger.error(f"无可用通道: {message_id}, channel_id={sms_log.channel_id}")
-            sms_log.status = 'failed'
-            sms_log.error_message = "No available channel"
-            await db.commit()
-            return {"success": False, "error": "No available channel"}
-        
-        logger.info(f"使用通道: {channel.channel_code} ({channel.protocol})")
-
-        # SMPP 通道需在专用线程池 worker 中处理，避免多进程并发 bind
-        # 如果当前任务运行在 sms_send 队列（prefork worker），返回重路由标记
-        if channel.protocol == 'SMPP' and _current_queue != 'sms_send_smpp':
-            await db.close()
-            return {"_reroute_smpp": True}
-
-        if channel.protocol != 'VIRTUAL':
-            from app.utils.rate_limiter import acquire_send_slot
-            max_tps = channel.max_tps or 100
-            allowed, wait_ms = acquire_send_slot(channel.id, max_tps)
-            if not allowed:
+            # SMPP 通道需在专用线程池 worker 中处理，避免多进程并发 bind
+            # 如果当前任务运行在 sms_send 队列（prefork worker），返回重路由标记
+            if channel.protocol == 'SMPP' and _current_queue != 'sms_send_smpp':
+                # 已进入发送链路，先落库为 queued，避免长期停留在 pending 被误判为「未出队」
+                if sms_log.status == "pending":
+                    sms_log.status = "queued"
+                    await db.commit()
+                # 首跳即 return，原先未刷新批次汇总；Go 网关写 sent 也不经本进程，须在此先同步一次
+                if sms_log.batch_id:
+                    await update_batch_progress(db, sms_log.batch_id)
                 await db.close()
-                return {"_rate_limited": True, "_wait_sec": round(wait_ms / 1000, 2)}
+                return {"_reroute_smpp": True}
 
-        # 更新状态为发送中
-        sms_log.status = 'sent'
-        sms_log.sent_time = datetime.now()
-        await db.commit()
-        
-        # 根据通道协议发送
-        if channel.protocol == 'VIRTUAL':
-            success = await _send_via_virtual(sms_log, channel)
-        elif channel.protocol == 'HTTP':
-            success = await _send_via_http(sms_log, channel, http_credentials)
-        else:
-            # SMPP 协议由 Go Gateway 处理。如果在此处捕获到，说明重路由逻辑或者队列配置有误。
-            logger.error(f"非预期路径：{channel.protocol} 协议尝试在 Python Worker 发送")
-            success = False
+            if channel.protocol != 'VIRTUAL':
+                from app.utils.rate_limiter import acquire_send_slot
+                max_tps = channel.max_tps or 100
+                allowed, wait_ms = acquire_send_slot(channel.id, max_tps)
+                if not allowed:
+                    await db.close()
+                    return {"_rate_limited": True, "_wait_sec": round(wait_ms / 1000, 2)}
 
-        # 发送成功后立刻提交：submit_sm_resp 写入的 upstream_message_id 必须先落库。
-        # deliver_sm 常在同一秒内到达，DLR 在独立线程读库；若仍停留在未提交的会话里，会大量出现「SMPP DLR: 未找到」且界面长期「送达等待中」。
-        if success:
+            # 更新状态为发送中
+            sms_log.status = 'sent'
+            sms_log.sent_time = datetime.now()
             await db.commit()
         
-        # 更新状态
-        if success:
-            sms_log.status = 'sent'  # 先标记为已发送，等待DLR
-            sms_log.sent_time = datetime.now()
-            logger.info(f"短信发送成功: {message_id}")
-            
-            # 触发Webhook回调（sent状态）
-            try:
-                from app.workers.webhook_worker import trigger_webhook
-                await trigger_webhook(
-                    message_id,
-                    'sent',
-                    {
-                        'phone_number': sms_log.phone_number,
-                        'country_code': sms_log.country_code,
-                        'channel_id': sms_log.channel_id
-                    },
-                    account_id=sms_log.account_id,
-                )
-            except Exception as e:
-                logger.warning(f"触发Webhook失败: {str(e)}")
-        else:
-            sms_log.status = 'failed'
-            # 保留详细错误信息，只有未设置时才使用默认值
-            if not sms_log.error_message:
-                sms_log.error_message = "Send failed"
-            logger.error(f"短信发送失败: {message_id}, 错误: {sms_log.error_message}")
-            
-            # 触发Webhook回调（failed状态）
-            try:
-                from app.workers.webhook_worker import trigger_webhook
-                await trigger_webhook(
-                    message_id,
-                    'failed',
-                    {
-                        'phone_number': sms_log.phone_number,
-                        'country_code': sms_log.country_code,
-                        'error_message': sms_log.error_message
-                    },
-                    account_id=sms_log.account_id,
-                )
-            except Exception as e:
-                logger.warning(f"触发Webhook失败: {str(e)}")
-        
-        await db.commit()
+            # 根据通道协议发送
+            if channel.protocol == 'VIRTUAL':
+                success = await _send_via_virtual(sms_log, channel)
+            elif channel.protocol == 'HTTP':
+                success = await _send_via_http(sms_log, channel, http_credentials)
+            else:
+                # SMPP 协议由 Go Gateway 处理。如果在此处捕获到，说明重路由逻辑或者队列配置有误。
+                logger.error(f"非预期路径：{channel.protocol} 协议尝试在 Python Worker 发送")
+                success = False
 
-        # 更新批次进度
-        if sms_log.batch_id:
-            await update_batch_progress(db, sms_log.batch_id)
+            # 发送成功后立刻提交：submit_sm_resp 写入的 upstream_message_id 必须先落库。
+            # deliver_sm 常在同一秒内到达，DLR 在独立线程读库；若仍停留在未提交的会话里，会大量出现「SMPP DLR: 未找到」且界面长期「送达等待中」。
+            if success:
+                await db.commit()
         
-        return {"success": success, "message_id": message_id, "status": sms_log.status}
+            # 更新状态
+            if success:
+                sms_log.status = 'sent'  # 先标记为已发送，等待DLR
+                sms_log.sent_time = datetime.now()
+                logger.info(f"短信发送成功: {message_id}")
+            
+                # 触发Webhook回调（sent状态）
+                try:
+                    from app.workers.webhook_worker import trigger_webhook
+                    await trigger_webhook(
+                        message_id,
+                        'sent',
+                        {
+                            'phone_number': sms_log.phone_number,
+                            'country_code': sms_log.country_code,
+                            'channel_id': sms_log.channel_id
+                        },
+                        account_id=sms_log.account_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"触发Webhook失败: {str(e)}")
+            else:
+                sms_log.status = 'failed'
+                # 保留详细错误信息，只有未设置时才使用默认值
+                if not sms_log.error_message:
+                    sms_log.error_message = "Send failed"
+                logger.error(f"短信发送失败: {message_id}, 错误: {sms_log.error_message}")
+            
+                # 触发Webhook回调（failed状态）
+                try:
+                    from app.workers.webhook_worker import trigger_webhook
+                    await trigger_webhook(
+                        message_id,
+                        'failed',
+                        {
+                            'phone_number': sms_log.phone_number,
+                            'country_code': sms_log.country_code,
+                            'error_message': sms_log.error_message
+                        },
+                        account_id=sms_log.account_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"触发Webhook失败: {str(e)}")
+        
+            await db.commit()
+
+            # 更新批次进度
+            if sms_log.batch_id:
+                await update_batch_progress(db, sms_log.batch_id)
+        
+            return {"success": success, "message_id": message_id, "status": sms_log.status}
     finally:
         await eng.dispose()
 
@@ -300,6 +337,7 @@ async def _send_via_virtual(sms_log: SMSLog, channel: Channel) -> bool:
             "virtual_dlr_generate",
             args=[sms_log.message_id, channel.id],
             countdown=delay,
+            queue="sms_send",
         )
         return True
     except Exception as e:
@@ -974,78 +1012,78 @@ async def _dlr_timeout_check_async():
     try:
         async with Session() as db:
             default_h = int(getattr(settings, "DLR_SENT_TIMEOUT_HOURS", 72) or 72)
-        default_h = max(4, min(default_h, 720))
+            default_h = max(4, min(default_h, 720))
 
-        ch_result = await db.execute(
-            select(Channel.id, Channel.dlr_sent_timeout_hours).where(
-                Channel.is_deleted == False
+            ch_result = await db.execute(
+                select(Channel.id, Channel.dlr_sent_timeout_hours).where(
+                    Channel.is_deleted == False
+                )
             )
-        )
-        channel_rows = ch_result.all()
-        # 显式列出的通道（含仅自定义超时的通道）
-        channel_ids = {row[0] for row in channel_rows}
-        expired_count = 0
+            channel_rows = ch_result.all()
+            # 显式列出的通道（含仅自定义超时的通道）
+            channel_ids = {row[0] for row in channel_rows}
+            expired_count = 0
 
-        for ch_id, custom_h in channel_rows:
-            h = int(custom_h) if custom_h is not None and int(custom_h) > 0 else default_h
-            h = max(4, min(h, 720))
-            cutoff = datetime.now() - timedelta(hours=h)
-            stmt = (
+            for ch_id, custom_h in channel_rows:
+                h = int(custom_h) if custom_h is not None and int(custom_h) > 0 else default_h
+                h = max(4, min(h, 720))
+                cutoff = datetime.now() - timedelta(hours=h)
+                stmt = (
+                    update(SMSLog)
+                    .where(
+                        and_(
+                            SMSLog.channel_id == ch_id,
+                            SMSLog.status == 'sent',
+                            SMSLog.sent_time < cutoff,
+                            SMSLog.sent_time.isnot(None),
+                        )
+                    )
+                    .values(
+                        status='expired',
+                        error_message=f'DLR 超时: 超过{h}小时未收到终态回执',
+                    )
+                )
+                r = await db.execute(stmt)
+                expired_count += r.rowcount
+
+            # 无 channel_id、或通道已删除/未在表中的记录，用全局默认小时数
+            from sqlalchemy import or_, true as sql_true
+
+            cutoff_default = datetime.now() - timedelta(hours=default_h)
+            if channel_ids:
+                misc_where = or_(
+                    SMSLog.channel_id.is_(None),
+                    ~SMSLog.channel_id.in_(list(channel_ids)),
+                )
+            else:
+                misc_where = sql_true()
+
+            stmt_misc = (
                 update(SMSLog)
                 .where(
                     and_(
-                        SMSLog.channel_id == ch_id,
                         SMSLog.status == 'sent',
-                        SMSLog.sent_time < cutoff,
+                        SMSLog.sent_time < cutoff_default,
                         SMSLog.sent_time.isnot(None),
+                        misc_where,
                     )
                 )
                 .values(
                     status='expired',
-                    error_message=f'DLR 超时: 超过{h}小时未收到终态回执',
+                    error_message=f'DLR 超时: 超过{default_h}小时未收到终态回执',
                 )
             )
-            r = await db.execute(stmt)
-            expired_count += r.rowcount
+            r2 = await db.execute(stmt_misc)
+            expired_count += r2.rowcount
 
-        # 无 channel_id、或通道已删除/未在表中的记录，用全局默认小时数
-        from sqlalchemy import or_, true as sql_true
+            await db.commit()
 
-        cutoff_default = datetime.now() - timedelta(hours=default_h)
-        if channel_ids:
-            misc_where = or_(
-                SMSLog.channel_id.is_(None),
-                ~SMSLog.channel_id.in_(list(channel_ids)),
-            )
-        else:
-            misc_where = sql_true()
+            if expired_count > 0:
+                logger.info(f"DLR 超时: 标记 {expired_count} 条记录为 expired（默认阈值 {default_h}h）")
+            else:
+                logger.debug("DLR 超时检查: 无超时记录")
 
-        stmt_misc = (
-            update(SMSLog)
-            .where(
-                and_(
-                    SMSLog.status == 'sent',
-                    SMSLog.sent_time < cutoff_default,
-                    SMSLog.sent_time.isnot(None),
-                    misc_where,
-                )
-            )
-            .values(
-                status='expired',
-                error_message=f'DLR 超时: 超过{default_h}小时未收到终态回执',
-            )
-        )
-        r2 = await db.execute(stmt_misc)
-        expired_count += r2.rowcount
-
-        await db.commit()
-
-        if expired_count > 0:
-            logger.info(f"DLR 超时: 标记 {expired_count} 条记录为 expired（默认阈值 {default_h}h）")
-        else:
-            logger.debug("DLR 超时检查: 无超时记录")
-
-        return {"success": True, "expired": expired_count}
+            return {"success": True, "expired": expired_count}
     finally:
         await eng.dispose()
 
@@ -1219,6 +1257,25 @@ async def _do_virtual_dlr_batch(message_ids: list, channel_id: int, batch_id: in
 
                 await db.commit()
 
+                # 批量虚拟回执与单条 API 行为对齐：终态入 Webhook 队列
+                for _log in logs:
+                    if _log.status not in ("delivered", "failed", "expired"):
+                        continue
+                    try:
+                        from app.workers.webhook_worker import trigger_webhook
+                        await trigger_webhook(
+                            _log.message_id,
+                            _log.status,
+                            {
+                                "phone_number": _log.phone_number,
+                                "country_code": _log.country_code,
+                                "error_message": _log.error_message if _log.status != "delivered" else None,
+                            },
+                            account_id=_log.account_id,
+                        )
+                    except Exception as _e:
+                        logger.warning(f"虚拟DLR批量Webhook失败: {_log.message_id}, {_e}")
+
             if batch_id:
                 await update_batch_progress(db, batch_id)
 
@@ -1301,6 +1358,32 @@ async def _do_virtual_dlr(message_id: str, channel_id: int):
             if sms_log.batch_id:
                 await update_batch_progress(db, sms_log.batch_id)
 
+            # 与真实 DLR 一致：终态后触发注水与 Webhook
+            if new_status == "delivered" and sms_log.account_id:
+                try:
+                    from app.utils.water_trigger import trigger_water_single
+                    await trigger_water_single(
+                        db, sms_log.id, sms_log.message,
+                        sms_log.country_code, sms_log.account_id,
+                        channel_id=sms_log.channel_id,
+                    )
+                except Exception as e:
+                    logger.warning(f"虚拟DLR注水触发异常: {e}")
+            try:
+                from app.workers.webhook_worker import trigger_webhook
+                await trigger_webhook(
+                    message_id,
+                    new_status,
+                    {
+                        "phone_number": sms_log.phone_number,
+                        "country_code": sms_log.country_code,
+                        "error_message": sms_log.error_message if new_status != "delivered" else None,
+                    },
+                    account_id=sms_log.account_id,
+                )
+            except Exception as e:
+                logger.warning(f"虚拟DLR触发Webhook失败: {e}")
+
             return {"success": True, "message_id": message_id, "status": new_status}
     except Exception as e:
         logger.error(f"虚拟DLR异常: {message_id}, {e}")
@@ -1309,3 +1392,67 @@ async def _do_virtual_dlr(message_id: str, channel_id: int):
         await eng.dispose()
 
 
+@celery_app.task(name="repair_virtual_batch_dlr", bind=True, max_retries=1)
+def repair_virtual_batch_dlr_task(self, batch_id: int):
+    """按 batch_id 为仍处 sent/pending/queued 的短信补调度虚拟终态（修复卡回执批次）"""
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_do_repair_virtual_batch_dlr(batch_id))
+    finally:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+
+
+async def _do_repair_virtual_batch_dlr(batch_id: int):
+    from collections import defaultdict
+
+    eng, Session = _make_session()
+    try:
+        async with Session() as db:
+            rows = (
+                await db.execute(
+                    select(SMSLog.message_id, SMSLog.channel_id).where(
+                        SMSLog.batch_id == batch_id,
+                        SMSLog.status.in_(["sent", "pending", "queued"]),
+                    )
+                )
+            ).all()
+            if not rows:
+                logger.info(f"repair_virtual_batch_dlr: batch={batch_id} 无待处理记录")
+                return {"batch_id": batch_id, "chunks_scheduled": 0}
+
+            by_chan = defaultdict(list)
+            for mid, cid in rows:
+                if cid:
+                    by_chan[cid].append(mid)
+
+            chunks_scheduled = 0
+            for cid, mids in by_chan.items():
+                ch_row = await db.execute(select(Channel.protocol).where(Channel.id == cid))
+                prot = ch_row.scalar_one_or_none()
+                pv = getattr(prot, "value", prot)
+                pv = getattr(pv, "value", pv)
+                if str(pv or "").upper() != "VIRTUAL":
+                    logger.warning(
+                        f"repair_virtual_batch_dlr: batch={batch_id} channel_id={cid} 非 VIRTUAL，跳过"
+                    )
+                    continue
+
+                chunk_size = 500
+                for bi, start in enumerate(range(0, len(mids), chunk_size)):
+                    chunk = mids[start : start + chunk_size]
+                    virtual_dlr_batch_generate_task.apply_async(
+                        args=[chunk, cid, batch_id],
+                        countdown=2 + bi * 2,
+                        queue="sms_send",
+                    )
+                    chunks_scheduled += 1
+
+            logger.info(
+                f"repair_virtual_batch_dlr: batch={batch_id}, chunks_scheduled={chunks_scheduled}"
+            )
+            return {"batch_id": batch_id, "chunks_scheduled": chunks_scheduled}
+    finally:
+        await eng.dispose()

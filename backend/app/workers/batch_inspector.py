@@ -2,6 +2,7 @@
 批次健康巡检 Worker (Inspector)
 
 定期检查状态为 processing 且长时间未更新的批次，根据实际 sms_logs 记录校准其进度和状态。
+同时检测 COMPLETED 批次中虚拟通道 DLR 任务丢失导致的 sent 状态积压，并自动触发修复。
 """
 from datetime import datetime, timedelta
 from sqlalchemy import select, and_, func
@@ -24,8 +25,7 @@ async def _do_inspect_batches():
     eng, Session = _make_session()
     try:
         async with Session() as db:
-            # 1. 查找超过 15 分钟未更新且仍在 processing 状态的非虚拟批次
-            # (虚拟通道通常由特定的延迟任务处理，巡检重点放在由于 Worker 崩溃导致的同步卡死)
+            # 1. 查找超过 15 分钟未更新且仍在 processing 状态的批次
             cutoff = datetime.now() - timedelta(minutes=15)
 
             result = await db.execute(
@@ -40,9 +40,8 @@ async def _do_inspect_batches():
 
             if not stuck_batches:
                 logger.debug("未发现卡死的批次")
-                return {"stuck_found": 0}
-
-            logger.info(f"发现 {len(stuck_batches)} 个疑似卡死的批次，开始校准...")
+            else:
+                logger.info(f"发现 {len(stuck_batches)} 个疑似卡死的批次，开始校准...")
 
             reconciled = 0
             for batch in stuck_batches:
@@ -53,7 +52,7 @@ async def _do_inspect_batches():
                     # 重新查询状态
                     await db.refresh(batch)
 
-                    # 如果校准后仍然是 processing 且确实由于某种原因卡住了(例如所有任务都发完了但没切状态)
+                    # 如果校准后仍然是 processing 且确实由于某种原因卡住了
                     # 检查是否所有号码都有终态
                     total = batch.total_count or 0
                     res_counts = await db.execute(
@@ -78,6 +77,110 @@ async def _do_inspect_batches():
                     logger.error(f"校准批次 {batch.id} 失败: {e}")
                     await db.rollback()
 
-            return {"stuck_found": len(stuck_batches), "reconciled": reconciled}
+            # 2. 检查近期 COMPLETED 批次中是否有虚拟通道 sent 状态积压
+            #    [历史根因] 旧版同步批量/CSV 路径曾误在入队后标 COMPLETED；现由 batch_utils 纠偏。
+            #    DLR 任务可能因 RabbitMQ ETA/countdown 未被 worker 消费（如 consumer 断连）而积压。
+            #    批次已 COMPLETED → inspect_batches_task 原本不会检测 → DLR 永久丢失 → 送达率 0%
+            #    修复策略：对 sent 超 60s 且占比 >10% 的 COMPLETED 虚拟通道批次，重新触发 DLR 任务。
+            virtual_dlr_cutoff = datetime.now() - timedelta(seconds=60)
+            recent_cutoff = datetime.now() - timedelta(minutes=30)
+
+            completed_batches_result = await db.execute(
+                select(SmsBatch).where(
+                    and_(
+                        SmsBatch.status == BatchStatus.COMPLETED,
+                        SmsBatch.completed_at >= recent_cutoff,
+                    )
+                )
+            )
+            completed_batches = completed_batches_result.scalars().all()
+
+            virtual_repair_count = 0
+            for batch in completed_batches:
+                try:
+                    # 统计发送超过 60s 仍为 sent 的记录
+                    sent_rows = (
+                        await db.execute(
+                            select(SMSLog.message_id, SMSLog.channel_id, SMSLog.sent_time).where(
+                                and_(
+                                    SMSLog.batch_id == batch.id,
+                                    SMSLog.status == "sent",
+                                    SMSLog.sent_time <= virtual_dlr_cutoff,
+                                )
+                            )
+                        )
+                    ).all()
+
+                    if not sent_rows:
+                        continue
+
+                    total = batch.total_count or 1
+                    sent_ratio = len(sent_rows) / total
+
+                    # 超过 10% 的 sent 积压才触发修复，避免正常短批次误触发
+                    if sent_ratio < 0.10:
+                        continue
+
+                    # 按通道分组，仅对虚拟通道执行修复
+                    from collections import defaultdict
+                    by_cid = defaultdict(list)
+                    for r in sent_rows:
+                        if r.channel_id:
+                            by_cid[r.channel_id].append(r.message_id)
+
+                    from app.modules.sms.channel import Channel
+                    from app.workers.sms_worker import virtual_dlr_batch_generate_task
+                    for cid, mids in by_cid.items():
+                        prot_row = await db.execute(
+                            select(Channel.protocol).where(Channel.id == cid)
+                        )
+                        prot = prot_row.scalar_one_or_none()
+                        pv = getattr(prot, "value", prot)
+                        pv = getattr(pv, "value", pv)
+                        if str(pv or "").upper() != "VIRTUAL":
+                            continue
+
+                        chunk_size = 500
+                        for bi, start in enumerate(range(0, len(mids), chunk_size)):
+                            chunk = mids[start:start + chunk_size]
+                            virtual_dlr_batch_generate_task.apply_async(
+                                args=[chunk, cid, batch.id],
+                                countdown=bi * 2,
+                                queue="sms_send",
+                            )
+                        virtual_repair_count += 1
+                        logger.warning(
+                            f"inspect: COMPLETED批次={batch.id} 发现 {len(mids)} 条虚拟通道sent积压"
+                            f"（{sent_ratio:.1%}），已触发DLR修复 channel_id={cid}"
+                        )
+                except Exception as e:
+                    logger.error(f"检查COMPLETED批次 {batch.id} 虚拟DLR积压失败: {e}")
+
+            # 3. 近 48h 内 processing 批次：按 sms_logs 重算汇总（Go 网关 Submit 成功写 sent 不经 Python worker）
+            proc_ids = (
+                await db.execute(
+                    select(SmsBatch.id).where(
+                        and_(
+                            SmsBatch.status == BatchStatus.PROCESSING,
+                            SmsBatch.is_deleted == False,
+                            SmsBatch.created_at >= datetime.now() - timedelta(hours=48),
+                        )
+                    ).order_by(SmsBatch.id.desc()).limit(150)
+                )
+            ).scalars().all()
+            progress_synced = 0
+            for bid in proc_ids:
+                try:
+                    await update_batch_progress(db, bid)
+                    progress_synced += 1
+                except Exception as pe:
+                    logger.debug(f"inspect: processing 批次 {bid} 汇总同步跳过: {pe}")
+
+            return {
+                "stuck_found": len(stuck_batches),
+                "reconciled": reconciled,
+                "virtual_dlr_repaired": virtual_repair_count,
+                "processing_progress_synced": progress_synced,
+            }
     finally:
         await eng.dispose()

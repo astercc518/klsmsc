@@ -16,15 +16,22 @@ import (
 
 // SMPPManager manages multiple SMPP connections across different channels
 type SMPPManager struct {
-    connections  map[int][]*gosmpp.Session
-    configs      map[int]ChannelConfig
-    mu           sync.RWMutex
-    sequenceMap  sync.Map // Maps sequence_number (uint32) to messageID (string) and logID (int64)
+	connections  map[int][]*gosmpp.Session
+	configs      map[int]ChannelConfig
+	mu           sync.RWMutex
+	// 每个 bind 会话独立互斥：Submit 与 sequence 登记串行，避免多 goroutine 同 session 竞态。
+	sessionSubmitMu map[*gosmpp.Session]*sync.Mutex
+	// sequenceMap 键为「通道ID:序列号」。仅用序列号会与多 bind 会话或其它通道的序号冲突，导致 SubmitSMResp 无法匹配、短信永久 queued。
+	sequenceMap sync.Map
 }
 
 type sequenceData struct {
-    messageID string
-    logID     int64
+	messageID string
+	logID     int64
+}
+
+func smppSeqMapKey(channelID int, seq int32) string {
+	return fmt.Sprintf("%d:%d", channelID, seq)
 }
 
 var manager *SMPPManager
@@ -68,10 +75,11 @@ func stripLeadingPlusFromConfigJSON(raw string) bool {
 }
 
 func InitSMPPManager() {
-    manager = &SMPPManager{
-        connections: make(map[int][]*gosmpp.Session),
-        configs:     make(map[int]ChannelConfig),
-    }
+	manager = &SMPPManager{
+		connections:     make(map[int][]*gosmpp.Session),
+		configs:         make(map[int]ChannelConfig),
+		sessionSubmitMu: make(map[*gosmpp.Session]*sync.Mutex),
+	}
 }
 
 // ReloadChannels reloads configurations and establishes connections asynchronously.
@@ -92,11 +100,12 @@ func (m *SMPPManager) ReloadChannels() error {
     for id, conns := range m.connections {
         if _, exists := newConfigs[id]; !exists {
             log.Printf("Channel %d (%s) is no longer active, closing %d sessions...", id, m.configs[id].ChannelCode, len(conns))
-            for _, session := range conns {
-                _ = session.Close()
-            }
-            delete(m.connections, id)
-            delete(m.configs, id)
+			for _, session := range conns {
+				delete(m.sessionSubmitMu, session)
+				_ = session.Close()
+			}
+			delete(m.connections, id)
+			delete(m.configs, id)
         }
     }
 
@@ -118,11 +127,12 @@ func (m *SMPPManager) ReloadChannels() error {
             // Scale down immediately if concurrency was reduced
             toClose := -diff
             log.Printf("Channel %s reducing concurrency, closing %d sessions...", cfg.ChannelCode, toClose)
-            for i := 0; i < toClose && len(m.connections[id]) > 0; i++ {
-                session := m.connections[id][0]
-                _ = session.Close()
-                m.connections[id] = m.connections[id][1:]
-            }
+			for i := 0; i < toClose && len(m.connections[id]) > 0; i++ {
+				session := m.connections[id][0]
+				delete(m.sessionSubmitMu, session)
+				_ = session.Close()
+				m.connections[id] = m.connections[id][1:]
+			}
         }
     }
     m.mu.Unlock()
@@ -142,10 +152,11 @@ func (m *SMPPManager) ReloadChannels() error {
                 defer m.mu.Unlock()
                 
                 // Re-check if the channel configuration still exists before adding the new session
-                if _, exists := m.configs[cfg.ID]; exists {
-                    m.connections[cfg.ID] = append(m.connections[cfg.ID], session)
-                    log.Printf("Successfully bound new async session for channel %s (total sessions: %d)", cfg.ChannelCode, len(m.connections[cfg.ID]))
-                } else {
+				if _, exists := m.configs[cfg.ID]; exists {
+					m.connections[cfg.ID] = append(m.connections[cfg.ID], session)
+					m.sessionSubmitMu[session] = &sync.Mutex{}
+					log.Printf("Successfully bound new async session for channel %s (total sessions: %d)", cfg.ChannelCode, len(m.connections[cfg.ID]))
+				} else {
                     log.Printf("Channel %s was removed during async bind, closing new session", cfg.ChannelCode)
                     _ = session.Close()
                 }
@@ -184,10 +195,10 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
             EnquireLink: 30 * time.Second,
             OnPDU: func(p pdu.PDU, responded bool) {
                 switch pd := p.(type) {
-                case *pdu.SubmitSMResp:
-                    log.Printf("[SMPP-DEBUG] SubmitSMResp reached: channel=%s, msgID=%s, sequence=%d, status=%d", cfg.ChannelCode, pd.MessageID, pd.SequenceNumber, pd.CommandStatus)
-                    
-                    if val, ok := m.sequenceMap.LoadAndDelete(pd.SequenceNumber); ok {
+				case *pdu.SubmitSMResp:
+					log.Printf("[SMPP-DEBUG] SubmitSMResp reached: channel=%s, msgID=%s, sequence=%d, status=%d", cfg.ChannelCode, pd.MessageID, pd.SequenceNumber, pd.CommandStatus)
+					
+					if val, ok := m.sequenceMap.LoadAndDelete(smppSeqMapKey(cfg.ID, pd.SequenceNumber)); ok {
                         seqData := val.(sequenceData)
                         log.Printf("[SMPP-DEBUG] Found matching sequence for msg: %s (internal log ID: %d)", seqData.messageID, seqData.logID)
                         
@@ -205,9 +216,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
                                 log.Printf("[SMPP-ERROR] Failed to record SMPP error for %s: %v", seqData.messageID, err)
                             }
                         }
-                    } else {
-                        log.Printf("[SMPP-DEBUG] Warning: Received SubmitSMResp for unknown sequence number %d (possibly from another session or restarted gateway)", pd.SequenceNumber)
-                    }
+					} else {
+						log.Printf("[SMPP-DEBUG] Warning: SubmitSMResp 无匹配映射: channel_id=%d seq=%d（会话重建、序号跨通道冲突已修复前遗留、或上游异步回包）", cfg.ID, pd.SequenceNumber)
+					}
 
                 case *pdu.DeliverSM:
                     log.Printf("[SMPP-DEBUG] Received DeliverSM on channel %s", cfg.ChannelCode)
@@ -281,46 +292,51 @@ func (m *SMPPManager) handleDeliverSM(deliver *pdu.DeliverSM, cfg ChannelConfig)
 
 // SendSMS picks a session and sends the message
 func (m *SMPPManager) SendSMS(logID int64, messageID string, phoneNumber string, message string, channelID int) error {
-    m.mu.RLock()
-    conns := m.connections[channelID]
-    cfg := m.configs[channelID]
-    m.mu.RUnlock()
+	m.mu.RLock()
+	conns := m.connections[channelID]
+	cfg := m.configs[channelID]
+	if len(conns) == 0 {
+		m.mu.RUnlock()
+		return fmt.Errorf("no active connections for channel %d", channelID)
+	}
+	// Round-robin 分散到不同 bind，配合每会话互斥实现多路并行 Submit。
+	session := conns[time.Now().UnixNano()%int64(len(conns))]
+	subMu := m.sessionSubmitMu[session]
+	m.mu.RUnlock()
 
-    if len(conns) == 0 {
-        return fmt.Errorf("no active connections for channel %d", channelID)
-    }
+	if subMu != nil {
+		subMu.Lock()
+		defer subMu.Unlock()
+	}
 
-    // Round-robin or pick first
-    session := conns[time.Now().UnixNano()%int64(len(conns))]
+	s := pdu.NewSubmitSM().(*pdu.SubmitSM)
+	s.SourceAddr = pdu.NewAddress()
+	s.SourceAddr.SetAddress(cfg.DefaultSenderID)
+	s.DestAddr = pdu.NewAddress()
+	destDigits := phoneNumber
+	if stripLeadingPlusFromConfigJSON(cfg.ConfigJSON) {
+		destDigits = destAddrNoPlus(phoneNumber)
+	}
+	s.DestAddr.SetAddress(destDigits)
+	_ = s.Message.SetMessageWithEncoding(message, data.UCS2)
+	s.RegisteredDelivery = 1
 
-    s := pdu.NewSubmitSM().(*pdu.SubmitSM)
-    s.SourceAddr = pdu.NewAddress()
-    s.SourceAddr.SetAddress(cfg.DefaultSenderID)
-    s.DestAddr = pdu.NewAddress()
-    destDigits := phoneNumber
-    if stripLeadingPlusFromConfigJSON(cfg.ConfigJSON) {
-        destDigits = destAddrNoPlus(phoneNumber)
-    }
-    s.DestAddr.SetAddress(destDigits)
-    _ = s.Message.SetMessageWithEncoding(message, data.UCS2)
-    s.RegisteredDelivery = 1
+	trans := session.Transmitter()
+	if trans == nil {
+		return fmt.Errorf("session has no transmitter")
+	}
 
-    trans := session.Transmitter()
-    if trans == nil {
-        return fmt.Errorf("session has no transmitter")
-    }
+	m.sequenceMap.Store(smppSeqMapKey(channelID, s.SequenceNumber), sequenceData{messageID: messageID, logID: logID})
 
-    m.sequenceMap.Store(s.SequenceNumber, sequenceData{messageID: messageID, logID: logID})
+	log.Printf("[SMPP-DEBUG] Submitting SM: channel=%s, sequence=%d, dest=%s, sender=%s, len=%d",
+		cfg.ChannelCode, s.SequenceNumber, destDigits, cfg.DefaultSenderID, len(message))
 
-    log.Printf("[SMPP-DEBUG] Submitting SM: channel=%s, sequence=%d, dest=%s, sender=%s, len=%d",
-               cfg.ChannelCode, s.SequenceNumber, destDigits, cfg.DefaultSenderID, len(message))
+	err := trans.Submit(s)
+	if err != nil {
+		m.sequenceMap.Delete(smppSeqMapKey(channelID, s.SequenceNumber))
+		log.Printf("[SMPP-ERROR] Submit failed: %v", err)
+		return err
+	}
 
-    err := trans.Submit(s)
-    if err != nil {
-        m.sequenceMap.Delete(s.SequenceNumber)
-        log.Printf("[SMPP-ERROR] Submit failed: %v", err)
-        return err
-    }
-
-    return nil
+	return nil
 }

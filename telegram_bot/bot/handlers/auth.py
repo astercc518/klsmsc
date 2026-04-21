@@ -99,8 +99,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-        # 2. 验证用户身份 (Admin/Customer/Guest)
-        user_info = await api.verify_user(tg_id)
+        # 2. 验证用户身份：先跳过本月大表聚合，销售欢迎语再异步补数，缩短首包延迟
+        user_info = await api.verify_user(tg_id, include_monthly_performance=False)
         
         if user_info.get("is_admin"):
             admin = user_info["admin"]
@@ -127,26 +127,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"👤 账号: {admin.get('username')}\n\n"
                     f"请选择操作："
                 )
-            else:
-                menu = get_main_menu_sales()
-                # 实时计算本月业绩和佣金
-                stats_resp = await api.get_sales_stats(admin["id"])
-                if stats_resp.get("success"):
-                    monthly_profit = stats_resp["monthly_profit"]
-                    monthly_comm = stats_resp["monthly_commission"]
-                else:
-                    monthly_profit = 0.0
-                    monthly_comm = 0.0
+                await send_and_log(context, tg_id, msg, reply_markup=menu)
+                return
 
-                msg = (
-                    f"👋 姓名: {display_name}\n"
-                    f"🔐 角色: {role_label}\n"
-                    f"📊 本月预计业绩: ${monthly_profit:.2f}\n"
-                    f"💰 本月预计佣金: ${monthly_comm:.2f}\n\n"
-                    f"请选择操作：\n\n"
-                    f"📢 全行业短信群发，AI语音，渗透数据！\n"
-                    f"所有信息以官网 https://www.kaolach.com/ 展示为准！"
-                )
+            # 销售 / 财务：主菜单不展示本月业绩/佣金（与 show_main_menu 一致），详见「业绩统计」
+            menu = get_main_menu_sales()
+            msg = (
+                f"👋 姓名: {display_name}\n"
+                f"🔐 角色: {role_label}\n\n"
+                f"请选择操作：\n\n"
+                f"📈 本月业绩与佣金请点下方「📊 业绩统计」查看。\n\n"
+                f"📢 全行业短信群发，AI语音，渗透数据！\n"
+                f"所有信息以官网 https://www.kaolach.com/ 展示为准！"
+            )
             await send_and_log(context, tg_id, msg, reply_markup=menu)
             return
         

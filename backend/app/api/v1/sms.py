@@ -781,7 +781,7 @@ async def send_batch_sms(
     # 统一提交记录，然后批量入队
     if valid_logs_mids:
         await db.commit()
-        # 暂时按通道分组或直接根据协议判断（由于是极小批量，暂不复杂分组，主要依靠 queue_sms_batch 的窗口优势）
+        # 极小批量：按协议分 SMPP（直投 sms_send_smpp）与其它（sms_send）
         smpp_ids = []
         other_ids = []
         for mid, phone, chan in valid_logs_mids:
@@ -793,15 +793,15 @@ async def send_batch_sms(
         # 处理 SMPP 批量
         if smpp_ids:
             mids_only = [m[0] for m in smpp_ids]
-            # 这里可以用一个大的 chunk，因为 ASYNC_THRESHOLD 很低
-            if QueueManager.queue_sms_batch(mids_only):
+            # 这里可以用一个大的 chunk，因为 ASYNC_THRESHOLD 很低；SMPP 直投 smpp 队列
+            if QueueManager.queue_sms_batch_smpp(mids_only):
                 for mid, phone in smpp_ids:
                     succeeded += 1
                     results.append({"phone_number": phone, "success": True, "message_id": mid, "error": None})
             else:
                 # 回退单条
                 for mid, phone in smpp_ids:
-                    if QueueManager.queue_sms(mid):
+                    if QueueManager.queue_smpp_gateway(mid):
                         succeeded += 1
                         results.append({"phone_number": phone, "success": True, "message_id": mid, "error": None})
                     else:
@@ -827,12 +827,15 @@ async def send_batch_sms(
         sms_batch.progress = 0
         sms_batch.error_message = "没有成功入队的短信（号码、内容、余额或通道等原因）"
     else:
-        sms_batch.status = BatchStatus.COMPLETED
-        sms_batch.success_count = succeeded
-        sms_batch.failed_count = failed
-        sms_batch.progress = 100
-        sms_batch.completed_at = datetime.now()
-    
+        # 入队成功 ≠ 发送完成（SMPP 多跳后才有 sent）；由 sms_logs 驱动批次终态
+        from app.modules.sms.batch_utils import update_batch_progress
+
+        await update_batch_progress(db, batch_pk)
+        await db.refresh(sms_batch)
+        if sms_batch.status not in (BatchStatus.COMPLETED, BatchStatus.FAILED, BatchStatus.CANCELLED):
+            sms_batch.status = BatchStatus.PROCESSING
+            sms_batch.completed_at = None
+
     await db.commit()
 
     return BatchSMSResponse(

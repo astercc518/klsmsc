@@ -86,8 +86,9 @@ async def set_commands(application):
 
 
 async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """全局日志处理器"""
-    await MessageService.log_incoming(update)
+    """全局日志处理器（异步留痕，不阻塞菜单/对话处理）"""
+    import asyncio
+    asyncio.create_task(MessageService.log_incoming_background(update))
 
 
 def main():

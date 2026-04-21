@@ -1512,7 +1512,9 @@ const loadSalesList = async () => {
   salesLoading.value = true
   try {
     // 获取所有销售角色的管理员
-    const res = await request.get('/admin/users', { params: { role: 'sales', status: 'active' } })
+    const res = await request.get('/admin/users', {
+      params: { role: 'sales', status: 'active', include_monthly_stats: false },
+    })
     if (res.success) {
       salesList.value = res.users || res.items || []
     }
@@ -1648,7 +1650,9 @@ async function submitResetPassword() {
 const loadFilterSalesStaff = async () => {
   if (localStorage.getItem('admin_role') === 'sales') return
   try {
-    const res = await request.get('/admin/users', { params: { role: 'sales', status: 'active' } })
+    const res = await request.get('/admin/users', {
+      params: { role: 'sales', status: 'active', include_monthly_stats: false },
+    })
     if (res.success) {
       filterSalesStaffList.value = res.users || res.items || []
     }

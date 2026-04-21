@@ -151,6 +151,7 @@ class PrivateLibraryUploadTask(Base):
     purpose = Column(String(100))
     remarks = Column(Text)
     detect_carrier = Column(Boolean, default=False, comment="是否识别运营商")
+    export_password_hash = Column(String(128), nullable=True, comment="下载密码哈希（设置后导出需验证）")
     status = Column(String(20), nullable=False, default="pending", comment="pending/processing/completed/failed")
     stage = Column(String(50), default="", comment="当前阶段说明")
     progress_percent = Column(Integer, default=0)
@@ -184,6 +185,8 @@ class PrivateLibrarySummary(Base):
     library_origin = Column(String(20), nullable=False, comment="manual=手工私库分表 purchased=公海购入绑定")
     total_count = Column(Integer, nullable=False, default=0, comment="该桶号码总数")
     used_count = Column(Integer, nullable=False, default=0, comment="use_count>0 的号码数")
+    batch_name = Column(String(255), nullable=True, comment="数据包名称（来自上传文件名）")
+    export_password_hash = Column(String(128), nullable=True, comment="下载密码哈希（设置后导出需验证）")
     remarks = Column(Text, comment="展示用备注（取长文本）")
     is_deleted = Column(Boolean, nullable=False, default=False, server_default="0",
                         comment="客户侧软删后标记为 True，管理端仍可查阅")

@@ -47,15 +47,34 @@ func GetChannelConfigs() ([]ChannelConfig, error) {
 func GetSMSLogByMessageID(messageID string) (*SMSLog, error) {
     var log SMSLog
     // Use the latest record if there are duplicates (partitioning might cause this if not careful)
-    err := db.Get(&log, "SELECT id, message_id, phone_number, message, channel_id, submit_time FROM sms_logs WHERE message_id = ? ORDER BY submit_time DESC LIMIT 1", messageID)
+	err := db.Get(&log, `SELECT l.id, l.message_id, l.phone_number, l.message, l.channel_id, l.submit_time, l.status,
+		COALESCE(b.status, '') AS batch_status
+		FROM sms_logs l
+		LEFT JOIN sms_batches b ON b.id = l.batch_id
+		WHERE l.message_id = ? ORDER BY l.submit_time DESC LIMIT 1`, messageID)
     return &log, err
 }
 
 // UpdateSMSLogResult updates the status and upstream ID after sending
 func UpdateSMSLogResult(id int64, messageID string, upstreamID string, status string, errMsg string) error {
-    query := "UPDATE sms_logs SET status = ?, upstream_message_id = ?, error_message = ?, sent_time = NOW() WHERE id = ?"
-    _, err := db.Exec(query, status, upstreamID, errMsg, id)
-    return err
+	query := "UPDATE sms_logs SET status = ?, upstream_message_id = ?, error_message = ?, sent_time = NOW() WHERE id = ?"
+	_, err := db.Exec(query, status, upstreamID, errMsg, id)
+	return err
+}
+
+// MarkSMSLogQueuedAfterSmppHandoff 已交给 SMPP 会话层（等待 SubmitSMResp），将仍为 pending 的记录标为 queued，避免界面长期显示「待发送」
+func MarkSMSLogQueuedAfterSmppHandoff(id int64) error {
+	_, err := db.Exec("UPDATE sms_logs SET status = 'queued' WHERE id = ? AND status = 'pending'", id)
+	return err
+}
+
+// MarkSMSLogBatchCancelled 批次已取消时，将未提交上游的待发记录标为失败（与 Python worker 一致）
+func MarkSMSLogBatchCancelled(id int64) error {
+	_, err := db.Exec(
+		"UPDATE sms_logs SET status = 'failed', error_message = '批次已取消' WHERE id = ? AND status IN ('pending', 'queued')",
+		id,
+	)
+	return err
 }
 
 // UpdateSMSLogDLR updates the status when a DLR arrives

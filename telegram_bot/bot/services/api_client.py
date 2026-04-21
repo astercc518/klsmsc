@@ -230,16 +230,22 @@ class APIClient:
         b = await self.get_next_guest_cs_staff_bundle()
         return (b.get("url") or "").strip() or "https://t.me/kaolachbot"
 
-    async def verify_user(self, tg_id: int) -> Dict:
-        """校验用户身份；将 internal_bot 扁平 JSON 转为各 handler 使用的 admin / account 嵌套结构。"""
+    async def verify_user(self, tg_id: int, include_monthly_performance: bool = True) -> Dict:
+        """校验用户身份；将 internal_bot 扁平 JSON 转为各 handler 使用的 admin / account 嵌套结构。
+
+        include_monthly_performance 为 False 时跳过服务端本月 sms_logs 聚合，首屏更快。
+        """
         url = f"{self.base_url}/api/v1/internal/bot/verify-user/{tg_id}"
+        params = {}
+        if not include_monthly_performance:
+            params["include_monthly_performance"] = "false"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url, headers=self._get_internal_headers())
+                response = await client.get(url, headers=self._get_internal_headers(), params=params)
                 result = response.json()
         except Exception as e:
             logger.error(f"校验用户失败: {e}")
-            return {"role": "guest", "is_admin": False, "valid": False}
+            return {"role": "guest", "is_admin": False, "valid": False, "authorized": False}
 
         if result.get("is_admin") and "admin" not in result:
             result["admin"] = {
@@ -256,7 +262,15 @@ class APIClient:
                 "currency": result.get("currency", "USD"),
                 "status": result.get("status"),
             }
+        # 菜单等处使用 verify_bot_user(...).get("authorized")
+        result["authorized"] = bool(
+            result.get("is_admin") or result.get("valid") or result.get("account_id")
+        )
         return result
+
+    async def verify_bot_user(self, tg_id: int, include_monthly_performance: bool = True) -> Dict:
+        """与 verify_user 相同，兼容菜单等旧命名。"""
+        return await self.verify_user(tg_id, include_monthly_performance=include_monthly_performance)
 
     async def get_templates_internal(self, biz_type: str, country_code: Optional[str] = None) -> list:
         """获取模板列表"""
@@ -267,7 +281,9 @@ class APIClient:
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, params=params, headers=self._get_internal_headers())
-                return response.json()
+                data = response.json()
+                # internal/bot/templates 返回列表；异常时为 dict
+                return data if isinstance(data, list) else []
         except Exception as e:
             logger.error(f"获取模板失败: {e}")
             return []
@@ -525,16 +541,15 @@ class APIClient:
             return "-"
 
     async def get_recharge_orders(self, status: str = 'pending') -> list:
-        """获取充值记录"""
-        url = f"{self.base_url}/api/v1/internal/bot/recharge-orders"
-        params = {"status": status}
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url, params=params, headers=self._get_internal_headers())
-                return response.json()
-        except Exception as e:
-            logger.error(f"获取充值订单失败: {e}")
+        """获取充值订单列表（与后端一致：待审核走 /recharge-orders/pending，返回 orders 数组）"""
+        norm = (status or "pending").lower()
+        if norm != "pending":
+            logger.warning(f"get_recharge_orders 当前仅支持 pending，已忽略 status={status!r}")
             return []
+        data = await self._get("/recharge-orders/pending")
+        if not isinstance(data, dict) or not data.get("success"):
+            return []
+        return data.get("orders") or []
 
     async def get_tickets(self, status: Optional[str] = None, tg_id: Optional[int] = None) -> list:
         """获取工单列表"""
@@ -619,15 +634,26 @@ class APIClient:
             return {"success": False, "message": str(e)}
 
     async def get_template_internal(self, template_id: int) -> Dict:
-        """获取账户模板详情"""
+        """获取账户模板详情（非 200 或 body 无 id 时返回空 dict，避免把错误页当模板用）"""
         url = f"{self.base_url}/api/v1/internal/bot/templates/{template_id}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers())
-                return response.json()
+                data = response.json() if response.content else {}
+                if response.status_code != 200:
+                    logger.warning(
+                        "get_template_internal HTTP %s id=%s body=%s",
+                        response.status_code,
+                        template_id,
+                        data,
+                    )
+                    return {}
+                if not isinstance(data, dict) or data.get("id") is None:
+                    return {}
+                return data
         except Exception as e:
             logger.error(f"获取模板详情失败: {e}")
-            return {"success": False, "message": str(e)}
+            return {}
 
     async def review_sms_approval_internal(self, approval_id: int, approved: bool, admin_tg_id: int = None) -> Dict:
         """处理短信内容审核"""
@@ -685,17 +711,6 @@ class APIClient:
         except Exception as e:
             logger.error(f"更新发送状态失败: {e}")
             return {"success": False, "message": str(e)}
-
-    async def get_test_countries_internal(self, account_id: int) -> Dict:
-        """获取账户测试国家"""
-        url = f"{self.base_url}/api/v1/internal/bot/accounts/{account_id}/test-countries"
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url, headers=self._get_internal_headers())
-                return response.json()
-        except Exception as e:
-            logger.error(f"获取测试国家失败: {e}")
-            return {"countries": "-"}
 
     async def get_system_stats_internal(self) -> Dict:
         """获取系统统计信息"""
@@ -766,9 +781,12 @@ class APIClient:
         """获取有报价的国家列表"""
         return await self._get(f"/pricing/countries/{biz_type}")
 
-    async def bind_admin(self, tg_id: int, invite_code: str):
-        """绑定管理员/员工"""
-        return await self._post("/admin/bind", json={"tg_id": tg_id, "invite_code": invite_code})
+    async def get_pricing_detail(self, biz_type: str, country_code: str) -> Dict:
+        """获取某业务类型+国家的供应商报价列表"""
+        from urllib.parse import quote
+
+        cc = quote(str(country_code).strip(), safe="")
+        return await self._get(f"/pricing/detail/{biz_type}/{cc}")
 
     async def get_customer_info(self, tg_id: int):
         """获取客户账户信息"""
@@ -810,9 +828,9 @@ class APIClient:
         payload = {"account_id": account_id, "amount": amount, "proof": proof}
         return await self._post("/recharge-order", json=payload)
 
-    async def get_pending_recharges(self):
-        """获取待审核充值列表"""
-        return await self._get("/recharge-orders/pending")
+    async def get_pending_recharges(self) -> list:
+        """获取待审核充值列表（与 get_recharge_orders('pending') 一致）"""
+        return await self.get_recharge_orders(status="pending")
 
     async def audit_recharge_order(self, order_id: int, status: str, admin_id: int, remark: str = ""):
         """审核充值工单"""
@@ -878,16 +896,3 @@ class APIClient:
             "sms_submit_mode": sms_submit_mode
         }
         return await self._post("/sms/submit-approval", json=payload)
-    async def get_knowledge_articles(self, category: Optional[str] = None):
-        """获取知识库文章列表"""
-        params = {}
-        if category: params["category"] = category
-        return await self._get("/knowledge", params=params)
-
-    async def get_knowledge_article(self, article_id: int):
-        """获取知识库文章详情"""
-        return await self._get(f"/knowledge/{article_id}")
-
-    async def get_knowledge_attachment(self, attachment_id: int):
-        """获取知识库附件元数据"""
-        return await self._get(f"/knowledge/attachment/{attachment_id}")

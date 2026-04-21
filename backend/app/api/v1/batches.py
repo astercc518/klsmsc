@@ -31,6 +31,34 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+async def _maybe_sync_batch_row_from_logs(
+    db: AsyncSession,
+    batch: SmsBatch,
+    patch: Dict[str, int],
+    total_by_id: Dict[int, int],
+) -> Dict[str, int]:
+    """
+    列表/详情用 sms_logs 重算的 progress 可能已是 100%，但 sms_batches 行仍 processing（Go 写 sent 不经 Python）。
+    此时补跑一次 update_batch_progress 持久化，并返回更新后的展示 patch。
+    """
+    if batch.status != BatchStatus.PROCESSING or not patch:
+        return patch
+    if patch.get("progress", 0) < 100 or patch.get("processing_count", 1) != 0:
+        return patch
+    try:
+        from app.modules.sms.batch_utils import update_batch_progress
+
+        await update_batch_progress(db, batch.id)
+        await db.refresh(batch)
+        new_map = await _smslog_batch_display_patches(
+            db, [batch.id], {int(batch.id): int(batch.total_count or total_by_id.get(int(batch.id), 0) or 0)}
+        )
+        return new_map.get(batch.id, patch)
+    except Exception as e:
+        logger.debug(f"批次 {batch.id} 列表/详情触发进度持久化跳过: {e}")
+        return patch
+
+
 def _smslog_counts_to_response_patch(m: Dict[str, int], batch_total: int = 0) -> Dict[str, int]:
     """
     将单批 sms_logs 按状态计数转为列表接口覆盖字段。
@@ -264,8 +292,11 @@ async def list_batches(
         patches = await _smslog_batch_display_patches(db, ids, total_by_id)
         items = []
         for b in batches:
+            p = patches.get(b.id, {})
+            p = await _maybe_sync_batch_row_from_logs(db, b, p, total_by_id)
+            patches[b.id] = p
             base = SmsBatchResponse.model_validate(b, from_attributes=True)
-            items.append(base.model_copy(update=patches.get(b.id, {})))
+            items.append(base.model_copy(update=p))
 
         return SmsBatchListResponse(
             total=total,
@@ -383,11 +414,12 @@ async def get_batch(
         raise HTTPException(status_code=404, detail="批次不存在")
 
     try:
-        patches = await _smslog_batch_display_patches(
-            db, [batch.id], {int(batch.id): int(batch.total_count or 0)}
-        )
+        total_by_id = {int(batch.id): int(batch.total_count or 0)}
+        patches = await _smslog_batch_display_patches(db, [batch.id], total_by_id)
+        p = patches.get(batch.id, {})
+        p = await _maybe_sync_batch_row_from_logs(db, batch, p, total_by_id)
         base = SmsBatchResponse.model_validate(batch, from_attributes=True)
-        return base.model_copy(update=patches.get(batch.id, {}))
+        return base.model_copy(update=p)
     except Exception as e:
         logger.exception(f"批次详情序列化失败 batch_id={batch_id}: {e}")
         raise HTTPException(status_code=500, detail="批次数据格式异常，请联系管理员查看日志")
@@ -399,7 +431,7 @@ async def export_batch_records_csv(
     current_account: Account = Depends(get_current_account),
     db: AsyncSession = Depends(get_db),
 ):
-    """导出该批量任务下短信明细；手机号列已脱敏，便于外发（客户导出不含发送通道）。"""
+    """导出该批量任务下短信明细；手机号列已脱敏；不含成本价与利润列。"""
 
     q_batch = select(SmsBatch).where(
         SmsBatch.id == batch_id,
@@ -435,9 +467,7 @@ async def export_batch_records_csv(
             "内容",
             "条数",
             "状态",
-            "成本价",
             "售价",
-            "利润",
             "币种",
             "提交时间",
             "发送时间",
@@ -457,9 +487,7 @@ async def export_batch_records_csv(
                 (r.message or "")[:200],
                 r.message_count,
                 r.status,
-                float(r.cost_price) if r.cost_price else 0,
                 float(r.selling_price) if r.selling_price else 0,
-                float(r.profit) if r.profit else 0,
                 r.currency or "USD",
                 r.submit_time.strftime("%Y-%m-%d %H:%M:%S") if r.submit_time else "",
                 r.sent_time.strftime("%Y-%m-%d %H:%M:%S") if r.sent_time else "",
@@ -524,7 +552,7 @@ async def retry_batch_failed(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    将批次内状态为 failed 的短信重新入队发送。
+    将批次内状态为 failed / expired 的短信重新入队发送（与列表「失败」计数一致，含虚拟超时等 expired）。
 
     - 普通群发：按当前费率重新扣费（账户按提交计费，发送失败不退款，重发须再次扣费）。
     - 数据仓库购数并发送（批次名 DataSend- 开头）：购数时已含短信费用，重发不再扣费，沿用原记录计费字段。
@@ -552,7 +580,7 @@ async def retry_batch_failed(
         .where(
             SMSLog.batch_id == batch_id,
             SMSLog.account_id == current_account.id,
-            SMSLog.status == "failed",
+            or_(SMSLog.status == "failed", SMSLog.status == "expired"),
         )
         .order_by(SMSLog.id)
     )

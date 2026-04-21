@@ -32,6 +32,8 @@ type SMSLog struct {
     Message           string    `db:"message"`
     ChannelID         int       `db:"channel_id"`
     SubmitTime        time.Time `db:"submit_time"`
+    Status            string    `db:"status"`       // pending/queued/sent/...
+    BatchStatus       string    `db:"batch_status"` // 关联 sms_batches.status；无批次为空串
 }
 
 // CeleryTask represents the JSON message received from RabbitMQ (Celery format)

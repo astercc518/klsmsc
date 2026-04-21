@@ -238,6 +238,8 @@ def build_summary_payload_from_rows(
                 "source": key[1],
                 "purpose": key[2],
                 "batch_id": key[3],
+                "batch_name": None,
+                "export_password_hash": None,
                 "remarks": None,
                 "_origins": set(),
                 "_count": 0,
@@ -262,6 +264,10 @@ def build_summary_payload_from_rows(
         g["_carrier_unused_map"][cname] += _tu - _uu
         if r.remarks and (not g["remarks"] or len(r.remarks) > len(g["remarks"] or "")):
             g["remarks"] = r.remarks
+        if getattr(r, "batch_name", None) and not g["batch_name"]:
+            g["batch_name"] = r.batch_name
+        if getattr(r, "export_password_hash", None) and not g["export_password_hash"]:
+            g["export_password_hash"] = r.export_password_hash
         if r.first_at:
             if g["_first_at"] is None or r.first_at < g["_first_at"]:
                 g["_first_at"] = r.first_at
@@ -296,7 +302,9 @@ def build_summary_payload_from_rows(
                 "purpose": g["purpose"],
                 "purpose_label": g["purpose"],
                 "batch_id": g["batch_id"],
+                "batch_name": g["batch_name"],
                 "remarks": g["remarks"],
+                "is_encrypted": bool(g["export_password_hash"]),
                 "count": g["_count"],
                 "used_count": g["_used"],
                 "unused_count": unused,

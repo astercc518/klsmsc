@@ -1,4 +1,6 @@
-from telegram import Update
+import os
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
@@ -6,7 +8,7 @@ from telegram.ext import (
     MessageHandler,
     filters
 )
-from bot.utils import logger, send_and_log
+from bot.utils import logger, send_and_log, is_internal_staff_from_verify
 from bot.services.api_client import APIClient
 
 # 会话状态
@@ -19,7 +21,27 @@ async def recharge_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = user.id
     
     api = APIClient()
-    user_info = await api.verify_user(tg_id)
+    user_info = await api.verify_user(tg_id, include_monthly_performance=False)
+
+    if is_internal_staff_from_verify(user_info):
+        bot_user = (os.environ.get("TELEGRAM_BOT_USERNAME") or "").strip().lstrip("@")
+        text = (
+            "ℹ️ <b>您是内部员工</b>\n\n"
+            "<code>/recharge</code> 用于<b>客户本人</b>在已绑定账户的前提下提交充值申请；"
+            "员工无法代替客户走此流程（便于审计与归属）。\n\n"
+            "<b>您可以：</b>\n"
+            "• 发送 /start → 主菜单「待审核充值」审核客户工单（财务/管理员）。\n"
+            "• 引导客户在已绑定的 Telegram 中向本机器人发送 /recharge 自助申请。\n\n"
+            "客户未绑定时请先完成开户绑定。"
+        )
+        kb = None
+        if bot_user:
+            kb = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("打开主菜单（机器人）", url=f"https://t.me/{bot_user}")]]
+            )
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb)
+        return ConversationHandler.END
+
     if not user_info or user_info.get("role") != "customer":
         await send_and_log(
             context,

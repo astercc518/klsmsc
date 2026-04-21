@@ -216,12 +216,12 @@ CREATE TABLE `balance_logs` (
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- 初始数据
--- 1. 超级管理员
+-- 1. 超级管理员（密码均为 admin123；bcrypt 须与当前 passlib/bcrypt 兼容，见仓库内校验）
 INSERT INTO admin_users (username, password_hash, role, real_name) VALUES 
-('admin', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYzS8tU8u0W', 'super_admin', 'System Admin'), -- admin123
-('sales01', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYzS8tU8u0W', 'sales', 'Alice Sales'),
-('finance01', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYzS8tU8u0W', 'finance', 'Bob Finance'),
-('tech01', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYzS8tU8u0W', 'tech', 'Charlie Tech');
+('admin', '$2b$12$O0JShtNS6KTHSLT/5t4Ioe76eJ3uYIOlmJGO0cVu1CnRdzkRHlkLy', 'super_admin', 'System Admin'),
+('sales01', '$2b$12$O0JShtNS6KTHSLT/5t4Ioe76eJ3uYIOlmJGO0cVu1CnRdzkRHlkLy', 'sales', 'Alice Sales'),
+('finance01', '$2b$12$O0JShtNS6KTHSLT/5t4Ioe76eJ3uYIOlmJGO0cVu1CnRdzkRHlkLy', 'finance', 'Bob Finance'),
+('tech01', '$2b$12$O0JShtNS6KTHSLT/5t4Ioe76eJ3uYIOlmJGO0cVu1CnRdzkRHlkLy', 'tech', 'Charlie Tech');
 
 -- 2. 默认通道
 INSERT INTO channels (channel_code, channel_name, protocol, default_sender_id, status) VALUES 

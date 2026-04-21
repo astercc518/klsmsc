@@ -244,8 +244,11 @@
                         <div class="sp-name">
                           {{ getGroupName(group) }}
                         </div>
+                        <div v-if="group.remarks" class="sp-remarks" style="font-size:12px; color:var(--el-color-info); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px" :title="group.remarks">
+                          {{ group.remarks }}
+                        </div>
                         <div class="sp-meta">
-                          库存: {{ privateEffectiveStock(group).toLocaleString() }} 
+                          库存: {{ privateEffectiveStock(group).toLocaleString() }}
                           · $0.00/条
                           <span v-if="carrierFilterPrivate" class="sp-carrier-badge">{{ carrierFilterPrivate }}</span>
                           <el-tag v-if="group.library_origin" size="small" type="info" effect="plain" style="margin-left: 6px">{{ privateLibraryOriginLabel(group.library_origin) }}</el-tag>
@@ -2495,6 +2498,8 @@ function formatCount(count: number): string {
 }
 
 function getGroupName(group: any) {
+  // 优先使用文件名作为数据包名称，方便识别
+  if (group.batch_name) return group.batch_name
   const country = findCountryByIso(group.country_code)
   const countryName = country ? country.name : group.country_code
   return `${countryName}-${group.source_label || group.source}-${group.purpose_label || group.purpose}`

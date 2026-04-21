@@ -212,6 +212,80 @@ class TestHTTPAdapterSend:
             assert success is False
             assert error is not None
 
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_send_http200_empty_json_not_success(self, mock_http_channel, mock_sms_log):
+        """HTTP 200 但无业务成功字段时不得误判为成功（避免库内 sent 与上游未收到不一致）"""
+        from app.workers.adapters.http_adapter import HTTPAdapter
+
+        adapter = HTTPAdapter(mock_http_channel)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+        mock_response.text = "{}"
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                return_value=mock_response
+            )
+
+            success, msg_id, error = await adapter.send(mock_sms_log)
+
+            assert success is False
+            assert msg_id is None
+            assert error is not None
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_send_kaola_status_string_zero(self, mock_http_channel, mock_sms_log):
+        """Kaola 上游若返回字符串 status=0 也应判成功"""
+        from app.workers.adapters.http_adapter import HTTPAdapter
+
+        mock_http_channel.config_json = json.dumps({"payload_template": "kaola"})
+        mock_http_channel.api_url = "https://example.com/kaola/send"
+        adapter = HTTPAdapter(mock_http_channel)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"status": "0", "list": [{"msgid": "K1"}]}
+        mock_response.text = '{"status":"0"}'
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                return_value=mock_response
+            )
+
+            success, msg_id, error = await adapter.send(mock_sms_log)
+
+            assert success is True
+            assert msg_id == "K1"
+            assert error is None
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_send_kaola_missing_status_not_success(self, mock_http_channel, mock_sms_log):
+        """Kaola 模板下无 status 字段不得默认成功"""
+        from app.workers.adapters.http_adapter import HTTPAdapter
+
+        mock_http_channel.config_json = json.dumps({"payload_template": "kaola"})
+        adapter = HTTPAdapter(mock_http_channel)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"message": "ignored"}
+        mock_response.text = '{"message":"ignored"}'
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                return_value=mock_response
+            )
+
+            success, msg_id, error = await adapter.send(mock_sms_log)
+
+            assert success is False
+            assert msg_id is None
+
 
 class TestHTTPPayloadTemplates:
     """Payload模板测试"""

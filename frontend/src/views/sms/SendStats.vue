@@ -948,7 +948,7 @@ const loadAccounts = async () => {
 
 const loadStaff = async () => {
   try {
-    const res = await request.get('/admin/users')
+    const res = await request.get('/admin/users', { params: { include_monthly_stats: false } })
     staffOptions.value = res.users || []
   } catch { staffOptions.value = [] }
 }
