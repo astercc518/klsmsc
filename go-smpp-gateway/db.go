@@ -1,58 +1,63 @@
 package main
 
 import (
-    "fmt"
-    "log"
-    "os"
+	"fmt"
+	"log"
+	"os"
+	"time"
 
-    _ "github.com/go-sql-driver/mysql"
-    "github.com/jmoiron/sqlx"
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/jmoiron/sqlx"
 )
 
 var db *sqlx.DB
 
 // InitDB initializes the MySQL connection
 func InitDB() {
-    dbUser := os.Getenv("DATABASE_USER")
-    dbPass := os.Getenv("DATABASE_PASSWORD")
-    dbHost := os.Getenv("DATABASE_HOST")
-    dbPort := os.Getenv("DATABASE_PORT")
-    dbName := os.Getenv("DATABASE_NAME")
+	dbUser := os.Getenv("DATABASE_USER")
+	dbPass := os.Getenv("DATABASE_PASSWORD")
+	dbHost := os.Getenv("DATABASE_HOST")
+	dbPort := os.Getenv("DATABASE_PORT")
+	dbName := os.Getenv("DATABASE_NAME")
 
-    // Default connection string (pointing to ProxySQL)
-    dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", 
-        dbUser, dbPass, dbHost, dbPort, dbName)
+	// Default connection string (pointing to ProxySQL)
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true",
+		dbUser, dbPass, dbHost, dbPort, dbName)
 
-    var err error
-    db, err = sqlx.Connect("mysql", dsn)
-    if err != nil {
-        log.Fatalf("Failed to connect to database: %v", err)
-    }
-    log.Println("Database connection established.")
+	var err error
+	db, err = sqlx.Connect("mysql", dsn)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	// 连接池：避免高并发 Submit/DLR 更新时瞬间打满 MySQL
+	db.SetMaxOpenConns(150)
+	db.SetMaxIdleConns(50)
+	db.SetConnMaxLifetime(time.Minute * 5)
+	log.Println("Database connection established.")
 }
 
 // GetChannelConfigs loads all active SMPP channels
 func GetChannelConfigs() ([]ChannelConfig, error) {
-    var configs []ChannelConfig
-    query := "SELECT id, channel_code, protocol, host, port, username, password, " +
-             "smpp_bind_mode, smpp_system_type, smpp_interface_version, " +
-             "smpp_dlr_socket_hold_seconds, COALESCE(default_sender_id, '') as default_sender_id, " +
-             "max_tps, concurrency, COALESCE(config_json, '') as config_json " +
-             "FROM channels WHERE protocol='SMPP' AND status='active' AND is_deleted=0"
-    err := db.Select(&configs, query)
-    return configs, err
+	var configs []ChannelConfig
+	query := "SELECT id, channel_code, protocol, host, port, username, password, " +
+		"smpp_bind_mode, smpp_system_type, smpp_interface_version, " +
+		"smpp_dlr_socket_hold_seconds, COALESCE(default_sender_id, '') as default_sender_id, " +
+		"max_tps, concurrency, COALESCE(config_json, '') as config_json " +
+		"FROM channels WHERE protocol='SMPP' AND status='active' AND is_deleted=0"
+	err := db.Select(&configs, query)
+	return configs, err
 }
 
 // GetSMSLogByMessageID fetches a specific SMS log
 func GetSMSLogByMessageID(messageID string) (*SMSLog, error) {
-    var log SMSLog
-    // Use the latest record if there are duplicates (partitioning might cause this if not careful)
+	var log SMSLog
+	// Use the latest record if there are duplicates (partitioning might cause this if not careful)
 	err := db.Get(&log, `SELECT l.id, l.message_id, l.phone_number, l.message, l.channel_id, l.submit_time, l.status,
 		COALESCE(b.status, '') AS batch_status
 		FROM sms_logs l
 		LEFT JOIN sms_batches b ON b.id = l.batch_id
 		WHERE l.message_id = ? ORDER BY l.submit_time DESC LIMIT 1`, messageID)
-    return &log, err
+	return &log, err
 }
 
 // UpdateSMSLogResult updates the status and upstream ID after sending
@@ -80,7 +85,7 @@ func MarkSMSLogBatchCancelled(id int64) error {
 
 // UpdateSMSLogDLR updates the status when a DLR arrives
 func UpdateSMSLogDLR(upstreamID string, status string) error {
-    query := "UPDATE sms_logs SET status = ?, delivery_time = NOW() WHERE upstream_message_id = ? AND status='sent'"
-    _, err := db.Exec(query, status, upstreamID)
-    return err
+	query := "UPDATE sms_logs SET status = ?, delivery_time = NOW() WHERE upstream_message_id = ? AND status='sent'"
+	_, err := db.Exec(query, status, upstreamID)
+	return err
 }

@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/google/uuid"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 var (
@@ -126,7 +126,7 @@ func workerProcessDelivery(d amqp.Delivery, ackCh chan<- rabbitAckOp) {
 	}
 
 	// 同一 delivery 内多条：限制并发，避免单包过大时 goroutine 爆炸
-	const perDeliveryCap = 16
+	const perDeliveryCap = 4
 	sem := make(chan struct{}, perDeliveryCap)
 	var wg sync.WaitGroup
 	var failMu sync.Mutex
