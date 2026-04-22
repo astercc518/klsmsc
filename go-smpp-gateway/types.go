@@ -42,3 +42,14 @@ type CeleryTask struct {
     ID   string        `json:"id"`
     Task string        `json:"task"`
 }
+
+// SMSLogData 为 Python 投递至 sms_send_smpp 的单条短信负载；发送路径仅依赖此结构，不查库。
+type SMSLogData struct {
+    LogID         int64  `json:"log_id"`
+    MessageID     string `json:"message_id"`
+    PhoneNumber   string `json:"phone_number"`
+    Message       string `json:"message"`
+    ChannelID     int    `json:"channel_id"`
+    BatchStatus   string `json:"batch_status"`
+    RecordStatus  string `json:"record_status"`
+}

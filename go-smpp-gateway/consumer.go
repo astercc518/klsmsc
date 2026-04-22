@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,43 +52,94 @@ type rabbitAckOp struct {
 	requeue bool
 }
 
-// extractMessageIDs 从 Celery 消息体解析 message_id 列表；若需丢弃毒消息返回 nackPoison=true
-func extractMessageIDs(body []byte) (messageIDs []string, nackPoison bool) {
-	var raw []interface{}
-	if err := json.Unmarshal(body, &raw); err == nil {
-		if len(raw) > 0 {
-			args, ok := raw[0].([]interface{})
-			if ok && len(args) > 0 {
-				if firstArgList, ok := args[0].([]interface{}); ok {
-					for _, id := range firstArgList {
-						if idStr, ok := id.(string); ok {
-							messageIDs = append(messageIDs, idStr)
-						}
-					}
-				} else if idStr, ok := args[0].(string); ok {
-					messageIDs = append(messageIDs, idStr)
-				}
-			}
+// parseSMSLogData 将 JSON map 转为 SMSLogData（Celery JSON 数字常为 float64）
+func parseSMSLogData(m map[string]interface{}) (SMSLogData, error) {
+	var d SMSLogData
+	if v, ok := m["log_id"]; ok {
+		switch x := v.(type) {
+		case float64:
+			d.LogID = int64(x)
+		case int64:
+			d.LogID = x
+		case int:
+			d.LogID = int64(x)
+		default:
+			return d, fmt.Errorf("log_id type %T", v)
 		}
 	} else {
-		var task CeleryTask
-		if err := json.Unmarshal(body, &task); err != nil {
-			log.Printf("Failed to unmarshal Celery task: %v | Raw: %s", err, string(body))
-			return nil, true
-		}
-		if len(task.Args) > 0 {
-			if firstArgList, ok := task.Args[0].([]interface{}); ok {
-				for _, id := range firstArgList {
-					if idStr, ok := id.(string); ok {
-						messageIDs = append(messageIDs, idStr)
-					}
-				}
-			} else if idStr, ok := task.Args[0].(string); ok {
-				messageIDs = append(messageIDs, idStr)
-			}
+		return d, fmt.Errorf("missing log_id")
+	}
+	if v, ok := m["message_id"].(string); ok {
+		d.MessageID = v
+	} else {
+		return d, fmt.Errorf("missing message_id")
+	}
+	if v, ok := m["phone_number"].(string); ok {
+		d.PhoneNumber = v
+	}
+	if v, ok := m["message"].(string); ok {
+		d.Message = v
+	}
+	if v, ok := m["channel_id"]; ok {
+		switch x := v.(type) {
+		case float64:
+			d.ChannelID = int(x)
+		case int:
+			d.ChannelID = x
+		case int64:
+			d.ChannelID = int(x)
 		}
 	}
-	return messageIDs, false
+	if v, ok := m["batch_status"].(string); ok {
+		d.BatchStatus = v
+	}
+	if v, ok := m["record_status"].(string); ok {
+		d.RecordStatus = v
+	}
+	return d, nil
+}
+
+// extractSmsPayloads 从 Celery 消息体解析 SMSLogData 列表；仅支持「全量负载」对象（不再在发送路径按 message_id 查库）
+func extractSmsPayloads(body []byte) (payloads []SMSLogData, nackPoison bool) {
+	var task CeleryTask
+	if err := json.Unmarshal(body, &task); err != nil {
+		log.Printf("Failed to unmarshal Celery task: %v | Raw: %s", err, string(body))
+		return nil, true
+	}
+	if len(task.Args) == 0 {
+		return nil, false
+	}
+	first := task.Args[0]
+	switch x := first.(type) {
+	case string:
+		log.Printf("Reject legacy message_id-only payload (purge sms_send_smpp or republish with full payload): %s", x)
+		return nil, true
+	case map[string]interface{}:
+		d, err := parseSMSLogData(x)
+		if err != nil {
+			log.Printf("Bad smpp payload: %v", err)
+			return nil, true
+		}
+		return []SMSLogData{d}, false
+	case []interface{}:
+		for _, el := range x {
+			mm, ok := el.(map[string]interface{})
+			if !ok {
+				log.Printf("Reject non-map element in smpp batch args")
+				return nil, true
+			}
+			d, err := parseSMSLogData(mm)
+			if err != nil {
+				log.Printf("Bad smpp payload in batch: %v", err)
+				return nil, true
+			}
+			payloads = append(payloads, d)
+		}
+		return payloads, false
+	default:
+		log.Printf("Unsupported Celery args[0] type %T", first)
+		return nil, true
+	}
 }
 
 // workerProcessDelivery 执行业务逻辑，不向 Rabbit 直接 Ack（由 ack 专用 goroutine 执行）
@@ -99,24 +151,23 @@ func workerProcessDelivery(d amqp.Delivery, ackCh chan<- rabbitAckOp) {
 		}
 	}()
 
-	messageIDs, nackPoison := extractMessageIDs(d.Body)
+	payloads, nackPoison := extractSmsPayloads(d.Body)
 	if nackPoison {
 		ackCh <- rabbitAckOp{d: d, nack: true, requeue: false}
 		return
 	}
-	if len(messageIDs) == 0 {
-		log.Printf("Could not extract message_id(s) from task: %s", string(d.Body))
+	if len(payloads) == 0 {
+		log.Printf("Could not extract smpp payload(s) from task: %s", string(d.Body))
 		ackCh <- rabbitAckOp{d: d, ack: true}
 		return
 	}
 
-	if len(messageIDs) == 1 {
-		log.Printf("Processing SMS Task: %s", messageIDs[0])
-		procErr := processSingleSMS(messageIDs[0])
+	if len(payloads) == 1 {
+		log.Printf("Processing SMS Task: %s log_id=%d", payloads[0].MessageID, payloads[0].LogID)
+		procErr := processSingleSMSData(payloads[0])
 		if procErr != nil {
-			log.Printf("Failed to process message %s: %v", messageIDs[0], procErr)
+			log.Printf("Failed to process message %s: %v", payloads[0].MessageID, procErr)
 		}
-		// 处理失败时必须 Nack 并 requeue，否则会出现「队列已空但 sms_logs 未更新」的假丢失
 		if procErr != nil {
 			ackCh <- rabbitAckOp{d: d, nack: true, requeue: true}
 			return
@@ -125,37 +176,36 @@ func workerProcessDelivery(d amqp.Delivery, ackCh chan<- rabbitAckOp) {
 		return
 	}
 
-	// 同一 delivery 内多条：限制并发，避免单包过大时 goroutine 爆炸
 	const perDeliveryCap = 4
 	sem := make(chan struct{}, perDeliveryCap)
 	var wg sync.WaitGroup
 	var failMu sync.Mutex
 	failedCount := 0
-	for _, msgID := range messageIDs {
+	for _, pl := range payloads {
 		wg.Add(1)
 		sem <- struct{}{}
-		go func(mid string) {
+		go func(data SMSLogData) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			defer func() {
 				if r := recover(); r != nil {
-					log.Printf("panic processSingleSMS %s: %v", mid, r)
+					log.Printf("panic processSingleSMSData %s: %v", data.MessageID, r)
 					failMu.Lock()
 					failedCount++
 					failMu.Unlock()
 				}
 			}()
-			log.Printf("Processing SMS Task: %s", mid)
-			if err := processSingleSMS(mid); err != nil {
-				log.Printf("Failed to process message %s: %v", mid, err)
+			log.Printf("Processing SMS Task: %s", data.MessageID)
+			if err := processSingleSMSData(data); err != nil {
+				log.Printf("Failed to process message %s: %v", data.MessageID, err)
 				failMu.Lock()
 				failedCount++
 				failMu.Unlock()
 			}
-		}(msgID)
+		}(pl)
 	}
 	wg.Wait()
-	totalN := len(messageIDs)
+	totalN := len(payloads)
 	// 全部失败：整包 Nack 重入队；部分失败仍 Ack，避免已成功 Submit 的条因整包重投而重复下发
 	if failedCount == totalN && totalN > 0 {
 		ackCh <- rabbitAckOp{d: d, nack: true, requeue: true}
@@ -184,6 +234,16 @@ func startSingleConsumerSession(url string) error {
 	rabbitConn = conn
 	publishCh = pubCh
 	rabbitMu.Unlock()
+
+	// 结果回写队列：与 Python Celery task_queues 中 sms_result_queue 对齐
+	if _, err = pubCh.QueueDeclare("sms_result_queue", true, false, false, false, nil); err != nil {
+		_ = pubCh.Close()
+		_ = conn.Close()
+		rabbitMu.Lock()
+		closeRabbitMQLocked()
+		rabbitMu.Unlock()
+		return fmt.Errorf("declare sms_result_queue: %w", err)
+	}
 
 	ch, err := conn.Channel()
 	if err != nil {
@@ -329,54 +389,36 @@ func PublishCeleryTask(queue string, taskName string, args []interface{}) error 
 	return err
 }
 
-func processSingleSMS(messageID string) error {
-	logData, err := GetSMSLogByMessageID(messageID)
-	if err != nil {
-		return fmt.Errorf("failed to get log: %v", err)
-	}
-
-	// 批次已取消且仍为待发：不再提交到 SMPP（与 Python worker 侧逻辑一致）
-	if logData.BatchStatus == "cancelled" && (logData.Status == "pending" || logData.Status == "queued") {
-		log.Printf("跳过 SMPP 提交: 批次已取消 message_id=%s status=%s", messageID, logData.Status)
-		if err := MarkSMSLogBatchCancelled(logData.ID); err != nil {
-			log.Printf("WARN: 批次取消落库失败 id=%d: %v", logData.ID, err)
+func processSingleSMSData(data SMSLogData) error {
+	bs := strings.ToLower(strings.TrimSpace(data.BatchStatus))
+	rs := strings.TrimSpace(data.RecordStatus)
+	if bs == "cancelled" && (rs == "pending" || rs == "queued") {
+		log.Printf("跳过 SMPP 提交: 批次已取消 message_id=%s", data.MessageID)
+		if err := publishSmsSubmitResult(data.LogID, data.MessageID, "", "failed", "批次已取消"); err != nil {
+			log.Printf("WARN: publish cancel result id=%d: %v", data.LogID, err)
 		}
 		return nil
 	}
-	// 终态或已提交上游：避免重复 Submit
-	if logData.Status == "failed" || logData.Status == "expired" || logData.Status == "delivered" ||
-		logData.Status == "sent" {
-		log.Printf("跳过 SMPP 提交: 已是终态或已发送 message_id=%s status=%s", messageID, logData.Status)
+	if rs == "failed" || rs == "expired" || rs == "delivered" || rs == "sent" {
+		log.Printf("跳过 SMPP 提交: 已是终态 message_id=%s status=%s", data.MessageID, rs)
 		return nil
 	}
 
-	// 必须在 SendSMS 之前将 pending 标为 queued：若先 Send 且 SubmitSMResp 极快把状态写成 sent，
-	// 再执行 MarkQueued 会把终态覆盖回 queued，造成卡死。
-	if logData.Status == "pending" {
-		if err := MarkSMSLogQueuedAfterSmppHandoff(logData.ID); err != nil {
-			log.Printf("WARN: MarkSMSLogQueuedAfterSmppHandoff id=%d: %v", logData.ID, err)
-		}
-	}
-
-	// manager.SendSMS 在收到 SubmitSMResp 时异步更新库（如 sent）；此处仅处理 socket 首包失败等同步错误。
-	err = manager.SendSMS(logData.ID, logData.MessageID, logData.PhoneNumber, logData.Message, logData.ChannelID)
+	err := manager.SendSMS(data.LogID, data.MessageID, data.PhoneNumber, data.Message, data.ChannelID)
 	if err != nil {
 		errStr := err.Error()
 		if len(errStr) >= 13 && errStr[:13] == "_window_full:" {
-			// in-flight 窗口满导致超时：消息保持当前 DB 状态，nack+requeue 等待 session 重建后重试
-			log.Printf("[SMPP-WARN] window full nack+requeue: message_id=%s", logData.MessageID)
-			return fmt.Errorf("window full, requeue: %s", logData.MessageID)
+			log.Printf("[SMPP-WARN] window full nack+requeue: message_id=%s", data.MessageID)
+			return fmt.Errorf("window full, requeue: %s", data.MessageID)
 		}
 		if len(errStr) >= 12 && errStr[:12] == "_temp_error:" {
-			// 临时错误（session 正在关闭/重建）：不写 DB failed，nack+requeue 等待 session 恢复
-			log.Printf("[SMPP-WARN] temp error nack+requeue: message_id=%s err=%s", logData.MessageID, errStr)
-			return fmt.Errorf("temp error, requeue: %s", logData.MessageID)
+			log.Printf("[SMPP-WARN] temp error nack+requeue: message_id=%s err=%s", data.MessageID, errStr)
+			return fmt.Errorf("temp error, requeue: %s", data.MessageID)
 		}
-		// 其它永久性发送错误：写 failed
-		_ = UpdateSMSLogResult(logData.ID, logData.MessageID, "", "failed", errStr)
+		if pubErr := publishSmsSubmitResult(data.LogID, data.MessageID, "", "failed", errStr); pubErr != nil {
+			log.Printf("WARN: publish failed result id=%d: %v", data.LogID, pubErr)
+		}
 		return fmt.Errorf("failed to send: %v", err)
 	}
-
-	// SubmitSMResp 回调再将状态更新为 sent 并写入上游 message_id。
 	return nil
 }

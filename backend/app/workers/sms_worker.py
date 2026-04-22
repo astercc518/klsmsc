@@ -7,7 +7,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, Iterator, List, Optional, Tuple
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, update
 from celery.exceptions import Retry
 
 from app.workers.celery_app import celery_app
@@ -81,6 +81,57 @@ def _make_session():
     return eng, factory
 
 
+async def _load_smpp_payload_by_message_id(message_id: str) -> Optional[Dict[str, Any]]:
+    """按 message_id 查库组装 Go 网关所需全量负载（仅用于兼容旧入队路径）。"""
+    eng, Session = _make_session()
+    try:
+        async with Session() as db:
+            result = await db.execute(select(SMSLog).where(SMSLog.message_id == message_id))
+            sms_log = result.scalar_one_or_none()
+            if not sms_log:
+                return None
+            bs = ""
+            if sms_log.batch_id:
+                _bs = (
+                    await db.execute(select(SmsBatch.status).where(SmsBatch.id == sms_log.batch_id))
+                ).scalar_one_or_none()
+                bs = getattr(_bs, "value", str(_bs or ""))
+            from app.utils.smpp_payload import smpp_payload_public_dict
+
+            return smpp_payload_public_dict(sms_log, bs)
+    finally:
+        await eng.dispose()
+
+
+async def _load_smpp_payloads_by_message_ids(message_ids: List[str]) -> List[Dict[str, Any]]:
+    """批量按 message_id 组装 SMPP 负载列表（顺序与输入一致，缺失则跳过）。"""
+    if not message_ids:
+        return []
+    eng, Session = _make_session()
+    try:
+        async with Session() as db:
+            result = await db.execute(select(SMSLog).where(SMSLog.message_id.in_(message_ids)))
+            logs = list(result.scalars().all())
+            by_mid = {r.message_id: r for r in logs}
+            from app.utils.smpp_payload import smpp_payload_public_dict
+
+            out: List[Dict[str, Any]] = []
+            for mid in message_ids:
+                row = by_mid.get(mid)
+                if not row:
+                    continue
+                bs = ""
+                if row.batch_id:
+                    _bs = (
+                        await db.execute(select(SmsBatch.status).where(SmsBatch.id == row.batch_id))
+                    ).scalar_one_or_none()
+                    bs = getattr(_bs, "value", str(_bs or ""))
+                out.append(smpp_payload_public_dict(row, bs))
+            return out
+    finally:
+        await eng.dispose()
+
+
 @celery_app.task(name='dlr_water_followup_task')
 def dlr_water_followup_task(
     sms_log_id: int,
@@ -115,14 +166,21 @@ def dlr_water_followup_task(
 
 
 @celery_app.task(name='send_sms_task', bind=True, max_retries=3)
-def send_sms_task(self, message_id: str, http_credentials: dict = None):
+def send_sms_task(self, first, http_credentials: dict = None):
     """
     发送短信任务
-    
+
     Args:
-        message_id: 消息ID
+        first: sms_send 队列为 message_id 字符串；sms_send_smpp 为全量负载 dict（仅 Go 消费，Python 直接跳过）
         http_credentials: HTTP通道凭据（可选），包含 username 和 password
     """
+    if isinstance(first, dict):
+        logger.debug(
+            "send_sms_task 收到 sms_send_smpp 专用负载，应由 Go 网关消费；Python worker 跳过"
+        )
+        return {"success": True, "skipped_gateway_payload": True}
+
+    message_id = first
     logger.info(f"开始处理短信发送任务: {message_id}")
     current_queue = (self.request.delivery_info or {}).get('routing_key', 'sms_send')
 
@@ -130,11 +188,15 @@ def send_sms_task(self, message_id: str, http_credentials: dict = None):
         result = _run_async(_send_sms_async(message_id, http_credentials, _current_queue=current_queue))
 
         if isinstance(result, dict) and result.get("_reroute_smpp"):
-            # 生产默认由 go-smpp-gateway 消费 sms_send_smpp；勿与 worker-sms-smpp 同队列并行（见 docs/运维/服务与队列矩阵.md）
+            smpp_pl = result.get("_smpp_payload")
+            if not smpp_pl:
+                logger.error(f"SMPP 重路由缺少负载: {message_id}")
+                _run_async(_mark_failed(message_id, "SMPP重路由缺少全量负载"))
+                return {"success": False, "error": "missing smpp payload"}
             logger.info(f"SMPP 通道任务重路由到 sms_send_smpp 队列: {message_id}")
             try:
                 send_sms_task.apply_async(
-                    args=[message_id, http_credentials],
+                    args=[smpp_pl, http_credentials],
                     queue='sms_send_smpp',
                 )
             except Exception as e:
@@ -280,8 +342,17 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
                 # 首跳即 return，原先未刷新批次汇总；Go 网关写 sent 也不经本进程，须在此先同步一次
                 if sms_log.batch_id:
                     await update_batch_progress(db, sms_log.batch_id)
+                bs = ""
+                if sms_log.batch_id:
+                    _bs = (
+                        await db.execute(select(SmsBatch.status).where(SmsBatch.id == sms_log.batch_id))
+                    ).scalar_one_or_none()
+                    bs = getattr(_bs, "value", str(_bs or ""))
+                from app.utils.smpp_payload import smpp_payload_public_dict
+
+                smpp_pl = smpp_payload_public_dict(sms_log, bs)
                 await db.close()
-                return {"_reroute_smpp": True}
+                return {"_reroute_smpp": True, "_smpp_payload": smpp_pl}
 
             if channel.protocol != 'VIRTUAL':
                 from app.utils.rate_limiter import acquire_send_slot
@@ -1626,3 +1697,100 @@ async def _do_repair_virtual_batch_dlr(batch_id: int):
             return {"batch_id": batch_id, "chunks_scheduled": chunks_scheduled}
     finally:
         await eng.dispose()
+
+
+# ---------- Go 网关 SubmitSM 结果异步回写（合并 UPDATE，减轻 MySQL 压力）----------
+_SMS_RESULT_BUFFER: List[dict] = []
+_SMS_RESULT_LOCK = threading.Lock()
+_SMS_RESULT_TIMER: Optional[threading.Timer] = None
+
+
+def _timer_flush_sms_results():
+    global _SMS_RESULT_TIMER
+    batch: List[dict] = []
+    with _SMS_RESULT_LOCK:
+        _SMS_RESULT_TIMER = None
+        if _SMS_RESULT_BUFFER:
+            batch = _SMS_RESULT_BUFFER[:]
+            _SMS_RESULT_BUFFER.clear()
+    if batch:
+        try:
+            _flush_sms_results_sync(batch)
+        except Exception as e:
+            logger.error(f"sms_result 定时刷盘失败: {e}", exc_info=e)
+
+
+def _enqueue_sms_result_buffer(item: dict):
+    global _SMS_RESULT_TIMER
+    to_flush: Optional[List[dict]] = None
+    with _SMS_RESULT_LOCK:
+        _SMS_RESULT_BUFFER.append(item)
+        if len(_SMS_RESULT_BUFFER) >= 200:
+            to_flush = _SMS_RESULT_BUFFER[:]
+            _SMS_RESULT_BUFFER.clear()
+            if _SMS_RESULT_TIMER is not None:
+                try:
+                    _SMS_RESULT_TIMER.cancel()
+                except Exception:
+                    pass
+                _SMS_RESULT_TIMER = None
+        elif _SMS_RESULT_TIMER is None:
+            _SMS_RESULT_TIMER = threading.Timer(1.0, _timer_flush_sms_results)
+            _SMS_RESULT_TIMER.daemon = True
+            _SMS_RESULT_TIMER.start()
+    if to_flush:
+        _flush_sms_results_sync(to_flush)
+
+
+def _flush_sms_results_sync(rows: List[dict]):
+    if not rows:
+        return
+    _run_async(_flush_sms_results_async(rows))
+
+
+async def _flush_sms_results_async(rows: List[dict]):
+    eng, Session = _make_session()
+    try:
+        async with Session() as db:
+            now = datetime.now()
+            batch_ids = set()
+            for r in rows:
+                log_id = int(r.get("log_id") or 0)
+                if log_id <= 0:
+                    continue
+                st = (r.get("status") or "").strip() or "failed"
+                up = (r.get("upstream_message_id") or "").strip() or None
+                err = (r.get("error") or "")[:4000]
+                br = await db.execute(select(SMSLog.batch_id).where(SMSLog.id == log_id))
+                bid = br.scalar_one_or_none()
+                if bid is not None:
+                    batch_ids.add(int(bid))
+                vals: Dict[str, Any] = {
+                    "status": st,
+                    "upstream_message_id": up,
+                }
+                if st == "failed":
+                    vals["error_message"] = err
+                    vals["sent_time"] = now
+                elif st == "sent":
+                    vals["error_message"] = None
+                    vals["sent_time"] = now
+                await db.execute(update(SMSLog).where(SMSLog.id == log_id).values(**vals))
+            await db.commit()
+            for bid in batch_ids:
+                try:
+                    await update_batch_progress(db, bid)
+                except Exception as e:
+                    logger.warning(f"update_batch_progress batch={bid}: {e}")
+    finally:
+        await eng.dispose()
+
+
+@celery_app.task(name="process_sms_result_task")
+def process_sms_result_task(item: dict):
+    """消费 Go 网关回传的 SubmitSM 结果，200 条或 1 秒合并刷盘。"""
+    try:
+        _enqueue_sms_result_buffer(item)
+    except Exception as e:
+        logger.error(f"process_sms_result_task 入缓冲失败: {e}", exc_info=e)
+    return {"ok": True}

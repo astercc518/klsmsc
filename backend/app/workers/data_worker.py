@@ -364,9 +364,43 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
     await db.commit()
     logger.info(f"[buy-send-async] order={order_id}, 创建 {len(message_ids)} 条 SMS 记录")
 
-    # 6. 入队发送
+    # 6. 入队发送（SMPP 直投全量负载，避免 Go 网关在发送路径查库）
+    bs_val = ""
+    if batch_id:
+        _bs_row = await db.execute(select(SmsBatch.status).where(SmsBatch.id == batch_id))
+        _bs_raw = _bs_row.scalar_one_or_none()
+        bs_val = getattr(_bs_raw, "value", str(_bs_raw or ""))
+    cids = list({s.channel_id for s in sms_objects if getattr(s, "channel_id", None)})
+    prot_map: dict = {}
+    for _cid in cids:
+        _pr = await db.execute(select(Channel.protocol).where(Channel.id == _cid))
+        prot_map[_cid] = _pr.scalar_one_or_none()
+    from app.utils.smpp_payload import smpp_payload_public_dict
+
+    smpp_payloads: list = []
+    other_mids: list = []
+    for sms in sms_objects:
+        _prot_raw = prot_map.get(sms.channel_id)
+        _pv = getattr(_prot_raw, "value", _prot_raw)
+        _pv = getattr(_pv, "value", _pv)
+        if "SMPP" in str(_pv or "").upper():
+            smpp_payloads.append(smpp_payload_public_dict(sms, bs_val))
+        else:
+            other_mids.append(sms.message_id)
+
     queued = 0
-    for mid in message_ids:
+    from app.config import settings as _cfg
+
+    _win = int(getattr(_cfg, "SMPP_WINDOW_SIZE", 10) or 10)
+    for _i in range(0, len(smpp_payloads), _win):
+        chunk = smpp_payloads[_i : _i + _win]
+        if QueueManager.queue_sms_batch_smpp(chunk):
+            queued += len(chunk)
+        else:
+            for _p in chunk:
+                if QueueManager.queue_smpp_gateway(_p):
+                    queued += 1
+    for mid in other_mids:
         if QueueManager.queue_sms(mid):
             queued += 1
     logger.info(f"[buy-send-async] order={order_id}, 入队 {queued}/{len(message_ids)}")

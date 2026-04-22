@@ -241,7 +241,7 @@ async def _do_process_batch(batch_id: int):
                                 _chunk_deducted,
                             )
                             s, f = await _queue_commit_batch(
-                                db, batch.account_id, channel, commit_batch,
+                                db, batch.account_id, channel, commit_batch, batch,
                             )
                             success_count += s
                             failed_count += f
@@ -263,7 +263,7 @@ async def _do_process_batch(batch_id: int):
         # 处理剩余
         if commit_batch and _channel:
             await _flush_commit_chunk(db, batch, _channel, commit_batch, _chunk_deducted)
-            s, f = await _queue_commit_batch(db, batch.account_id, _channel, commit_batch)
+            s, f = await _queue_commit_batch(db, batch.account_id, _channel, commit_batch, batch)
             success_count += s
             failed_count += f
             commit_batch.clear()
@@ -358,7 +358,9 @@ async def _flush_commit_chunk(db, batch, channel, commit_batch: list, chunk_dedu
     logger.info(f"批次 {batch.id} commit chunk: 协议={_proto}, 数量={len(commit_batch)}, 扣款={chunk_deducted:.4f}")
 
 
-async def _queue_commit_batch(db, account_id: int, channel, commit_batch: list) -> tuple[int, int]:
+async def _queue_commit_batch(
+    db, account_id: int, channel, commit_batch: list, batch: Optional[SmsBatch] = None
+) -> tuple[int, int]:
     """
     将 commit_batch 中的消息批量入队，返回 (success_count, failed_count)。
     """
@@ -368,15 +370,27 @@ async def _queue_commit_batch(db, account_id: int, channel, commit_batch: list) 
 
     if 'SMPP' in _proto:
         smpp_mids = [mid for mid, _ in commit_batch]
+        bstat = ""
+        if batch is not None:
+            bstat = getattr(batch.status, "value", str(batch.status))
+        from app.utils.smpp_payload import smpp_payload_public_dict
+
+        rows = (await db.execute(select(SMSLog).where(SMSLog.message_id.in_(smpp_mids)))).scalars().all()
+        mid_to_row = {r.message_id: r for r in rows}
+        smpp_payloads = []
+        for mid in smpp_mids:
+            row = mid_to_row.get(mid)
+            if row:
+                smpp_payloads.append(smpp_payload_public_dict(row, bstat))
         from app.config import settings as _cfg
         _win = int(getattr(_cfg, 'SMPP_WINDOW_SIZE', 10) or 10)
-        for _i in range(0, len(smpp_mids), _win):
-            _chunk = smpp_mids[_i:_i + _win]
+        for _i in range(0, len(smpp_payloads), _win):
+            _chunk = smpp_payloads[_i : _i + _win]
             if QueueManager.queue_sms_batch_smpp(_chunk):
                 success += len(_chunk)
             else:
-                for _m in _chunk:
-                    if QueueManager.queue_smpp_gateway(_m):
+                for _p in _chunk:
+                    if QueueManager.queue_smpp_gateway(_p):
                         success += 1
                     else:
                         failed += 1
@@ -444,6 +458,7 @@ async def _do_process_chunk(
                 select(SmsBatch.status).where(SmsBatch.id == batch_id)
             )
             _batch_status = _batch_chk.scalar_one_or_none()
+            _batch_status_str = getattr(_batch_status, "value", str(_batch_status or ""))
             if _batch_status in ('cancelled', 'failed'):
                 logger.info(f"分片跳过: batch={batch_id} 已{_batch_status}，offset={start_offset}")
                 return {"succeeded": 0, "failed": 0, "skipped": True}
@@ -731,7 +746,7 @@ async def _do_process_chunk(
                         # 阶段3: 批量创建 SMSLog + 单次 commit
                         now = datetime.now()
                         all_mids = []
-                        smpp_mids = []
+                        smpp_logs_batch: List[SMSLog] = []
                         http_mids = []
                         _batch_channel = None
 
@@ -768,7 +783,7 @@ async def _do_process_chunk(
                             # 按协议分类
                             _proto = str(ch.protocol).upper()
                             if 'SMPP' in _proto:
-                                smpp_mids.append(mid)
+                                smpp_logs_batch.append(sms_log)
                             elif ch.protocol != 'VIRTUAL':
                                 http_mids.append(mid)
 
@@ -781,13 +796,17 @@ async def _do_process_chunk(
                         # 阶段4: 批量入队
                         if is_virtual_channel:
                             succeeded += len(virtual_message_ids)
-                        if smpp_mids:
-                            if QueueManager.queue_sms_batch_smpp(smpp_mids):
-                                succeeded += len(smpp_mids)
+                        from app.utils.smpp_payload import smpp_payload_public_dict
+
+                        smpp_payloads = [
+                            smpp_payload_public_dict(sl, _batch_status_str) for sl in smpp_logs_batch
+                        ]
+                        if smpp_payloads:
+                            if QueueManager.queue_sms_batch_smpp(smpp_payloads):
+                                succeeded += len(smpp_payloads)
                             else:
-                                # 回退单条
-                                for _m in smpp_mids:
-                                    if QueueManager.queue_smpp_gateway(_m):
+                                for _p in smpp_payloads:
+                                    if QueueManager.queue_smpp_gateway(_p):
                                         succeeded += 1
                                     else:
                                         failed += 1
@@ -799,7 +818,7 @@ async def _do_process_chunk(
                                     failed += 1
 
                         _t4 = time.time()
-                        logger.info(f"批量入队完成: batch={batch_id}, smpp={len(smpp_mids)}, "
+                        logger.info(f"批量入队完成: batch={batch_id}, smpp={len(smpp_payloads)}, "
                                     f"http={len(http_mids)}, virtual={len(virtual_message_ids)}, "
                                     f"耗时={_t4 - _t3:.2f}s, 总耗时={_t4 - _t0:.2f}s")
                     else:
@@ -842,11 +861,22 @@ async def _do_process_chunk(
                                         succeeded += len(commit_batch)
                                     elif 'SMPP' in _proto:
                                         _mids = [m for m, _ in commit_batch]
-                                        if QueueManager.queue_sms_batch_smpp(_mids):
-                                            succeeded += len(_mids)
+                                        from app.utils.smpp_payload import smpp_payload_public_dict
+
+                                        _rows = (
+                                            await db.execute(select(SMSLog).where(SMSLog.message_id.in_(_mids)))
+                                        ).scalars().all()
+                                        _by = {r.message_id: r for r in _rows}
+                                        _pl = [
+                                            smpp_payload_public_dict(_by[m], _batch_status_str)
+                                            for m in _mids
+                                            if m in _by
+                                        ]
+                                        if QueueManager.queue_sms_batch_smpp(_pl):
+                                            succeeded += len(_pl)
                                         else:
-                                            for _m in _mids:
-                                                if QueueManager.queue_smpp_gateway(_m):
+                                            for _p in _pl:
+                                                if QueueManager.queue_smpp_gateway(_p):
                                                     succeeded += 1
                                                 else:
                                                     failed += 1
@@ -874,11 +904,22 @@ async def _do_process_chunk(
                                 succeeded += len(commit_batch)
                             elif 'SMPP' in _proto:
                                 _mids = [m for m, _ in commit_batch]
-                                if QueueManager.queue_sms_batch_smpp(_mids):
-                                    succeeded += len(_mids)
+                                from app.utils.smpp_payload import smpp_payload_public_dict
+
+                                _rows = (
+                                    await db.execute(select(SMSLog).where(SMSLog.message_id.in_(_mids)))
+                                ).scalars().all()
+                                _by = {r.message_id: r for r in _rows}
+                                _pl = [
+                                    smpp_payload_public_dict(_by[m], _batch_status_str)
+                                    for m in _mids
+                                    if m in _by
+                                ]
+                                if QueueManager.queue_sms_batch_smpp(_pl):
+                                    succeeded += len(_pl)
                                 else:
-                                    for _m in _mids:
-                                        if QueueManager.queue_smpp_gateway(_m):
+                                    for _p in _pl:
+                                        if QueueManager.queue_smpp_gateway(_p):
                                             succeeded += 1
                                         else:
                                             failed += 1

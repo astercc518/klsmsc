@@ -39,6 +39,7 @@ celery_app.conf.update(
 # 发送（sms_send / sms_send_smpp）与回执（sms_dlr）队列隔离：大批量 send 不会占满消费 DLR 的 worker。
 celery_app.conf.task_routes = {
     'send_sms_task': {'queue': 'sms_send'},
+    'process_sms_result_task': {'queue': 'sms_result_queue'},
     'process_dlr_task': {'queue': 'sms_dlr'},
     'process_smpp_dlr_task': {'queue': 'sms_dlr'},
     'fetch_dlr_reports_task': {'queue': 'sms_dlr'},
@@ -79,6 +80,11 @@ celery_app.conf.task_queues = {
     'integrations': {
         'exchange': 'integrations',
         'routing_key': 'integrations',
+    },
+    # Go smpp-gateway SubmitSM 结果异步回写 sms_logs（批量合并 UPDATE）
+    'sms_result_queue': {
+        'exchange': 'sms_result_queue',
+        'routing_key': 'sms_result_queue',
     },
 }
 

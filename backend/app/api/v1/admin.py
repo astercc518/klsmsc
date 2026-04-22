@@ -1858,7 +1858,9 @@ async def channel_test_send(
             await db.commit()
 
             from app.utils.queue import QueueManager
-            ok = QueueManager.queue_smpp_gateway(test_message_id, None)
+            from app.utils.smpp_payload import smpp_payload_public_dict
+
+            ok = QueueManager.queue_smpp_gateway(smpp_payload_public_dict(sms_log, ""), None)
             if not ok:
                 await db.refresh(sms_log)
                 sms_log.status = "failed"

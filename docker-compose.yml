@@ -187,6 +187,9 @@ services:
       # OKCC 语音余额全量同步：Beat 调度，由此 Worker 执行（队列 integrations）
       OKCC_BEAT_SYNC_ENABLED: ${OKCC_BEAT_SYNC_ENABLED:-true}
       OKCC_BEAT_SYNC_INTERVAL_SECONDS: ${OKCC_BEAT_SYNC_INTERVAL_SECONDS:-300}
+      # 批次巡检：Go 异步回写时放宽卡死/孤儿判定（分钟，与 batch_inspector 一致）
+      BATCH_INSPECT_STUCK_MINUTES: ${BATCH_INSPECT_STUCK_MINUTES:-30}
+      BATCH_INSPECT_SMPP_ORPHAN_MINUTES: ${BATCH_INSPECT_SMPP_ORPHAN_MINUTES:-30}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
@@ -200,6 +203,44 @@ services:
       rabbitmq:
         condition: service_healthy
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-8} -Q celery,sms_dlr,data_tasks,webhook_tasks,integrations
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # 专用：仅消费 sms_result_queue（Go SubmitSM 异步回写），与通用 worker 物理隔离，避免被 DLR/批量任务挤占
+  worker-result:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: smsc-worker-result
+    environment:
+      TZ: Asia/Shanghai
+      APP_ENV: ${APP_ENV:-development}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
+      DATABASE_USER: ${MYSQL_USER:-smsuser}
+      DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+      DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
+      DLR_SENT_TIMEOUT_HOURS: ${DLR_SENT_TIMEOUT_HOURS:-72}
+      DLR_PULL_HTTP_TIMEOUT_SECONDS: ${DLR_PULL_HTTP_TIMEOUT_SECONDS:-60}
+    volumes:
+      - ./backend:/app
+      - ./logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${RESULT_WORKER_CONCURRENCY:-4} -Q sms_result_queue
     restart: unless-stopped
     networks:
       - smsc-network

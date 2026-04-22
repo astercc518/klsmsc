@@ -420,17 +420,15 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 						log.Printf("[SMPP-DEBUG] Found matching sequence for msg: %s (internal log ID: %d)", seqData.messageID, seqData.logID)
 
 						if pd.CommandStatus == data.ESME_ROK {
-							err := UpdateSMSLogResult(seqData.logID, seqData.messageID, pd.MessageID, "sent", "")
-							if err != nil {
-								log.Printf("[SMPP-ERROR] Failed to update upstream ID for %s: %v", seqData.messageID, err)
+							if err := publishSmsSubmitResult(seqData.logID, seqData.messageID, pd.MessageID, "sent", ""); err != nil {
+								log.Printf("[SMPP-ERROR] Failed to publish submit result for %s: %v", seqData.messageID, err)
 							} else {
 								log.Printf("[SMPP-DEBUG] Successfully mapped upstream ID: %s => %s", seqData.messageID, pd.MessageID)
 							}
 						} else {
 							log.Printf("[SMPP-ERROR] SubmitSM failed with status %d for msg %s", pd.CommandStatus, seqData.messageID)
-							err := UpdateSMSLogResult(seqData.logID, seqData.messageID, "", "failed", fmt.Sprintf("SMPP Error: %d", pd.CommandStatus))
-							if err != nil {
-								log.Printf("[SMPP-ERROR] Failed to record SMPP error for %s: %v", seqData.messageID, err)
+							if err := publishSmsSubmitResult(seqData.logID, seqData.messageID, "", "failed", fmt.Sprintf("SMPP Error: %d", pd.CommandStatus)); err != nil {
+								log.Printf("[SMPP-ERROR] Failed to publish SMPP error for %s: %v", seqData.messageID, err)
 							}
 						}
 					} else {
@@ -523,8 +521,8 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 					for _, k := range orphanKeys {
 						if val, loaded := m.sequenceMap.LoadAndDelete(k); loaded {
 							seq := val.(sequenceData)
-							if err := UpdateSMSLogResult(seq.logID, seq.messageID, "", "sent", ""); err != nil {
-								log.Printf("[SMPP-ERROR] Failed to mark orphan as sent: msgID=%s err=%v", seq.messageID, err)
+							if err := publishSmsSubmitResult(seq.logID, seq.messageID, "", "sent", ""); err != nil {
+								log.Printf("[SMPP-ERROR] Failed to publish orphan sent: msgID=%s err=%v", seq.messageID, err)
 							}
 						}
 					}
@@ -585,8 +583,8 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 			for _, k := range staleKeys {
 				if val, loaded := m.sequenceMap.LoadAndDelete(k); loaded {
 					sd := val.(sequenceData)
-					if err := UpdateSMSLogResult(sd.logID, sd.messageID, "", "sent", ""); err != nil {
-						log.Printf("[SMPP-ERROR] stale cleanup mark sent: msgID=%s err=%v", sd.messageID, err)
+					if err := publishSmsSubmitResult(sd.logID, sd.messageID, "", "sent", ""); err != nil {
+						log.Printf("[SMPP-ERROR] stale cleanup publish sent: msgID=%s err=%v", sd.messageID, err)
 					}
 				}
 			}

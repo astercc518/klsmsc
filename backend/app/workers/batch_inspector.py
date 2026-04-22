@@ -3,7 +3,12 @@
 
 定期检查状态为 processing 且长时间未更新的批次，根据实际 sms_logs 记录校准其进度和状态。
 同时检测 COMPLETED 批次中虚拟通道 DLR 任务丢失导致的 sent 状态积压，并自动触发修复。
+
+Go 网关全异步后：SMPP 条目不再在网关内同步改库，pending 可能停留较久且可跳过 queued，
+经 sms_result_queue 异步变为 sent/failed；巡检阈值须显著放宽，避免误杀正常大队列批次。
+可通过环境变量 BATCH_INSPECT_STUCK_MINUTES / BATCH_INSPECT_SMPP_ORPHAN_MINUTES 覆盖（默认 30）。
 """
+import os
 from datetime import datetime, timedelta
 from sqlalchemy import select, and_, func
 from app.workers.celery_app import celery_app
@@ -14,6 +19,11 @@ from app.workers.sms_worker import _make_session, _run_async
 from app.modules.sms.batch_utils import update_batch_progress
 
 logger = get_logger(__name__)
+
+# 默认 30 分钟：与 Go 异步回写、万级队列积压相匹配；过短会误判「卡死」或把仍在队列中的 SMPP 标为过期
+_STUCK_BATCH_MINUTES = int(os.environ.get("BATCH_INSPECT_STUCK_MINUTES", "30"))
+_SMPP_ORPHAN_MINUTES = int(os.environ.get("BATCH_INSPECT_SMPP_ORPHAN_MINUTES", "30"))
+
 
 @celery_app.task(name='sync_processing_batch_progress_task')
 def sync_processing_batch_progress_task():
@@ -60,8 +70,8 @@ async def _do_inspect_batches():
     eng, Session = _make_session()
     try:
         async with Session() as db:
-            # 1. 查找超过 15 分钟未更新且仍在 processing 状态的批次
-            cutoff = datetime.now() - timedelta(minutes=15)
+            # 1. 查找超过阈值未更新且仍在 processing 状态的批次（全异步 SMPP 下批次 updated_at 可能久不刷新）
+            cutoff = datetime.now() - timedelta(minutes=_STUCK_BATCH_MINUTES)
 
             result = await db.execute(
                 select(SmsBatch).where(
@@ -192,12 +202,12 @@ async def _do_inspect_batches():
                     logger.error(f"检查COMPLETED批次 {batch.id} 虚拟DLR积压失败: {e}")
 
             # 3. SMPP SubmitSMResp 丢失清理（兜底，Go 网关 OnClosed 应已处理大部分）
-            # 仅清理「批次本身已停滞（updated_at > 5min）」的孤儿 queued/pending 记录，
-            # 避免误杀正在被 Go 网关活跃消费的批次（重发后 submit_time 不会刷新）。
-            smpp_orphan_cutoff = datetime.now() - timedelta(minutes=5)
+            # 仅清理「批次本身已停滞（updated_at 早于阈值）」的孤儿 queued/pending 记录，
+            # 且 submit_time 早于阈值：兼容 pending→sent 不经 queued 的新路径，窗口须与队列积压一致。
+            smpp_orphan_cutoff = datetime.now() - timedelta(minutes=_SMPP_ORPHAN_MINUTES)
             from sqlalchemy import update as _sa_upd2
 
-            # 停滞批次：PROCESSING 且最近 5 分钟无进度更新
+            # 停滞批次：PROCESSING 且最近 N 分钟无进度更新（N 与 _SMPP_ORPHAN_MINUTES 一致）
             stale_batch_ids_res = await db.execute(
                 select(SmsBatch.id).where(
                     and_(

@@ -793,15 +793,30 @@ async def send_batch_sms(
         # 处理 SMPP 批量
         if smpp_ids:
             mids_only = [m[0] for m in smpp_ids]
-            # 这里可以用一个大的 chunk，因为 ASYNC_THRESHOLD 很低；SMPP 直投 smpp 队列
-            if QueueManager.queue_sms_batch_smpp(mids_only):
+            from app.utils.smpp_payload import smpp_payload_public_dict
+
+            _log_rows = (
+                await db.execute(select(SMSLog).where(SMSLog.message_id.in_(mids_only)))
+            ).scalars().all()
+            _bs_snap = ""
+            if batch_pk:
+                _bstat = await db.execute(select(SmsBatch.status).where(SmsBatch.id == batch_pk))
+                _br = _bstat.scalar_one_or_none()
+                _bs_snap = getattr(_br, "value", str(_br or ""))
+            _by_mid = {r.message_id: r for r in _log_rows}
+            smpp_payloads = [
+                smpp_payload_public_dict(_by_mid[mid], _bs_snap)
+                for mid in mids_only
+                if mid in _by_mid
+            ]
+            if smpp_payloads and QueueManager.queue_sms_batch_smpp(smpp_payloads):
                 for mid, phone in smpp_ids:
                     succeeded += 1
                     results.append({"phone_number": phone, "success": True, "message_id": mid, "error": None})
             else:
-                # 回退单条
                 for mid, phone in smpp_ids:
-                    if QueueManager.queue_smpp_gateway(mid):
+                    row = _by_mid.get(mid)
+                    if row and QueueManager.queue_smpp_gateway(smpp_payload_public_dict(row, _bs_snap)):
                         succeeded += 1
                         results.append({"phone_number": phone, "success": True, "message_id": mid, "error": None})
                     else:
