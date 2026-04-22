@@ -332,8 +332,7 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
         
             logger.info(f"使用通道: {channel.channel_code} ({channel.protocol})")
 
-            # SMPP 通道需在专用线程池 worker 中处理，避免多进程并发 bind
-            # 如果当前任务运行在 sms_send 队列（prefork worker），返回重路由标记
+            # SMPP：由 Go smpp-gateway 消费 sms_send_smpp；在 sms_send 上执行时重投该队列
             if channel.protocol == 'SMPP' and _current_queue != 'sms_send_smpp':
                 # 已进入发送链路，先落库为 queued，避免长期停留在 pending 被误判为「未出队」
                 if sms_log.status == "pending":
@@ -380,8 +379,8 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
                     return {"_rate_limited": True, "_wait_sec": 10}
                 success = bool(http_result)
             else:
-                # SMPP 协议由 Go Gateway 处理；走到此处说明队列配置有误，重新触发路由而非标 failed
-                logger.error(f"非预期路径：{channel.protocol} 协议在 Python Worker 执行，触发重路由")
+                # SMPP 不应在 Python 内 Submit；防御性重路由（缺负载时上层会记失败）
+                logger.error(f"非预期路径：{channel.protocol} 在 Python Worker 执行，触发重路由")
                 return {"_reroute_smpp": True}
 
             # 发送成功后立刻提交：submit_sm_resp 写入的 upstream_message_id 必须先落库。

@@ -298,51 +298,6 @@ services:
     networks:
       - smsc-network
 
-  # 专用 SMPP 短信发送 Worker（线程池；与 smpp-gateway 同队列会争抢消息，生产勿与 Go 网关同时启用）
-  # 默认不启动：docker compose --profile legacy-smpp-python up -d
-  worker-sms-smpp:
-    profiles:
-      - legacy-smpp-python
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: smsc-worker-sms-smpp
-    environment:
-      TZ: Asia/Shanghai
-      APP_ENV: ${APP_ENV:-development}
-      APP_DEBUG: ${APP_DEBUG:-false}
-      DATABASE_HOST: proxysql
-      DATABASE_PORT: 6033
-      DATABASE_USER: ${MYSQL_USER:-smsuser}
-      DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
-      DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
-      SMPP_SUBMIT_RESP_WAIT_SECONDS: ${SMPP_SUBMIT_RESP_WAIT_SECONDS:-8}
-      SMPP_DLR_SOCKET_HOLD_SECONDS: ${SMPP_DLR_SOCKET_HOLD_SECONDS:-300}
-      DLR_SENT_TIMEOUT_HOURS: ${DLR_SENT_TIMEOUT_HOURS:-72}
-      DLR_PULL_HTTP_TIMEOUT_SECONDS: ${DLR_PULL_HTTP_TIMEOUT_SECONDS:-60}
-    volumes:
-      - ./backend:/app
-      - ./logs:/app/logs
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-    # threads 池：所有任务在同一进程的不同线程中运行，threading.Lock 有效串行化同通道 SMPP 连接
-    # concurrency=8 允许最多 8 个不同 SMPP 通道同时发送
-    command: celery -A app.workers.celery_app worker --loglevel=info --pool=threads --concurrency=${SMPP_WORKER_CONCURRENCY:-8} -Q sms_send_smpp
-    restart: unless-stopped
-    networks:
-      - smsc-network
-
   # Celery Beat (定时任务调度)
   beat:
     build:

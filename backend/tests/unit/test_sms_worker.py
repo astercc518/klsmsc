@@ -93,18 +93,16 @@ async def test_send_sms_async_http_channel_success(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_send_sms_async_smpp_channel_success(
+async def test_send_sms_async_smpp_channel_reroutes_to_gateway_queue(
     db_session, test_account, test_channel
 ):
-    """测试SMPP通道发送成功"""
+    """SMPP 在 sms_send 队列上下文：返回重路由标记与全量负载，供投递 sms_send_smpp 给 Go 网关"""
     from app.workers.sms_worker import _send_sms_async
     from app.modules.sms.sms_log import SMSLog
-    
-    # 设置通道为SMPP协议
+
     test_channel.protocol = "SMPP"
     await db_session.commit()
-    
-    # 创建短信记录
+
     sms_log = SMSLog(
         message_id="test_msg_smpp_001",
         account_id=test_account.id,
@@ -117,19 +115,16 @@ async def test_send_sms_async_smpp_channel_success(
         cost_price=0.01,
         selling_price=0.05,
         currency="USD",
-        submit_time=datetime.now()
+        submit_time=datetime.now(),
     )
     db_session.add(sms_log)
     await db_session.commit()
-    
-    # Mock SMPP Adapter
-    with patch('app.workers.sms_worker._send_via_smpp') as mock_smpp:
-        mock_smpp.return_value = True
-        
-        result = await _send_sms_async("test_msg_smpp_001")
-        
-        # 验证SMPP发送被调用
-        mock_smpp.assert_called_once()
+
+    result = await _send_sms_async("test_msg_smpp_001", _current_queue="sms_send")
+
+    assert result.get("_reroute_smpp") is True
+    assert isinstance(result.get("_smpp_payload"), dict)
+    assert result["_smpp_payload"].get("message_id") == "test_msg_smpp_001"
 
 
 @pytest.mark.unit

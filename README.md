@@ -55,14 +55,7 @@ docker compose up -d
 
 **生产环境请注意**：在 `.env` 中设置强口令 **`GRAFANA_ADMIN_PASSWORD`**（以及 `JWT_SECRET_KEY`、数据库与 RabbitMQ 密码等），不要使用仓库内默认值上线。
 
-**可选 Profile**（详见 [docs/运维/服务与队列矩阵.md](docs/运维/服务与队列矩阵.md)）：
-
-- `legacy-smpp-python`：额外启动旧版 **worker-sms-smpp**。**不要**与 **smpp-gateway** 同时启用（二者会竞争消费 `sms_send_smpp`）。生产 SMPP 推荐只运行 **smpp-gateway**。
-
-```bash
-# 仅当明确需要旧版 Python SMPP Worker 且已关闭 Go 网关时：
-docker compose --profile legacy-smpp-python up -d
-```
+**SMPP 发送**：队列 **`sms_send_smpp`** 由 **smpp-gateway**（Go）消费；详见 [docs/运维/服务与队列矩阵.md](docs/运维/服务与队列矩阵.md)。
 
 ### 3. 常用端口
 
