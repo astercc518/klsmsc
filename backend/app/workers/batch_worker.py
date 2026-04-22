@@ -456,6 +456,21 @@ async def _do_process_chunk(
                 )
             )
             already_done = set(r[0] for r in existing_res.all())
+
+            # 黑名单预查询：一次性捞出本分片内所有黑名单号码，逐号码循环时 O(1) 判断
+            blacklisted_phones: set = set()
+            try:
+                from app.modules.data.models import DataNumber
+                bl_rows = await db.execute(
+                    select(DataNumber.phone_number)
+                    .where(DataNumber.phone_number.in_(phone_numbers),
+                           DataNumber.status == 'blacklisted')
+                )
+                blacklisted_phones = {r[0] for r in bl_rows.all()}
+                if blacklisted_phones:
+                    logger.info(f"批量黑名单预检: batch={batch_id}, 命中 {len(blacklisted_phones)} 个号码")
+            except Exception as _bl_err:
+                logger.warning(f"批量黑名单预查询异常(忽略): {_bl_err}")
             if already_done:
                 logger.info(
                     f"分片幂等检查: batch={batch_id}, offset={start_offset}, "
@@ -497,6 +512,10 @@ async def _do_process_chunk(
                     is_valid, err_msg, phone_info = Validator.validate_phone_number(phone_number)
                     if not is_valid:
                         logger.warning(f"分片预检失败 (格式错误): batch={batch_id}, phone={phone_number}, error={err_msg}")
+                        failed += 1
+                        continue
+                    if phone_number in blacklisted_phones or phone_info.get('e164_format') in blacklisted_phones:
+                        logger.info(f"分片预检失败 (黑名单): batch={batch_id}, phone={phone_number}")
                         failed += 1
                         continue
                     cc = phone_info['country_code']
@@ -602,6 +621,11 @@ async def _do_process_chunk(
                         is_valid, err_msg, phone_info = Validator.validate_phone_number(phone_number)
                         if not is_valid:
                             logger.warning(f"分片预检失败 (格式错误): batch={batch_id}, phone={phone_number}, error={err_msg}")
+                            failed += 1
+                            continue
+
+                        if phone_number in blacklisted_phones or phone_info.get('e164_format') in blacklisted_phones:
+                            logger.info(f"分片预检失败 (黑名单): batch={batch_id}, phone={phone_number}")
                             failed += 1
                             continue
 
@@ -719,6 +743,10 @@ async def _do_process_chunk(
                             if ch.protocol == 'VIRTUAL':
                                 is_virtual_channel = True
                                 virtual_channel_id = ch.id
+                                init_status = 'pending'
+                            elif 'SMPP' in str(ch.protocol).upper():
+                                # SMPP：写库用 pending，Go 网关取到消息后再改 queued 并写 submit_time。
+                                # 避免 inspector 5分钟窗口对队列积压中的合法消息误判为孤儿。
                                 init_status = 'pending'
                             else:
                                 init_status = 'queued'

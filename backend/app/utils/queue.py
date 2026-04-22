@@ -141,37 +141,50 @@ class QueueManager:
         """
         将多条 SMPP 短信直接投递到 sms_send_smpp，由 Go 网关消费（跳过 sms_send 双跳）。
 
-        当前实现为逐条 apply_async，与 queue_smpp_gateway 一致，保证 Celery 消息体与网关解析兼容。
+        使用 producer_pool 复用单个 AMQP 连接批量发布，与 queue_sms_bulk 一致。
+        万条批次可节省数秒 AMQP 开销，避免逐条 apply_async 的连接竞争。
         """
         if not message_ids:
             return True
 
         from app.workers.sms_worker import send_sms_task
 
-        all_ok = True
-        for message_id in message_ids:
-            last_err = None
-            ok = False
-            for attempt in range(_SMS_QUEUE_RETRIES):
-                try:
-                    send_sms_task.apply_async(
-                        args=[message_id, http_credentials],
-                        queue="sms_send_smpp",
-                    )
-                    ok = True
-                    break
-                except Exception as e:
-                    last_err = e
-                    if attempt < _SMS_QUEUE_RETRIES - 1:
-                        time.sleep(_SMS_QUEUE_BACKOFF[attempt])
-            if not ok:
-                logger.error(
-                    f"SMPP 批量直投失败: {message_id}, 错误: {str(last_err)}",
-                    exc_info=last_err,
-                )
-                all_ok = False
+        ok_count = 0
+        fail_count = 0
 
-        logger.info(f"SMPP 批量直投 sms_send_smpp 完成: 共 {len(message_ids)} 条, 全部成功={all_ok}")
+        try:
+            with celery_app.producer_pool.acquire(block=True) as producer:
+                for message_id in message_ids:
+                    last_err = None
+                    sent = False
+                    for attempt in range(_SMS_QUEUE_RETRIES):
+                        try:
+                            send_sms_task.apply_async(
+                                args=[message_id, http_credentials],
+                                queue="sms_send_smpp",
+                                producer=producer,
+                            )
+                            sent = True
+                            break
+                        except Exception as e:
+                            last_err = e
+                            if attempt < _SMS_QUEUE_RETRIES - 1:
+                                time.sleep(_SMS_QUEUE_BACKOFF[attempt])
+                    if sent:
+                        ok_count += 1
+                    else:
+                        logger.error(f"SMPP 批量直投失败: {message_id}, {last_err}")
+                        fail_count += 1
+        except Exception as e:
+            logger.error(f"queue_sms_batch_smpp producer 获取失败，降级逐条入队: {e}")
+            for message_id in message_ids[ok_count:]:
+                if QueueManager.queue_smpp_gateway(message_id, http_credentials):
+                    ok_count += 1
+                else:
+                    fail_count += 1
+
+        all_ok = fail_count == 0
+        logger.info(f"SMPP 批量直投 sms_send_smpp 完成: 共 {len(message_ids)} 条, 成功={ok_count}, 失败={fail_count}")
         return all_ok
 
     @staticmethod

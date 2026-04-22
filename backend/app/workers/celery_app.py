@@ -42,6 +42,7 @@ celery_app.conf.task_routes = {
     'process_smpp_dlr_task': {'queue': 'sms_dlr'},
     'fetch_dlr_reports_task': {'queue': 'sms_dlr'},
     'dlr_timeout_check_task': {'queue': 'sms_dlr'},
+    'flush_dlr_retry_buffer_task': {'queue': 'sms_dlr'},
 }
 
 # 任务队列
@@ -49,6 +50,10 @@ celery_app.conf.task_queues = {
     'sms_send': {
         'exchange': 'sms_send',
         'routing_key': 'sms_send',
+    },
+    'sms_send_smpp': {
+        'exchange': 'sms_send_smpp',
+        'routing_key': 'sms_send_smpp',
     },
     'sms_dlr': {
         'exchange': 'sms_dlr',
@@ -88,6 +93,7 @@ celery_app.conf.task_routes.update({
     'process_batch': {'queue': 'celery'},
     'process_batch_chunk': {'queue': 'celery'},
     'inspect_batches_task': {'queue': 'celery'},
+    'sync_processing_batch_progress_task': {'queue': 'celery'},
     'send_webhook': {'queue': 'webhook_tasks'},
     'okcc_sync_balances_task': {'queue': 'integrations'},
     # 与 send_sms_task 同队列：仅起 worker-sms 时也能消费模拟回执，避免 DataSend 万级任务积压在无人消费的 celery 队列
@@ -127,10 +133,20 @@ celery_app.conf.beat_schedule = {
         'task': 'dlr_timeout_check_task',
         'schedule': 600.0,
     },
+    # 每30秒同步 processing 批次进度（SMPP sent 实时反映到前端）
+    'sync-processing-batch-progress-30s': {
+        'task': 'sync_processing_batch_progress_task',
+        'schedule': 30.0,
+    },
     # 每5分钟巡检一次卡死的批次
     'inspect-stuck-batches-5min': {
         'task': 'inspect_batches_task',
         'schedule': 300.0,
+    },
+    # 每5秒重试一次「DLR先于SubmitSMResp到达」导致未匹配的回执（防止 DLR 永久丢失）
+    'flush-dlr-retry-buffer-5s': {
+        'task': 'flush_dlr_retry_buffer_task',
+        'schedule': 5.0,
     },
 }
 

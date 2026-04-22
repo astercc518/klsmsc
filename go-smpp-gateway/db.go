@@ -62,9 +62,10 @@ func UpdateSMSLogResult(id int64, messageID string, upstreamID string, status st
 	return err
 }
 
-// MarkSMSLogQueuedAfterSmppHandoff 已交给 SMPP 会话层（等待 SubmitSMResp），将仍为 pending 的记录标为 queued，避免界面长期显示「待发送」
+// MarkSMSLogQueuedAfterSmppHandoff 已交给 SMPP 会话层（等待 SubmitSMResp），将仍为 pending 的记录标为 queued 并更新 submit_time。
+// submit_time 在此处才真正反映消息被提交至 SMPP 网关的时刻，inspector 的孤儿清理窗口以此为基准。
 func MarkSMSLogQueuedAfterSmppHandoff(id int64) error {
-	_, err := db.Exec("UPDATE sms_logs SET status = 'queued' WHERE id = ? AND status = 'pending'", id)
+	_, err := db.Exec("UPDATE sms_logs SET status = 'queued', submit_time = NOW() WHERE id = ? AND status = 'pending'", id)
 	return err
 }
 

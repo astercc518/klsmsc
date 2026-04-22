@@ -15,6 +15,41 @@ from app.modules.sms.batch_utils import update_batch_progress
 
 logger = get_logger(__name__)
 
+@celery_app.task(name='sync_processing_batch_progress_task')
+def sync_processing_batch_progress_task():
+    """每30秒同步 PROCESSING 批次进度（轻量，专为 SMPP/Go 网关写 sent 不经 Python worker 设计）"""
+    return _run_async(_do_sync_processing_progress())
+
+
+async def _do_sync_processing_progress():
+    from datetime import timedelta
+    from sqlalchemy import and_
+    eng, Session = _make_session()
+    try:
+        async with Session() as db:
+            proc_ids = (
+                await db.execute(
+                    select(SmsBatch.id).where(
+                        and_(
+                            SmsBatch.status == BatchStatus.PROCESSING,
+                            SmsBatch.is_deleted == False,
+                            SmsBatch.created_at >= datetime.now() - timedelta(hours=48),
+                        )
+                    ).order_by(SmsBatch.id.desc()).limit(100)
+                )
+            ).scalars().all()
+            synced = 0
+            for bid in proc_ids:
+                try:
+                    await update_batch_progress(db, bid)
+                    synced += 1
+                except Exception as e:
+                    logger.debug(f"sync_progress: batch {bid} 跳过: {e}")
+            return {"synced": synced}
+    finally:
+        await eng.dispose()
+
+
 @celery_app.task(name='inspect_batches_task')
 def inspect_batches_task():
     """定期执行的巡检任务"""
@@ -156,31 +191,91 @@ async def _do_inspect_batches():
                 except Exception as e:
                     logger.error(f"检查COMPLETED批次 {batch.id} 虚拟DLR积压失败: {e}")
 
-            # 3. 近 48h 内 processing 批次：按 sms_logs 重算汇总（Go 网关 Submit 成功写 sent 不经 Python worker）
-            proc_ids = (
-                await db.execute(
-                    select(SmsBatch.id).where(
+            # 3. SMPP SubmitSMResp 丢失清理（兜底，Go 网关 OnClosed 应已处理大部分）
+            # 仅清理「批次本身已停滞（updated_at > 5min）」的孤儿 queued/pending 记录，
+            # 避免误杀正在被 Go 网关活跃消费的批次（重发后 submit_time 不会刷新）。
+            smpp_orphan_cutoff = datetime.now() - timedelta(minutes=5)
+            from sqlalchemy import update as _sa_upd2
+
+            # 停滞批次：PROCESSING 且最近 5 分钟无进度更新
+            stale_batch_ids_res = await db.execute(
+                select(SmsBatch.id).where(
+                    and_(
+                        SmsBatch.status == BatchStatus.PROCESSING,
+                        SmsBatch.is_deleted == False,
+                        SmsBatch.updated_at < smpp_orphan_cutoff,
+                    )
+                ).limit(200)
+            )
+            stale_batch_ids = stale_batch_ids_res.scalars().all()
+
+            smpp_orphan_cleaned = 0
+            if stale_batch_ids:
+                r_smpp = await db.execute(
+                    _sa_upd2(SMSLog)
+                    .where(
                         and_(
-                            SmsBatch.status == BatchStatus.PROCESSING,
-                            SmsBatch.is_deleted == False,
-                            SmsBatch.created_at >= datetime.now() - timedelta(hours=48),
+                            SMSLog.batch_id.in_(stale_batch_ids),
+                            SMSLog.status.in_(['queued', 'pending']),
+                            SMSLog.sent_time.is_(None),
+                            SMSLog.submit_time < smpp_orphan_cutoff,
+                            SMSLog.submit_time.isnot(None),
                         )
-                    ).order_by(SmsBatch.id.desc()).limit(150)
+                    )
+                    .values(
+                        status='expired',
+                        error_message='SMPP SubmitSMResp丢失: 会话断连导致提交回执未收到，超时标记',
+                    )
                 )
-            ).scalars().all()
-            progress_synced = 0
-            for bid in proc_ids:
-                try:
-                    await update_batch_progress(db, bid)
-                    progress_synced += 1
-                except Exception as pe:
-                    logger.debug(f"inspect: processing 批次 {bid} 汇总同步跳过: {pe}")
+                smpp_orphan_cleaned = r_smpp.rowcount
+
+            # 无批次归属的孤儿单条消息（batch_id IS NULL），继续用时间兜底清理
+            r_smpp_standalone = await db.execute(
+                _sa_upd2(SMSLog)
+                .where(
+                    and_(
+                        SMSLog.batch_id.is_(None),
+                        SMSLog.status.in_(['queued', 'pending']),
+                        SMSLog.sent_time.is_(None),
+                        SMSLog.submit_time < smpp_orphan_cutoff,
+                        SMSLog.submit_time.isnot(None),
+                    )
+                )
+                .values(
+                    status='expired',
+                    error_message='SMPP SubmitSMResp丢失: 会话断连导致提交回执未收到，超时标记',
+                )
+            )
+            smpp_orphan_cleaned += r_smpp_standalone.rowcount
+
+            if smpp_orphan_cleaned > 0:
+                await db.commit()
+                logger.warning(f"inspect: SMPP孤儿queued清理 {smpp_orphan_cleaned} 条 → expired")
+                # 触发受影响批次的进度更新
+                affected_batches = (
+                    await db.execute(
+                        select(SMSLog.batch_id)
+                        .where(
+                            SMSLog.status == 'expired',
+                            SMSLog.error_message.like('%SubmitSMResp丢失%'),
+                            SMSLog.submit_time >= smpp_orphan_cutoff - timedelta(hours=48),
+                        )
+                        .distinct()
+                        .limit(50)
+                    )
+                ).scalars().all()
+                for bid in affected_batches:
+                    if bid:
+                        try:
+                            await update_batch_progress(db, bid)
+                        except Exception:
+                            pass
 
             return {
                 "stuck_found": len(stuck_batches),
                 "reconciled": reconciled,
                 "virtual_dlr_repaired": virtual_repair_count,
-                "processing_progress_synced": progress_synced,
+                "smpp_orphan_cleaned": smpp_orphan_cleaned,
             }
     finally:
         await eng.dispose()

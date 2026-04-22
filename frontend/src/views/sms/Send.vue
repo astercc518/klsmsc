@@ -241,11 +241,8 @@
                       @click="selectedPrivateGroup = group"
                     >
                       <div class="sp-info">
-                        <div class="sp-name">
+                        <div class="sp-name" :title="getGroupName(group)">
                           {{ getGroupName(group) }}
-                        </div>
-                        <div v-if="group.remarks" class="sp-remarks" style="font-size:12px; color:var(--el-color-info); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:260px" :title="group.remarks">
-                          {{ group.remarks }}
                         </div>
                         <div class="sp-meta">
                           库存: {{ privateEffectiveStock(group).toLocaleString() }}
@@ -2498,11 +2495,12 @@ function formatCount(count: number): string {
 }
 
 function getGroupName(group: any) {
-  // 优先使用文件名作为数据包名称，方便识别
-  if (group.batch_name) return group.batch_name
+  const remarks = group.remarks ? ` (${group.remarks})` : ''
+  if (group.batch_name) return `${group.batch_name}${remarks}`
   const country = findCountryByIso(group.country_code)
   const countryName = country ? country.name : group.country_code
-  return `${countryName}-${group.source_label || group.source}-${group.purpose_label || group.purpose}`
+  const base = `${countryName}-${group.source_label || group.source}-${group.purpose_label || group.purpose}`
+  return `${base}${remarks}`
 }
 
 function privateLibraryOriginLabel(o: string) {

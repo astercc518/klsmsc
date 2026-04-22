@@ -354,8 +354,19 @@ func processSingleSMS(messageID string) error {
 	// However, if the initial socket write fails, it returns an error here.
 	err = manager.SendSMS(logData.ID, logData.MessageID, logData.PhoneNumber, logData.Message, logData.ChannelID)
 	if err != nil {
-		// Update DB with failure since it failed to even queue to the socket
-		_ = UpdateSMSLogResult(logData.ID, logData.MessageID, "", "failed", err.Error())
+		errStr := err.Error()
+		if len(errStr) >= 13 && errStr[:13] == "_window_full:" {
+			// in-flight 窗口满导致超时：消息保持当前 DB 状态，nack+requeue 等待 session 重建后重试
+			log.Printf("[SMPP-WARN] window full nack+requeue: message_id=%s", logData.MessageID)
+			return fmt.Errorf("window full, requeue: %s", logData.MessageID)
+		}
+		if len(errStr) >= 12 && errStr[:12] == "_temp_error:" {
+			// 临时错误（session 正在关闭/重建）：不写 DB failed，nack+requeue 等待 session 恢复
+			log.Printf("[SMPP-WARN] temp error nack+requeue: message_id=%s err=%s", logData.MessageID, errStr)
+			return fmt.Errorf("temp error, requeue: %s", logData.MessageID)
+		}
+		// 其它永久性发送错误：写 failed
+		_ = UpdateSMSLogResult(logData.ID, logData.MessageID, "", "failed", errStr)
 		return fmt.Errorf("failed to send: %v", err)
 	}
 
