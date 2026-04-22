@@ -472,7 +472,11 @@ function stopListPoll() {
 function maybeStartListPoll() {
   stopListPoll()
   const need = batches.value.some(
-    (b) => b.status === 'processing' || b.status === 'pending'
+    (b) =>
+      b.status === 'processing' ||
+      b.status === 'pending' ||
+      // COMPLETED 但仍有 sent_awaiting_receipt_count > 0：DLR 还在陆续到达，继续轮询以同步送达率
+      (b.status === 'completed' && (b.sent_awaiting_receipt_count ?? 0) > 0),
   )
   if (!need) return
   listPollTimer = setInterval(() => {
