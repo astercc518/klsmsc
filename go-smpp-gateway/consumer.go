@@ -350,8 +350,15 @@ func processSingleSMS(messageID string) error {
 		return nil
 	}
 
-	// manager.SendSMS now updates the database asynchronously when SubmitSMResp is received.
-	// However, if the initial socket write fails, it returns an error here.
+	// 必须在 SendSMS 之前将 pending 标为 queued：若先 Send 且 SubmitSMResp 极快把状态写成 sent，
+	// 再执行 MarkQueued 会把终态覆盖回 queued，造成卡死。
+	if logData.Status == "pending" {
+		if err := MarkSMSLogQueuedAfterSmppHandoff(logData.ID); err != nil {
+			log.Printf("WARN: MarkSMSLogQueuedAfterSmppHandoff id=%d: %v", logData.ID, err)
+		}
+	}
+
+	// manager.SendSMS 在收到 SubmitSMResp 时异步更新库（如 sent）；此处仅处理 socket 首包失败等同步错误。
 	err = manager.SendSMS(logData.ID, logData.MessageID, logData.PhoneNumber, logData.Message, logData.ChannelID)
 	if err != nil {
 		errStr := err.Error()
@@ -370,12 +377,6 @@ func processSingleSMS(messageID string) error {
 		return fmt.Errorf("failed to send: %v", err)
 	}
 
-	// 已写入 SMPP 会话层，在 SubmitSMResp 回调前将仍为 pending 的标为 queued，区分「未出队」与「已提交待上游回执」
-	if err := MarkSMSLogQueuedAfterSmppHandoff(logData.ID); err != nil {
-		log.Printf("WARN: MarkSMSLogQueuedAfterSmppHandoff id=%d: %v", logData.ID, err)
-	}
-
-	// We no longer update the status to "sent" here.
 	// SubmitSMResp 回调再将状态更新为 sent 并写入上游 message_id。
 	return nil
 }

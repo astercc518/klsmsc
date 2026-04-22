@@ -6,6 +6,7 @@ toolchain go1.21.13
 
 require (
 	github.com/go-sql-driver/mysql v1.9.3
+	github.com/google/uuid v1.6.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/linxGnu/gosmpp v0.2.1
 	github.com/rabbitmq/amqp091-go v1.9.0

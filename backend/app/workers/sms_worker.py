@@ -607,10 +607,8 @@ async def _process_dlr_async(dlr_data: dict):
             await db.commit()
             logger.info(f"DLR处理完成: {message_id}, 状态: {status}")
 
-            # [重要] 回执更新后同步批次进度
-            if sms_log.batch_id:
-                await update_batch_progress(db, sms_log.batch_id)
-            
+            # 批次进度由 sync_processing_batch_progress_task 等定时汇总，避免每条 HTTP DLR 抢锁 sms_batches。
+
             # 注水触发（delivered 时）
             if status == 'delivered' and sms_log.account_id:
                 try:
@@ -686,12 +684,16 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
     try:
         async with Session() as db:
             sms_log = None
+            # 查询时同时包含 'delivered'/'failed'：Go gateway 的 UpdateSMSLogDLR 已直接写库，
+            # Python task 到达时记录可能已是终态。过滤掉 expired/cancelled 即可，
+            # 勿过滤 delivered/failed，否则 webhook 等后续逻辑永远不会被调用。
+            _non_terminal = ["sent", "pending", "queued", "delivered", "failed"]
             if candidate_ids:
                 stmt = select(SMSLog).where(
                     and_(
                         SMSLog.channel_id == channel_id,
                         SMSLog.upstream_message_id.in_(candidate_ids),
-                        SMSLog.status.in_(["sent", "pending", "queued"]),
+                        SMSLog.status.in_(_non_terminal),
                     )
                 ).order_by(SMSLog.submit_time.desc()).limit(1)
 
@@ -736,21 +738,26 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                     logger.debug(f"DLR 重试缓冲写入异常(忽略): {_buf_err}")
                 return False
 
-            sms_log.status = new_status
-            if new_status == "delivered":
-                sms_log.delivery_time = datetime.now()
-                sms_log.error_message = None
-            elif new_status == "failed":
-                sms_log.error_message = f"SMPP DLR: stat={stat} err={err}"
+            already_correct = sms_log.status == new_status
+            if not already_correct:
+                # Go gateway 尚未更新（或更新失败）：Python 主动写入
+                sms_log.status = new_status
+                if new_status == "delivered":
+                    sms_log.delivery_time = datetime.now()
+                    sms_log.error_message = None
+                elif new_status == "failed":
+                    sms_log.error_message = f"SMPP DLR: stat={stat} err={err}"
 
-            if upstream_id and str(sms_log.upstream_message_id or "") != str(upstream_id).strip():
-                sms_log.upstream_message_id = str(upstream_id).strip()
+                if upstream_id and str(sms_log.upstream_message_id or "") != str(upstream_id).strip():
+                    sms_log.upstream_message_id = str(upstream_id).strip()
 
-            await db.commit()
-            logger.info(f"SMPP DLR 更新成功: {sms_log.message_id} -> {new_status}")
+                await db.commit()
+                logger.info(f"SMPP DLR 更新成功: {sms_log.message_id} -> {new_status}")
+            else:
+                # Go gateway 已更新状态：跳过重复写库，但仍需执行业务逻辑（webhook/注水）
+                logger.info(f"SMPP DLR 业务处理: {sms_log.message_id} 已是 {new_status}（Go 直写），触发 webhook/注水")
 
-            if sms_log.batch_id:
-                await update_batch_progress(db, sms_log.batch_id)
+            # 批次进度由 sync_processing_batch_progress_task 等定时汇总，避免海量 DLR 并发抢锁 sms_batches。
 
             if new_status == "delivered" and sms_log.account_id:
                 try:
