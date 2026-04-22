@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -99,47 +100,113 @@ func parseSMSLogData(m map[string]interface{}) (SMSLogData, error) {
 	return d, nil
 }
 
-// extractSmsPayloads 从 Celery 消息体解析 SMSLogData 列表；仅支持「全量负载」对象（不再在发送路径按 message_id 查库）
-func extractSmsPayloads(body []byte) (payloads []SMSLogData, nackPoison bool) {
-	var task CeleryTask
-	if err := json.Unmarshal(body, &task); err != nil {
-		log.Printf("Failed to unmarshal Celery task: %v | Raw: %s", err, string(body))
-		return nil, true
+const maxPayloadLogBytes = 4096
+
+// logPayloadParseError 无法解析或拒绝投递时的显式日志，便于与 DB pending 对账
+func logPayloadParseError(reason string, body []byte) {
+	raw := string(body)
+	if len(raw) > maxPayloadLogBytes {
+		raw = raw[:maxPayloadLogBytes] + fmt.Sprintf("… (truncated, len=%d)", len(body))
 	}
-	if len(task.Args) == 0 {
+	log.Printf("Payload Parse Error, dropping message: %s | raw=%s", reason, raw)
+}
+
+// stripCeleryEnvelope 从 Celery / kombu JSON 消息体取出 send_sms_task 的首个位置参数，
+// 或识别无信封的裸 SMSLogData 对象（须同时含 log_id 与 message_id）。
+// 第二返回值 true 表示 first 可交给 smsPayloadsFromFirstTaskArg。
+func stripCeleryEnvelope(body []byte) (first interface{}, ok bool) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
 		return nil, false
 	}
-	first := task.Args[0]
+
+	// ① Celery JSON / kombu 常见体：[位置参数数组, kwargs 对象, 嵌入元数据]，三段数组（v2 风格）
+	if trimmed[0] == '[' {
+		var top []interface{}
+		if err := json.Unmarshal(trimmed, &top); err != nil {
+			return nil, false
+		}
+		if len(top) == 0 {
+			return nil, false
+		}
+		posArgs, isArr := top[0].([]interface{})
+		if !isArr || len(posArgs) == 0 {
+			return nil, false
+		}
+		if posArgs[0] == nil {
+			return nil, false
+		}
+		return posArgs[0], true
+	}
+
+	// ② JSON 对象：含 "args" 的 Celery v1 信封，或裸负载
+	if trimmed[0] == '{' {
+		var m map[string]interface{}
+		if err := json.Unmarshal(trimmed, &m); err != nil {
+			return nil, false
+		}
+		if argsVal, has := m["args"]; has {
+			argsList, isList := argsVal.([]interface{})
+			if isList && len(argsList) > 0 && argsList[0] != nil {
+				return argsList[0], true
+			}
+			return nil, false
+		}
+		_, hasLog := m["log_id"]
+		_, hasMid := m["message_id"]
+		if hasLog && hasMid {
+			return m, true
+		}
+		return nil, false
+	}
+
+	return nil, false
+}
+
+// smsPayloadsFromFirstTaskArg 解析 send_sms_task 的首参：单 dict、dict 数组（批量）、或旧版 message_id 字符串。
+// 若非毒消息则 poisonReason 为空；否则为简短原因（由上层统一带 raw 打日志）。
+func smsPayloadsFromFirstTaskArg(first interface{}) (payloads []SMSLogData, poisonReason string) {
 	switch x := first.(type) {
 	case string:
-		log.Printf("Reject legacy message_id-only payload (purge sms_send_smpp or republish with full payload): %s", x)
-		return nil, true
+		return nil, fmt.Sprintf("legacy message_id-only payload (len=%d)", len(x))
 	case map[string]interface{}:
 		d, err := parseSMSLogData(x)
 		if err != nil {
-			log.Printf("Bad smpp payload: %v", err)
-			return nil, true
+			return nil, fmt.Sprintf("invalid SMSLogData map: %v", err)
 		}
-		return []SMSLogData{d}, false
+		return []SMSLogData{d}, ""
 	case []interface{}:
-		for _, el := range x {
+		var out []SMSLogData
+		for i, el := range x {
 			mm, ok := el.(map[string]interface{})
 			if !ok {
-				log.Printf("Reject non-map element in smpp batch args")
-				return nil, true
+				return nil, fmt.Sprintf("batch args[%d] is not object (type %T)", i, el)
 			}
 			d, err := parseSMSLogData(mm)
 			if err != nil {
-				log.Printf("Bad smpp payload in batch: %v", err)
-				return nil, true
+				return nil, fmt.Sprintf("batch args[%d]: %v", i, err)
 			}
-			payloads = append(payloads, d)
+			out = append(out, d)
 		}
-		return payloads, false
+		return out, ""
 	default:
-		log.Printf("Unsupported Celery args[0] type %T", first)
+		return nil, fmt.Sprintf("unsupported first task arg type %T", first)
+	}
+}
+
+// extractSmsPayloads 从 RabbitMQ body 解析 SMSLogData 列表：兼容 kombu 三段数组、Celery 对象信封、裸 JSON 负载。
+func extractSmsPayloads(body []byte) (payloads []SMSLogData, nackPoison bool) {
+	root, stripped := stripCeleryEnvelope(body)
+	if !stripped {
+		logPayloadParseError("无法识别 Celery 信封或裸 SMS JSON（需 [args,…] 或 {\"args\":…} 或 {\"log_id\",\"message_id\"}）", body)
 		return nil, true
 	}
+	payloads, reason := smsPayloadsFromFirstTaskArg(root)
+	if reason != "" {
+		logPayloadParseError(reason, body)
+		return nil, true
+	}
+	return payloads, false
 }
 
 // workerProcessDelivery 执行业务逻辑，不向 Rabbit 直接 Ack（由 ack 专用 goroutine 执行）
