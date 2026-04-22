@@ -422,7 +422,7 @@ def process_batch_chunk(
     channel_id: int = None,
     sender_id: str = None,
 ):
-    """处理一个分片（最多 500 条号码）：校验 → 计费 → 写库 → 入队"""
+    """处理一个分片（规模由 API 的 CHUNK_SIZE 决定，通常 ≤5000）：校验 → 计费 → 写库 → 入队"""
     logger.info(f"分片处理开始: batch={batch_id}, offset={start_offset}, count={len(phone_numbers)}")
     return _run_async(_do_process_chunk(
         batch_id, account_id, phone_numbers, message,
@@ -594,26 +594,32 @@ async def _do_process_chunk(
                             cache_manager = await get_cache_manager()
                             await cache_manager.set(f"account:{account_id}:balance", float(bal_after), ttl=60)
 
-                    # 4. 批量创建 SMSLog
+                    # 4. 分片批量创建 SMSLog（避免单次包体过大 / 长事务）
                     if deduct_ok:
                         now = datetime.now()
-                        for phone_info, cc, final_msg, msg_count, batch_index in valid_items:
-                            sell_pp, currency, cost_pp = price_cache[cc]
-                            mid = f"msg_{uuid.uuid4().hex}"
-                            sms_log = SMSLog(
-                                message_id=mid, account_id=account_id, channel_id=_pre_channel.id,
-                                phone_number=phone_info['e164_format'], country_code=cc,
-                                message=final_msg, message_count=msg_count,
-                                status='pending', cost_price=float(cost_pp * msg_count),
-                                selling_price=float(sell_pp * msg_count), currency=currency,
-                                submit_time=now, batch_id=batch_id,
-                            )
-                            sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
-                            db.add(sms_log)
-                            virtual_message_ids.append(mid)
-                            succeeded += 1
-                        await db.flush()
-                        await db.commit()
+                        _db_log_chunk = 5000
+                        for _c0 in range(0, len(valid_items), _db_log_chunk):
+                            _sub = valid_items[_c0 : _c0 + _db_log_chunk]
+                            _rows: List[SMSLog] = []
+                            for phone_info, cc, final_msg, msg_count, batch_index in _sub:
+                                sell_pp, currency, cost_pp = price_cache[cc]
+                                mid = f"msg_{uuid.uuid4().hex}"
+                                sms_log = SMSLog(
+                                    message_id=mid, account_id=account_id, channel_id=_pre_channel.id,
+                                    phone_number=phone_info['e164_format'], country_code=cc,
+                                    message=final_msg, message_count=msg_count,
+                                    status='pending', cost_price=float(cost_pp * msg_count),
+                                    selling_price=float(sell_pp * msg_count), currency=currency,
+                                    submit_time=now, batch_id=batch_id,
+                                )
+                                sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
+                                _rows.append(sms_log)
+                                virtual_message_ids.append(mid)
+                                succeeded += 1
+                            if _rows:
+                                db.add_all(_rows)
+                                await db.flush()
+                                await db.commit()
 
             else:
                 # ====== 普通通道批量快速路径（优化版） ======
@@ -743,84 +749,85 @@ async def _do_process_chunk(
                                 f"deduct_ok={deduct_ok}, 耗时={_t2 - _t1:.2f}s")
 
                     if deduct_ok:
-                        # 阶段3: 批量创建 SMSLog + 单次 commit
+                        # 阶段3/4：分片写库 + 分片入队（每片最多 5000 条，降低 max_allowed_packet / 长事务风险）
                         now = datetime.now()
-                        all_mids = []
-                        smpp_logs_batch: List[SMSLog] = []
-                        http_mids = []
-                        _batch_channel = None
-
-                        for phone_info, cc, final_msg, msg_count, batch_index, ch in valid_items:
-                            sell_pp, currency, cost_pp = price_cache[(ch.id, cc)]
-                            mid = f"msg_{uuid.uuid4().hex}"
-                            _batch_channel = ch
-
-                            if ch.protocol == 'VIRTUAL':
-                                is_virtual_channel = True
-                                virtual_channel_id = ch.id
-                                init_status = 'pending'
-                            elif 'SMPP' in str(ch.protocol).upper():
-                                # SMPP：写库用 pending，Go 网关取到消息后再改 queued 并写 submit_time。
-                                # 避免 inspector 5分钟窗口对队列积压中的合法消息误判为孤儿。
-                                init_status = 'pending'
-                            else:
-                                init_status = 'queued'
-
-                            sms_log = SMSLog(
-                                message_id=mid, account_id=account_id, channel_id=ch.id,
-                                phone_number=phone_info['e164_format'], country_code=cc,
-                                message=final_msg, message_count=msg_count,
-                                status=init_status, cost_price=float(cost_pp * msg_count),
-                                selling_price=float(sell_pp * msg_count), currency=currency,
-                                submit_time=now, batch_id=batch_id,
-                            )
-                            if ch.protocol == 'VIRTUAL':
-                                sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
-                                virtual_message_ids.append(mid)
-                            db.add(sms_log)
-                            all_mids.append(mid)
-
-                            # 按协议分类
-                            _proto = str(ch.protocol).upper()
-                            if 'SMPP' in _proto:
-                                smpp_logs_batch.append(sms_log)
-                            elif ch.protocol != 'VIRTUAL':
-                                http_mids.append(mid)
-
-                        await db.flush()
-                        await db.commit()
-
+                        _db_log_chunk = 5000
                         _t3 = time.time()
-                        logger.info(f"批量写库完成: batch={batch_id}, count={len(all_mids)}, 耗时={_t3 - _t2:.2f}s")
-
-                        # 阶段4: 批量入队
-                        if is_virtual_channel:
-                            succeeded += len(virtual_message_ids)
                         from app.utils.smpp_payload import smpp_payload_public_dict
 
-                        smpp_payloads = [
-                            smpp_payload_public_dict(sl, _batch_status_str) for sl in smpp_logs_batch
-                        ]
-                        if smpp_payloads:
-                            if QueueManager.queue_sms_batch_smpp(smpp_payloads):
-                                succeeded += len(smpp_payloads)
-                            else:
-                                for _p in smpp_payloads:
-                                    if QueueManager.queue_smpp_gateway(_p):
-                                        succeeded += 1
-                                    else:
-                                        failed += 1
-                        if http_mids:
-                            for _m in http_mids:
-                                if QueueManager.queue_sms(_m):
-                                    succeeded += 1
+                        for _c0 in range(0, len(valid_items), _db_log_chunk):
+                            sub_items = valid_items[_c0 : _c0 + _db_log_chunk]
+                            chunk_logs: List[SMSLog] = []
+                            smpp_logs_batch = []
+                            http_mids = []
+                            _batch_channel = None
+
+                            for phone_info, cc, final_msg, msg_count, batch_index, ch in sub_items:
+                                sell_pp, currency, cost_pp = price_cache[(ch.id, cc)]
+                                mid = f"msg_{uuid.uuid4().hex}"
+                                _batch_channel = ch
+
+                                if ch.protocol == 'VIRTUAL':
+                                    is_virtual_channel = True
+                                    virtual_channel_id = ch.id
+                                    init_status = 'pending'
+                                elif 'SMPP' in str(ch.protocol).upper():
+                                    # SMPP：写库用 pending，Go 网关取到消息后再改 queued 并写 submit_time。
+                                    init_status = 'pending'
                                 else:
-                                    failed += 1
+                                    init_status = 'queued'
+
+                                sms_log = SMSLog(
+                                    message_id=mid, account_id=account_id, channel_id=ch.id,
+                                    phone_number=phone_info['e164_format'], country_code=cc,
+                                    message=final_msg, message_count=msg_count,
+                                    status=init_status, cost_price=float(cost_pp * msg_count),
+                                    selling_price=float(sell_pp * msg_count), currency=currency,
+                                    submit_time=now, batch_id=batch_id,
+                                )
+                                if ch.protocol == 'VIRTUAL':
+                                    sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
+                                    virtual_message_ids.append(mid)
+                                chunk_logs.append(sms_log)
+
+                                _proto = str(ch.protocol).upper()
+                                if 'SMPP' in _proto:
+                                    smpp_logs_batch.append(sms_log)
+                                elif ch.protocol != 'VIRTUAL':
+                                    http_mids.append(mid)
+
+                            if chunk_logs:
+                                db.add_all(chunk_logs)
+                                await db.flush()
+
+                            smpp_payloads = [
+                                smpp_payload_public_dict(sl, _batch_status_str)
+                                for sl in smpp_logs_batch
+                            ]
+                            await db.commit()
+
+                            if smpp_payloads:
+                                if QueueManager.queue_sms_batch_smpp(smpp_payloads):
+                                    succeeded += len(smpp_payloads)
+                                else:
+                                    for _p in smpp_payloads:
+                                        if QueueManager.queue_smpp_gateway(_p):
+                                            succeeded += 1
+                                        else:
+                                            failed += 1
+                            if http_mids:
+                                _ok_http, _bad_http = QueueManager.queue_sms_bulk(http_mids)
+                                succeeded += len(_ok_http)
+                                failed += len(_bad_http)
+
+                        if is_virtual_channel:
+                            succeeded += len(virtual_message_ids)
 
                         _t4 = time.time()
-                        logger.info(f"批量入队完成: batch={batch_id}, smpp={len(smpp_payloads)}, "
-                                    f"http={len(http_mids)}, virtual={len(virtual_message_ids)}, "
-                                    f"耗时={_t4 - _t3:.2f}s, 总耗时={_t4 - _t0:.2f}s")
+                        logger.info(
+                            f"批量写库+入队完成(分片): batch={batch_id}, valid={len(valid_items)}, "
+                            f"virtual={len(virtual_message_ids)}, 耗时={_t4 - _t3:.2f}s, 总耗时={_t4 - _t0:.2f}s"
+                        )
                     else:
                         # 余额不足时逐条回退：尽可能扣到余额耗尽
                         for phone_info, cc, final_msg, msg_count, batch_index, ch in valid_items:

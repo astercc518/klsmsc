@@ -1,6 +1,7 @@
 """
 短信发送API路由
 """
+import asyncio
 import json
 import uuid
 from datetime import datetime
@@ -650,26 +651,35 @@ async def send_batch_sms(
     batch_pk = sms_batch.id
 
     ASYNC_THRESHOLD = 10
-    CHUNK_SIZE = 500
+    # 与 batch_worker 写库分片对齐，减少 Celery 任务数、缩短 HTTP 内同步调度时间
+    CHUNK_SIZE = 5000
 
     if total_numbers > ASYNC_THRESHOLD:
         # ========== 大批量：异步分片处理 ==========
         from app.workers.batch_worker import process_batch_chunk
 
-        chunk_count = 0
-        for offset in range(0, total_numbers, CHUNK_SIZE):
-            chunk = request.phone_numbers[offset:offset + CHUNK_SIZE]
-            process_batch_chunk.delay(
-                batch_pk,
-                account.id,
-                chunk,
-                request.message,
-                rot_messages if use_rotate else [],
-                offset,
-                request.channel_id,
-                request.sender_id,
-            )
-            chunk_count += 1
+        phones = request.phone_numbers
+        rot = rot_messages if use_rotate else []
+
+        def _enqueue_all_batch_chunks() -> int:
+            """在线程中执行大量 .delay()，避免阻塞事件循环。"""
+            n = 0
+            for offset in range(0, total_numbers, CHUNK_SIZE):
+                chunk = phones[offset : offset + CHUNK_SIZE]
+                process_batch_chunk.delay(
+                    batch_pk,
+                    account.id,
+                    chunk,
+                    request.message,
+                    rot,
+                    offset,
+                    request.channel_id,
+                    request.sender_id,
+                )
+                n += 1
+            return n
+
+        chunk_count = await asyncio.to_thread(_enqueue_all_batch_chunks)
 
         sms_batch.send_config = {"chunks": chunk_count, "chunk_size": CHUNK_SIZE, "async": True}
         await db.commit()

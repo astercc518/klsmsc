@@ -37,6 +37,13 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    # 全量 restart 后 MySQL 容器 IP 会变；须确认经 ProxySQL 能真正连上后端，再让 API 起，避免 502
+    healthcheck:
+      test: ["CMD", "mysql", "-h127.0.0.1", "-P6033", "-usmsuser", "-psmspass123", "-e", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 18
+      start_period: 40s
     restart: unless-stopped
     networks:
       - smsc-network
@@ -147,6 +154,8 @@ services:
       - ./.env:/app/.env.host
     depends_on:
       mysql:
+        condition: service_healthy
+      proxysql:
         condition: service_healthy
       redis:
         condition: service_healthy
