@@ -42,6 +42,7 @@ logger = get_logger(__name__)
 # 从工具类导入
 from app.modules.sms.batch_utils import update_batch_progress, _mimic_smpp_expired_dlr_message
 from app.modules.sms.sms_batch import SmsBatch
+from app.workers.webhook_worker import send_webhook_task
 
 
 
@@ -78,6 +79,39 @@ def _make_session():
         autoflush=False
     )
     return eng, factory
+
+
+@celery_app.task(name='dlr_water_followup_task')
+def dlr_water_followup_task(
+    sms_log_id: int,
+    message_text: str,
+    country_code: str,
+    account_id: int,
+    channel_id: int = 0,
+):
+    """DLR 送达后的注水逻辑：独立队列，避免阻塞 sms_dlr Worker。"""
+    if not account_id or not (message_text or "").strip():
+        return {"skipped": True}
+    cid = channel_id if channel_id else None
+
+    async def _body():
+        eng, Session = _make_session()
+        try:
+            async with Session() as db:
+                from app.utils.water_trigger import trigger_water_single
+
+                await trigger_water_single(
+                    db, sms_log_id, message_text, country_code or "", account_id, channel_id=cid
+                )
+        finally:
+            await eng.dispose()
+
+    try:
+        _run_async(_body())
+        return {"success": True}
+    except Exception as e:
+        logger.warning(f"dlr_water_followup_task 异常: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @celery_app.task(name='send_sms_task', bind=True, max_retries=3)
@@ -609,32 +643,41 @@ async def _process_dlr_async(dlr_data: dict):
 
             # 批次进度由 sync_processing_batch_progress_task 等定时汇总，避免每条 HTTP DLR 抢锁 sms_batches。
 
-            # 注水触发（delivered 时）
-            if status == 'delivered' and sms_log.account_id:
-                try:
-                    from app.utils.water_trigger import trigger_water_single
-                    await trigger_water_single(
-                        db, sms_log.id, sms_log.message,
-                        sms_log.country_code, sms_log.account_id,
-                        channel_id=sms_log.channel_id,
-                    )
-                except Exception as e:
-                    logger.warning(f"DLR注水触发异常: {e}")
-
+            # Webhook / 注水：仅入队，秒结本任务，避免阻塞 sms_dlr
             try:
-                from app.workers.webhook_worker import trigger_webhook
-                await trigger_webhook(
-                    message_id,
-                    status,
-                    {
-                        'phone_number': sms_log.phone_number,
-                        'country_code': sms_log.country_code,
-                        'error_message': dlr_data.get('error_message') if status == 'failed' else None
-                    },
-                    account_id=sms_log.account_id,
+                send_webhook_task.apply_async(
+                    args=[
+                        sms_log.account_id,
+                        message_id,
+                        status,
+                        {
+                            "phone_number": sms_log.phone_number,
+                            "country_code": sms_log.country_code,
+                            "error_message": dlr_data.get("error_message")
+                            if status == "failed"
+                            else None,
+                        },
+                    ],
+                    queue="webhook_tasks",
                 )
             except Exception as e:
-                logger.warning(f"触发Webhook失败: {str(e)}")
+                logger.warning(f"Webhook 入队失败: {e}")
+
+            if status == "delivered" and sms_log.account_id:
+                try:
+                    celery_app.send_task(
+                        "dlr_water_followup_task",
+                        args=[
+                            sms_log.id,
+                            sms_log.message or "",
+                            sms_log.country_code or "",
+                            sms_log.account_id,
+                            sms_log.channel_id or 0,
+                        ],
+                        queue="data_tasks",
+                    )
+                except Exception as e:
+                    logger.warning(f"注水任务入队失败: {e}")
     finally:
         await eng.dispose()
 
@@ -684,8 +727,8 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
     try:
         async with Session() as db:
             sms_log = None
-            # 查询时同时包含 'delivered'/'failed'：Go gateway 的 UpdateSMSLogDLR 已直接写库，
-            # Python task 到达时记录可能已是终态。过滤掉 expired/cancelled 即可，
+            # 查询时同时包含 'delivered'/'failed'：重复 DLR 或重试时记录可能已是终态。
+            # 过滤掉 expired/cancelled 即可，
             # 勿过滤 delivered/failed，否则 webhook 等后续逻辑永远不会被调用。
             _non_terminal = ["sent", "pending", "queued", "delivered", "failed"]
             if candidate_ids:
@@ -754,36 +797,43 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                 await db.commit()
                 logger.info(f"SMPP DLR 更新成功: {sms_log.message_id} -> {new_status}")
             else:
-                # Go gateway 已更新状态：跳过重复写库，但仍需执行业务逻辑（webhook/注水）
-                logger.info(f"SMPP DLR 业务处理: {sms_log.message_id} 已是 {new_status}（Go 直写），触发 webhook/注水")
+                # 重复 DLR：状态已是目标值，跳过写库，仍派发 webhook/注水入队（与首次一致）
+                logger.info(f"SMPP DLR 业务处理: {sms_log.message_id} 已是 {new_status}，派发 webhook/注水入队")
 
             # 批次进度由 sync_processing_batch_progress_task 等定时汇总，避免海量 DLR 并发抢锁 sms_batches。
 
-            if new_status == "delivered" and sms_log.account_id:
-                try:
-                    from app.utils.water_trigger import trigger_water_single
-                    await trigger_water_single(
-                        db, sms_log.id, sms_log.message,
-                        sms_log.country_code, sms_log.account_id,
-                        channel_id=sms_log.channel_id,
-                    )
-                except Exception as e:
-                    logger.warning(f"SMPP DLR注水触发异常: {e}")
-
             try:
-                from app.workers.webhook_worker import trigger_webhook
-                await trigger_webhook(
-                    sms_log.message_id,
-                    new_status,
-                    {
-                        'phone_number': sms_log.phone_number,
-                        'country_code': sms_log.country_code,
-                        'error_message': sms_log.error_message
-                    },
-                    account_id=sms_log.account_id,
+                send_webhook_task.apply_async(
+                    args=[
+                        sms_log.account_id,
+                        sms_log.message_id,
+                        new_status,
+                        {
+                            "phone_number": sms_log.phone_number,
+                            "country_code": sms_log.country_code,
+                            "error_message": sms_log.error_message,
+                        },
+                    ],
+                    queue="webhook_tasks",
                 )
             except Exception as e:
-                logger.warning(f"触发Webhook失败: {str(e)}")
+                logger.warning(f"Webhook 入队失败: {e}")
+
+            if new_status == "delivered" and sms_log.account_id:
+                try:
+                    celery_app.send_task(
+                        "dlr_water_followup_task",
+                        args=[
+                            sms_log.id,
+                            sms_log.message or "",
+                            sms_log.country_code or "",
+                            sms_log.account_id,
+                            sms_log.channel_id or 0,
+                        ],
+                        queue="data_tasks",
+                    )
+                except Exception as e:
+                    logger.warning(f"注水任务入队失败: {e}")
 
             return True
 

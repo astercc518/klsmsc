@@ -36,6 +36,7 @@ celery_app.conf.update(
 )
 
 # 任务路由
+# 发送（sms_send / sms_send_smpp）与回执（sms_dlr）队列隔离：大批量 send 不会占满消费 DLR 的 worker。
 celery_app.conf.task_routes = {
     'send_sms_task': {'queue': 'sms_send'},
     'process_dlr_task': {'queue': 'sms_dlr'},
@@ -43,6 +44,8 @@ celery_app.conf.task_routes = {
     'fetch_dlr_reports_task': {'queue': 'sms_dlr'},
     'dlr_timeout_check_task': {'queue': 'sms_dlr'},
     'flush_dlr_retry_buffer_task': {'queue': 'sms_dlr'},
+    # DLR 后注水：与 sms_dlr 分离，避免 HTTP 回调与注水 DB 拖慢回执落库
+    'dlr_water_followup_task': {'queue': 'data_tasks'},
 }
 
 # 任务队列

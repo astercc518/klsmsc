@@ -12,7 +12,7 @@ class SMSLog(Base):
     
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="记录ID")
     message_id = Column(String(64), nullable=False, unique=True, comment="消息ID")
-    upstream_message_id = Column(String(64), comment="上游消息ID(用于状态报告匹配)")
+    upstream_message_id = Column(String(64), index=True, comment="上游消息ID(用于状态报告匹配)")
     account_id = Column(Integer, nullable=False, comment="账户ID")
     channel_id = Column(Integer, comment="通道ID")
     batch_id = Column(Integer, comment="关联批次ID")

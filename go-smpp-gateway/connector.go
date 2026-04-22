@@ -672,14 +672,9 @@ func (m *SMPPManager) handleDeliverSM(deliver *pdu.DeliverSM, cfg ChannelConfig)
 			finalStatus = "failed"
 		}
 
-		err := UpdateSMSLogDLR(upstreamID, finalStatus)
-		if err != nil {
-			log.Printf("Failed to update DLR for upstreamID %s: %v", upstreamID, err)
-		} else {
-			log.Printf("Successfully updated DLR for message %s: %s", upstreamID, finalStatus)
-		}
+		// 不在 PDU 线程内同步写 MySQL（会阻塞读包与后续 DeliverSM）；由 Python process_smpp_dlr_task 写库与副作用。
 
-		// [重要] 通知 Python Worker 进行对账、注水、Webhook 等复杂逻辑
+		// [重要] 通知 Python Worker 写回执、对账、注水、Webhook 等
 		dlrArgs := []interface{}{
 			cfg.ID,      // channel_id
 			upstreamID,  // upstream_id
@@ -690,9 +685,8 @@ func (m *SMPPManager) handleDeliverSM(deliver *pdu.DeliverSM, cfg ChannelConfig)
 			"",          // source_addr (optional)
 			upstreamID,  // receipted_message_id (often same as upstreamID)
 		}
-		err = PublishCeleryTask("sms_dlr", "process_smpp_dlr_task", dlrArgs)
-		if err != nil {
-			log.Printf("[SMPP-ERROR] Failed to notify Python worker of DLR for %s: %v", upstreamID, err)
+		if pubErr := PublishCeleryTask("sms_dlr", "process_smpp_dlr_task", dlrArgs); pubErr != nil {
+			log.Printf("[SMPP-ERROR] Failed to notify Python worker of DLR for %s: %v", upstreamID, pubErr)
 		} else {
 			log.Printf("[SMPP-DEBUG] Notified Python worker of DLR for %s", upstreamID)
 		}
