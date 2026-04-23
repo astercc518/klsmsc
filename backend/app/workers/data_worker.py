@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timedelta, date
 from decimal import Decimal
 from typing import Optional
-from sqlalchemy import select, func, or_, update as sa_update
+from sqlalchemy import select, func, or_, update as sa_update, insert
 from sqlalchemy.exc import OperationalError
 from app.workers.celery_app import celery_app
 import app.models  # noqa: F401 确保所有 ORM 关系模型被加载
@@ -13,6 +13,7 @@ from app.modules.data.models import (
     DataNumber,
     DataProduct,
     DataOrder,
+    DataOrderNumber,
     DataImportBatch,
     DataPricingTemplate,
     PrivateLibraryUploadTask,
@@ -186,45 +187,57 @@ async def _finalize_buy_send_failure_state(order_id: int, batch_id: int, reason:
         await eng.dispose()
 
 async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids, message, messages, sender_id):
+    """
+    购数并发送单次事务：按 5000 条分片从关联表或 legacy 列表取号，Core 批量 insert sms_logs，
+    避免 ORM 膨胀；提交后按 id 分页组负载入队，控制峰值内存。
+    number_ids 为 None 时仅从 data_order_numbers 键集分页反查（瘦消息）。
+    """
+    from collections import Counter, defaultdict
+    from sqlalchemy import text as sa_text
+
     from app.core.router import RoutingEngine
     from app.core.pricing import PricingEngine
     from app.modules.sms.sms_log import SMSLog
     from app.modules.sms.sms_batch import SmsBatch, BatchStatus
     from app.modules.sms.channel import Channel
-    from app.modules.common.account import Account, AccountChannel
+    from app.modules.common.account import AccountChannel
     from app.utils.queue import QueueManager
     from app.utils.phone_utils import country_to_dial_code
     from app.utils.sms_template import render_sms_variables, sms_template_has_variables
+    from app.utils.smpp_payload import smpp_payload_public_dict_from_row
+    from app.api.v1.data.customer import (
+        ORIGIN_PURCHASED,
+        norm_dim,
+        pls_apply_deltas_bulk,
+        pls_prune_non_positive,
+    )
     import uuid as _uuid
+
+    CHUNK = 5000
+    IN_READ = 3000
 
     msg_list = messages if messages and len(messages) > 1 else [message]
     msg_count = len(msg_list)
     msg_has_vars = [sms_template_has_variables(m) for m in msg_list]
 
-    # 1. 加载号码
-    num_result = await db.execute(
-        select(DataNumber).where(DataNumber.id.in_(number_ids))
-    )
-    numbers = num_result.scalars().all()
-    logger.info(f"[buy-send-async] order={order_id}, 加载 {len(numbers)} 条号码")
+    stream_from_order = number_ids is None
+    legacy_ptr = 0
+    last_don_id = 0
 
-    # 2. 按 country_code 分组，每组只查一次路由/定价
-    from collections import defaultdict
-    by_country = defaultdict(list)
-    for num in numbers:
-        by_country[num.country_code or "PH"].append(num)
+    dn_t = DataOrderNumber.__table__
+    num_t = DataNumber.__table__
+    log_t = SMSLog.__table__
 
     routing_engine = RoutingEngine(db)
     pricing_engine = PricingEngine(db)
 
-    # 预加载账户绑定通道（兜底用）
     ac_result = await db.execute(
         select(AccountChannel.channel_id).where(AccountChannel.account_id == account_id)
     )
     bound_ids = [r[0] for r in ac_result.all()]
 
-    country_channel_cache = {}  # country_code -> Channel
-    country_price_cache = {}    # (channel_id, country_code) -> (sell_per_part, cost_per_part, currency)
+    country_channel_cache = {}
+    country_price_cache = {}
 
     async def _get_channel_for_country(cc_country):
         if cc_country in country_channel_cache:
@@ -234,10 +247,10 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
         for cc in [dial_code, cc_country]:
             try:
                 ch = await routing_engine.select_channel(
-                    country_code=cc, strategy='priority', account_id=account_id
+                    country_code=cc, strategy="priority", account_id=account_id
                 )
                 if ch:
-                    if ch.protocol in ('VIRTUAL', 'HTTP', 'SMPP'):
+                    if ch.protocol in ("VIRTUAL", "HTTP", "SMPP"):
                         channel = ch
                         break
             except Exception:
@@ -246,7 +259,7 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
             ch_result = await db.execute(
                 select(Channel).where(
                     Channel.id.in_(bound_ids),
-                    Channel.status == 'active',
+                    Channel.status == "active",
                     Channel.is_deleted == False,
                 ).order_by(Channel.priority.desc()).limit(1)
             )
@@ -263,152 +276,255 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
         if not price_info:
             price_info = await pricing_engine.get_price(channel.id, cc_country, account_id=account_id)
         base_cost = await pricing_engine.resolve_base_cost_per_sms(channel.id, cc_country, channel)
-        sell_per = float(price_info['price']) if price_info else 0.0
+        sell_per = float(price_info["price"]) if price_info else 0.0
         cost_per = float(base_cost)
-        curr = price_info['currency'] if price_info else 'USD'
+        curr = price_info["currency"] if price_info else "USD"
         country_price_cache[cache_key] = (sell_per, cost_per, curr)
         return sell_per, cost_per, curr
 
-    # 3. 批量创建 SMS 记录
-    message_ids = []
-    channels_used = set()
-    total_sell = Decimal('0')
-    total_cost_sms = Decimal('0')
-    sms_objects = []
-
     global_idx = 0
-    for cc_country, cc_numbers in by_country.items():
-        channel = await _get_channel_for_country(cc_country)
-        if not channel:
-            logger.warning(f"[buy-send-async] 国家 {cc_country} 无可用通道，跳过 {len(cc_numbers)} 条")
+    channels_used = set()
+    channel_ids_used = set()
+    n_inserted_total = 0
+
+    chunk_no = 0
+    while True:
+        if stream_from_order:
+            don_res = await db.execute(
+                select(dn_t.c.id, dn_t.c.number_id)
+                .where(dn_t.c.order_id == order_id, dn_t.c.id > last_don_id)
+                .order_by(dn_t.c.id)
+                .limit(CHUNK)
+            )
+            don_rows = don_res.all()
+            if not don_rows:
+                break
+            last_don_id = don_rows[-1][0]
+            chunk_ids = [r[1] for r in don_rows]
+        else:
+            if legacy_ptr >= len(number_ids):
+                break
+            chunk_ids = number_ids[legacy_ptr : legacy_ptr + CHUNK]
+            legacy_ptr += len(chunk_ids)
+            if not chunk_ids:
+                break
+
+        chunk_no += 1
+        id_to_row = {}
+        for _off in range(0, len(chunk_ids), IN_READ):
+            sub = chunk_ids[_off : _off + IN_READ]
+            nr = await db.execute(select(num_t).where(num_t.c.id.in_(sub)))
+            for rowmap in nr.mappings().all():
+                id_to_row[rowmap["id"]] = rowmap
+        ordered_nums = [id_to_row[i] for i in chunk_ids if i in id_to_row]
+
+        if not ordered_nums:
+            logger.warning(
+                f"[buy-send-async] order={order_id} chunk#{chunk_no} 无有效 data_numbers 行，跳过"
+            )
             continue
-        channels_used.add(channel.channel_code)
-        sell_per, cost_per, curr = await _get_price_for(channel, cc_country)
 
-        for num in cc_numbers:
-            global_idx += 1
-            template = msg_list[(global_idx - 1) % msg_count]
-            msg = (
-                render_sms_variables(
-                    template, index=global_idx,
-                    phone_e164=num.phone_number or "",
-                    country_code=num.country_code or "",
+        by_country = defaultdict(list)
+        for row in ordered_nums:
+            cc = row.get("country_code") or "PH"
+            by_country[cc].append(row)
+
+        insert_rows = []
+        inserted_number_id_for_use_count = []
+        now_ts = datetime.now()
+
+        for cc_country, cc_rows in by_country.items():
+            channel = await _get_channel_for_country(cc_country)
+            if not channel:
+                logger.warning(
+                    f"[buy-send-async] 国家 {cc_country} 无可用通道，跳过本 chunk 内 {len(cc_rows)} 条"
                 )
-                if msg_has_vars[(global_idx - 1) % msg_count]
-                else template
+                continue
+            channels_used.add(channel.channel_code)
+            channel_ids_used.add(int(channel.id))
+            sell_per, cost_per, curr = await _get_price_for(channel, cc_country)
+
+            for row in cc_rows:
+                global_idx += 1
+                template = msg_list[(global_idx - 1) % msg_count]
+                msg = (
+                    render_sms_variables(
+                        template,
+                        index=global_idx,
+                        phone_e164=row.get("phone_number") or "",
+                        country_code=row.get("country_code") or "",
+                    )
+                    if msg_has_vars[(global_idx - 1) % msg_count]
+                    else template
+                )
+                parts = pricing_engine._count_sms_parts(msg)
+                sell = sell_per * parts
+                cost = cost_per * parts
+                mid = f"msg_{_uuid.uuid4().hex}"
+                insert_rows.append(
+                    {
+                        "message_id": mid,
+                        "account_id": account_id,
+                        "channel_id": int(channel.id),
+                        "batch_id": batch_id,
+                        "phone_number": row["phone_number"],
+                        "country_code": row.get("country_code"),
+                        "message": msg,
+                        "message_count": int(parts),
+                        "status": "pending",
+                        "cost_price": Decimal(str(cost)),
+                        "selling_price": Decimal(str(sell)),
+                        "currency": curr,
+                        "submit_time": now_ts,
+                    }
+                )
+                inserted_number_id_for_use_count.append(row["id"])
+
+        now_pls = datetime.now()
+        pls_chunk = [
+            (
+                ORIGIN_PURCHASED,
+                norm_dim(row.get("country_code")),
+                norm_dim(row.get("source")),
+                norm_dim(row.get("purpose")),
+                norm_dim(row.get("batch_id")),
+                norm_dim(row.get("carrier")),
+                1,
+                1,
+                row.get("remarks"),
+                row.get("created_at"),
+                now_pls,
             )
-            parts = pricing_engine._count_sms_parts(msg)
-            sell = sell_per * parts
-            cost = cost_per * parts
-            total_sell += Decimal(str(sell))
-            total_cost_sms += Decimal(str(cost))
-
-            mid = f"msg_{_uuid.uuid4().hex}"
-            sms = SMSLog(
-                message_id=mid,
-                account_id=account_id,
-                channel_id=channel.id,
-                batch_id=batch_id,
-                phone_number=num.phone_number,
-                country_code=num.country_code,
-                message=msg,
-                message_count=parts,
-                status="pending",
-                cost_price=cost,
-                selling_price=sell,
-                currency=curr,
-                submit_time=datetime.now(),
+            for row in ordered_nums
+        ]
+        try:
+            if pls_chunk:
+                await pls_apply_deltas_bulk(db, account_id, pls_chunk)
+        except Exception as e:
+            logger.warning(
+                f"[buy-send-async] PLS 分片 chunk#{chunk_no} 失败（非致命）: {e}"
             )
-            if sender_id:
-                sms.sender_id = sender_id
-            sms_objects.append(sms)
-            message_ids.append(mid)
 
-            num.use_count = (num.use_count or 0) + 1
+        if insert_rows:
+            await db.execute(insert(log_t), insert_rows)
+            await db.flush()
 
-            # 每 100 条 flush 一次，缩短单次锁持有，控制内存
-            if len(sms_objects) % 100 == 0:
-                db.add_all(sms_objects[-100:])
-                await db.flush()
+            counter = Counter(inserted_number_id_for_use_count)
+            if counter:
+                items = list(counter.items())
+                for i in range(0, len(items), 400):
+                    part = dict(items[i : i + 400])
+                    when_sql = " ".join(f"WHEN {int(k)} THEN {int(v)}" for k, v in part.items())
+                    ids_sql = ",".join(str(int(k)) for k in part.keys())
+                    await db.execute(
+                        sa_text(
+                            "UPDATE data_numbers SET use_count = IFNULL(use_count, 0) + "
+                            f"CASE id {when_sql} ELSE 0 END WHERE id IN ({ids_sql})"
+                        )
+                    )
 
-    # flush 剩余
-    remainder = len(sms_objects) % 100
-    if remainder > 0:
-        db.add_all(sms_objects[-remainder:])
-        await db.flush()
+            n_inserted_total += len(insert_rows)
+            logger.info(
+                f"[buy-send-async] order={order_id} Core 写入 chunk#{chunk_no} "
+                f"{len(insert_rows)} 条 sms_logs（累计 {n_inserted_total}）"
+            )
 
-    # 4. 更新批次状态
+        insert_rows.clear()
+        inserted_number_id_for_use_count.clear()
+
+    try:
+        await pls_prune_non_positive(db, account_id)
+    except Exception as e:
+        logger.warning(f"[buy-send-async] PLS prune 失败（非致命）: {e}")
+
     batch_result = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
     sms_batch = batch_result.scalar_one_or_none()
     if sms_batch:
-        sms_batch.total_count = len(message_ids)
+        sms_batch.total_count = n_inserted_total
         sms_batch.status = BatchStatus.PROCESSING
 
-    # 5. PLS 统计更新
-    try:
-        from app.api.v1.data.customer import pls_apply_deltas_bulk, pls_prune_non_positive, ORIGIN_PURCHASED, norm_dim
-        now_pls = datetime.now()
-        pls_deltas = []
-        for num in numbers:
-            pls_deltas.append((
-                ORIGIN_PURCHASED, norm_dim(num.country_code), norm_dim(num.source),
-                norm_dim(num.purpose), norm_dim(num.batch_id), norm_dim(num.carrier),
-                1, 1, num.remarks, num.created_at, now_pls,
-            ))
-        await pls_apply_deltas_bulk(db, account_id, pls_deltas)
-        await pls_prune_non_positive(db, account_id)
-    except Exception as e:
-        logger.warning(f"[buy-send-async] PLS 更新失败（非致命）: {e}")
-
-    # 6. 订单状态在入队结果确认后再写，避免「库里有短信但一条都没进队列」仍标 completed
     await db.commit()
-    logger.info(f"[buy-send-async] order={order_id}, 创建 {len(message_ids)} 条 SMS 记录")
+    logger.info(
+        f"[buy-send-async] order={order_id}, Core 分片完成，共创建 {n_inserted_total} 条 SMS 记录"
+    )
 
-    # 6. 入队发送（SMPP 直投全量负载，避免 Go 网关在发送路径查库）
     bs_val = ""
     if batch_id:
         _bs_row = await db.execute(select(SmsBatch.status).where(SmsBatch.id == batch_id))
         _bs_raw = _bs_row.scalar_one_or_none()
         bs_val = getattr(_bs_raw, "value", str(_bs_raw or ""))
-    cids = list({s.channel_id for s in sms_objects if getattr(s, "channel_id", None)})
-    prot_map: dict = {}
-    for _cid in cids:
+
+    prot_map = {}
+    for _cid in channel_ids_used:
         _pr = await db.execute(select(Channel.protocol).where(Channel.id == _cid))
         prot_map[_cid] = _pr.scalar_one_or_none()
-    from app.utils.smpp_payload import smpp_payload_public_dict
 
-    smpp_payloads: list = []
-    other_mids: list = []
-    for sms in sms_objects:
-        _prot_raw = prot_map.get(sms.channel_id)
-        _pv = getattr(_prot_raw, "value", _prot_raw)
-        _pv = getattr(_pv, "value", _pv)
-        if "SMPP" in str(_pv or "").upper():
-            smpp_payloads.append(smpp_payload_public_dict(sms, bs_val))
-        else:
-            other_mids.append(sms.message_id)
-
-    queued = 0
     from app.config import settings as _cfg
 
     _win = int(getattr(_cfg, "SMPP_WINDOW_SIZE", 10) or 10)
-    for _i in range(0, len(smpp_payloads), _win):
-        chunk = smpp_payloads[_i : _i + _win]
-        if QueueManager.queue_sms_batch_smpp(chunk):
-            queued += len(chunk)
-        else:
-            for _p in chunk:
-                if QueueManager.queue_smpp_gateway(_p):
-                    queued += 1
-    for mid in other_mids:
-        if QueueManager.queue_sms(mid):
-            queued += 1
-    logger.info(f"[buy-send-async] order={order_id}, 入队 {queued}/{len(message_ids)}")
+    queued = 0
+    last_log_id = 0
+    while True:
+        qrows = await db.execute(
+            select(
+                log_t.c.id,
+                log_t.c.message_id,
+                log_t.c.phone_number,
+                log_t.c.message,
+                log_t.c.channel_id,
+                log_t.c.status,
+            )
+            .where(log_t.c.batch_id == batch_id, log_t.c.id > last_log_id)
+            .order_by(log_t.c.id)
+            .limit(CHUNK)
+        )
+        maps = qrows.mappings().all()
+        if not maps:
+            break
+        last_log_id = maps[-1]["id"]
 
-    # 6a. 按入队结果更新订单（与 sms_batches 语义一致，便于排障）
+        smpp_payloads = []
+        other_mids = []
+        for rm in maps:
+            _prot_raw = prot_map.get(rm["channel_id"])
+            _pv = getattr(_prot_raw, "value", _prot_raw)
+            _pv = getattr(_pv, "value", _pv)
+            st = getattr(rm["status"], "value", rm["status"]) or ""
+            if "SMPP" in str(_pv or "").upper():
+                smpp_payloads.append(
+                    smpp_payload_public_dict_from_row(
+                        int(rm["id"]),
+                        rm["message_id"],
+                        rm["phone_number"] or "",
+                        rm["message"] or "",
+                        int(rm["channel_id"] or 0),
+                        str(st),
+                        bs_val,
+                    )
+                )
+            else:
+                other_mids.append(rm["message_id"])
+
+        for _i in range(0, len(smpp_payloads), _win):
+            chunk = smpp_payloads[_i : _i + _win]
+            if QueueManager.queue_sms_batch_smpp(chunk):
+                queued += len(chunk)
+            else:
+                for _p in chunk:
+                    if QueueManager.queue_smpp_gateway(_p):
+                        queued += 1
+        for mid in other_mids:
+            if QueueManager.queue_sms(mid):
+                queued += 1
+
+        smpp_payloads.clear()
+        other_mids.clear()
+
+    n_msgs = n_inserted_total
+    logger.info(f"[buy-send-async] order={order_id}, 入队 {queued}/{n_msgs}")
+
     order_result = await db.execute(select(DataOrder).where(DataOrder.id == order_id))
     order = order_result.scalar_one_or_none()
-    n_msgs = len(message_ids)
     if order and n_msgs > 0:
         order.executed_count = n_msgs
         order.executed_at = datetime.now()
@@ -426,43 +542,42 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
             order.status = "completed"
             order.cancel_reason = None
 
-    # 6b. 整批同一虚拟通道时，在 sms_send 上分片补调度批量模拟回执（与 per-msg 任务同队列，防仅 worker-sms 时无人消费 celery）
-    if message_ids and sms_objects:
-        _cids = {s.channel_id for s in sms_objects if getattr(s, "channel_id", None)}
-        if len(_cids) == 1:
-            _only_cid = next(iter(_cids))
-            _prot_row = await db.execute(
-                select(Channel.protocol).where(Channel.id == _only_cid)
-            )
-            _prot = _prot_row.scalar_one_or_none()
-            # SQLAlchemy / Enum 可能返回非 str，str(Enum) 常为 "ChannelProtocol.VIRTUAL"，会导致误判跳过补调度
-            _prot_raw = getattr(_prot, "value", _prot)
-            _prot_raw = getattr(_prot_raw, "value", _prot_raw)
-            if str(_prot_raw or "").upper() == "VIRTUAL":
-                from app.workers.sms_worker import virtual_dlr_batch_generate_task as _vbatch_task
+    if n_inserted_total > 0 and len(channel_ids_used) == 1:
+        _only_cid = next(iter(channel_ids_used))
+        _prot_row = await db.execute(select(Channel.protocol).where(Channel.id == _only_cid))
+        _prot = _prot_row.scalar_one_or_none()
+        _prot_raw = getattr(_prot, "value", _prot)
+        _prot_raw = getattr(_prot_raw, "value", _prot_raw)
+        if str(_prot_raw or "").upper() == "VIRTUAL":
+            from app.workers.sms_worker import virtual_dlr_batch_generate_task as _vbatch_task
 
-                _chunk_size = 500
-                _nchunks = (len(message_ids) + _chunk_size - 1) // _chunk_size
-                for _bi, _start in enumerate(range(0, len(message_ids), _chunk_size)):
-                    _chunk = message_ids[_start : _start + _chunk_size]
-                    _vbatch_task.apply_async(
-                        args=[_chunk, _only_cid, batch_id],
-                        countdown=min(600, 3 + _bi * 2),
-                        queue="sms_send",
-                    )
-                logger.info(
-                    f"[buy-send-async] 虚拟通道已补调度 virtual_dlr_batch_generate: "
-                    f"batch={batch_id}, channel_id={_only_cid}, chunks={_nchunks}"
+            _mid_res = await db.execute(
+                select(log_t.c.message_id).where(
+                    log_t.c.batch_id == batch_id,
+                    log_t.c.channel_id == _only_cid,
                 )
+            )
+            all_mids = [r[0] for r in _mid_res.all()]
+            _chunk_size = 500
+            _nchunks = (len(all_mids) + _chunk_size - 1) // _chunk_size
+            for _bi, _start in enumerate(range(0, len(all_mids), _chunk_size)):
+                _chunk = all_mids[_start : _start + _chunk_size]
+                _vbatch_task.apply_async(
+                    args=[_chunk, _only_cid, batch_id],
+                    countdown=min(600, 3 + _bi * 2),
+                    queue="sms_send",
+                )
+            logger.info(
+                f"[buy-send-async] 虚拟通道已补调度 virtual_dlr_batch_generate: "
+                f"batch={batch_id}, channel_id={_only_cid}, chunks={_nchunks}"
+            )
 
-    # 7. 入队完成后：按 sms_logs 汇总批次计数（勿用入队数伪造 success_count，否则与列表回执拆列不一致）
     from app.modules.sms.batch_utils import update_batch_progress
 
     await update_batch_progress(db, batch_id)
     batch_result2 = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
     sms_batch2 = batch_result2.scalar_one_or_none()
     if sms_batch2:
-        # 批次状态与 Celery 入队结果对齐；单条终态仍以 sms_logs 为准
         if n_msgs == 0:
             sms_batch2.status = BatchStatus.FAILED
             sms_batch2.error_message = "无有效短信记录"
@@ -480,11 +595,8 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
             )
             sms_batch2.progress = min(99, int(100 * queued / n_msgs)) if n_msgs else 0
         else:
-            # 入队成功 ≠ 发送完成：sms_log 仍为 queued/pending，实际发送（尤其 SMPP）尚未完成。
-            # 此处仅标记为 PROCESSING，待 worker 发送后通过 update_batch_progress 自然转为 completed。
             sms_batch2.status = BatchStatus.PROCESSING
             sms_batch2.completed_at = None
-            # progress 由 update_batch_progress 已按实际 sms_logs 计算，保留不覆盖
             sms_batch2.error_message = None
         logger.info(
             f"[buy-send-async] batch={batch_id} 状态={sms_batch2.status}; "
@@ -493,11 +605,39 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
         )
     await db.commit()
 
-    return {"order_id": order_id, "total": len(message_ids), "queued": queued}
+    return {"order_id": order_id, "total": n_inserted_total, "queued": queued}
+
 
 async def _do_buy_send_async(order_id, batch_id, account_id, number_ids,
                               message, messages, sender_id):
     """购数并发送：含 InnoDB 死锁重试与失败落库。"""
+    # None：仅走 data_order_numbers；列表：legacy Celery 大包（若关联表有数据则强制忽略）
+    legacy = None if number_ids is None else list(number_ids)
+
+    eng_probe, Session_probe = _make_session()
+    try:
+        async with Session_probe() as db_probe:
+            assoc_n = await db_probe.scalar(
+                select(func.count())
+                .select_from(DataOrderNumber)
+                .where(DataOrderNumber.order_id == order_id)
+            ) or 0
+    finally:
+        await eng_probe.dispose()
+
+    if assoc_n > 0:
+        legacy = None
+    elif not legacy:
+        logger.error(
+            f"[buy-send-async] order={order_id} 无号码：data_order_numbers 为空且未传入 number_ids"
+        )
+        await _finalize_buy_send_failure_state(
+            order_id,
+            batch_id,
+            "购数并发送：订单无关联号码（data_order_numbers 为空），请检查 API 是否写入关联表",
+        )
+        return {"order_id": order_id, "total": 0, "queued": 0}
+
     _deadlock_attempts = 5
     for _attempt in range(_deadlock_attempts):
         eng, Session = _make_session()
@@ -505,7 +645,7 @@ async def _do_buy_send_async(order_id, batch_id, account_id, number_ids,
             async with Session() as db:
                 try:
                     return await _do_buy_send_async_once(
-                        db, order_id, batch_id, account_id, number_ids, message, messages, sender_id,
+                        db, order_id, batch_id, account_id, legacy, message, messages, sender_id,
                     )
                 except OperationalError as e:
                     if _is_mysql_deadlock(e) and _attempt < _deadlock_attempts - 1:
@@ -583,14 +723,31 @@ async def _refresh_all_stock():
 # ============ 大批量 buy-and-send 异步处理 ============
 
 @celery_app.task(name='data_buy_send_async', bind=True, soft_time_limit=600, time_limit=660)
-def data_buy_send_async(self, order_id: int, batch_id: int, account_id: int,
-                        number_ids: list, message: str, messages: list = None,
-                        sender_id: str = None):
-    """异步处理大批量数据购买+发送：路由、定价、创建 SMS 记录、入队"""
-    return _run_async(_do_buy_send_async(
-        order_id, batch_id, account_id, number_ids,
-        message, messages, sender_id,
-    ))
+def data_buy_send_async(
+    self,
+    order_id: int,
+    batch_id: int,
+    account_id: int,
+    message: str,
+    messages: list = None,
+    sender_id: str = None,
+    number_ids: list = None,
+):
+    """异步处理大批量数据购买+发送：路由、定价、创建 SMS 记录、入队。
+
+    number_ids 可选；缺省时由 data_order_numbers 按 order_id 反查（与 buy_and_send 瘦消息体对齐）。
+    """
+    return _run_async(
+        _do_buy_send_async(
+            order_id,
+            batch_id,
+            account_id,
+            number_ids,
+            message,
+            messages,
+            sender_id,
+        )
+    )
 
 
 @celery_app.task(name='data_backfill_carriers', bind=True, soft_time_limit=7200, time_limit=7500)

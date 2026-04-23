@@ -925,15 +925,18 @@ async def buy_and_send(
     if len(number_ids) < data.quantity:
         raise HTTPException(400, f"库存不足，仅剩 {len(number_ids)} 条")
 
-    # 分批锁定（每批 1000 条），避免超大 IN 子句
-    LOCK_BATCH = 1000
+    # Core 分批锁定（每批 5000），减少往返、缩短 HTTP 占用时间（不设 status=sold，与现网枚举一致）
+    LOCK_CHUNK = 5000
     total_locked = 0
     now_ts = datetime.now()
-    for i in range(0, len(number_ids), LOCK_BATCH):
-        chunk = number_ids[i:i + LOCK_BATCH]
+    for i in range(0, len(number_ids), LOCK_CHUNK):
+        chunk = number_ids[i : i + LOCK_CHUNK]
         lock_result = await db.execute(
             sa_update(DataNumber)
-            .where(DataNumber.id.in_(chunk), DataNumber.account_id.is_(None))
+            .where(
+                DataNumber.id.in_(chunk),
+                DataNumber.account_id.is_(None),
+            )
             .values(account_id=account.id, last_used_at=now_ts)
         )
         total_locked += lock_result.rowcount
@@ -1019,6 +1022,16 @@ async def buy_and_send(
     )
     db.add(sms_batch)
     await db.flush()
+    order.sms_batch_id = sms_batch.id
+
+    # 订单-号码关联落库，供 Worker 按 order_id 拉取（Celery 消息体不再携带数万 ID）
+    _ord_num_chunk = 5000
+    for _start in range(0, len(number_ids), _ord_num_chunk):
+        _chunk = number_ids[_start : _start + _ord_num_chunk]
+        await db.execute(
+            insert(DataOrderNumber),
+            [{"order_id": order.id, "number_id": int(nid)} for nid in _chunk],
+        )
 
     if product:
         product.total_sold = (product.total_sold or 0) + data.quantity
@@ -1026,20 +1039,22 @@ async def buy_and_send(
     await db.commit()
     await _invalidate_my_numbers_summary_cache(account.id)
 
-    # ---------- 5. 派发 Celery 异步任务 ----------
+    # ---------- 5. 派发 Celery（瘦 kwargs；线程内发避免阻塞事件循环） ----------
     from app.workers.celery_app import celery_app as _celery
-    _celery.send_task(
-        'data_buy_send_async',
-        kwargs={
-            'order_id': order.id,
-            'batch_id': sms_batch.id,
-            'account_id': account.id,
-            'number_ids': number_ids,
-            'message': data.message,
-            'messages': data.messages,
-            'sender_id': getattr(data, 'sender_id', None),
-        },
-    )
+
+    _kw = {
+        "order_id": order.id,
+        "batch_id": sms_batch.id,
+        "account_id": account.id,
+        "message": data.message,
+        "messages": data.messages,
+        "sender_id": getattr(data, "sender_id", None),
+    }
+
+    def _publish_buy_send() -> None:
+        _celery.send_task("data_buy_send_async", kwargs=_kw)
+
+    await asyncio.to_thread(_publish_buy_send)
 
     return {
         "success": True,
