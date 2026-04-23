@@ -2,6 +2,8 @@
 SMS 批次处理工具函数
 """
 from datetime import datetime
+from typing import Any, Optional
+
 from sqlalchemy import select, func as sa_func, update as _sa_upd
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.sms_batch import SmsBatch, BatchStatus
@@ -23,71 +25,91 @@ def _mimic_smpp_expired_dlr_message() -> str:
     return f"SMPP DLR: stat=EXPIRED err={random.randint(1, 999):03d}"
 
 
-async def update_batch_progress(db, batch_id: int):
+def _norm_status_val(status: Any) -> str:
+    """Enum / str 统一为小写字符串，便于比对。"""
+    if status is None:
+        return ""
+    v = getattr(status, "value", status)
+    v = getattr(v, "value", v)
+    return str(v or "").lower()
+
+
+def _norm_err(msg: Optional[str]) -> Optional[str]:
+    s = (msg or "").strip()
+    return s if s else None
+
+
+def _same_completed_at(a: Any, b: Any) -> bool:
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return a == b
+
+
+def _batch_targets_unchanged(
+    batch: SmsBatch,
+    *,
+    new_success: int,
+    new_failed: int,
+    new_processing: int,
+    new_progress: int,
+    new_status: Any,
+    new_completed_at: Any,
+    new_error: Optional[str],
+) -> bool:
+    """与当前 ORM 已加载值比对；无变化则跳过写库，避免无意义刷新 updated_at。"""
+    if int(batch.success_count or 0) != int(new_success):
+        return False
+    if int(batch.failed_count or 0) != int(new_failed):
+        return False
+    if int(batch.processing_count or 0) != int(new_processing):
+        return False
+    if int(batch.progress or 0) != int(new_progress):
+        return False
+    if _norm_status_val(batch.status) != _norm_status_val(new_status):
+        return False
+    if not _same_completed_at(batch.completed_at, new_completed_at):
+        return False
+    if _norm_err(batch.error_message) != _norm_err(new_error):
+        return False
+    return True
+
+
+async def update_batch_progress(db, batch_id: int) -> bool:
     """
     更新批次的发送进度和状态。
     计算 SMSLog 中各状态的数量，同步到 SmsBatch 记录。
-    
-    此函数由从异步 Worker 的 DLR 处理逻辑和 API 的 DLR 回调逻辑共同调用。
+
+    返回 True 表示已执行有实质变更的写库并 commit；False 表示聚合结果与当前批次行一致，已跳过 commit（防抖）。
     """
     if not batch_id:
-        return
+        return False
 
     try:
-        # 统计批次内各状态的短信数量
         stats = await db.execute(
             select(
                 SMSLog.status,
-                sa_func.count().label('cnt')
+                sa_func.count().label("cnt"),
             ).where(SMSLog.batch_id == batch_id).group_by(SMSLog.status)
         )
         counts = {row.status: row.cnt for row in stats}
         log_total = sum(counts.values())
-        
-        # 成功数：已发送(sent) 或 已送达(delivered)
-        # 失败数：失败(failed) 或 已过期(expired)
-        sent = counts.get('sent', 0) + counts.get('delivered', 0)
-        failed = counts.get('failed', 0) + counts.get('expired', 0)
-        done = sent + failed
 
-        # 获取批次对象
+        sent = counts.get("sent", 0) + counts.get("delivered", 0)
+        failed = counts.get("failed", 0) + counts.get("expired", 0)
+        done = sent + failed
+        pending_cnt = counts.get("pending", 0) + counts.get("queued", 0)
+
         batch_result = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
         batch = batch_result.scalar_one_or_none()
         if not batch:
-            return
+            return False
 
         total = batch.total_count or log_total
-        pending_cnt = counts.get('pending', 0) + counts.get('queued', 0)
 
-        # 更新基础统计数据
-        batch.success_count = sent
-        batch.failed_count = failed
-        batch.processing_count = max(0, total - done)
-        batch.progress = min(100, int(done * 100 / max(total, 1)))
-
-        # 纠偏：历史代码曾把「仅入队」误标为 completed；若仍有待发或在途未计入 done，必须回退为 processing
-        if batch.status == BatchStatus.COMPLETED and (pending_cnt > 0 or done < log_total):
-            batch.status = BatchStatus.PROCESSING
-            batch.completed_at = None
-            logger.warning(
-                f"批次 {batch_id} 从 completed 回退为 processing："
-                f"pending+queued={pending_cnt}, done={done}, log_total={log_total}, total={total}"
-            )
-
-        # 状态切换逻辑
-        if log_total >= total and done >= log_total:
-            # 全部短信已处理完成（成功或失败）
-            if failed == 0:
-                batch.status = BatchStatus.COMPLETED
-            elif sent == 0:
-                batch.status = BatchStatus.FAILED
-            else:
-                batch.status = BatchStatus.COMPLETED
-                batch.error_message = f"部分失败: {failed}/{total}"
-            batch.completed_at = datetime.now()
-            
-        elif log_total >= total and pending_cnt > 0 and pending_cnt <= total * 0.02:
-            # 兜底清理：如果剩余极少量短信卡在 pending/queued（通常是 Worker 重启导致虚拟通道任务丢失）
+        # ---------- 虚拟通道 ≤2% pending 兜底（会改 sms_logs，视为必有实质变更）----------
+        if log_total >= total and pending_cnt > 0 and pending_cnt <= total * 0.02:
             pend_rows = (
                 await db.execute(
                     select(SMSLog.message_id, Channel.protocol)
@@ -99,20 +121,12 @@ async def update_batch_progress(db, batch_id: int):
                     )
                 )
             ).all()
-            
-            # 仅对虚拟通道进行自动过期处理
+
             all_virtual_pending = bool(pend_rows) and all(
                 r.protocol == "VIRTUAL" for r in pend_rows
             )
-            
-            if not all_virtual_pending:
-                logger.debug(
-                    f"批次存在非虚拟待发(≤2%)，跳过自动过期: batch={batch_id}, pending={pending_cnt}"
-                )
-                if batch.status != BatchStatus.PROCESSING:
-                    batch.status = BatchStatus.PROCESSING
-                batch.completed_at = None
-            else:
+
+            if all_virtual_pending:
                 now_ts = datetime.now()
                 virt_ids = [r.message_id for r in pend_rows]
                 await db.execute(
@@ -125,42 +139,109 @@ async def update_batch_progress(db, batch_id: int):
                     )
                 )
                 await db.commit()
-                
-                # 重新统计
+
                 stats2 = await db.execute(
-                    select(SMSLog.status, sa_func.count().label('cnt'))
+                    select(SMSLog.status, sa_func.count().label("cnt"))
                     .where(SMSLog.batch_id == batch_id).group_by(SMSLog.status)
                 )
                 counts2 = {r.status: r.cnt for r in stats2}
-                sent2 = counts2.get('sent', 0) + counts2.get('delivered', 0)
-                failed2 = counts2.get('failed', 0) + counts2.get('expired', 0)
-                
+                sent2 = counts2.get("sent", 0) + counts2.get("delivered", 0)
+                failed2 = counts2.get("failed", 0) + counts2.get("expired", 0)
+
                 batch.success_count = sent2
                 batch.failed_count = failed2
                 batch.processing_count = 0
                 batch.progress = 100
                 batch.status = BatchStatus.COMPLETED
                 batch.completed_at = datetime.now()
-                batch.error_message = f"部分失败: {failed2}/{total}" if failed2 > 0 else None
+                batch.error_message = (
+                    f"部分失败: {failed2}/{total}" if failed2 > 0 else None
+                )
+                await db.commit()
                 logger.info(f"批次虚拟通道兜底完成: batch={batch_id}, 清理 {pending_cnt} 条遗留 pending")
-        
+                return True
+
+            logger.debug(
+                f"批次存在非虚拟待发(≤2%)，跳过自动过期: batch={batch_id}, pending={pending_cnt}"
+            )
+
+        # ---------- 计算目标字段（局部变量），末尾与 batch 比对防抖 ----------
+        new_success = int(sent)
+        new_failed = int(failed)
+        new_processing = max(0, int(total) - int(done))
+        new_progress = min(100, int(done * 100 / max(int(total), 1)))
+        new_status: Any = batch.status
+        new_completed_at: Any = batch.completed_at
+        new_error: Optional[str] = batch.error_message
+
+        if batch.status == BatchStatus.COMPLETED and (pending_cnt > 0 or done < log_total):
+            new_status = BatchStatus.PROCESSING
+            new_completed_at = None
+            logger.warning(
+                f"批次 {batch_id} 从 completed 回退为 processing："
+                f"pending+queued={pending_cnt}, done={done}, log_total={log_total}, total={total}"
+            )
+
+        if log_total >= total and done >= log_total:
+            if failed == 0:
+                new_status = BatchStatus.COMPLETED
+            elif sent == 0:
+                new_status = BatchStatus.FAILED
+            else:
+                new_status = BatchStatus.COMPLETED
+                new_error = f"部分失败: {failed}/{total}"
+            # 已在同终态时不反复刷 completed_at，否则每次与 now() 比较都会误判为「有变化」
+            if (
+                _norm_status_val(batch.status) == _norm_status_val(new_status)
+                and batch.completed_at is not None
+            ):
+                new_completed_at = batch.completed_at
+            else:
+                new_completed_at = datetime.now()
+
+        elif log_total >= total and pending_cnt > 0 and pending_cnt <= total * 0.02:
+            # 非虚拟：仅纠批次状态（与历史逻辑一致）
+            if _norm_status_val(new_status) != "processing":
+                new_status = BatchStatus.PROCESSING
+            new_completed_at = None
+
         elif log_total >= total and batch.status == BatchStatus.COMPLETED:
-            # 已完成状态，且没有新记录，保持现状
             pass
+
         else:
-            # 仍在处理中
-            if batch.status not in [BatchStatus.COMPLETED, BatchStatus.FAILED, BatchStatus.CANCELLED]:
-                batch.status = BatchStatus.PROCESSING
-            batch.completed_at = None
-            # 如果之前有“部分失败”文案但任务还在跑（重发等），清理掉它
-            if batch.error_message and "部分失败" in batch.error_message:
-                batch.error_message = None
+            if _norm_status_val(new_status) not in ("completed", "failed", "cancelled"):
+                new_status = BatchStatus.PROCESSING
+            new_completed_at = None
+            if new_error and "部分失败" in new_error:
+                new_error = None
+
+        if _batch_targets_unchanged(
+            batch,
+            new_success=new_success,
+            new_failed=new_failed,
+            new_processing=new_processing,
+            new_progress=new_progress,
+            new_status=new_status,
+            new_completed_at=new_completed_at,
+            new_error=new_error,
+        ):
+            return False
+
+        batch.success_count = new_success
+        batch.failed_count = new_failed
+        batch.processing_count = new_processing
+        batch.progress = new_progress
+        batch.status = new_status
+        batch.completed_at = new_completed_at
+        batch.error_message = new_error
 
         await db.commit()
+        return True
 
     except Exception as e:
         logger.warning(f"更新批次进度失败: batch_id={batch_id}, {e}")
         await db.rollback()
+        return False
 
 
 async def publish_batch_pipeline_progress(

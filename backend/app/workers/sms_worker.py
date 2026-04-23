@@ -1894,9 +1894,9 @@ def _enqueue_sms_result_buffer(item: dict):
 
 @celery_app.task(name="process_sms_result_task", acks_late=True)
 def process_sms_result_task(item: dict):
-    """消费 Go 网关回传的 SubmitSM 结果，200 条或 1 秒合并刷盘。"""
+    """消费 Go 网关回传的 SubmitSM 结果，同步写库（避免 daemon timer 在 worker 回收时丢数据）。"""
     try:
-        _enqueue_sms_result_buffer(item)
+        _flush_sms_results_sync([item])
     except Exception as e:
-        logger.error(f"process_sms_result_task 入缓冲失败: {e}", exc_info=e)
+        logger.error(f"process_sms_result_task 写库失败: log_id={item.get('log_id')}, err={e}", exc_info=e)
     return {"ok": True}

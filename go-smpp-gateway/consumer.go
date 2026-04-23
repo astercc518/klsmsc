@@ -231,12 +231,10 @@ func workerProcessDelivery(d amqp.Delivery, ackCh chan<- rabbitAckOp) {
 
 	if len(payloads) == 1 {
 		log.Printf("Processing SMS Task: %s log_id=%d", payloads[0].MessageID, payloads[0].LogID)
-		procErr := processSingleSMSData(payloads[0])
+		kind, procErr := processSingleSMSData(payloads[0])
 		if procErr != nil {
 			log.Printf("Failed to process message %s: %v", payloads[0].MessageID, procErr)
-		}
-		if procErr != nil {
-			ackCh <- rabbitAckOp{d: d, nack: true, requeue: true}
+			ackCh <- rabbitAckOp{d: d, nack: true, requeue: kind == smsTransient}
 			return
 		}
 		ackCh <- rabbitAckOp{d: d, ack: true}
@@ -246,8 +244,10 @@ func workerProcessDelivery(d amqp.Delivery, ackCh chan<- rabbitAckOp) {
 	const perDeliveryCap = 4
 	sem := make(chan struct{}, perDeliveryCap)
 	var wg sync.WaitGroup
-	var failMu sync.Mutex
-	failedCount := 0
+	var mu sync.Mutex
+	var transientPayloads []SMSLogData
+	permanentFailed := 0
+	successCount := 0
 	for _, pl := range payloads {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -257,29 +257,48 @@ func workerProcessDelivery(d amqp.Delivery, ackCh chan<- rabbitAckOp) {
 			defer func() {
 				if r := recover(); r != nil {
 					log.Printf("panic processSingleSMSData %s: %v", data.MessageID, r)
-					failMu.Lock()
-					failedCount++
-					failMu.Unlock()
+					mu.Lock()
+					permanentFailed++
+					mu.Unlock()
 				}
 			}()
 			log.Printf("Processing SMS Task: %s", data.MessageID)
-			if err := processSingleSMSData(data); err != nil {
+			kind, err := processSingleSMSData(data)
+			if err != nil {
 				log.Printf("Failed to process message %s: %v", data.MessageID, err)
-				failMu.Lock()
-				failedCount++
-				failMu.Unlock()
 			}
+			mu.Lock()
+			switch kind {
+			case smsTransient:
+				transientPayloads = append(transientPayloads, data)
+			case smsPermanent:
+				permanentFailed++
+			default:
+				successCount++
+			}
+			mu.Unlock()
 		}(pl)
 	}
 	wg.Wait()
 	totalN := len(payloads)
-	// 全部失败：整包 Nack 重入队；部分失败仍 Ack，避免已成功 Submit 的条因整包重投而重复下发
-	if failedCount == totalN && totalN > 0 {
-		ackCh <- rabbitAckOp{d: d, nack: true, requeue: true}
-		return
+
+	if len(transientPayloads) > 0 {
+		// 全部为瞬时失败（无任何消息已发出）：重投失败则 NACK 原包，避免丢失
+		allTransient := successCount == 0 && permanentFailed == 0
+		if err := republishSmppPayloads(transientPayloads); err != nil {
+			if allTransient {
+				log.Printf("ERROR: 瞬时失败重投失败，NACK 原包重入队: %v", err)
+				ackCh <- rabbitAckOp{d: d, nack: true, requeue: true}
+				return
+			}
+			log.Printf("ERROR: %d 条瞬时失败重投失败（部分已发出不可 NACK，消息将丢失）: %v", len(transientPayloads), err)
+		} else {
+			log.Printf("[REQUEUE] %d transient failed messages re-queued to sms_send_smpp", len(transientPayloads))
+		}
 	}
-	if failedCount > 0 {
-		log.Printf("WARN: multi-SMS delivery partial failures %d/%d; ack to avoid duplicate Submit", failedCount, totalN)
+
+	if permanentFailed > 0 {
+		log.Printf("WARN: %d/%d permanent failures in batch (marked failed in DB)", permanentFailed, totalN)
 	}
 	ackCh <- rabbitAckOp{d: d, ack: true}
 }
@@ -421,6 +440,39 @@ func RunConsumerForever(url string) {
 	}
 }
 
+// smsFailureKind distinguishes success, permanent failures, and transient failures
+type smsFailureKind int
+
+const (
+	smsSentOK    smsFailureKind = 0
+	smsPermanent smsFailureKind = 1
+	smsTransient smsFailureKind = 2
+)
+
+// republishSmppPayloads 将瞬时失败的 SMS 以原生 JSON 数组重投回 sms_send_smpp 队列
+func republishSmppPayloads(payloads []SMSLogData) error {
+	rabbitMu.Lock()
+	defer rabbitMu.Unlock()
+	if publishCh == nil {
+		return fmt.Errorf("RabbitMQ publish channel not ready")
+	}
+	body, err := json.Marshal(payloads)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	return publishCh.Publish(
+		"sms_send_smpp", // exchange
+		"sms_send_smpp", // routing key
+		false,
+		false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			Body:         body,
+			DeliveryMode: amqp.Persistent,
+		},
+	)
+}
+
 // PublishCeleryTask dispatches a task to the Python worker via RabbitMQ
 func PublishCeleryTask(queue string, taskName string, args []interface{}) error {
 	rabbitMu.Lock()
@@ -456,7 +508,7 @@ func PublishCeleryTask(queue string, taskName string, args []interface{}) error 
 	return err
 }
 
-func processSingleSMSData(data SMSLogData) error {
+func processSingleSMSData(data SMSLogData) (smsFailureKind, error) {
 	bs := strings.ToLower(strings.TrimSpace(data.BatchStatus))
 	rs := strings.TrimSpace(data.RecordStatus)
 	if bs == "cancelled" && (rs == "pending" || rs == "queued") {
@@ -464,28 +516,28 @@ func processSingleSMSData(data SMSLogData) error {
 		if err := publishSmsSubmitResult(data.LogID, data.MessageID, "", "failed", "批次已取消"); err != nil {
 			log.Printf("WARN: publish cancel result id=%d: %v", data.LogID, err)
 		}
-		return nil
+		return smsSentOK, nil
 	}
 	if rs == "failed" || rs == "expired" || rs == "delivered" || rs == "sent" {
 		log.Printf("跳过 SMPP 提交: 已是终态 message_id=%s status=%s", data.MessageID, rs)
-		return nil
+		return smsSentOK, nil
 	}
 
 	err := manager.SendSMS(data.LogID, data.MessageID, data.PhoneNumber, data.Message, data.ChannelID)
 	if err != nil {
 		errStr := err.Error()
 		if len(errStr) >= 13 && errStr[:13] == "_window_full:" {
-			log.Printf("[SMPP-WARN] window full nack+requeue: message_id=%s", data.MessageID)
-			return fmt.Errorf("window full, requeue: %s", data.MessageID)
+			log.Printf("[SMPP-WARN] window full, will requeue: message_id=%s", data.MessageID)
+			return smsTransient, fmt.Errorf("window full: %s", data.MessageID)
 		}
 		if len(errStr) >= 12 && errStr[:12] == "_temp_error:" {
-			log.Printf("[SMPP-WARN] temp error nack+requeue: message_id=%s err=%s", data.MessageID, errStr)
-			return fmt.Errorf("temp error, requeue: %s", data.MessageID)
+			log.Printf("[SMPP-WARN] temp error, will requeue: message_id=%s err=%s", data.MessageID, errStr)
+			return smsTransient, fmt.Errorf("temp error: %s", data.MessageID)
 		}
 		if pubErr := publishSmsSubmitResult(data.LogID, data.MessageID, "", "failed", errStr); pubErr != nil {
 			log.Printf("WARN: publish failed result id=%d: %v", data.LogID, pubErr)
 		}
-		return fmt.Errorf("failed to send: %v", err)
+		return smsPermanent, fmt.Errorf("failed to send: %v", err)
 	}
-	return nil
+	return smsSentOK, nil
 }
