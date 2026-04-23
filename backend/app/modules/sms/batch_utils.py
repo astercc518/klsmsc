@@ -161,3 +161,45 @@ async def update_batch_progress(db, batch_id: int):
     except Exception as e:
         logger.warning(f"更新批次进度失败: batch_id={batch_id}, {e}")
         await db.rollback()
+
+
+async def publish_batch_pipeline_progress(
+    batch_id: int,
+    *,
+    total: int,
+    inserted: int,
+    queued: int,
+) -> None:
+    """
+    大批量购数并发送等任务的「中途」进度：单条 UPDATE sms_batches，无 COUNT 聚合。
+
+    使用独立短会话提交，避免与 Worker 主事务绑定；读者可立刻看到 progress/total_count。
+    进度按落库约 50%、入队约 49% 线性铺开，封顶 99；任务收尾仍由 update_batch_progress 按 sms_logs 终态覆盖。
+    """
+    if not batch_id or total <= 0:
+        return
+    ins = max(0, min(int(inserted), total))
+    q = max(0, min(int(queued), total))
+    # 浮点避免整除台阶过粗
+    p = int(min(99, (ins * 50.0 / total) + (q * 49.0 / total)))
+
+    try:
+        from app.database import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as pub_db:
+            await pub_db.execute(
+                _sa_upd(SmsBatch)
+                .where(SmsBatch.id == batch_id, SmsBatch.is_deleted == False)
+                .values(
+                    progress=p,
+                    total_count=sa_func.greatest(
+                        sa_func.coalesce(SmsBatch.total_count, 0), int(total)
+                    ),
+                    updated_at=datetime.now(),
+                )
+            )
+            await pub_db.commit()
+    except Exception as e:
+        logger.warning(
+            f"中途批次进度发布失败（忽略，不影响主流程）: batch_id={batch_id}, {e}"
+        )

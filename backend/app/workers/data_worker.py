@@ -216,6 +216,8 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
     CHUNK = 5000
     IN_READ = 3000
 
+    from app.modules.sms.batch_utils import publish_batch_pipeline_progress
+
     msg_list = messages if messages and len(messages) > 1 else [message]
     msg_count = len(msg_list)
     msg_has_vars = [sms_template_has_variables(m) for m in msg_list]
@@ -286,6 +288,19 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
     channels_used = set()
     channel_ids_used = set()
     n_inserted_total = 0
+
+    # 预期总条数（进度分母）：订单 quantity → legacy 列表长 → 关联表 COUNT
+    oq = await db.scalar(select(DataOrder.quantity).where(DataOrder.id == order_id))
+    total_expected = int(oq or 0)
+    if total_expected <= 0 and not stream_from_order and number_ids:
+        total_expected = len(number_ids)
+    if total_expected <= 0 and stream_from_order:
+        total_expected = int(
+            await db.scalar(
+                select(func.count()).select_from(dn_t).where(dn_t.c.order_id == order_id)
+            )
+            or 0
+        )
 
     chunk_no = 0
     while True:
@@ -428,6 +443,14 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
                 f"[buy-send-async] order={order_id} Core 写入 chunk#{chunk_no} "
                 f"{len(insert_rows)} 条 sms_logs（累计 {n_inserted_total}）"
             )
+            # 独立会话刷进度，避免主事务未提交时前端长时间 0%
+            if total_expected > 0:
+                await publish_batch_pipeline_progress(
+                    batch_id,
+                    total=total_expected,
+                    inserted=n_inserted_total,
+                    queued=0,
+                )
 
         insert_rows.clear()
         inserted_number_id_for_use_count.clear()
@@ -520,6 +543,14 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
         smpp_payloads.clear()
         other_mids.clear()
 
+        if total_expected > 0:
+            await publish_batch_pipeline_progress(
+                batch_id,
+                total=total_expected,
+                inserted=n_inserted_total,
+                queued=queued,
+            )
+
     n_msgs = n_inserted_total
     logger.info(f"[buy-send-async] order={order_id}, 入队 {queued}/{n_msgs}")
 
@@ -575,6 +606,14 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
     from app.modules.sms.batch_utils import update_batch_progress
 
     await update_batch_progress(db, batch_id)
+    # update_batch_progress 在「全 pending」时 progress 按已终态条数算会为 0；入队刚结束需保持「提交阶段」进度观感
+    if n_inserted_total > 0:
+        await publish_batch_pipeline_progress(
+            batch_id,
+            total=n_inserted_total,
+            inserted=n_inserted_total,
+            queued=queued,
+        )
     batch_result2 = await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))
     sms_batch2 = batch_result2.scalar_one_or_none()
     if sms_batch2:
