@@ -51,6 +51,7 @@ def _batch_targets_unchanged(
     batch: SmsBatch,
     *,
     new_success: int,
+    new_delivered: int,
     new_failed: int,
     new_processing: int,
     new_progress: int,
@@ -60,6 +61,8 @@ def _batch_targets_unchanged(
 ) -> bool:
     """与当前 ORM 已加载值比对；无变化则跳过写库，避免无意义刷新 updated_at。"""
     if int(batch.success_count or 0) != int(new_success):
+        return False
+    if int(getattr(batch, 'delivered_count', None) or 0) != int(new_delivered):
         return False
     if int(batch.failed_count or 0) != int(new_failed):
         return False
@@ -149,6 +152,7 @@ async def update_batch_progress(db, batch_id: int) -> bool:
                 failed2 = counts2.get("failed", 0) + counts2.get("expired", 0)
 
                 batch.success_count = sent2
+                batch.delivered_count = counts2.get("delivered", 0)
                 batch.failed_count = failed2
                 batch.processing_count = 0
                 batch.progress = 100
@@ -167,6 +171,7 @@ async def update_batch_progress(db, batch_id: int) -> bool:
 
         # ---------- 计算目标字段（局部变量），末尾与 batch 比对防抖 ----------
         new_success = int(sent)
+        new_delivered = int(counts.get("delivered", 0))
         new_failed = int(failed)
         new_processing = max(0, int(total) - int(done))
         new_progress = min(100, int(done * 100 / max(int(total), 1)))
@@ -218,6 +223,7 @@ async def update_batch_progress(db, batch_id: int) -> bool:
         if _batch_targets_unchanged(
             batch,
             new_success=new_success,
+            new_delivered=new_delivered,
             new_failed=new_failed,
             new_processing=new_processing,
             new_progress=new_progress,
@@ -228,6 +234,7 @@ async def update_batch_progress(db, batch_id: int) -> bool:
             return False
 
         batch.success_count = new_success
+        batch.delivered_count = new_delivered
         batch.failed_count = new_failed
         batch.processing_count = new_processing
         batch.progress = new_progress

@@ -33,7 +33,8 @@ class SmsBatch(Base):
     
     # 统计信息
     total_count = Column(Integer, default=0, comment="总条数")
-    success_count = Column(Integer, default=0, comment="成功数")
+    success_count = Column(Integer, default=0, comment="成功数(sent+delivered)")
+    delivered_count = Column(Integer, default=0, comment="已送达数")
     failed_count = Column(Integer, default=0, comment="失败数")
     processing_count = Column(Integer, default=0, comment="处理中数")
     

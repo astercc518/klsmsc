@@ -287,14 +287,30 @@ async def list_batches(
         result = await db.execute(query)
         batches = result.scalars().all()
 
-        ids = [b.id for b in batches]
         total_by_id = {int(b.id): int(b.total_count or 0) for b in batches}
-        patches = await _smslog_batch_display_patches(db, ids, total_by_id)
+
+        # 只对仍在处理中的批次扫 sms_logs；已完成批次直接用存量字段，避免全表聚合
+        live_ids = [b.id for b in batches if b.status in (BatchStatus.PROCESSING, BatchStatus.PENDING)]
+        patches = await _smslog_batch_display_patches(db, live_ids, total_by_id) if live_ids else {}
+
         items = []
         for b in batches:
-            p = patches.get(b.id, {})
-            p = await _maybe_sync_batch_row_from_logs(db, b, p, total_by_id)
-            patches[b.id] = p
+            if b.status not in (BatchStatus.PROCESSING, BatchStatus.PENDING):
+                # 已终态批次：用 sms_batches 存量字段直接构造 patch，无需扫 sms_logs
+                dlv = int(getattr(b, 'delivered_count', None) or 0)
+                succ = int(b.success_count or 0)
+                p: Dict[str, int] = {
+                    "delivered_count": dlv,
+                    "sent_awaiting_receipt_count": 0,
+                    "success_count": succ,
+                    "failed_count": int(b.failed_count or 0),
+                    "processing_count": 0,
+                    "progress": int(b.progress or 0),
+                }
+            else:
+                p = patches.get(b.id, {})
+                p = await _maybe_sync_batch_row_from_logs(db, b, p, total_by_id)
+                patches[b.id] = p
             base = SmsBatchResponse.model_validate(b, from_attributes=True)
             items.append(base.model_copy(update=p))
 

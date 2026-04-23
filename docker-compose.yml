@@ -211,7 +211,44 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-8} -Q celery,sms_dlr,data_tasks,webhook_tasks,integrations
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-8} -Q celery,data_tasks,webhook_tasks,integrations
+    restart: unless-stopped
+    networks:
+      - smsc-network
+
+  # 专用：仅消费 sms_dlr（DLR 回执），与业务 worker 物理隔离，DLR 洪峰不影响 webhook/data 任务
+  worker-dlr:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: smsc-worker-dlr
+    environment:
+      TZ: Asia/Shanghai
+      APP_ENV: ${APP_ENV:-development}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
+      DATABASE_USER: ${MYSQL_USER:-smsuser}
+      DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+      DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
+      DLR_SENT_TIMEOUT_HOURS: ${DLR_SENT_TIMEOUT_HOURS:-72}
+    volumes:
+      - ./backend:/app
+      - ./logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app worker --loglevel=info --autoscale=${DLR_WORKER_MAX:-16},${DLR_WORKER_MIN:-2} -Q sms_dlr
     restart: unless-stopped
     networks:
       - smsc-network

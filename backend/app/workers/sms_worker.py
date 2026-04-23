@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 from sqlalchemy import select, and_, or_, update
 from sqlalchemy.exc import OperationalError
 from celery.exceptions import Retry
+from celery.signals import worker_process_shutdown
 
 from app.workers.celery_app import celery_app
 from app.config import settings
@@ -61,25 +62,50 @@ def _run_async(coro):
         loop.close()
 
 
+_process_engine = None
+_process_session_factory = None
+_process_engine_lock = threading.Lock()
+
+
 def _make_session():
-    """为 Worker 任务创建独立的数据库引擎和会话（避免跨事件循环复用连接池）"""
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-    from sqlalchemy.pool import NullPool
-    
-    eng = create_async_engine(
-        settings.SQLALCHEMY_DATABASE_URL, 
-        echo=False,
-        poolclass=NullPool,
-        pool_pre_ping=True, 
-        pool_recycle=600,
-    )
-    factory = async_sessionmaker(
-        eng, class_=AsyncSession,
-        expire_on_commit=False, 
-        autocommit=False, 
-        autoflush=False
-    )
-    return eng, factory
+    """进程级单例引擎（每个 ForkPool 子进程 fork 后首次调用时初始化，后续复用连接池）。"""
+    global _process_engine, _process_session_factory
+    if _process_engine is not None:
+        return _process_engine, _process_session_factory
+    with _process_engine_lock:
+        if _process_engine is not None:
+            return _process_engine, _process_session_factory
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+        _process_engine = create_async_engine(
+            settings.SQLALCHEMY_DATABASE_URL,
+            echo=False,
+            pool_size=5,
+            max_overflow=3,
+            pool_pre_ping=True,
+            pool_recycle=600,
+        )
+        _process_session_factory = async_sessionmaker(
+            _process_engine, class_=AsyncSession,
+            expire_on_commit=False,
+            autocommit=False,
+            autoflush=False,
+        )
+    return _process_engine, _process_session_factory
+
+
+@worker_process_shutdown.connect
+def _close_process_engine_on_shutdown(**kwargs):
+    """worker 进程退出前关闭连接池，释放数据库连接。"""
+    global _process_engine
+    if _process_engine is not None:
+        try:
+            import asyncio as _asyncio
+            loop = _asyncio.new_event_loop()
+            loop.run_until_complete(_process_engine.dispose())
+            loop.close()
+        except Exception:
+            pass
+        _process_engine = None
 
 
 async def _load_smpp_payload_by_message_id(message_id: str) -> Optional[Dict[str, Any]]:
@@ -1761,92 +1787,64 @@ async def _apply_sms_result_row_to_db(db, r: dict, now: datetime) -> Optional[in
 
 
 async def _flush_sms_results_bulk_once(rows: List[dict]) -> None:
-    """单会话整批提交；失败抛异常由上层重试或降级。"""
-    eng, Session = _make_session()
-    try:
-        async with Session() as db:
-            now = datetime.now()
-            batch_ids: Set[int] = set()
-            for r in rows:
-                bid = await _apply_sms_result_row_to_db(db, r, now)
-                if bid is not None:
-                    batch_ids.add(bid)
-            await db.commit()
-            for bid in batch_ids:
-                try:
-                    await update_batch_progress(db, bid)
-                except Exception as e:
-                    logger.warning(f"update_batch_progress batch={bid}: {e}")
-    finally:
-        await eng.dispose()
+    """单会话整批提交 sms_logs 更新；批次进度由 beat 每 30s 的 sync_processing_batch_progress_task 聚合，避免行锁争用。"""
+    _eng, Session = _make_session()
+    async with Session() as db:
+        now = datetime.now()
+        for r in rows:
+            await _apply_sms_result_row_to_db(db, r, now)
+        await db.commit()
 
 
-async def _flush_sms_results_one_by_one(rows: List[dict]) -> bool:
-    """整批失败时降级：逐条独立会话提交，隔离脏数据。"""
+async def _flush_sms_results_one_by_one(rows: List[dict]) -> List[dict]:
+    """整批失败时降级：逐条独立会话提交。返回成功写入的 rows（供上层精准清理缓冲）。"""
     now = datetime.now()
-    batch_ids: Set[int] = set()
-    ok_any = False
+    ok_rows: List[dict] = []
+    _eng, Session = _make_session()
     for r in rows:
         log_id = int(r.get("log_id") or 0)
         if log_id <= 0:
             continue
-        eng, Session = _make_session()
         try:
             async with Session() as db:
-                bid = await _apply_sms_result_row_to_db(db, r, now)
+                await _apply_sms_result_row_to_db(db, r, now)
                 await db.commit()
-                if bid is not None:
-                    batch_ids.add(bid)
-            ok_any = True
+            ok_rows.append(r)
         except Exception as e2:
             logger.error(
-                f"sms_result 单条降级回写仍失败 log_id={log_id}: {e2}",
-                exc_info=e2,
+                f"sms_result 单条降级回写仍失败 log_id={log_id}: {e2}"
             )
-        finally:
-            await eng.dispose()
-    for bid in batch_ids:
-        try:
-            eng2, Session2 = _make_session()
-            async with Session2() as db2:
-                await update_batch_progress(db2, bid)
-            await eng2.dispose()
-        except Exception as e:
-            logger.warning(f"update_batch_progress batch={bid}: {e}")
-    return ok_any
+    return ok_rows
 
 
-async def _flush_sms_results_async(rows: List[dict]) -> bool:
-    """批量回写 Go 网关 Submit 结果；死锁可重试一次，仍失败则逐条降级。"""
+async def _flush_sms_results_async(rows: List[dict]) -> List[dict]:
+    """批量回写 Go 网关 Submit 结果；死锁可重试一次，仍失败则逐条降级。返回真正写库成功的 rows。"""
     if not rows:
-        return True
+        return []
     try:
         await _flush_sms_results_bulk_once(rows)
-        return True
+        return list(rows)
     except OperationalError as e:
         if _sms_result_is_deadlock(e):
             logger.warning(f"sms_result 整批刷盘遇死锁，将重试一次: {e}")
             await asyncio.sleep(0.08)
             try:
                 await _flush_sms_results_bulk_once(rows)
-                return True
+                return list(rows)
             except Exception as e2:
-                logger.error(
-                    f"sms_result 整批刷盘重试仍失败，降级逐条: {e2}",
-                    exc_info=e2,
-                )
+                logger.error(f"sms_result 整批刷盘重试仍失败，降级逐条: {e2}")
                 return await _flush_sms_results_one_by_one(rows)
-        logger.error(f"sms_result 整批刷盘 OperationalError: {e}", exc_info=e)
+        logger.error(f"sms_result 整批刷盘 OperationalError（如 lock_wait_timeout 1205），降级逐条: {e}")
         return await _flush_sms_results_one_by_one(rows)
     except Exception as e:
-        logger.error(f"sms_result 整批刷盘异常，降级逐条: {e}", exc_info=e)
+        logger.error(f"sms_result 整批刷盘异常，降级逐条: {e}")
         return await _flush_sms_results_one_by_one(rows)
 
 
-def _flush_sms_results_sync(rows: List[dict]) -> bool:
+def _flush_sms_results_sync(rows: List[dict]) -> List[dict]:
     if not rows:
-        return True
-    return bool(_run_async(_flush_sms_results_async(rows)))
+        return []
+    return _run_async(_flush_sms_results_async(rows)) or []
 
 
 def _timer_flush_sms_results():
@@ -1858,11 +1856,12 @@ def _timer_flush_sms_results():
             snap = list(_SMS_RESULT_BUFFER)
     if not snap:
         return
-    if _flush_sms_results_sync(snap):
-        _sms_result_remove_flushed_from_buffer(snap)
-    else:
+    ok_rows = _flush_sms_results_sync(snap)
+    if ok_rows:
+        _sms_result_remove_flushed_from_buffer(ok_rows)
+    if len(ok_rows) < len(snap):
         logger.error(
-            f"sms_result 定时刷盘失败，已保留缓冲内约 {len(snap)} 条待后续重试"
+            f"sms_result 定时刷盘：snap={len(snap)} ok={len(ok_rows)} 失败={len(snap)-len(ok_rows)}，未成功的保留在缓冲待重试"
         )
 
 
@@ -1884,15 +1883,14 @@ def _enqueue_sms_result_buffer(item: dict):
             _SMS_RESULT_TIMER.daemon = False
             _SMS_RESULT_TIMER.start()
     if snap is not None:
-        if _flush_sms_results_sync(snap):
-            _sms_result_remove_flushed_from_buffer(snap)
-        else:
+        ok_rows = _flush_sms_results_sync(snap)
+        if ok_rows:
+            _sms_result_remove_flushed_from_buffer(ok_rows)
+        if len(ok_rows) < len(snap):
             logger.error(
-                f"sms_result 满200刷盘失败，已保留缓冲内数据（含本批 {len(snap)} 条）待重试"
+                f"sms_result 满200刷盘：snap={len(snap)} ok={len(ok_rows)} 失败={len(snap)-len(ok_rows)}，未成功的保留在缓冲待重试"
             )
 
-
-from celery.signals import worker_process_shutdown
 
 @worker_process_shutdown.connect
 def _flush_result_buffer_on_shutdown(**kwargs):
@@ -1900,9 +1898,21 @@ def _flush_result_buffer_on_shutdown(**kwargs):
     with _SMS_RESULT_LOCK:
         snap = list(_SMS_RESULT_BUFFER)
         _SMS_RESULT_BUFFER.clear()
-    if snap:
-        logger.info(f"worker_process_shutdown: 刷盘残余 sms_result 缓冲 {len(snap)} 条")
-        _flush_sms_results_sync(snap)
+    if not snap:
+        return
+    logger.info(f"worker_process_shutdown: 刷盘残余 sms_result 缓冲 {len(snap)} 条")
+    remaining = snap
+    for attempt in range(3):
+        ok_rows = _flush_sms_results_sync(remaining)
+        ok_ids = {int(x.get("log_id") or 0) for x in ok_rows}
+        remaining = [r for r in remaining if int(r.get("log_id") or 0) not in ok_ids]
+        if not remaining:
+            return
+        logger.warning(f"shutdown 刷盘第{attempt+1}次仍有 {len(remaining)} 条失败，重试中")
+    if remaining:
+        logger.critical(
+            f"shutdown 刷盘最终失败 {len(remaining)} 条 sms_result，log_ids={[r.get('log_id') for r in remaining[:20]]}"
+        )
 
 
 @celery_app.task(name="process_sms_result_task", acks_late=True)
