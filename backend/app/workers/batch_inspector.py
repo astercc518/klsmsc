@@ -7,10 +7,14 @@
 Go 网关全异步后：SMPP 条目不再在网关内同步改库，pending 可能停留较久且可跳过 queued，
 经 sms_result_queue 异步变为 sent/failed；巡检阈值须显著放宽，避免误杀正常大队列批次。
 可通过环境变量 BATCH_INSPECT_STUCK_MINUTES / BATCH_INSPECT_SMPP_ORPHAN_MINUTES 覆盖（默认 30）。
+
+对「停滞」批次：以 **pending/queued 的最早 submit_time** 早于 BATCH_INSPECT_STUCK_MINUTES 为准（不再仅用
+sms_batches.updated_at——否则 sync_processing_batch_progress_task 每 30s 调用 update_batch_progress 会不断刷新
+updated_at，导致永远选不中「卡进度」批次）。若仍有 pending/queued，将批量标 failed 并校准进度。
 """
 import os
 from datetime import datetime, timedelta
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, update as _sa_upd_log
 from app.workers.celery_app import celery_app
 from app.modules.sms.sms_batch import SmsBatch, BatchStatus
 from app.modules.sms.sms_log import SMSLog
@@ -70,16 +74,30 @@ async def _do_inspect_batches():
     eng, Session = _make_session()
     try:
         async with Session() as db:
-            # 1. 查找超过阈值未更新且仍在 processing 状态的批次（全异步 SMPP 下批次 updated_at 可能久不刷新）
+            # 1. 查找「仍有 pending/queued 且最早一条待发提交时间」早于阈值的 processing 批次。
+            # 注意：不能仅用 sms_batches.updated_at——sync_processing_batch_progress_task 会周期性
+            # update_batch_progress，updated_at 一直被刷新，超时斩杀永远触发不了。
             cutoff = datetime.now() - timedelta(minutes=_STUCK_BATCH_MINUTES)
 
-            result = await db.execute(
-                select(SmsBatch).where(
-                    and_(
-                        SmsBatch.status == BatchStatus.PROCESSING,
-                        SmsBatch.updated_at < cutoff
-                    )
+            pend_stale_sq = (
+                select(SMSLog.batch_id.label("bid"))
+                .where(
+                    SMSLog.batch_id.isnot(None),
+                    SMSLog.status.in_(["pending", "queued"]),
+                    SMSLog.submit_time.isnot(None),
                 )
+                .group_by(SMSLog.batch_id)
+                .having(func.min(SMSLog.submit_time) < cutoff)
+            ).subquery()
+
+            result = await db.execute(
+                select(SmsBatch)
+                .join(pend_stale_sq, SmsBatch.id == pend_stale_sq.c.bid)
+                .where(
+                    SmsBatch.status == BatchStatus.PROCESSING,
+                    SmsBatch.is_deleted == False,
+                )
+                .limit(200)
             )
             stuck_batches = result.scalars().all()
 
@@ -89,6 +107,7 @@ async def _do_inspect_batches():
                 logger.info(f"发现 {len(stuck_batches)} 个疑似卡死的批次，开始校准...")
 
             reconciled = 0
+            stuck_force_failed = 0
             for batch in stuck_batches:
                 try:
                     # 调用统一的进度校准逻辑
@@ -96,6 +115,41 @@ async def _do_inspect_batches():
 
                     # 重新查询状态
                     await db.refresh(batch)
+
+                    # 绝对斩杀：停滞超过 BATCH_INSPECT_STUCK_MINUTES 的批次，无视 batch_utils 内 2% 虚拟兜底限制，
+                    # 将仍卡在 pending/queued 的记录标为 failed，避免进度永久卡在 ~97%。
+                    pend_q = (
+                        await db.execute(
+                            select(func.count(SMSLog.id)).where(
+                                and_(
+                                    SMSLog.batch_id == batch.id,
+                                    SMSLog.status.in_(["pending", "queued"]),
+                                )
+                            )
+                        )
+                    ).scalar() or 0
+                    if pend_q > 0 and batch.status == BatchStatus.PROCESSING:
+                        _timeout_msg = "Timeout or dropped by gateway"
+                        _now_ts = datetime.now()
+                        await db.execute(
+                            _sa_upd_log(SMSLog)
+                            .where(
+                                SMSLog.batch_id == batch.id,
+                                SMSLog.status.in_(["pending", "queued"]),
+                            )
+                            .values(
+                                status="failed",
+                                error_message=_timeout_msg,
+                                sent_time=_now_ts,
+                            )
+                        )
+                        await db.commit()
+                        await update_batch_progress(db, batch.id)
+                        await db.refresh(batch)
+                        stuck_force_failed += int(pend_q)
+                        logger.warning(
+                            f"inspect: 停滞批次 {batch.id} 超时斩杀 {pend_q} 条 pending/queued → failed"
+                        )
 
                     # 如果校准后仍然是 processing 且确实由于某种原因卡住了
                     # 检查是否所有号码都有终态
@@ -207,15 +261,25 @@ async def _do_inspect_batches():
             smpp_orphan_cutoff = datetime.now() - timedelta(minutes=_SMPP_ORPHAN_MINUTES)
             from sqlalchemy import update as _sa_upd2
 
-            # 停滞批次：PROCESSING 且最近 N 分钟无进度更新（N 与 _SMPP_ORPHAN_MINUTES 一致）
+            # 停滞批次：与上文一致，用「最早 pending/queued 的 submit_time」判定，避免 updated_at 被同步任务刷没
+            orphan_pend_sq = (
+                select(SMSLog.batch_id.label("bid"))
+                .where(
+                    SMSLog.batch_id.isnot(None),
+                    SMSLog.status.in_(["pending", "queued"]),
+                    SMSLog.submit_time.isnot(None),
+                )
+                .group_by(SMSLog.batch_id)
+                .having(func.min(SMSLog.submit_time) < smpp_orphan_cutoff)
+            ).subquery()
             stale_batch_ids_res = await db.execute(
-                select(SmsBatch.id).where(
-                    and_(
-                        SmsBatch.status == BatchStatus.PROCESSING,
-                        SmsBatch.is_deleted == False,
-                        SmsBatch.updated_at < smpp_orphan_cutoff,
-                    )
-                ).limit(200)
+                select(SmsBatch.id)
+                .join(orphan_pend_sq, SmsBatch.id == orphan_pend_sq.c.bid)
+                .where(
+                    SmsBatch.status == BatchStatus.PROCESSING,
+                    SmsBatch.is_deleted == False,
+                )
+                .limit(200)
             )
             stale_batch_ids = stale_batch_ids_res.scalars().all()
 
@@ -284,6 +348,7 @@ async def _do_inspect_batches():
             return {
                 "stuck_found": len(stuck_batches),
                 "reconciled": reconciled,
+                "stuck_force_failed": stuck_force_failed,
                 "virtual_dlr_repaired": virtual_repair_count,
                 "smpp_orphan_cleaned": smpp_orphan_cleaned,
             }

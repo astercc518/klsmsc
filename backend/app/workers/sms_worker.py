@@ -6,8 +6,9 @@ import json
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 from sqlalchemy import select, and_, or_, update
+from sqlalchemy.exc import OperationalError
 from celery.exceptions import Retry
 
 from app.workers.celery_app import celery_app
@@ -1711,77 +1712,65 @@ _SMS_RESULT_LOCK = threading.Lock()
 _SMS_RESULT_TIMER: Optional[threading.Timer] = None
 
 
-def _timer_flush_sms_results():
-    global _SMS_RESULT_TIMER
-    batch: List[dict] = []
-    with _SMS_RESULT_LOCK:
-        _SMS_RESULT_TIMER = None
-        if _SMS_RESULT_BUFFER:
-            batch = _SMS_RESULT_BUFFER[:]
-            _SMS_RESULT_BUFFER.clear()
-    if batch:
-        try:
-            _flush_sms_results_sync(batch)
-        except Exception as e:
-            logger.error(f"sms_result 定时刷盘失败: {e}", exc_info=e)
+def _sms_result_is_deadlock(exc: BaseException) -> bool:
+    """判断是否为 InnoDB 死锁(1213)，可整批重试。"""
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        args = getattr(orig, "args", ()) or ()
+        if args and args[0] == 1213:
+            return True
+    if getattr(exc, "args", None) and exc.args and exc.args[0] == 1213:
+        return True
+    s = str(exc)
+    return "1213" in s or "Deadlock" in s or "deadlock" in s
 
 
-def _enqueue_sms_result_buffer(item: dict):
-    global _SMS_RESULT_TIMER
-    to_flush: Optional[List[dict]] = None
-    with _SMS_RESULT_LOCK:
-        _SMS_RESULT_BUFFER.append(item)
-        if len(_SMS_RESULT_BUFFER) >= 200:
-            to_flush = _SMS_RESULT_BUFFER[:]
-            _SMS_RESULT_BUFFER.clear()
-            if _SMS_RESULT_TIMER is not None:
-                try:
-                    _SMS_RESULT_TIMER.cancel()
-                except Exception:
-                    pass
-                _SMS_RESULT_TIMER = None
-        elif _SMS_RESULT_TIMER is None:
-            _SMS_RESULT_TIMER = threading.Timer(1.0, _timer_flush_sms_results)
-            _SMS_RESULT_TIMER.daemon = True
-            _SMS_RESULT_TIMER.start()
-    if to_flush:
-        _flush_sms_results_sync(to_flush)
-
-
-def _flush_sms_results_sync(rows: List[dict]):
-    if not rows:
+def _sms_result_remove_flushed_from_buffer(flushed: List[dict]) -> None:
+    """按 log_id 从进程缓冲中剔除已成功落库的结果，避免失败时误删未持久化数据。"""
+    flushed_ids = {int(x.get("log_id") or 0) for x in flushed if int(x.get("log_id") or 0) > 0}
+    if not flushed_ids:
         return
-    _run_async(_flush_sms_results_async(rows))
+    with _SMS_RESULT_LOCK:
+        _SMS_RESULT_BUFFER[:] = [
+            r for r in _SMS_RESULT_BUFFER if int(r.get("log_id") or 0) not in flushed_ids
+        ]
 
 
-async def _flush_sms_results_async(rows: List[dict]):
+async def _apply_sms_result_row_to_db(db, r: dict, now: datetime) -> Optional[int]:
+    """单条 sms_logs 更新；返回 batch_id 供后续进度汇总。"""
+    log_id = int(r.get("log_id") or 0)
+    if log_id <= 0:
+        return None
+    st = (r.get("status") or "").strip() or "failed"
+    up = (r.get("upstream_message_id") or "").strip() or None
+    err = (r.get("error") or "")[:4000]
+    br = await db.execute(select(SMSLog.batch_id).where(SMSLog.id == log_id))
+    bid = br.scalar_one_or_none()
+    vals: Dict[str, Any] = {
+        "status": st,
+        "upstream_message_id": up,
+    }
+    if st == "failed":
+        vals["error_message"] = err
+        vals["sent_time"] = now
+    elif st == "sent":
+        vals["error_message"] = None
+        vals["sent_time"] = now
+    await db.execute(update(SMSLog).where(SMSLog.id == log_id).values(**vals))
+    return int(bid) if bid is not None else None
+
+
+async def _flush_sms_results_bulk_once(rows: List[dict]) -> None:
+    """单会话整批提交；失败抛异常由上层重试或降级。"""
     eng, Session = _make_session()
     try:
         async with Session() as db:
             now = datetime.now()
-            batch_ids = set()
+            batch_ids: Set[int] = set()
             for r in rows:
-                log_id = int(r.get("log_id") or 0)
-                if log_id <= 0:
-                    continue
-                st = (r.get("status") or "").strip() or "failed"
-                up = (r.get("upstream_message_id") or "").strip() or None
-                err = (r.get("error") or "")[:4000]
-                br = await db.execute(select(SMSLog.batch_id).where(SMSLog.id == log_id))
-                bid = br.scalar_one_or_none()
+                bid = await _apply_sms_result_row_to_db(db, r, now)
                 if bid is not None:
-                    batch_ids.add(int(bid))
-                vals: Dict[str, Any] = {
-                    "status": st,
-                    "upstream_message_id": up,
-                }
-                if st == "failed":
-                    vals["error_message"] = err
-                    vals["sent_time"] = now
-                elif st == "sent":
-                    vals["error_message"] = None
-                    vals["sent_time"] = now
-                await db.execute(update(SMSLog).where(SMSLog.id == log_id).values(**vals))
+                    batch_ids.add(bid)
             await db.commit()
             for bid in batch_ids:
                 try:
@@ -1792,7 +1781,118 @@ async def _flush_sms_results_async(rows: List[dict]):
         await eng.dispose()
 
 
-@celery_app.task(name="process_sms_result_task")
+async def _flush_sms_results_one_by_one(rows: List[dict]) -> bool:
+    """整批失败时降级：逐条独立会话提交，隔离脏数据。"""
+    now = datetime.now()
+    batch_ids: Set[int] = set()
+    ok_any = False
+    for r in rows:
+        log_id = int(r.get("log_id") or 0)
+        if log_id <= 0:
+            continue
+        eng, Session = _make_session()
+        try:
+            async with Session() as db:
+                bid = await _apply_sms_result_row_to_db(db, r, now)
+                await db.commit()
+                if bid is not None:
+                    batch_ids.add(bid)
+            ok_any = True
+        except Exception as e2:
+            logger.error(
+                f"sms_result 单条降级回写仍失败 log_id={log_id}: {e2}",
+                exc_info=e2,
+            )
+        finally:
+            await eng.dispose()
+    for bid in batch_ids:
+        try:
+            eng2, Session2 = _make_session()
+            async with Session2() as db2:
+                await update_batch_progress(db2, bid)
+            await eng2.dispose()
+        except Exception as e:
+            logger.warning(f"update_batch_progress batch={bid}: {e}")
+    return ok_any
+
+
+async def _flush_sms_results_async(rows: List[dict]) -> bool:
+    """批量回写 Go 网关 Submit 结果；死锁可重试一次，仍失败则逐条降级。"""
+    if not rows:
+        return True
+    try:
+        await _flush_sms_results_bulk_once(rows)
+        return True
+    except OperationalError as e:
+        if _sms_result_is_deadlock(e):
+            logger.warning(f"sms_result 整批刷盘遇死锁，将重试一次: {e}")
+            await asyncio.sleep(0.08)
+            try:
+                await _flush_sms_results_bulk_once(rows)
+                return True
+            except Exception as e2:
+                logger.error(
+                    f"sms_result 整批刷盘重试仍失败，降级逐条: {e2}",
+                    exc_info=e2,
+                )
+                return await _flush_sms_results_one_by_one(rows)
+        logger.error(f"sms_result 整批刷盘 OperationalError: {e}", exc_info=e)
+        return await _flush_sms_results_one_by_one(rows)
+    except Exception as e:
+        logger.error(f"sms_result 整批刷盘异常，降级逐条: {e}", exc_info=e)
+        return await _flush_sms_results_one_by_one(rows)
+
+
+def _flush_sms_results_sync(rows: List[dict]) -> bool:
+    if not rows:
+        return True
+    return bool(_run_async(_flush_sms_results_async(rows)))
+
+
+def _timer_flush_sms_results():
+    global _SMS_RESULT_TIMER
+    snap: List[dict] = []
+    with _SMS_RESULT_LOCK:
+        _SMS_RESULT_TIMER = None
+        if _SMS_RESULT_BUFFER:
+            snap = list(_SMS_RESULT_BUFFER)
+    if not snap:
+        return
+    if _flush_sms_results_sync(snap):
+        _sms_result_remove_flushed_from_buffer(snap)
+    else:
+        logger.error(
+            f"sms_result 定时刷盘失败，已保留缓冲内约 {len(snap)} 条待后续重试"
+        )
+
+
+def _enqueue_sms_result_buffer(item: dict):
+    global _SMS_RESULT_TIMER
+    snap: Optional[List[dict]] = None
+    with _SMS_RESULT_LOCK:
+        _SMS_RESULT_BUFFER.append(item)
+        if len(_SMS_RESULT_BUFFER) >= 200:
+            snap = list(_SMS_RESULT_BUFFER[:200])
+            if _SMS_RESULT_TIMER is not None:
+                try:
+                    _SMS_RESULT_TIMER.cancel()
+                except Exception:
+                    pass
+                _SMS_RESULT_TIMER = None
+        elif _SMS_RESULT_TIMER is None:
+            _SMS_RESULT_TIMER = threading.Timer(1.0, _timer_flush_sms_results)
+            _SMS_RESULT_TIMER.daemon = True
+            _SMS_RESULT_TIMER.start()
+    if snap is not None:
+        if _flush_sms_results_sync(snap):
+            _sms_result_remove_flushed_from_buffer(snap)
+        else:
+            logger.error(
+                f"sms_result 满200刷盘失败，已保留缓冲内数据（含本批 {len(snap)} 条）待重试"
+            )
+
+
+@celery_app.task(name="process_sms_result_task", acks_late=True)
 def process_sms_result_task(item: dict):
     """消费 Go 网关回传的 SubmitSM 结果，200 条或 1 秒合并刷盘。"""
     try:
