@@ -1881,7 +1881,7 @@ def _enqueue_sms_result_buffer(item: dict):
                 _SMS_RESULT_TIMER = None
         elif _SMS_RESULT_TIMER is None:
             _SMS_RESULT_TIMER = threading.Timer(1.0, _timer_flush_sms_results)
-            _SMS_RESULT_TIMER.daemon = True
+            _SMS_RESULT_TIMER.daemon = False
             _SMS_RESULT_TIMER.start()
     if snap is not None:
         if _flush_sms_results_sync(snap):
@@ -1892,11 +1892,24 @@ def _enqueue_sms_result_buffer(item: dict):
             )
 
 
+from celery.signals import worker_process_shutdown
+
+@worker_process_shutdown.connect
+def _flush_result_buffer_on_shutdown(**kwargs):
+    """worker 进程回收前刷尽内存缓冲，防止 max_tasks_per_child 导致数据丢失。"""
+    with _SMS_RESULT_LOCK:
+        snap = list(_SMS_RESULT_BUFFER)
+        _SMS_RESULT_BUFFER.clear()
+    if snap:
+        logger.info(f"worker_process_shutdown: 刷盘残余 sms_result 缓冲 {len(snap)} 条")
+        _flush_sms_results_sync(snap)
+
+
 @celery_app.task(name="process_sms_result_task", acks_late=True)
 def process_sms_result_task(item: dict):
-    """消费 Go 网关回传的 SubmitSM 结果，同步写库（避免 daemon timer 在 worker 回收时丢数据）。"""
+    """消费 Go 网关回传的 SubmitSM 结果；缓冲至 200 条或 1s 后批量写库，回收前由信号兜底刷盘。"""
     try:
-        _flush_sms_results_sync([item])
+        _enqueue_sms_result_buffer(item)
     except Exception as e:
         logger.error(f"process_sms_result_task 写库失败: log_id={item.get('log_id')}, err={e}", exc_info=e)
     return {"ok": True}
