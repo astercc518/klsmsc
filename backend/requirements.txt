@@ -15,6 +15,7 @@ asyncmy==0.2.8
 redis==5.0.1
 celery==5.3.4
 kombu==5.3.4
+orjson==3.10.7
 
 # 电话号码解析
 phonenumbers==8.13.26

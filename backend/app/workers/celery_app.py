@@ -169,3 +169,34 @@ if settings.OKCC_BEAT_SYNC_ENABLED:
 # Schema 变更已统一由 Alembic 管理，部署前运行 alembic upgrade head 即可。
 # Worker 启动时不再执行 ALTER TABLE。
 
+# sms_send_smpp 整包投递：注册 Kombu orjson，降低大批量 Celery 消息序列化 CPU（Go 网关仅解析 JSON 体）
+SMPP_BULK_PUBLISH_SERIALIZER = "json"
+try:
+    import orjson
+    from kombu.serialization import register
+
+    def _orjson_enc(o):
+        return orjson.dumps(o, default=str).decode("utf-8")
+
+    def _orjson_dec(s):
+        if isinstance(s, memoryview):
+            s = s.tobytes()
+        if isinstance(s, bytes):
+            return orjson.loads(s)
+        return orjson.loads(s)
+
+    register(
+        "orjson",
+        _orjson_enc,
+        _orjson_dec,
+        content_type="application/json",
+        content_encoding="utf-8",
+    )
+    SMPP_BULK_PUBLISH_SERIALIZER = "orjson"
+    _ac = list(celery_app.conf.get("accept_content") or ["json"])
+    if "orjson" not in _ac:
+        _ac.append("orjson")
+    celery_app.conf.accept_content = _ac
+except Exception:
+    pass
+

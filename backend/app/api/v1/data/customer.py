@@ -1022,9 +1022,10 @@ async def buy_and_send(
     )
     db.add(sms_batch)
     await db.flush()
+    # 回填批次：commit 前 flush，保证 Worker 按 order_id 反查时订单与批次已绑定
     order.sms_batch_id = sms_batch.id
 
-    # 订单-号码关联落库，供 Worker 按 order_id 拉取（Celery 消息体不再携带数万 ID）
+    # 订单-号码关联表（与锁定在同一事务）：Worker 仅依赖 order_id 拉号，禁止把 number_ids 塞进 MQ
     _ord_num_chunk = 5000
     for _start in range(0, len(number_ids), _ord_num_chunk):
         _chunk = number_ids[_start : _start + _ord_num_chunk]
@@ -1036,12 +1037,14 @@ async def buy_and_send(
     if product:
         product.total_sold = (product.total_sold or 0) + data.quantity
 
+    await db.flush()
     await db.commit()
     await _invalidate_my_numbers_summary_cache(account.id)
 
     # ---------- 5. 派发 Celery（瘦 kwargs；线程内发避免阻塞事件循环） ----------
     from app.workers.celery_app import celery_app as _celery
 
+    # 瘦消息：仅传 order_id / batch_id 等；绝不携带 number_ids（数万级 JSON 会拖垮 Broker）
     _kw = {
         "order_id": order.id,
         "batch_id": sms_batch.id,
@@ -1050,6 +1053,7 @@ async def buy_and_send(
         "messages": data.messages,
         "sender_id": getattr(data, "sender_id", None),
     }
+    _kw.pop("number_ids", None)
 
     def _publish_buy_send() -> None:
         _celery.send_task("data_buy_send_async", kwargs=_kw)

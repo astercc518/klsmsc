@@ -459,9 +459,8 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
         _pr = await db.execute(select(Channel.protocol).where(Channel.id == _cid))
         prot_map[_cid] = _pr.scalar_one_or_none()
 
-    from app.config import settings as _cfg
-
-    _win = int(getattr(_cfg, "SMPP_WINDOW_SIZE", 10) or 10)
+    # MQ 投递批大小：与 SMPP 网关会话窗口（SMPP_WINDOW_SIZE）解耦，减少 Rabbit 往返次数
+    MQ_BATCH_SIZE = 2000
     queued = 0
     last_log_id = 0
     while True:
@@ -505,8 +504,9 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
             else:
                 other_mids.append(rm["message_id"])
 
-        for _i in range(0, len(smpp_payloads), _win):
-            chunk = smpp_payloads[_i : _i + _win]
+        # 每 chunk 调用一次 queue_sms_batch_smpp：内部为「整包单次 publish」，不再按条 apply_async
+        for _i in range(0, len(smpp_payloads), MQ_BATCH_SIZE):
+            chunk = smpp_payloads[_i : _i + MQ_BATCH_SIZE]
             if QueueManager.queue_sms_batch_smpp(chunk):
                 queued += len(chunk)
             else:

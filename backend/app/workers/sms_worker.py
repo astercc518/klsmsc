@@ -180,6 +180,13 @@ def send_sms_task(self, first, http_credentials: dict = None):
         )
         return {"success": True, "skipped_gateway_payload": True}
 
+    # 整包批量负载：首参为 list[dict]，与 Go extractSmsPayloads 的「args[0] 为对象数组」对齐，仅网关消费
+    if isinstance(first, list):
+        logger.debug(
+            f"send_sms_task 收到 sms_send_smpp 批量负载 len={len(first)}，应由 Go 网关消费；Python worker 跳过"
+        )
+        return {"success": True, "skipped_gateway_payload": True, "batch_len": len(first)}
+
     message_id = first
     logger.info(f"开始处理短信发送任务: {message_id}")
     current_queue = (self.request.delivery_info or {}).get('routing_key', 'sms_send')
