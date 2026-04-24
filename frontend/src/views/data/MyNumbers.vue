@@ -290,6 +290,15 @@
                 <el-button type="danger" size="small" plain @click="handleDelete(g)">
                   删除
                 </el-button>
+                <el-button
+                  type="warning"
+                  size="small"
+                  plain
+                  :disabled="!g.used_count"
+                  @click="handleResetUsed(g)"
+                >
+                  重置已使用
+                </el-button>
                 <el-button type="success" size="small" @click="handleSendSms(g)">
                   发送短信
                 </el-button>
@@ -322,6 +331,7 @@ import {
   getMyNumbersSummary,
   exportMyNumbers,
   deleteMyNumbers,
+  resetMyNumbersUsage,
   createMyNumbersUploadTask,
   getMyNumbersUploadTask,
   listMyNumbersUploadTasks,
@@ -824,6 +834,45 @@ function handleSendSms(g: NumberGroup) {
       data_count: String(g.count),
     },
   })
+}
+
+async function handleResetUsed(g: NumberGroup) {
+  if (!g.used_count) {
+    ElMessage.info('当前分组没有已使用号码')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定将该组 ${g.used_count} 条「已使用」号码重置为未使用吗？重置后这些号码会重新进入可发送池，可能对同一号码产生二次发送。此操作不影响发送历史（sms_logs）。`,
+      '警告',
+      {
+        confirmButtonText: '确定重置',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    )
+
+    loading.value = true
+    const res = await resetMyNumbersUsage({
+      country: String(g.country_code ?? ''),
+      source: String(g.source ?? ''),
+      purpose: String(g.purpose ?? ''),
+      batch_id: g.batch_id == null || g.batch_id === undefined ? '' : String(g.batch_id),
+    })
+
+    if (res.success) {
+      ElMessage.success(res.message || '重置成功')
+      loadData()
+    } else {
+      ElMessage.warning(res.message || '未能重置数据')
+    }
+  } catch (e: any) {
+    if (e !== 'cancel') {
+      ElMessage.error(e.message || '重置失败')
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 async function handleDelete(g: NumberGroup) {

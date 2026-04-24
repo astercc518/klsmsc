@@ -87,9 +87,12 @@ def build_filter_query(filter_criteria: dict, public_only: bool = False):
 
 
 async def calculate_stock(db: AsyncSession, filter_criteria: dict, public_only: bool = False) -> int:
-    """计算符合条件的号码数量"""
-    # 尝试从汇总表快速读取（仅限公海、且筛选维度简单时）
-    if public_only and not any(k in filter_criteria for k in ('tags', 'exclude_used_days')):
+    """计算符合条件的号码数量。
+
+    data_stock_summaries 的 total_count 定义为「account_id IS NULL 的公海号码数」，
+    所有卖出/回收路径必须同步增量扣减。快路径仅对简单维度且无 cooldown/used_days 过滤时启用。
+    """
+    if not any(k in filter_criteria for k in ('tags', 'exclude_used_days')):
         q = select(func.sum(DataStockSummary.total_count)).where(DataStockSummary.status == 'active')
         if filter_criteria.get('country'):
             q = q.where(DataStockSummary.country_code == filter_criteria['country'])
@@ -101,7 +104,9 @@ async def calculate_stock(db: AsyncSession, filter_criteria: dict, public_only: 
             q = q.where(DataStockSummary.purpose == filter_criteria['purpose'])
         if filter_criteria.get('freshness'):
             q = q.where(DataStockSummary.freshness == filter_criteria['freshness'])
-        
+        if filter_criteria.get('batch_id'):
+            q = q.where(DataStockSummary.batch_id == filter_criteria['batch_id'])
+
         result = await db.execute(q)
         return int(result.scalar() or 0)
 

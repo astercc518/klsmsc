@@ -62,50 +62,31 @@ def _run_async(coro):
         loop.close()
 
 
-_process_engine = None
-_process_session_factory = None
-_process_engine_lock = threading.Lock()
-
-
 def _make_session():
-    """进程级单例引擎（每个 ForkPool 子进程 fork 后首次调用时初始化，后续复用连接池）。"""
-    global _process_engine, _process_session_factory
-    if _process_engine is not None:
-        return _process_engine, _process_session_factory
-    with _process_engine_lock:
-        if _process_engine is not None:
-            return _process_engine, _process_session_factory
-        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-        _process_engine = create_async_engine(
-            settings.SQLALCHEMY_DATABASE_URL,
-            echo=False,
-            pool_size=5,
-            max_overflow=3,
-            pool_pre_ping=True,
-            pool_recycle=600,
-        )
-        _process_session_factory = async_sessionmaker(
-            _process_engine, class_=AsyncSession,
-            expire_on_commit=False,
-            autocommit=False,
-            autoflush=False,
-        )
-    return _process_engine, _process_session_factory
+    """为每次 Celery 任务创建独立的引擎和会话。
 
+    **关键约束**：必须使用 NullPool。Celery ForkPool 任务通过 _run_async 每次创建新事件循环，
+    若用持久连接池，第一次创建的连接 bound 到首个 loop，后续任务换 loop 时会触发
+    "Task got Future attached to a different loop"，导致 sms_logs UPDATE 异步失败、
+    批次永远卡在 pending（issue: 批次 327/328/330 反复卡死的根因）。
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from sqlalchemy.pool import NullPool
 
-@worker_process_shutdown.connect
-def _close_process_engine_on_shutdown(**kwargs):
-    """worker 进程退出前关闭连接池，释放数据库连接。"""
-    global _process_engine
-    if _process_engine is not None:
-        try:
-            import asyncio as _asyncio
-            loop = _asyncio.new_event_loop()
-            loop.run_until_complete(_process_engine.dispose())
-            loop.close()
-        except Exception:
-            pass
-        _process_engine = None
+    eng = create_async_engine(
+        settings.SQLALCHEMY_DATABASE_URL,
+        echo=False,
+        poolclass=NullPool,
+        pool_pre_ping=True,
+        pool_recycle=600,
+    )
+    factory = async_sessionmaker(
+        eng, class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
+    return eng, factory
 
 
 async def _load_smpp_payload_by_message_id(message_id: str) -> Optional[Dict[str, Any]]:
@@ -1788,32 +1769,38 @@ async def _apply_sms_result_row_to_db(db, r: dict, now: datetime) -> Optional[in
 
 async def _flush_sms_results_bulk_once(rows: List[dict]) -> None:
     """单会话整批提交 sms_logs 更新；批次进度由 beat 每 30s 的 sync_processing_batch_progress_task 聚合，避免行锁争用。"""
-    _eng, Session = _make_session()
-    async with Session() as db:
-        now = datetime.now()
-        for r in rows:
-            await _apply_sms_result_row_to_db(db, r, now)
-        await db.commit()
+    eng, Session = _make_session()
+    try:
+        async with Session() as db:
+            now = datetime.now()
+            for r in rows:
+                await _apply_sms_result_row_to_db(db, r, now)
+            await db.commit()
+    finally:
+        await eng.dispose()
 
 
 async def _flush_sms_results_one_by_one(rows: List[dict]) -> List[dict]:
     """整批失败时降级：逐条独立会话提交。返回成功写入的 rows（供上层精准清理缓冲）。"""
     now = datetime.now()
     ok_rows: List[dict] = []
-    _eng, Session = _make_session()
-    for r in rows:
-        log_id = int(r.get("log_id") or 0)
-        if log_id <= 0:
-            continue
-        try:
-            async with Session() as db:
-                await _apply_sms_result_row_to_db(db, r, now)
-                await db.commit()
-            ok_rows.append(r)
-        except Exception as e2:
-            logger.error(
-                f"sms_result 单条降级回写仍失败 log_id={log_id}: {e2}"
-            )
+    eng, Session = _make_session()
+    try:
+        for r in rows:
+            log_id = int(r.get("log_id") or 0)
+            if log_id <= 0:
+                continue
+            try:
+                async with Session() as db:
+                    await _apply_sms_result_row_to_db(db, r, now)
+                    await db.commit()
+                ok_rows.append(r)
+            except Exception as e2:
+                logger.error(
+                    f"sms_result 单条降级回写仍失败 log_id={log_id}: {e2}"
+                )
+    finally:
+        await eng.dispose()
     return ok_rows
 
 

@@ -248,7 +248,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --autoscale=${DLR_WORKER_MAX:-16},${DLR_WORKER_MIN:-2} -Q sms_dlr
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${DLR_WORKER_CONCURRENCY:-8} -Q sms_dlr
     restart: unless-stopped
     networks:
       - smsc-network
@@ -286,7 +286,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --autoscale=${RESULT_WORKER_MAX:-32},${RESULT_WORKER_MIN:-2} -Q sms_result_queue
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${RESULT_WORKER_CONCURRENCY:-12} -Q sms_result_queue
     restart: unless-stopped
     networks:
       - smsc-network

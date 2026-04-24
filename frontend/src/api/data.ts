@@ -253,3 +253,31 @@ export function deleteMyNumbers(params: {
     deleted?: number
   }>
 }
+
+export function resetMyNumbersUsage(params: {
+  country?: string
+  source?: string
+  purpose?: string
+  carrier?: string
+  batch_id?: string
+  remarks?: string
+}) {
+  return request({
+    url: '/data/my-numbers/reset-used',
+    method: 'post',
+    data: {
+      country_code: params.country ?? '',
+      source: params.source ?? '',
+      purpose: params.purpose ?? '',
+      batch_id: params.batch_id ?? '',
+      remarks: params.remarks,
+      carrier: params.carrier,
+    },
+  }) as Promise<{
+    success?: boolean
+    message?: string
+    reset?: number
+    reset_private?: number
+    reset_purchased?: number
+  }>
+}

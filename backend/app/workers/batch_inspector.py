@@ -40,25 +40,43 @@ async def _do_sync_processing_progress():
     eng, Session = _make_session()
     try:
         async with Session() as db:
+            # 覆盖两类批次：
+            # 1) processing 批次（近 48h 创建）— 正常进度推进
+            # 2) completed 批次（近 2h 完成）— 覆盖 DLR 延迟到达：批次虽被标 completed，
+            #    后续仍会陆续收到 DLR 更新 sms_logs.status=delivered，sms_batches.delivered_count
+            #    必须随之刷新，否则前端"送达率"停留在错误快照。
+            now = datetime.now()
             proc_ids = (
                 await db.execute(
                     select(SmsBatch.id).where(
                         and_(
                             SmsBatch.status == BatchStatus.PROCESSING,
                             SmsBatch.is_deleted == False,
-                            SmsBatch.created_at >= datetime.now() - timedelta(hours=48),
+                            SmsBatch.created_at >= now - timedelta(hours=48),
                         )
                     ).order_by(SmsBatch.id.desc()).limit(100)
                 )
             ).scalars().all()
+            recent_done_ids = (
+                await db.execute(
+                    select(SmsBatch.id).where(
+                        and_(
+                            SmsBatch.status == BatchStatus.COMPLETED,
+                            SmsBatch.is_deleted == False,
+                            SmsBatch.completed_at >= now - timedelta(hours=2),
+                        )
+                    ).order_by(SmsBatch.id.desc()).limit(100)
+                )
+            ).scalars().all()
+            all_ids = list(proc_ids) + [bid for bid in recent_done_ids if bid not in set(proc_ids)]
             updated = 0
-            for bid in proc_ids:
+            for bid in all_ids:
                 try:
                     if await update_batch_progress(db, bid):
                         updated += 1
                 except Exception as e:
                     logger.debug(f"sync_progress: batch {bid} 跳过: {e}")
-            return {"scanned": len(proc_ids), "updated": updated}
+            return {"scanned": len(all_ids), "processing": len(proc_ids), "recent_done": len(recent_done_ids), "updated": updated}
     finally:
         await eng.dispose()
 

@@ -929,6 +929,7 @@ async def buy_and_send(
     LOCK_CHUNK = 5000
     total_locked = 0
     now_ts = datetime.now()
+    locked_ids_all: list = []
     for i in range(0, len(number_ids), LOCK_CHUNK):
         chunk = number_ids[i : i + LOCK_CHUNK]
         lock_result = await db.execute(
@@ -940,8 +941,26 @@ async def buy_and_send(
             .values(account_id=account.id, last_used_at=now_ts)
         )
         total_locked += lock_result.rowcount
+        locked_ids_all.extend(chunk)
     if total_locked < data.quantity:
         raise HTTPException(400, "号码已被抢购，请重试")
+
+    # 扣减公海库存汇总（summary 的总数定义为 account_id IS NULL 的号码数，卖出须同步扣减）
+    if locked_ids_all:
+        dim_q = select(
+            DataNumber.country_code, DataNumber.carrier, DataNumber.source,
+            DataNumber.purpose, DataNumber.data_date, DataNumber.batch_id, func.count().label("cnt")
+        ).where(DataNumber.id.in_(locked_ids_all)).group_by(
+            DataNumber.country_code, DataNumber.carrier, DataNumber.source,
+            DataNumber.purpose, DataNumber.data_date, DataNumber.batch_id
+        )
+        dim_res = await db.execute(dim_q)
+        for drow in dim_res.fetchall():
+            await update_stock_summary_delta(
+                db, country_code=drow[0], carrier=drow[1], source=drow[2],
+                purpose=drow[3], freshness=compute_freshness(drow[4]),
+                batch_id=drow[5], delta=-int(drow[6])
+            )
 
     # ---------- 2. 估算费用（用首条号码的通道价格 × 总数估算短信费用） ----------
     from app.core.router import RoutingEngine
@@ -1798,6 +1817,156 @@ async def _execute_my_numbers_batch_delete(
         "message": msg,
         "deleted": deleted_total,
     }
+
+
+class MyNumbersResetUsedBody(BaseModel):
+    """按卡片维度重置「已使用」回到「未使用」（不动 sms_logs 历史）"""
+
+    country_code: str = ""
+    source: str = ""
+    purpose: str = ""
+    batch_id: str = ""
+    remarks: Optional[str] = None
+    carrier: Optional[str] = None
+
+
+async def _execute_my_numbers_reset_used(
+    db: AsyncSession,
+    account_id: int,
+    *,
+    country: Optional[str],
+    source: Optional[str],
+    purpose: Optional[str],
+    batch_id: Optional[str],
+    remarks: Optional[str],
+    carrier: Optional[str],
+) -> dict:
+    """
+    将匹配维度下 use_count>0 的私库行（PrivateLibraryNumber）与公海购入绑定行（DataNumber）
+    重置为 use_count=0、last_used_at=NULL，并直接把汇总表对应桶的 used_count 置 0。
+    不删除 sms_logs 等历史。全程 3 条 UPDATE，无每桶循环。
+    """
+
+    def _filters_pln(q):
+        if country is not None:
+            q = q.where(_sql_dim_ci_trim_eq(PrivateLibraryNumber.country_code, country))
+        if source is not None:
+            q = q.where(_sql_dim_source_match(PrivateLibraryNumber.source, source))
+        if purpose is not None:
+            q = q.where(_sql_dim_purpose_match(PrivateLibraryNumber.purpose, purpose))
+        if batch_id is not None:
+            q = q.where(_sql_dim_ci_trim_eq(PrivateLibraryNumber.batch_id, batch_id))
+        if remarks is not None:
+            q = q.where(_sql_dim_ci_trim_eq(PrivateLibraryNumber.remarks, remarks))
+        if carrier is not None:
+            q = q.where(_sql_dim_ci_trim_eq(PrivateLibraryNumber.carrier, carrier))
+        return q
+
+    def _filters_dn(q):
+        if country is not None:
+            q = q.where(_sql_dim_ci_trim_eq(DataNumber.country_code, country))
+        if source is not None:
+            q = q.where(_sql_dim_source_match(DataNumber.source, source))
+        if purpose is not None:
+            q = q.where(_sql_dim_purpose_match(DataNumber.purpose, purpose))
+        if batch_id is not None:
+            q = q.where(_sql_dim_ci_trim_eq(DataNumber.batch_id, batch_id))
+        if remarks is not None:
+            q = q.where(_sql_dim_ci_trim_eq(DataNumber.remarks, remarks))
+        if carrier is not None:
+            q = q.where(_sql_dim_ci_trim_eq(DataNumber.carrier, carrier))
+        return q
+
+    def _filters_pls(q):
+        if country is not None:
+            q = q.where(_sql_dim_ci_trim_eq(PrivateLibrarySummary.country_code, country))
+        if source is not None:
+            q = q.where(_sql_dim_source_match(PrivateLibrarySummary.source, source))
+        if purpose is not None:
+            q = q.where(_sql_dim_purpose_match(PrivateLibrarySummary.purpose, purpose))
+        if batch_id is not None:
+            q = q.where(_sql_dim_ci_trim_eq(PrivateLibrarySummary.batch_id, batch_id))
+        if carrier is not None:
+            q = q.where(_sql_dim_ci_trim_eq(PrivateLibrarySummary.carrier, carrier))
+        return q
+
+    pln_scope = and_(
+        PrivateLibraryNumber.account_id == account_id,
+        _pln_client_visible_clause(),
+        PrivateLibraryNumber.use_count > 0,
+    )
+    dn_scope = and_(
+        DataNumber.account_id == account_id,
+        DataNumber.use_count > 0,
+    )
+
+    cnt_pln = (await db.execute(
+        _filters_pln(select(func.count()).select_from(PrivateLibraryNumber).where(pln_scope))
+    )).scalar() or 0
+    cnt_dn = (await db.execute(
+        _filters_dn(select(func.count()).select_from(DataNumber).where(dn_scope))
+    )).scalar() or 0
+
+    if cnt_pln + cnt_dn == 0:
+        return {
+            "success": True,
+            "message": "没有可重置的已使用号码",
+            "reset": 0,
+        }
+
+    now_ts = datetime.now()
+    if cnt_pln > 0:
+        await db.execute(_filters_pln(
+            sa_update(PrivateLibraryNumber)
+            .where(pln_scope)
+            .values(use_count=0, last_used_at=None, updated_at=now_ts)
+        ))
+    if cnt_dn > 0:
+        await db.execute(_filters_dn(
+            sa_update(DataNumber)
+            .where(dn_scope)
+            .values(use_count=0, last_used_at=None)
+        ))
+
+    # 汇总表直接置零——reset 后该维度下所有行 use_count 均为 0，used_count 必然为 0
+    await db.execute(_filters_pls(
+        sa_update(PrivateLibrarySummary)
+        .where(
+            PrivateLibrarySummary.account_id == account_id,
+            PrivateLibrarySummary.used_count > 0,
+        )
+        .values(used_count=0, updated_at=now_ts)
+    ))
+
+    await db.commit()
+    await _invalidate_my_numbers_summary_cache(account_id)
+    total = cnt_pln + cnt_dn
+    return {
+        "success": True,
+        "message": f"已将 {total} 条号码重置为未使用（手工私库 {cnt_pln} 条，公海购入 {cnt_dn} 条）",
+        "reset": total,
+        "reset_private": cnt_pln,
+        "reset_purchased": cnt_dn,
+    }
+
+
+@router.post("/my-numbers/reset-used")
+async def post_reset_my_numbers_used(
+    body: MyNumbersResetUsedBody,
+    db: AsyncSession = Depends(get_db),
+    account: Account = Depends(get_current_account),
+):
+    """按卡片维度把已使用号码重置为未使用（不动 sms_logs 历史）"""
+    return await _execute_my_numbers_reset_used(
+        db,
+        account.id,
+        country=body.country_code,
+        source=body.source,
+        purpose=body.purpose,
+        batch_id=body.batch_id,
+        remarks=body.remarks,
+        carrier=body.carrier,
+    )
 
 
 @router.post("/my-numbers/delete-batch")

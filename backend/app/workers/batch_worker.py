@@ -441,6 +441,7 @@ async def _do_process_chunk(
     sender_id: str = None,
 ):
     import uuid
+    from decimal import Decimal
     from app.utils.sms_template import render_sms_variables, sms_template_has_variables
     from app.modules.sms.channel import Channel
 
@@ -448,6 +449,7 @@ async def _do_process_chunk(
     succeeded = 0
     failed = 0
     use_rotate = len(rot_messages) > 0
+    _charged_amount = Decimal('0')  # 扣费已提交但未完成分片写库时的回滚金额
 
     try:
         async with factory() as db:
@@ -721,12 +723,33 @@ async def _do_process_chunk(
                     deduct_ok = True
                     if total_sell > 0:
                         from sqlalchemy import update as sa_update
-                        dr = await db.execute(
-                            sa_update(Account)
-                            .where(Account.id == account_id, Account.balance >= total_sell)
-                            .values(balance=Account.balance - total_sell)
-                        )
-                        if dr.rowcount == 0:
+                        from sqlalchemy.exc import OperationalError as _OpErr
+                        dr = None
+                        _attempts = 5
+                        for _atmpt in range(_attempts):
+                            try:
+                                dr = await db.execute(
+                                    sa_update(Account)
+                                    .where(Account.id == account_id, Account.balance >= total_sell)
+                                    .values(balance=Account.balance - total_sell)
+                                )
+                                break
+                            except _OpErr as _err:
+                                _orig = getattr(_err, 'orig', None)
+                                _code = (_orig.args[0] if _orig and getattr(_orig, 'args', None) else None)
+                                if _code in (1205, 1213) and _atmpt < _attempts - 1:
+                                    logger.warning(
+                                        f"分片扣费行锁冲突({_code}) retry={_atmpt+1}: "
+                                        f"batch={batch_id}, offset={start_offset}"
+                                    )
+                                    try:
+                                        await db.rollback()
+                                    except Exception:
+                                        pass
+                                    await asyncio.sleep(0.5 + _atmpt * 0.5)
+                                    continue
+                                raise
+                        if dr is None or dr.rowcount == 0:
                             # 余额不足：逐条回退处理（按余额能扣多少扣多少）
                             deduct_ok = False
                             logger.warning(
@@ -741,6 +764,10 @@ async def _do_process_chunk(
                                 amount=-total_sell, balance_after=bal_after,
                                 description=f"Batch charge: {len(valid_items)} msgs, batch#{batch_id}"
                             ))
+                            # 关键：立即 commit 释放 accounts 行锁，避免后续 INSERT 5000 sms_logs
+                            # 长时间持锁（40+ 秒），阻塞其他 chunk 的扣费 UPDATE 触发 1205 lock_wait_timeout。
+                            await db.commit()
+                            _charged_amount = total_sell  # 供异常时退款使用
                             cache_manager = await get_cache_manager()
                             await cache_manager.set(f"account:{account_id}:balance", float(bal_after), ttl=60)
 
@@ -1006,6 +1033,36 @@ async def _do_process_chunk(
 
     except Exception as e:
         logger.exception(f"分片处理异常: batch={batch_id}, offset={start_offset}, {e}")
+        # 扣费已 commit 但分片写库/入队未完成：独立新会话退款，避免用户为未入库记录付费
+        if _charged_amount and _charged_amount > 0 and succeeded == 0:
+            try:
+                _eng2, _fac2 = _make_fresh_session()
+                try:
+                    async with _fac2() as _db2:
+                        from sqlalchemy import update as _sa_upd
+                        await _db2.execute(
+                            _sa_upd(Account)
+                            .where(Account.id == account_id)
+                            .values(balance=Account.balance + _charged_amount)
+                        )
+                        _bal_r = await _db2.execute(select(Account.balance).where(Account.id == account_id))
+                        _bal_after = _bal_r.scalar() or 0
+                        _db2.add(BalanceLog(
+                            account_id=account_id, change_type='refund',
+                            amount=_charged_amount, balance_after=_bal_after,
+                            description=f"Batch chunk failed refund: batch#{batch_id} offset={start_offset}",
+                        ))
+                        await _db2.commit()
+                    logger.warning(
+                        f"分片失败退款完成: batch={batch_id}, offset={start_offset}, refund={_charged_amount}"
+                    )
+                finally:
+                    await _eng2.dispose()
+            except Exception as _re:
+                logger.error(
+                    f"分片失败退款失败(需人工介入): batch={batch_id}, offset={start_offset}, "
+                    f"charged={_charged_amount}, err={_re}"
+                )
         raise
     finally:
         await eng.dispose()
