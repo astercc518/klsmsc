@@ -418,7 +418,7 @@ async def create_bot_ticket(
         # 获取关联账户
         binding = (await db.execute(
             select(TelegramBinding).where(TelegramBinding.tg_id == request.tg_id)
-        )).scalar_one_or_none()
+        )).scalars().first()
         
         account_id = binding.account_id if binding else None
         
@@ -1141,15 +1141,24 @@ async def ticket_action_internal(
     """实施接单或解决动作"""
     try:
         from app.modules.common.ticket import Ticket
+        from app.modules.common.admin_user import AdminUser
         action = request.get("action")
-        admin_id = request.get("admin_id")
-        
+        admin_tg_id = request.get("admin_tg_id") or request.get("admin_id")
+
+        # 通过 TG ID 反查管理员，避免依赖前端传 admin_id
+        admin = (await db.execute(
+            select(AdminUser).where(AdminUser.tg_id == admin_tg_id, AdminUser.status == 'active')
+        )).scalars().first()
+        if not admin:
+            return {"success": False, "message": "未授权或管理员不存在"}
+        admin_id = admin.id
+
         ticket = await db.get(Ticket, ticket_id)
         if not ticket:
             return {"success": False, "message": "Ticket not found"}
-            
+
         if action == "take":
-            ticket.status = 'assigned'
+            ticket.status = 'in_progress'
             ticket.assigned_to = admin_id
             ticket.assigned_at = datetime.now()
         elif action == "resolve":
@@ -1157,9 +1166,9 @@ async def ticket_action_internal(
             ticket.resolved_at = datetime.now()
             ticket.resolved_by = admin_id
             ticket.resolution = request.get("resolution", "Resolved via Bot")
-            
+
         await db.commit()
-        return {"success": True, "ticket_no": ticket.ticket_no}
+        return {"success": True, "ticket_no": ticket.ticket_no, "admin_name": admin.real_name or admin.username}
     except Exception as e:
         logger.error(f"操作工单失败: {e}")
         raise HTTPException(status_code=500)
@@ -3088,7 +3097,7 @@ async def get_knowledge_detail(article_id: int, db: AsyncSession = Depends(get_d
     article = result.scalar_one_or_none()
     if not article:
         return {"success": False, "message": "Article not found"}
-    
+
     return {
         "success": True,
         "article": {
@@ -3100,3 +3109,276 @@ async def get_knowledge_detail(article_id: int, db: AsyncSession = Depends(get_d
             ]
         }
     }
+
+
+# ──────────────────────────────────────────────
+# 短信落地测试 API
+# ──────────────────────────────────────────────
+
+@router.get("/sms-test/suppliers")
+async def get_sms_test_suppliers(
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_internal_secret),
+):
+    """获取已配置 TG 群的活跃供应商列表（用于落地测试选择）"""
+    from app.modules.sms.supplier import Supplier
+    result = await db.execute(
+        select(Supplier)
+        .where(
+            Supplier.status == 'active',
+            Supplier.telegram_group_id.isnot(None),
+            Supplier.telegram_group_id != '',
+            Supplier.is_deleted == False,
+        )
+        .order_by(Supplier.supplier_name)
+    )
+    suppliers = result.scalars().all()
+    return {
+        "success": True,
+        "suppliers": [
+            {
+                "id": s.id,
+                "supplier_name": s.supplier_name,
+                "supplier_code": s.supplier_code,
+                "country": s.country,
+                "telegram_group_id": s.telegram_group_id,
+            }
+            for s in suppliers
+        ],
+    }
+
+
+@router.get("/sms-test/suppliers/{supplier_id}/countries")
+async def get_sms_test_supplier_countries(
+    supplier_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_internal_secret),
+):
+    """获取供应商支持的国家列表（来自 SupplierRate，去重）"""
+    from app.modules.sms.supplier import Supplier, SupplierRate
+    from sqlalchemy import distinct
+
+    rate_result = await db.execute(
+        select(distinct(SupplierRate.country_code))
+        .where(
+            SupplierRate.supplier_id == supplier_id,
+            SupplierRate.status == 'active',
+        )
+        .order_by(SupplierRate.country_code)
+    )
+    country_codes = [row[0] for row in rate_result.fetchall() if row[0]]
+
+    if not country_codes:
+        sup_result = await db.execute(
+            select(Supplier.country).where(Supplier.id == supplier_id)
+        )
+        sup_country = sup_result.scalar_one_or_none()
+        if sup_country:
+            country_codes = [sup_country]
+
+    return {"success": True, "countries": country_codes}
+
+
+@router.get("/sms-test/countries")
+async def get_sms_test_all_countries(
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_internal_secret),
+):
+    """获取所有业务国家（来自所有活跃供应商费率表，去重排序，不限是否有 TG 群）"""
+    from app.modules.sms.supplier import Supplier, SupplierRate
+    from sqlalchemy import distinct
+
+    # 所有活跃供应商（不限 TG 群）的费率国家
+    active_supplier_sub = (
+        select(Supplier.id)
+        .where(
+            Supplier.status == 'active',
+            Supplier.is_deleted == False,
+        )
+        .scalar_subquery()
+    )
+
+    rate_result = await db.execute(
+        select(distinct(SupplierRate.country_code))
+        .where(
+            SupplierRate.supplier_id.in_(active_supplier_sub),
+            SupplierRate.status == 'active',
+        )
+        .order_by(SupplierRate.country_code)
+    )
+    countries = [row[0] for row in rate_result.fetchall() if row[0]]
+
+    return {"success": True, "countries": countries}
+
+
+@router.get("/sms-test/countries/{country}/suppliers")
+async def get_sms_test_country_suppliers(
+    country: str,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_internal_secret),
+):
+    """获取支持指定国家且配置了 TG 群的活跃供应商列表"""
+    from app.modules.sms.supplier import Supplier, SupplierRate
+
+    # 通过费率表找到支持该国家的供应商 ID
+    rate_result = await db.execute(
+        select(SupplierRate.supplier_id)
+        .where(
+            SupplierRate.country_code == country,
+            SupplierRate.status == 'active',
+        )
+        .distinct()
+    )
+    supplier_ids_from_rate = [row[0] for row in rate_result.fetchall()]
+
+    result = await db.execute(
+        select(Supplier)
+        .where(
+            Supplier.status == 'active',
+            Supplier.telegram_group_id.isnot(None),
+            Supplier.telegram_group_id != '',
+            Supplier.is_deleted == False,
+            Supplier.id.in_(supplier_ids_from_rate) if supplier_ids_from_rate
+            else Supplier.country == country,
+        )
+        .order_by(Supplier.supplier_name)
+    )
+    suppliers = result.scalars().all()
+
+    # 若费率表无匹配，回退到 supplier.country 字段
+    if not suppliers:
+        result2 = await db.execute(
+            select(Supplier)
+            .where(
+                Supplier.status == 'active',
+                Supplier.telegram_group_id.isnot(None),
+                Supplier.telegram_group_id != '',
+                Supplier.is_deleted == False,
+                Supplier.country == country,
+            )
+            .order_by(Supplier.supplier_name)
+        )
+        suppliers = result2.scalars().all()
+
+    return {
+        "success": True,
+        "suppliers": [
+            {
+                "id": s.id,
+                "supplier_name": s.supplier_name,
+                "supplier_code": s.supplier_code,
+                "telegram_group_id": s.telegram_group_id,
+            }
+            for s in suppliers
+        ],
+    }
+
+
+class SmsTestCreateRequest(BaseModel):
+    requester_tg_id: int
+    requester_name: Optional[str] = None
+    supplier_id: int
+    country: str
+    sms_content: str
+    forwarded_message_id: int
+
+
+@router.post("/sms-test/requests")
+async def create_sms_test_request(
+    body: SmsTestCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_internal_secret),
+):
+    """创建短信落地测试记录"""
+    from app.modules.sms.supplier import Supplier
+    from app.modules.sms.sms_landing_test import SmsLandingTest
+
+    sup_result = await db.execute(
+        select(Supplier.supplier_name, Supplier.telegram_group_id)
+        .where(Supplier.id == body.supplier_id)
+    )
+    row = sup_result.one_or_none()
+    if not row:
+        return {"success": False, "message": "Supplier not found"}
+
+    supplier_name, tg_group_id = row
+    now = datetime.utcnow()
+    record = SmsLandingTest(
+        requester_tg_id=body.requester_tg_id,
+        requester_name=body.requester_name,
+        supplier_id=body.supplier_id,
+        supplier_name=supplier_name,
+        supplier_tg_group_id=tg_group_id,
+        country=body.country,
+        sms_content=body.sms_content,
+        status='forwarded',
+        forwarded_message_id=body.forwarded_message_id,
+        forwarded_at=now,
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return {"success": True, "id": record.id}
+
+
+@router.get("/sms-test/requests/by-message")
+async def find_sms_test_by_message(
+    group_id: str,
+    message_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_internal_secret),
+):
+    """根据供应商群 ID 和消息 ID 查找落地测试记录"""
+    from app.modules.sms.sms_landing_test import SmsLandingTest
+
+    result = await db.execute(
+        select(SmsLandingTest)
+        .where(
+            SmsLandingTest.supplier_tg_group_id == group_id,
+            SmsLandingTest.forwarded_message_id == message_id,
+            SmsLandingTest.status == 'forwarded',
+        )
+    )
+    record = result.scalar_one_or_none()
+    if not record:
+        return {"success": False, "message": "Test request not found"}
+
+    return {
+        "success": True,
+        "id": record.id,
+        "requester_tg_id": record.requester_tg_id,
+        "supplier_name": record.supplier_name,
+        "country": record.country,
+        "sms_content": record.sms_content,
+    }
+
+
+class SmsTestCompleteRequest(BaseModel):
+    photo_file_ids: list
+    note: Optional[str] = None
+
+
+@router.post("/sms-test/requests/{test_id}/complete")
+async def complete_sms_test_request(
+    test_id: int,
+    body: SmsTestCompleteRequest,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(verify_internal_secret),
+):
+    """标记落地测试为已完成，存储截图 file_id"""
+    from app.modules.sms.sms_landing_test import SmsLandingTest
+
+    result = await db.execute(
+        select(SmsLandingTest).where(SmsLandingTest.id == test_id)
+    )
+    record = result.scalar_one_or_none()
+    if not record:
+        return {"success": False, "message": "Test request not found"}
+
+    record.status = 'completed'
+    record.result_photo_file_ids = json.dumps(body.photo_file_ids)
+    record.result_note = body.note
+    record.completed_at = datetime.utcnow()
+    await db.commit()
+
+    return {"success": True, "requester_tg_id": record.requester_tg_id}

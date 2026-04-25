@@ -87,8 +87,13 @@ class Settings(BaseSettings):
     
     @field_validator("JWT_SECRET_KEY", mode="before")
     @classmethod
-    def _ensure_jwt_secret(cls, v: str) -> str:
+    def _ensure_jwt_secret(cls, v: str, info) -> str:
         if not v:
+            env = (info.data or {}).get("APP_ENV", "development")
+            if env == "production":
+                raise ValueError(
+                    "生产环境必须显式配置 JWT_SECRET_KEY（建议：openssl rand -hex 48）"
+                )
             return secrets.token_urlsafe(48)
         return v
     

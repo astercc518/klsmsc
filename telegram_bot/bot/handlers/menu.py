@@ -10,6 +10,7 @@ from bot.utils import (
     edit_and_log,
     send_and_log,
     dedupe_country_codes_from_templates,
+    get_group_ids,
 )
 from bot.services.api_client import APIClient
 from datetime import datetime, timedelta, date
@@ -151,7 +152,7 @@ def get_main_menu_sales():
         ],
         [
             InlineKeyboardButton("👥 我的客户", callback_data="menu_my_customers"),
-            InlineKeyboardButton("📋 客户工单", callback_data="menu_customer_tickets"),
+            InlineKeyboardButton("📋 业务工单", callback_data="menu_biz_tickets"),
         ],
         [
             InlineKeyboardButton("📊 业绩统计", callback_data="menu_sales_stats"),
@@ -160,6 +161,9 @@ def get_main_menu_sales():
         [
             InlineKeyboardButton("📋 报价查询", callback_data="menu_pricing"),
             InlineKeyboardButton("❓ 帮助", callback_data="menu_help"),
+        ],
+        [
+            InlineKeyboardButton("📱 短信落地测试", callback_data="menu_sms_test"),
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -181,6 +185,9 @@ def get_main_menu_tech():
             InlineKeyboardButton("📋 报价查询", callback_data="menu_pricing"),
             InlineKeyboardButton("❓ 帮助", callback_data="menu_help"),
         ],
+        [
+            InlineKeyboardButton("📱 短信落地测试", callback_data="menu_sms_test"),
+        ],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -201,6 +208,32 @@ async def get_main_menu_guest():
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
+
+
+def _get_biz_ticket_top_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 短信工单", callback_data="btk_sms"),
+         InlineKeyboardButton("📞 语音工单", callback_data="btk_voice")],
+        [InlineKeyboardButton("📊 数据工单", callback_data="btk_data")],
+        [InlineKeyboardButton("📂 我的业务工单", callback_data="bizt_my")],
+        [InlineKeyboardButton("🔙 返回", callback_data="menu_main")],
+    ])
+
+
+def _get_biz_ticket_category_keyboard(biz_type: str) -> InlineKeyboardMarkup:
+    opts = {
+        'sms':   ('🏢 短信开户', '🧪 短信测试', '💬 发送反馈'),
+        'voice': ('🏢 语音开户', '🧪 语音测试', '📞 通话反馈'),
+        'data':  ('🏢 数据开户', '🧪 数据测试', '📊 效果反馈'),
+    }
+    names = opts.get(biz_type, ('开户', '测试', '反馈'))
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(names[0], callback_data=f"btk_{biz_type}_register")],
+        [InlineKeyboardButton(names[1], callback_data=f"btk_{biz_type}_test")],
+        [InlineKeyboardButton(names[2], callback_data=f"btk_{biz_type}_feedback")],
+        [InlineKeyboardButton("⬅️ 返回", callback_data="menu_biz_tickets"),
+         InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")],
+    ])
 
 
 def get_ticket_type_menu():
@@ -858,11 +891,31 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await show_sales_stats(query, context)
         return
     
-    # 客户工单
+    # 客户工单（旧入口，保留兼容）
     if data == "menu_customer_tickets":
         await show_customer_tickets(query, context)
         return
-    
+
+    # 业务工单顶层菜单
+    if data == "menu_biz_tickets":
+        await query.edit_message_text(
+            "📋 业务工单\n\n请选择工单类型：",
+            reply_markup=_get_biz_ticket_top_keyboard()
+        )
+        return
+
+    # 业务工单类别选择
+    if data in ("btk_sms", "btk_voice", "btk_data"):
+        biz = data[4:]
+        biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}[biz]
+        await query.edit_message_text(
+            f"📋 {biz_label}工单\n\n请选择工单类别：",
+            reply_markup=_get_biz_ticket_category_keyboard(biz)
+        )
+        return
+
+    # 业务工单具体操作入口（btk_*_register/test/feedback）由 biz_ticket.py 的 ConversationHandler 接管
+
     # 工单类型选择后创建工单
     if data.startswith("ticket_type_"):
         ticket_type = data.replace("ticket_type_", "")
@@ -3019,7 +3072,7 @@ menu_handlers = [
     CallbackQueryHandler(
         handle_menu_callback,
         # kb_ 不能覆盖 kb_dl_*（第三字符为 d）；kb_noop 同理，须单独列出
-        pattern=r'^(?!menu_register$|reg_)(?:sales_login_|okcc_refresh_|menu_|biz_|kb_|kb_dl_|kb_noop|ticket_type_|country_|tpl_|pricing_|approve_|reject_|send_approved_sms_|sms_approval_skip_|process_|ticket_detail_|close_ticket_|back_|my_cust_)'
+        pattern=r'^(?!menu_register$|menu_sms_test$|reg_)(?:sales_login_|okcc_refresh_|menu_|biz_|btk_sms$|btk_voice$|btk_data$|kb_|kb_dl_|kb_noop|ticket_type_|country_|tpl_|pricing_|approve_|reject_|send_approved_sms_|sms_approval_skip_|process_|ticket_detail_|close_ticket_|back_|my_cust_)'
     ),
     # 短信审核回复：图片与图片类文档需在 TEXT 之外单独处理
     MessageHandler(

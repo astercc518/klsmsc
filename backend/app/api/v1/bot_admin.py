@@ -10,8 +10,8 @@ from app.core.auth import AuthService
 from app.modules.common.admin_user import AdminUser
 from app.modules.common.invitation_code import InvitationCode
 from app.modules.common.recharge_order import RechargeOrder
-from app.modules.sms.sms_batch import SmsBatch
-from app.modules.sms.sms_template import SmsTemplate
+from app.modules.sms.sms_batch import SmsBatch as SMSBatch
+from app.modules.sms.sms_template import SmsTemplate as SMSTemplate
 from app.modules.common.account import Account
 from app.modules.common.telegram_binding import TelegramBinding
 from app.core.invitation import InvitationService

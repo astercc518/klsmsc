@@ -22,24 +22,30 @@ class TemplateStatus(str, enum.Enum):
     DISABLED = "disabled"    # 已禁用
 
 
+def _enum_values(obj):
+    return [e.value for e in obj]
+
+
 class SmsTemplate(Base):
     """短信模板表"""
     __tablename__ = "sms_templates"
-    
+
     id = Column(Integer, primary_key=True, index=True, comment="模板ID")
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True, comment="账户ID")
-    name = Column(String(100), nullable=False, comment="模板名称")
-    category = Column(Enum(TemplateCategory), nullable=False, default=TemplateCategory.NOTIFICATION, comment="模板分类")
-    content = Column(Text, nullable=False, comment="模板内容（支持变量）")
+    name = Column(String(100), nullable=False, default="Template", comment="模板名称")
+    category = Column(Enum(TemplateCategory, values_callable=_enum_values), nullable=True, default="notification", comment="模板分类")
+    content = Column(Text, comment="模板内容（支持变量）")
     variables = Column(Text, comment="变量列表（JSON数组）")
-    status = Column(Enum(TemplateStatus), nullable=False, default=TemplateStatus.PENDING, comment="审核状态")
+    content_hash = Column(String(64), nullable=False, default="", comment="内容哈希")
+    content_text = Column(Text, comment="白名单文案原文")
+    status = Column(Enum(TemplateStatus, values_callable=_enum_values), nullable=True, default="pending", comment="审核状态")
     reject_reason = Column(Text, comment="拒绝原因")
     usage_count = Column(Integer, default=0, comment="使用次数")
-    
+
     # 审核相关
     approved_by = Column(Integer, comment="审核人ID")
     approved_at = Column(TIMESTAMP, comment="审核时间")
-    
+
     # 时间戳
     created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False, comment="创建时间")
     updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")

@@ -10,7 +10,8 @@ from fastapi import Security, HTTPException, Header, Request, Depends
 from fastapi.security import APIKeyHeader, HTTPBearer, HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from jose import JWTError, jwt
+import jwt as pyjwt
+from jwt.exceptions import InvalidTokenError as JWTError
 from passlib.context import CryptContext
 from app.modules.common.account import Account
 from app.modules.common.admin_user import AdminUser
@@ -276,7 +277,7 @@ class AuthService:
         expire = now + (expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES))
         
         to_encode.update({"exp": expire, "iat": now})
-        encoded_jwt = jwt.encode(
+        encoded_jwt = pyjwt.encode(
             to_encode,
             settings.JWT_SECRET_KEY,
             algorithm=settings.JWT_ALGORITHM
@@ -298,7 +299,7 @@ class AuthService:
             AuthenticationError: token无效或过期
         """
         try:
-            payload = jwt.decode(
+            payload = pyjwt.decode(
                 token,
                 settings.JWT_SECRET_KEY,
                 algorithms=[settings.JWT_ALGORITHM]

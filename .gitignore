@@ -34,9 +34,16 @@ logs/
 *.log
 *.tar.gz
 *.bak
+*.new
+*.rollback
 .backup_migrate/
 celerybeat-schedule
 bot_data.pickle
+
+# 散落的临时调试脚本（应放 scripts/ops/ 或 tests/）
+backend/test_*.py
+backend/debug_*.py
+backend/check_*.py
 
 # IDE / 编辑器
 .cursor/

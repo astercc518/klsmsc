@@ -2794,6 +2794,22 @@ async def get_admin_dashboard(
     - finance: 财务相关数据
     - tech: 技术运维数据
     """
+    import json
+    import redis.asyncio as aioredis
+
+    _cache_key = f"admin_dashboard:{admin.id}:{admin.role}"
+    _cache_ttl = 60  # 秒
+    try:
+        _rc = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        try:
+            _cached = await _rc.get(_cache_key)
+            if _cached:
+                return json.loads(_cached)
+        finally:
+            await _rc.aclose()
+    except Exception:
+        pass
+
     from app.modules.sms.channel import Channel
     from app.modules.sms.sms_log import SMSLog
     from app.modules.common.account import Account
@@ -3103,39 +3119,47 @@ async def get_admin_dashboard(
     server_metrics = None
     service_status = None
     if view_system_monitor:
-        service_status = []
-        try:
-            await db.execute(text("SELECT 1"))
-            service_status.append({"id": "mysql", "status": "ok"})
-        except Exception as e:
-            service_status.append({"id": "mysql", "status": "error", "message": str(e)[:160]})
-        try:
-            import redis.asyncio as aioredis
-
-            r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        async def _check_mysql():
             try:
-                await r.ping()
-                service_status.append({"id": "redis", "status": "ok"})
-            finally:
-                await r.aclose()
-        except Exception as e:
-            service_status.append({"id": "redis", "status": "error", "message": str(e)[:160]})
-        try:
-            from app.utils.server_metrics import check_rabbitmq_sync
+                await db.execute(text("SELECT 1"))
+                return {"id": "mysql", "status": "ok"}
+            except Exception as e:
+                return {"id": "mysql", "status": "error", "message": str(e)[:160]}
 
-            await asyncio.to_thread(check_rabbitmq_sync)
-            service_status.append({"id": "rabbitmq", "status": "ok"})
-        except Exception as e:
-            service_status.append({"id": "rabbitmq", "status": "error", "message": str(e)[:160]})
-        try:
-            from app.utils.server_metrics import collect_host_metrics_sync
+        async def _check_redis():
+            try:
+                _r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+                try:
+                    await _r.ping()
+                    return {"id": "redis", "status": "ok"}
+                finally:
+                    await _r.aclose()
+            except Exception as e:
+                return {"id": "redis", "status": "error", "message": str(e)[:160]}
 
-            server_metrics = await asyncio.to_thread(collect_host_metrics_sync)
-        except Exception as e:
-            logger.warning("采集主机指标失败: %s", e)
-            server_metrics = {"error": str(e)[:200]}
+        async def _check_rabbitmq():
+            try:
+                from app.utils.server_metrics import check_rabbitmq_sync
+                await asyncio.to_thread(check_rabbitmq_sync)
+                return {"id": "rabbitmq", "status": "ok"}
+            except Exception as e:
+                return {"id": "rabbitmq", "status": "error", "message": str(e)[:160]}
 
-    return {
+        async def _collect_metrics():
+            try:
+                from app.utils.server_metrics import collect_host_metrics_sync
+                return await asyncio.to_thread(collect_host_metrics_sync)
+            except Exception as e:
+                logger.warning("采集主机指标失败: %s", e)
+                return {"error": str(e)[:200]}
+
+        _svc_results, server_metrics = await asyncio.gather(
+            asyncio.gather(_check_mysql(), _check_redis(), _check_rabbitmq()),
+            _collect_metrics(),
+        )
+        service_status = list(_svc_results)
+
+    _result = {
         "success": True,
         "admin_name": admin.username,
         "admin_role": admin.role,
@@ -3167,6 +3191,15 @@ async def get_admin_dashboard(
         "server_metrics": server_metrics,
         "service_status": service_status,
     }
+    try:
+        _rc2 = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        try:
+            await _rc2.setex(_cache_key, _cache_ttl, json.dumps(_result, default=str))
+        finally:
+            await _rc2.aclose()
+    except Exception:
+        pass
+    return _result
 
 
 @router.get("/statistics", response_model=dict)

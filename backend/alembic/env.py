@@ -61,6 +61,7 @@ from app.modules.data.models import *  # noqa: F401,F403
 from app.models.scheduled_task import *  # noqa: F401,F403
 from app.models.sub_account import *  # noqa: F401,F403
 from app.modules.common.knowledge import *  # noqa: F401,F403
+from app.modules.sms.sms_landing_test import SmsLandingTest  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:

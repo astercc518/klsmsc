@@ -1,9 +1,9 @@
 # Web框架
-fastapi==0.104.1
+fastapi>=0.115.0
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
-python-multipart==0.0.6
+python-multipart>=0.0.18
 
 # 数据库
 SQLAlchemy==2.0.23
@@ -21,9 +21,9 @@ orjson==3.10.7
 phonenumbers==8.13.26
 
 # 安全和加密
-python-jose[cryptography]==3.3.0
+PyJWT==2.9.0
 passlib[bcrypt]==1.7.4
-cryptography==41.0.7
+cryptography>=43.0.0
 bcrypt==4.1.2
 
 # HTTP客户端

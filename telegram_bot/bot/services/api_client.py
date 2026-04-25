@@ -896,3 +896,45 @@ class APIClient:
             "sms_submit_mode": sms_submit_mode
         }
         return await self._post("/sms/submit-approval", json=payload)
+
+    # ── 短信落地测试 ──────────────────────────────
+
+    async def get_sms_test_suppliers(self) -> Dict:
+        """获取已配置 TG 群的活跃供应商列表"""
+        return await self._get("/sms-test/suppliers")
+
+    async def get_sms_test_all_countries(self) -> Dict:
+        """获取所有可测国家（跨所有有 TG 群的供应商）"""
+        return await self._get("/sms-test/countries")
+
+    async def get_sms_test_country_suppliers(self, country: str) -> Dict:
+        """获取支持指定国家且配置了 TG 群的供应商列表"""
+        return await self._get(f"/sms-test/countries/{country}/suppliers")
+
+    async def get_sms_test_supplier_countries(self, supplier_id: int) -> Dict:
+        """获取供应商支持的国家列表"""
+        return await self._get(f"/sms-test/suppliers/{supplier_id}/countries")
+
+    async def create_sms_test_request(self, requester_tg_id: int, requester_name: str,
+                                       supplier_id: int, country: str, sms_content: str,
+                                       forwarded_message_id: int) -> Dict:
+        """创建短信落地测试记录"""
+        return await self._post("/sms-test/requests", json={
+            "requester_tg_id": requester_tg_id,
+            "requester_name": requester_name,
+            "supplier_id": supplier_id,
+            "country": country,
+            "sms_content": sms_content,
+            "forwarded_message_id": forwarded_message_id,
+        })
+
+    async def find_sms_test_by_message(self, group_id: str, message_id: int) -> Dict:
+        """根据供应商群 ID 和消息 ID 查找落地测试记录"""
+        return await self._get("/sms-test/requests/by-message",
+                               params={"group_id": group_id, "message_id": message_id})
+
+    async def complete_sms_test(self, test_id: int, photo_file_ids: list,
+                                 note: str = None) -> Dict:
+        """标记落地测试完成，存储截图"""
+        return await self._post(f"/sms-test/requests/{test_id}/complete",
+                                json={"photo_file_ids": photo_file_ids, "note": note})

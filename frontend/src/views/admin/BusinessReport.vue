@@ -220,7 +220,7 @@ const ProfitIcon = TrendCharts
 import { getBusinessReport } from '@/api/reports'
 import { findCountryByIso } from '@/constants/countries'
 import { ElMessage } from 'element-plus'
-import * as XLSX from 'xlsx'
+import * as XLSX from '@e965/xlsx'
 import * as echarts from 'echarts'
 
 const { t } = useI18n()

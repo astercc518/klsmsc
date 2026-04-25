@@ -532,7 +532,9 @@ async def send_batch_sms(
                 if cc is not None:
                     q = q.where(cc)
             if f.get("unused_only"):
-                q = q.where(model.use_count == 0)
+                # use_count 在历史数据里可能为 NULL（早期上传未初始化默认值），
+                # NULL 与 0 在 SQL 比较里不相等 → 必须同时兼容两种写法
+                q = q.where(or_(model.use_count == 0, model.use_count.is_(None)))
             return q
 
         def _build_union(include_batch: bool = True):

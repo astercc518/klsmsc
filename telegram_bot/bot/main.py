@@ -47,6 +47,10 @@ from bot.handlers.mass_send import get_mass_handlers
 from bot.handlers.data_ops import data_handlers
 # 语音/数据开户处理器
 from bot.handlers.account_opening import opening_handlers, handle_tech_reply_in_group
+# 短信落地测试处理器
+from bot.handlers.sms_test import get_sms_test_handlers, handle_supplier_photo_reply
+# 业务工单处理器
+from bot.handlers.biz_ticket import get_biz_ticket_handlers
 
 async def get_bot_token_from_api() -> str:
     """从内部 API 读取 Bot Token"""
@@ -80,6 +84,7 @@ async def set_commands(application):
         BotCommand("recharge", "快速充值 (Fast Recharge)"),
         BotCommand("help", "帮助中心 (Help Center)"),
         BotCommand("sales_help", "业务员帮助 (Sales Help)"),
+        BotCommand("sms_test", "SMS landing test (Staff only)"),
     ]
     await application.bot.set_my_commands(commands)
     logger.info("Bot 菜单命令设置成功")
@@ -126,7 +131,13 @@ def main():
     app.add_handler(CommandHandler('help', help_command))
     app.add_handler(CommandHandler('sales_help', sales_help))
     app.add_handler(CommandHandler('tech_help', tech_help))
+    # 业务工单：必须在 register/sms_test 之前注册，确保 BIZ_DESC 状态下 TEXT 优先在自家 conversation 内消化
+    for handler in get_biz_ticket_handlers():
+        app.add_handler(handler)
     app.add_handler(register_conversation())
+    # 短信落地测试：需在 menu_handlers 之前，避免 menu_sms_test 回调被通用菜单处理器拦截
+    for handler in get_sms_test_handlers():
+        app.add_handler(handler)
     # 菜单处理器需在 send_conversation 之前，确保「短信审核」等菜单流程的文本输入优先处理
     for handler in menu_handlers:
         app.add_handler(handler)
@@ -157,6 +168,12 @@ def main():
         filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
         handle_tech_reply_in_group
     ), group=2)
+
+    # 供应商群图片回复检测（群内 Reply bot 的图片）
+    app.add_handler(MessageHandler(
+        filters.ChatType.GROUPS & filters.PHOTO,
+        handle_supplier_photo_reply
+    ), group=3)
     
     logger.info("Bot is running...")
     app.run_polling()

@@ -508,7 +508,7 @@ import request from '@/api/index'
 import { COUNTRY_LIST, findCountryByIso } from '@/constants/countries'
 import { ElMessage } from 'element-plus'
 import * as echarts from 'echarts'
-import * as XLSX from 'xlsx'
+import * as XLSX from '@e965/xlsx'
 
 const { t } = useI18n()
 

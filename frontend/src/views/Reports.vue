@@ -304,7 +304,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Document, CircleCheck, CircleClose, TrendCharts, Download, Search, Clock, Money, Wallet, Coin } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
-import * as XLSX from 'xlsx'
+import * as XLSX from '@e965/xlsx'
 import { getStatistics, getSuccessRate, getDailyStats } from '@/api/reports'
 import { findCountryByIso, findCountryByDial } from '@/constants/countries'
 

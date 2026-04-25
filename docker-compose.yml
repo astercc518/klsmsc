@@ -1,3 +1,9 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "5"
+
 services:
   # MySQL数据库
   mysql:
@@ -21,6 +27,7 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -45,6 +52,7 @@ services:
       retries: 18
       start_period: 40s
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -63,6 +71,7 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -87,6 +96,7 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -101,6 +111,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -167,6 +178,7 @@ services:
         condition: service_started
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -213,6 +225,7 @@ services:
         condition: service_healthy
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-8} -Q celery,data_tasks,webhook_tasks,integrations
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -250,6 +263,7 @@ services:
         condition: service_healthy
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${DLR_WORKER_CONCURRENCY:-8} -Q sms_dlr
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -288,6 +302,7 @@ services:
         condition: service_healthy
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${RESULT_WORKER_CONCURRENCY:-12} -Q sms_result_queue
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -332,6 +347,7 @@ services:
     # HTTP 通道高并发；SMPP 通道受连接限制需单独评估
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${SMS_WORKER_CONCURRENCY:-32} -Q sms_send
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -371,6 +387,7 @@ services:
         condition: service_healthy
     command: celery -A app.workers.celery_app beat --loglevel=info
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -410,6 +427,7 @@ services:
         condition: service_healthy
     command: python -m bot.main
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -428,6 +446,7 @@ services:
       LIVE_ORIGIN: "https://illyvoip.com"
       PREVIEW_PROXY_MISS: "1"
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -448,6 +467,7 @@ services:
       landing-preview:
         condition: service_started
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -464,6 +484,7 @@ services:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -481,6 +502,7 @@ services:
     depends_on:
       - prometheus
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -517,6 +539,7 @@ services:
         condition: service_healthy
     command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork --concurrency=4 -Q web_automation
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
@@ -545,6 +568,7 @@ services:
       rabbitmq:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
     networks:
       - smsc-network
 
