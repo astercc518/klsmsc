@@ -168,7 +168,7 @@
         <el-row :gutter="20">
           <el-col :span="12">
             <el-form-item :label="$t('channels.channelCode')" required>
-              <el-input v-model="channelForm.channel_code" :disabled="!!editingChannel" :placeholder="$t('channels.channelCodePlaceholder')" />
+              <el-input v-model="channelForm.channel_code" :placeholder="$t('channels.channelCodePlaceholder')" />
             </el-form-item>
           </el-col>
           <el-col :span="12">

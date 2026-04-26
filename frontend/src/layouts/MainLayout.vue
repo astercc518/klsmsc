@@ -13,7 +13,7 @@
         <div class="logo-area">
           <div class="logo-wrapper" @click="toggleSidebar">
             <div class="logo-icon">
-              <img src="/favicon.svg" alt="考拉出海" width="30" height="30" style="border-radius:6px" />
+              <img src="/favicon.svg?v=koala2" alt="考拉出海" width="30" height="30" />
             </div>
             <transition name="fade">
               <span class="logo-text" v-if="!sidebarCollapsed">{{ $t('brand.name') }}</span>
@@ -955,7 +955,7 @@ watch(() => route.path, () => {
 .orb-1 {
   width: 600px;
   height: 600px;
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.2) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(42, 157, 143, 0.2) 0%, transparent 70%);
   top: -200px;
   right: -100px;
 }
@@ -1094,13 +1094,13 @@ watch(() => route.path, () => {
 }
 
 .nav-item.active {
-  background: rgba(59, 130, 246, 0.1);
+  background: rgba(42, 157, 143, 0.1);
   color: var(--primary);
   box-shadow: var(--shadow-soft-in);
 }
 
 .light-mode .nav-item.active {
-  background: rgba(59, 130, 246, 0.08);
+  background: rgba(42, 157, 143, 0.08);
 }
 
 .nav-item.active::before {
@@ -1113,7 +1113,7 @@ watch(() => route.path, () => {
   height: 24px;
   border-radius: 0 4px 4px 0;
   background: var(--gradient-primary);
-  box-shadow: 0 0 15px rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 15px rgba(42, 157, 143, 0.5);
 }
 
 .nav-icon {
@@ -1166,7 +1166,7 @@ watch(() => route.path, () => {
 
 .submenu-item.active {
   color: var(--primary);
-  background: rgba(102, 126, 234, 0.08);
+  background: rgba(42, 157, 143, 0.08);
 }
 
 .collapsed .nav-item {

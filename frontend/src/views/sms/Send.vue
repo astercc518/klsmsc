@@ -395,6 +395,27 @@
                   class="custom-input"
                 />
               </div>
+              <!-- 通道选择：仅账户绑定 2+ 条通道时展示 -->
+              <div v-if="channelBound && channels.length > 1" class="field-group">
+                <label class="field-label">
+                  {{ $t('smsSend.channel') }}
+                </label>
+                <el-select
+                  v-model="form.channel_id"
+                  :placeholder="$t('smsSend.channelPlaceholder')"
+                  size="default"
+                  class="custom-select"
+                  popper-class="channel-popper"
+                  clearable
+                >
+                  <el-option
+                    v-for="ch in channels"
+                    :key="ch.id"
+                    :value="ch.id"
+                    :label="ch.code"
+                  />
+                </el-select>
+              </div>
             </div>
 
             <!-- 4. 其他选项 -->
@@ -2458,7 +2479,7 @@ const handleReset = () => {
 // ============ 数据加载 ============
 
 const loadChannels = async () => {
-  try { const res = await getChannels(); channels.value = res.channels || []; channelBound.value = res.bound === true; if (channelBound.value && channels.value.length === 1) form.value.channel_id = channels.value[0].id } catch (e) { console.error('Load channels failed', e) }
+  try { const res = await getChannels(); channels.value = res.channels || []; channelBound.value = res.bound === true; if (channelBound.value && channels.value.length >= 1) form.value.channel_id = channels.value[0].id } catch (e) { console.error('Load channels failed', e) }
 }
 
 const loadStats = async () => {
@@ -2650,6 +2671,11 @@ onUnmounted(() => clearInterval(timeInterval))
 
 /* 选项 */
 .options-row { display: flex; gap: 16px; margin-bottom: 16px; }
+.options-row > .field-group { flex: 1; min-width: 0; margin-bottom: 0; }
+.options-row > .field-group .el-select { width: 100%; }
+:deep(.channel-popper .el-select-dropdown__item) { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+:deep(.channel-popper .ch-opt-name) { color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:deep(.channel-popper .ch-opt-code) { color: var(--text-tertiary); font-size: 12px; flex-shrink: 0; }
 .checkbox-options { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; font-size: 13px; }
 .schedule-picker { margin-left: 8px; }
 

@@ -449,7 +449,5 @@ def get_sms_test_handlers():
         ],
         per_user=True,
         allow_reentry=True,
-        name="sms_test_conversation",
-        persistent=True,
     )
     return [conv]

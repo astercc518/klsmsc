@@ -1,158 +1,216 @@
 <template>
   <div class="login-page" :class="{ 'is-light': !isDark }">
-    <!-- 背景 -->
-    <div class="bg">
-      <div class="bg-grain"></div>
-      <div class="bg-glow glow-a"></div>
-      <div class="bg-glow glow-b"></div>
-      <div class="bg-glow glow-c"></div>
-    </div>
+    <!-- 背景 - kaolach 双径向渐变 -->
+    <div class="bg-mesh" aria-hidden="true"></div>
 
     <!-- 顶部工具栏 -->
     <header class="topbar">
-      <a href="/" class="topbar-logo" aria-label="考拉出海">
-        <img src="/favicon.svg" alt="" class="topbar-logo-icon" width="28" height="28" />
-        <span class="topbar-logo-text">Kao<em>lach</em></span>
+      <a href="/" class="topbar-logo" aria-label="kaolach">
+        <img src="/kaolach-wordmark.svg?v=koala2" alt="kaolach" class="topbar-wordmark" />
       </a>
-      <nav class="topbar-nav" aria-label="官网导航">
-        <a href="/" class="topbar-nav-item">{{ $t('landing.nav.home') }}</a>
-        <a href="/#products" class="topbar-nav-item">{{ $t('landing.nav.smsProducts') }}</a>
-        <a href="/#solutions" class="topbar-nav-item">{{ $t('landing.nav.solutions') }}</a>
-        <a href="/#pricing" class="topbar-nav-item">{{ $t('landing.nav.pricing') }}</a>
-        <a href="/#faq" class="topbar-nav-item">{{ $t('landing.nav.support') }}</a>
-        <a href="/#about" class="topbar-nav-item">{{ $t('landing.nav.about') }}</a>
-      </nav>
+      <div class="topbar-badges">
+        <span class="trust-pill">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17 8V6a5 5 0 00-10 0v2H5v14h14V8h-2zm-8 0V6a3 3 0 116 0v2H9z"/></svg>
+          {{ $t('login.badge.encrypted') }}
+        </span>
+        <span class="trust-pill">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+          {{ $t('login.badge.global') }}
+        </span>
+        <span class="trust-pill">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2L3 14h7v8l11-14h-8z"/></svg>
+          {{ $t('login.badge.fast') }}
+        </span>
+      </div>
       <div class="topbar-right">
         <button class="topbar-pill" @click="toggleTheme" :title="isDark ? 'Light' : 'Dark'">
-        <transition name="icon-flip" mode="out-in">
-          <svg v-if="isDark" key="sun" width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <circle cx="8" cy="8" r="3.2" stroke="currentColor" stroke-width="1.4"/>
-            <path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M3.4 12.6l1.3-1.3M11.3 4.7l1.3-1.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-          </svg>
-          <svg v-else key="moon" width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M13.6 9.8A6 6 0 0 1 6.2 2.4a6 6 0 1 0 7.4 7.4Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </transition>
-      </button>
-      <button class="topbar-pill lang-pill" @click="toggleLang">
-        {{ currentLang === 'zh-CN' ? $t('language.shortEn') : $t('language.zh') }}
-      </button>
+          <transition name="icon-flip" mode="out-in">
+            <svg v-if="isDark" key="sun" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="3.2" stroke="currentColor" stroke-width="1.4"/>
+              <path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M3.4 12.6l1.3-1.3M11.3 4.7l1.3-1.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+            <svg v-else key="moon" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M13.6 9.8A6 6 0 0 1 6.2 2.4a6 6 0 1 0 7.4 7.4Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </transition>
+        </button>
+        <button class="topbar-pill lang-pill" @click="toggleLang">
+          {{ currentLang === 'zh-CN' ? $t('language.shortEn') : $t('language.zh') }}
+        </button>
       </div>
     </header>
 
-    <!-- 主体 -->
+    <!-- 主体：左右两栏 -->
     <main class="main">
-      <div class="hero" :class="{ show: mounted }">
-        <div class="logo-mark">
-          <img src="/favicon.svg" alt="考拉出海" class="logo-mark-img" width="64" height="64" />
-        </div>
-        <h1 class="hero-title">{{ $t('brand.name') }}</h1>
-        <p class="hero-sub">{{ $t('login.subtitle') }}</p>
-      </div>
+      <div class="grid">
+        <!-- 左：价值主张 -->
+        <section class="hero-card" :class="{ show: mounted }" aria-label="平台介绍">
+          <h1 class="hero-title">{{ $t('login.hero.title') }}</h1>
+          <p class="hero-sub">{{ $t('login.hero.subtitle') }}</p>
 
-      <div class="card" :class="{ show: mounted }">
-        <!-- Tabs -->
-        <nav class="tabs">
-          <button v-for="tab in tabs" :key="tab.key"
-            :class="['tab', { active: loginType === tab.key }]"
-            @click="loginType = tab.key"
-          >{{ tab.label }}</button>
-          <div class="tab-indicator" :style="indicatorStyle"></div>
-        </nav>
-
-        <!-- TG 登录 -->
-        <div v-if="loginType === 'telegram'" class="form-area">
-          <div class="field">
-            <label>{{ $t('login.tgIdentifier') }}</label>
-            <div class="input-wrap">
-              <input type="text" v-model="tgForm.username" :placeholder="$t('login.tgIdentifierPlaceholder')" autocomplete="username" />
+          <div class="hero-checks">
+            <div class="hero-check">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="#22c55e"><path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>
+              {{ $t('login.hero.check1') }}
+            </div>
+            <div class="hero-check">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="#22c55e"><path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>
+              {{ $t('login.hero.check2') }}
+            </div>
+            <div class="hero-check">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="#22c55e"><path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>
+              {{ $t('login.hero.check3') }}
             </div>
           </div>
 
-          <template v-if="!tgCodeSent">
-            <button class="btn-primary" :disabled="tgSending || !tgForm.username" @click="handleSendTgCode">
-              <span v-if="!tgSending">{{ $t('login.tgSendCode') }}</span>
-              <span v-else class="btn-loading"><i class="dot-spinner"></i>{{ $t('login.tgSending') }}</span>
-            </button>
-          </template>
-          <template v-else>
+          <div class="chip-strip">
+            <span class="chip">{{ $t('login.chips.intl') }}</span>
+            <span class="chip">{{ $t('login.chips.verify') }}</span>
+            <span class="chip">{{ $t('login.chips.marketing') }}</span>
+            <span class="chip">{{ $t('login.chips.api') }}</span>
+            <span class="chip">{{ $t('login.chips.did') }}</span>
+            <span class="chip">{{ $t('login.chips.realtime') }}</span>
+          </div>
+
+          <div class="feature-grid">
+            <div class="feature-tile">
+              <h4>{{ $t('login.features.routing.title') }}</h4>
+              <p>{{ $t('login.features.routing.desc') }}</p>
+            </div>
+            <div class="feature-tile">
+              <h4>{{ $t('login.features.scale.title') }}</h4>
+              <p>{{ $t('login.features.scale.desc') }}</p>
+            </div>
+            <div class="feature-tile">
+              <h4>{{ $t('login.features.pricing.title') }}</h4>
+              <p>{{ $t('login.features.pricing.desc') }}</p>
+            </div>
+            <div class="feature-tile">
+              <h4>{{ $t('login.features.support.title') }}</h4>
+              <p>{{ $t('login.features.support.desc') }}</p>
+            </div>
+          </div>
+
+          <div class="hero-stats">
+            <div class="stat"><b>190+</b><span>{{ $t('login.stats.countries') }}</span></div>
+            <div class="stat"><b>99.9%</b><span>{{ $t('login.stats.uptime') }}</span></div>
+            <div class="stat"><b>&lt; 3s</b><span>{{ $t('login.stats.latency') }}</span></div>
+          </div>
+        </section>
+
+        <!-- 右：登录卡片 -->
+        <section class="card" :class="{ show: mounted }" aria-label="登录表单">
+          <h3 class="card-title">{{ $t('login.cardTitle') }}</h3>
+          <p class="card-micro">{{ $t('login.cardMicro') }}</p>
+
+          <!-- Tabs -->
+          <nav class="tabs">
+            <button v-for="tab in tabs" :key="tab.key"
+              :class="['tab', { active: loginType === tab.key }]"
+              @click="loginType = tab.key"
+            >{{ tab.label }}</button>
+            <div class="tab-indicator" :style="indicatorStyle"></div>
+          </nav>
+
+          <!-- TG 登录 -->
+          <div v-if="loginType === 'telegram'" class="form-area">
             <div class="field">
-              <label>{{ $t('login.tgVerifyCode') }}</label>
+              <label>{{ $t('login.tgIdentifier') }}</label>
               <div class="input-wrap">
-                <input
-                ref="tgCodeInputRef"
-                type="text"
-                v-model="tgForm.code"
-                :placeholder="$t('login.tgEnterCode')"
-                maxlength="6"
-                inputmode="numeric"
-                pattern="[0-9]*"
-                autocomplete="one-time-code"
-                @input="tgForm.code = tgForm.code.replace(/\D/g, '').slice(0, 6)"
-              />
+                <svg class="field-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                <input type="text" v-model="tgForm.username" :placeholder="$t('login.tgIdentifierPlaceholder')" autocomplete="username" />
               </div>
             </div>
-            <button class="btn-primary" :disabled="loading || !tgForm.code" @click="handleTgVerify">
-              <span v-if="!loading">{{ $t('login.tgVerifyLogin') }}</span>
+
+            <template v-if="!tgCodeSent">
+              <button class="btn-primary" :disabled="tgSending || !tgForm.username" @click="handleSendTgCode">
+                <span v-if="!tgSending">{{ $t('login.tgSendCode') }}</span>
+                <span v-else class="btn-loading"><i class="dot-spinner"></i>{{ $t('login.tgSending') }}</span>
+              </button>
+            </template>
+            <template v-else>
+              <div class="field">
+                <label>{{ $t('login.tgVerifyCode') }}</label>
+                <div class="input-wrap">
+                  <svg class="field-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                  <input
+                    ref="tgCodeInputRef"
+                    type="text"
+                    v-model="tgForm.code"
+                    :placeholder="$t('login.tgEnterCode')"
+                    maxlength="6"
+                    inputmode="numeric"
+                    pattern="[0-9]*"
+                    autocomplete="one-time-code"
+                    @input="tgForm.code = tgForm.code.replace(/\D/g, '').slice(0, 6)"
+                  />
+                </div>
+              </div>
+              <button class="btn-primary" :disabled="loading || !tgForm.code" @click="handleTgVerify">
+                <span v-if="!loading">{{ $t('login.tgVerifyLogin') }}</span>
+                <span v-else class="btn-loading"><i class="dot-spinner"></i>{{ $t('login.loggingIn') }}</span>
+              </button>
+              <p class="resend-row">
+                <span v-if="tgCooldown > 0" class="muted">{{ $t('login.tgResendIn', { n: tgCooldown }) }}</span>
+                <button v-else class="link-btn" @click="handleSendTgCode">{{ $t('login.tgResendCode') }}</button>
+              </p>
+            </template>
+          </div>
+
+          <!-- 密码登录 -->
+          <el-form v-else :model="form" :rules="rules" ref="formRef" @submit.prevent="handleLogin" class="form-area">
+            <div class="field">
+              <label>{{ $t('login.email') }}</label>
+              <div class="input-wrap">
+                <svg class="field-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/></svg>
+                <input
+                  type="text"
+                  v-model="form.username"
+                  :placeholder="$t('login.enterEmail')"
+                  autocomplete="username"
+                />
+              </div>
+            </div>
+            <div class="field">
+              <label>{{ $t('login.password') }}</label>
+              <div class="input-wrap has-toggle">
+                <svg class="field-ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                <input
+                  :type="showPwd ? 'text' : 'password'"
+                  v-model="form.password"
+                  :placeholder="$t('login.enterPassword')"
+                  autocomplete="current-password"
+                />
+                <button type="button" class="pwd-toggle" @click="showPwd = !showPwd" tabindex="-1">
+                  <svg v-if="showPwd" width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M1.5 9s3-5.5 7.5-5.5S16.5 9 16.5 9s-3 5.5-7.5 5.5S1.5 9 1.5 9Z" stroke="currentColor" stroke-width="1.3"/><circle cx="9" cy="9" r="2.5" stroke="currentColor" stroke-width="1.3"/></svg>
+                  <svg v-else width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M1.5 9s3-5.5 7.5-5.5S16.5 9 16.5 9s-3 5.5-7.5 5.5S1.5 9 1.5 9Z" stroke="currentColor" stroke-width="1.3"/><circle cx="9" cy="9" r="2.5" stroke="currentColor" stroke-width="1.3"/><path d="M3 15L15 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="captcha-row">
+              <SliderCaptcha ref="captchaRef" v-model="captchaVerified" />
+            </div>
+
+            <button type="submit" class="btn-primary" :disabled="loading" @click.prevent="handleLogin">
+              <span v-if="!loading">
+                {{ $t('login.customerLoginBtn') }}
+              </span>
               <span v-else class="btn-loading"><i class="dot-spinner"></i>{{ $t('login.loggingIn') }}</span>
             </button>
-            <p class="resend-row">
-              <span v-if="tgCooldown > 0" class="muted">{{ $t('login.tgResendIn', { n: tgCooldown }) }}</span>
-              <button v-else class="link-btn" @click="handleSendTgCode">{{ $t('login.tgResendCode') }}</button>
-            </p>
-          </template>
-        </div>
+          </el-form>
 
-        <!-- 密码登录 -->
-        <el-form v-else :model="form" :rules="rules" ref="formRef" @submit.prevent="handleLogin" class="form-area">
-          <div class="field">
-            <label>{{ $t('login.email') }}</label>
-            <div class="input-wrap">
-              <input
-                type="text"
-                v-model="form.username"
-                :placeholder="$t('login.enterEmail')"
-                autocomplete="username"
-              />
-            </div>
+          <div class="card-divider"></div>
+
+          <div class="card-footer">
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1L2 3.2v2.8c0 2.8 1.9 5.3 4.5 6 2.6-.7 4.5-3.2 4.5-6V3.2L6.5 1Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M4.5 6.5l1.3 1.3L8.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>{{ $t('login.securityNote') }}</span>
           </div>
-          <div class="field">
-            <label>{{ $t('login.password') }}</label>
-            <div class="input-wrap has-toggle">
-              <input
-                :type="showPwd ? 'text' : 'password'"
-                v-model="form.password"
-                :placeholder="$t('login.enterPassword')"
-                autocomplete="current-password"
-              />
-              <button type="button" class="pwd-toggle" @click="showPwd = !showPwd" tabindex="-1">
-                <svg v-if="showPwd" width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M1.5 9s3-5.5 7.5-5.5S16.5 9 16.5 9s-3 5.5-7.5 5.5S1.5 9 1.5 9Z" stroke="currentColor" stroke-width="1.3"/><circle cx="9" cy="9" r="2.5" stroke="currentColor" stroke-width="1.3"/></svg>
-                <svg v-else width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M1.5 9s3-5.5 7.5-5.5S16.5 9 16.5 9s-3 5.5-7.5 5.5S1.5 9 1.5 9Z" stroke="currentColor" stroke-width="1.3"/><circle cx="9" cy="9" r="2.5" stroke="currentColor" stroke-width="1.3"/><path d="M3 15L15 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-              </button>
-            </div>
-          </div>
-
-          <div class="captcha-row">
-            <SliderCaptcha ref="captchaRef" v-model="captchaVerified" />
-          </div>
-
-          <button type="submit" class="btn-primary" :disabled="loading" @click.prevent="handleLogin">
-            <span v-if="!loading">
-              {{ $t('login.customerLoginBtn') }}
-            </span>
-            <span v-else class="btn-loading"><i class="dot-spinner"></i>{{ $t('login.loggingIn') }}</span>
-          </button>
-        </el-form>
-
-        <!-- 底部信息 -->
-        <div class="card-footer">
-          <svg width="13" height="13" viewBox="0 0 13 13" fill="none"><path d="M6.5 1L2 3.2v2.8c0 2.8 1.9 5.3 4.5 6 2.6-.7 4.5-3.2 4.5-6V3.2L6.5 1Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M4.5 6.5l1.3 1.3L8.5 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <span>{{ $t('login.securityNote') }}</span>
-        </div>
-        <a href="/" class="card-website-link">{{ $t('login.backToWebsite') }}</a>
+          <a href="/" class="card-website-link">{{ $t('login.backToWebsite') }} →</a>
+        </section>
       </div>
 
-      <p class="copyright" :class="{ show: mounted }">© 2024 {{ $t('brand.name') }}. All rights reserved.</p>
+      <p class="copyright" :class="{ show: mounted }">© 2024 {{ $t('brand.name') }} · All rights reserved</p>
     </main>
   </div>
 </template>
@@ -493,609 +551,457 @@ const mapLoginError = (error: unknown): string => {
 const resetCaptcha = () => { captchaRef.value?.reset(); captchaVerified.value = false }
 </script>
 
+
 <style scoped>
 /* ═══════════════════════════════════════
-   Apple-Inspired Login — 极简通透质感
+   kaolach-style Login — 国际大厂质感
    ═══════════════════════════════════════ */
-
-/* ---------- 页面容器 ---------- */
 .login-page {
-  --accent: #6366F1;
-  --accent-hover: #4F46E5;
-  --accent-glow: rgba(99, 102, 241, 0.35);
-  --card-bg: rgba(28, 28, 34, 0.55);
-  --card-border: rgba(255, 255, 255, 0.08);
-  --card-shadow: 0 8px 64px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.2);
-  --input-bg: rgba(255, 255, 255, 0.06);
-  --input-border: rgba(255, 255, 255, 0.1);
-  --input-focus: rgba(255, 255, 255, 0.12);
-  --text-1: #F5F5F7;
-  --text-2: rgba(245, 245, 247, 0.72);
-  --text-3: rgba(245, 245, 247, 0.48);
-  --text-4: rgba(245, 245, 247, 0.28);
-  --page-bg: #0B0D13;
-
   min-height: 100vh;
+  position: relative;
   display: flex;
   flex-direction: column;
-  background: var(--page-bg);
-  color: var(--text-1);
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Helvetica Neue', Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  overflow: hidden;
-  position: relative;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow-x: hidden;
 }
 
-.login-page.is-light {
-  --accent: #0071E3;
-  --accent-hover: #0077ED;
-  --accent-glow: rgba(0, 113, 227, 0.18);
-  --card-bg: rgba(255, 255, 255, 0.72);
-  --card-border: rgba(0, 0, 0, 0.06);
-  --card-shadow: 0 4px 48px rgba(0, 0, 0, 0.08), 0 1px 4px rgba(0, 0, 0, 0.04);
-  --input-bg: rgba(0, 0, 0, 0.04);
-  --input-border: rgba(0, 0, 0, 0.08);
-  --input-focus: rgba(0, 0, 0, 0.06);
-  --text-1: #1D1D1F;
-  --text-2: rgba(29, 29, 31, 0.72);
-  --text-3: rgba(29, 29, 31, 0.42);
-  --text-4: rgba(29, 29, 31, 0.22);
-  --page-bg: #F5F5F7;
-}
-
-/* ---------- 背景 ---------- */
-.bg {
-  position: fixed;
+/* 背景径向渐变 - kaolach 双色 mesh */
+.bg-mesh {
+  position: absolute;
   inset: 0;
   pointer-events: none;
+  background:
+    radial-gradient(900px 480px at -8% -10%, rgba(42, 157, 143, 0.18), transparent 55%),
+    radial-gradient(900px 480px at 110% 10%, rgba(0, 255, 213, 0.12), transparent 55%),
+    radial-gradient(700px 400px at 50% 110%, rgba(253, 181, 42, 0.08), transparent 60%);
   z-index: 0;
 }
-
-.bg-grain {
-  position: absolute;
-  inset: 0;
-  opacity: 0.025;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 128px;
+.is-light .bg-mesh {
+  background:
+    radial-gradient(900px 480px at -8% -10%, rgba(42, 157, 143, 0.14), transparent 55%),
+    radial-gradient(900px 480px at 110% 10%, rgba(24, 99, 220, 0.10), transparent 55%),
+    radial-gradient(700px 400px at 50% 110%, rgba(253, 181, 42, 0.06), transparent 60%);
 }
 
-.is-light .bg-grain { opacity: 0.02; }
-
-.bg-glow {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(120px);
-  will-change: transform;
-  animation: float 20s ease-in-out infinite;
-}
-
-.glow-a {
-  width: 600px; height: 600px;
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.18), transparent 70%);
-  top: -20%; left: -10%;
-  animation-delay: 0s;
-}
-.glow-b {
-  width: 500px; height: 500px;
-  background: radial-gradient(circle, rgba(168, 85, 247, 0.14), transparent 70%);
-  bottom: -15%; right: -8%;
-  animation-delay: -7s;
-}
-.glow-c {
-  width: 350px; height: 350px;
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.1), transparent 70%);
-  top: 40%; left: 55%;
-  animation-delay: -14s;
-}
-
-.is-light .glow-a { background: radial-gradient(circle, rgba(0, 113, 227, 0.08), transparent 70%); }
-.is-light .glow-b { background: radial-gradient(circle, rgba(168, 85, 247, 0.06), transparent 70%); }
-.is-light .glow-c { background: radial-gradient(circle, rgba(52, 199, 89, 0.05), transparent 70%); }
-
-@keyframes float {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(30px, -20px) scale(1.05); }
-  66% { transform: translate(-20px, 15px) scale(0.97); }
-}
-
+/* ---------- Topbar ---------- */
 .topbar {
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  z-index: 100;
+  position: relative;
+  z-index: 10;
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 14px 24px;
-  gap: 24px;
-  background: rgba(11, 13, 19, 0.6);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  gap: 16px;
+  padding: 18px 32px;
+  max-width: 1280px;
+  width: 100%;
+  margin: 0 auto;
 }
-
-.is-light .topbar {
-  background: rgba(255, 255, 255, 0.7);
-  border-bottom-color: rgba(0, 0, 0, 0.06);
-}
-
 .topbar-logo {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  display: inline-flex; align-items: center;
   text-decoration: none;
-  font-size: 1.25rem;
-  font-weight: 800;
-  color: var(--text-1);
-  letter-spacing: -0.02em;
-  transition: opacity 0.2s;
+  color: var(--text-primary);
+  flex-shrink: 0;
+  height: 40px;
 }
-.topbar-logo-icon { border-radius: 6px; }
+.topbar-wordmark { height: 36px; width: auto; display: block; }
+.topbar-logo:hover { opacity: 0.85; }
 
-.topbar-logo:hover { opacity: 0.9; }
-
-.topbar-logo-text em {
-  font-style: normal;
-  color: var(--accent);
+.topbar-badges {
+  display: flex; gap: 10px; flex-wrap: wrap;
+  margin-left: 24px;
 }
+.trust-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  box-shadow: 0 2px 8px rgba(10, 20, 37, 0.04);
+}
+.trust-pill svg { color: var(--primary); }
 
 .topbar-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  margin-left: auto;
+  display: flex; align-items: center; gap: 8px;
 }
-
-.topbar-nav {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex-wrap: wrap;
-}
-
-.topbar-nav-item {
-  padding: 8px 14px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-2);
-  text-decoration: none;
-  border-radius: 10px;
-  transition: color 0.2s, background 0.2s;
-}
-
-.topbar-nav-item:hover {
-  color: var(--text-1);
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.is-light .topbar-nav-item {
-  color: rgba(29, 29, 31, 0.72);
-}
-
-.is-light .topbar-nav-item:hover {
-  color: var(--text-1);
-  background: rgba(0, 0, 0, 0.05);
-}
-
 .topbar-pill {
-  height: 34px;
-  min-width: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 10px;
-  background: rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 20px;
-  color: var(--text-2);
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.is-light .topbar-pill {
-  background: rgba(0, 0, 0, 0.04);
-  border-color: rgba(0, 0, 0, 0.06);
-}
-
-.topbar-pill:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--text-1);
-  transform: scale(1.04);
-}
-.is-light .topbar-pill:hover { background: rgba(0, 0, 0, 0.07); }
-
-.lang-pill { padding: 0 14px; }
-
-/* 卡片下方官网链接，醒目可见 */
-.card-website-link {
-  display: block;
-  text-align: center;
-  margin-top: 12px;
-  padding: 10px 16px;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--accent);
-  text-decoration: none;
-  border: 1px solid rgba(99, 102, 241, 0.4);
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 36px; min-width: 36px; padding: 0 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
   border-radius: 10px;
-  background: rgba(99, 102, 241, 0.1);
-  transition: background 0.2s, border-color 0.2s;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  transition: all 0.2s;
 }
-
-.card-website-link:hover {
-  background: rgba(99, 102, 241, 0.18);
-  border-color: var(--accent);
+.topbar-pill:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  transform: translateY(-1px);
 }
+.lang-pill { font-family: 'Plus Jakarta Sans', sans-serif; }
 
-.is-light .card-website-link {
-  color: var(--accent);
-  border-color: rgba(0, 113, 227, 0.4);
-  background: rgba(0, 113, 227, 0.08);
-}
-
-.is-light .card-website-link:hover {
-  background: rgba(0, 113, 227, 0.15);
-}
-
+/* ---------- Main grid ---------- */
 .main {
+  position: relative;
+  z-index: 5;
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 80px 20px 40px;
-  position: relative;
-  z-index: 1;
+  padding: 28px 32px 64px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 28px;
+  max-width: 1280px;
+  width: 100%;
+  align-items: start;
+}
+@media (max-width: 992px) {
+  .grid { grid-template-columns: 1fr; }
+  .topbar-badges { display: none; }
+}
+@media (max-width: 600px) {
+  .topbar { padding: 14px 18px; }
+  .main { padding: 16px 18px 40px; }
 }
 
-/* ---------- Hero ---------- */
-.hero {
-  text-align: center;
-  margin-bottom: 36px;
+/* ---------- 左：Hero card ---------- */
+.hero-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  padding: 36px 32px;
+  box-shadow: 0 12px 32px rgba(10, 20, 37, 0.06);
   opacity: 0;
-  transform: translateY(18px);
-  transition: all 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+  transform: translateY(16px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
 }
-.hero.show { opacity: 1; transform: translateY(0); }
-
-.logo-mark { margin-bottom: 20px; display: flex; justify-content: center; }
-.logo-mark-img { border-radius: 14px; box-shadow: 0 8px 24px rgba(59,130,246,.3); }
-
-.logo-ring {
-  width: 72px; height: 72px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 50%;
-  background: radial-gradient(circle at 40% 40%, rgba(99, 102, 241, 0.12), rgba(168, 85, 247, 0.06));
-  border: 1px solid rgba(99, 102, 241, 0.1);
-  box-shadow: 0 0 40px rgba(99, 102, 241, 0.12), inset 0 0 20px rgba(99, 102, 241, 0.05);
-  transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.4s ease;
-}
-.is-light .logo-ring {
-  background: radial-gradient(circle at 40% 40%, rgba(99, 102, 241, 0.08), rgba(168, 85, 247, 0.03));
-  border-color: rgba(99, 102, 241, 0.08);
-  box-shadow: 0 0 30px rgba(99, 102, 241, 0.06);
-}
-.logo-ring:hover {
-  transform: scale(1.08);
-  box-shadow: 0 0 60px rgba(99, 102, 241, 0.2), inset 0 0 20px rgba(99, 102, 241, 0.08);
-}
+.hero-card.show { opacity: 1; transform: translateY(0); }
 
 .hero-title {
-  font-size: 34px;
+  font-size: clamp(28px, 2.8vw, 40px);
+  line-height: 1.15;
   font-weight: 800;
-  letter-spacing: 0.12em;
-  margin: 0 0 8px;
-  background: linear-gradient(135deg, #6366F1 0%, #A855F7 50%, #6366F1 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  background-size: 200% 100%;
-  animation: shimmer 6s ease-in-out infinite;
+  margin: 0 0 12px;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
 }
-.is-light .hero-title {
-  background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 50%, #4F46E5 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  background-size: 200% 100%;
-  animation: shimmer 6s ease-in-out infinite;
-}
-@keyframes shimmer {
-  0%, 100% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-}
-
 .hero-sub {
-  font-size: 13px;
-  color: var(--text-3);
-  margin: 0;
-  font-weight: 500;
-  letter-spacing: 0.35em;
-  text-transform: uppercase;
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1.6;
+  margin: 0 0 22px;
 }
 
-/* ---------- 卡片 ---------- */
+.hero-checks {
+  display: flex; flex-direction: column; gap: 10px;
+  margin-bottom: 18px;
+}
+.hero-check {
+  display: flex; align-items: center; gap: 10px;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.hero-check svg { flex-shrink: 0; }
+
+.chip-strip {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+.chip {
+  padding: 7px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-subtle);
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+@media (max-width: 600px) {
+  .feature-grid { grid-template-columns: 1fr; }
+}
+.feature-tile {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: 0 2px 6px rgba(10, 20, 37, 0.03);
+  transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
+}
+.feature-tile:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px rgba(42, 157, 143, 0.10);
+  border-color: var(--primary);
+}
+.feature-tile h4 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.feature-tile p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.hero-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  padding: 18px 0 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+.stat { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.stat b {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--primary);
+  font-feature-settings: 'tnum';
+}
+.stat span {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+/* ---------- 右：登录卡 ---------- */
 .card {
-  width: 100%;
-  max-width: 400px;
-  background: var(--card-bg);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
-  border: 1px solid var(--card-border);
-  border-radius: 20px;
-  padding: 32px 32px 28px;
-  box-shadow: var(--card-shadow);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: 16px;
+  padding: 32px 28px;
+  box-shadow: 0 16px 48px rgba(10, 20, 37, 0.08);
+  position: sticky;
+  top: 24px;
   opacity: 0;
-  transform: translateY(24px);
-  transition: all 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.1s;
+  transform: translateY(16px);
+  transition: opacity 0.6s ease 0.15s, transform 0.6s ease 0.15s;
 }
 .card.show { opacity: 1; transform: translateY(0); }
 
-/* ---------- Tabs ---------- */
-.tabs {
-  display: flex;
-  position: relative;
-  background: var(--input-bg);
-  border-radius: 10px;
-  padding: 3px;
-  margin-bottom: 28px;
+.card-title {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  margin: 0 0 4px;
+  color: var(--text-primary);
+}
+.card-micro {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 20px;
 }
 
+/* Tabs */
+.tabs {
+  position: relative;
+  display: flex;
+  background: var(--bg-tertiary);
+  border-radius: 10px;
+  padding: 4px;
+  margin-bottom: 22px;
+}
 .tab {
   flex: 1;
-  position: relative;
-  z-index: 1;
-  padding: 9px 0;
-  background: none;
+  position: relative; z-index: 2;
+  padding: 9px 12px;
   border: none;
-  color: var(--text-3);
-  font-size: 13px;
-  font-weight: 500;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 13.5px;
+  font-weight: 600;
   cursor: pointer;
-  transition: color 0.3s ease;
-  letter-spacing: 0.01em;
+  border-radius: 8px;
+  transition: color 0.2s;
+  font-family: inherit;
 }
-.tab:hover { color: var(--text-2); }
-.tab.active { color: var(--text-1); }
-
+.tab.active { color: var(--primary); }
+.tab:not(.active):hover { color: var(--text-secondary); }
 .tab-indicator {
   position: absolute;
-  top: 3px;
-  bottom: 3px;
-  background: rgba(255, 255, 255, 0.1);
+  top: 4px; bottom: 4px;
+  background: var(--bg-secondary);
   border-radius: 8px;
-  transition: left 0.35s cubic-bezier(0.16, 1, 0.3, 1), width 0.35s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 6px rgba(10, 20, 37, 0.08);
+  transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 1;
 }
 
-.is-light .tab-indicator {
-  background: rgba(255, 255, 255, 0.85);
-  box-shadow: 0 0.5px 2px rgba(0, 0, 0, 0.08), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
-}
+/* Form */
+.form-area { display: flex; flex-direction: column; gap: 14px; }
 
-/* ---------- 表单区 ---------- */
-.form-area {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.field {
-  margin-bottom: 18px;
-}
-
+.field { position: relative; }
 .field label {
   display: block;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-2);
-  margin-bottom: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
   letter-spacing: 0.01em;
 }
-
 .input-wrap {
   position: relative;
+  display: flex; align-items: center;
 }
-
+.field-ico {
+  position: absolute;
+  left: 14px; top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-tertiary);
+  pointer-events: none;
+  z-index: 2;
+}
 .input-wrap input {
   width: 100%;
   height: 48px;
-  padding: 0 16px;
-  background: var(--input-bg);
-  border: 1px solid var(--input-border);
-  border-radius: 12px;
-  color: var(--text-1);
-  font-size: 15px;
-  font-family: inherit;
+  padding: 0 16px 0 44px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 14px;
   outline: none;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  box-sizing: border-box;
+  transition: border-color 0.18s, box-shadow 0.18s;
+  font-family: inherit;
 }
-
-.input-wrap input::placeholder {
-  color: var(--text-4);
-}
-
-.input-wrap input:hover {
-  border-color: rgba(255, 255, 255, 0.15);
-  background: var(--input-focus);
-}
-.is-light .input-wrap input:hover {
-  border-color: rgba(0, 0, 0, 0.12);
-}
-
+.input-wrap.has-toggle input { padding-right: 44px; }
+.input-wrap input::placeholder { color: var(--text-quaternary); }
 .input-wrap input:focus {
-  border-color: var(--accent);
-  background: var(--input-focus);
-  box-shadow: 0 0 0 3px var(--accent-glow);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 4px rgba(42, 157, 143, 0.18);
 }
-
-.has-toggle input { padding-right: 46px; }
+.input-wrap input:hover:not(:focus) {
+  border-color: var(--border-hover);
+}
 
 .pwd-toggle {
   position: absolute;
-  right: 4px; top: 50%;
+  right: 8px; top: 50%;
   transform: translateY(-50%);
-  width: 38px; height: 38px;
+  width: 32px; height: 32px;
   display: flex; align-items: center; justify-content: center;
-  background: none;
+  background: transparent;
   border: none;
-  color: var(--text-4);
+  color: var(--text-tertiary);
   cursor: pointer;
-  border-radius: 8px;
-  transition: color 0.2s, background 0.2s;
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
 }
-.pwd-toggle:hover { color: var(--text-2); background: rgba(255, 255, 255, 0.06); }
-.is-light .pwd-toggle:hover { background: rgba(0, 0, 0, 0.04); }
+.pwd-toggle:hover { background: var(--bg-tertiary); color: var(--text-primary); }
 
-/* ---------- 滑块验证 ---------- */
-.captcha-row {
-  margin-bottom: 22px;
-}
+.captcha-row { padding: 4px 0; }
 
-/* ---------- 主按钮 ---------- */
 .btn-primary {
-  width: 100%;
-  height: 48px;
-  background: var(--accent);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 100%; height: 48px;
+  padding: 0 18px;
+  background: linear-gradient(135deg, var(--primary), var(--primary-hover));
+  color: #ffffff;
+  font-size: 14.5px;
+  font-weight: 700;
   border: none;
-  border-radius: 12px;
-  color: #fff;
-  font-size: 15px;
-  font-weight: 600;
-  font-family: inherit;
-  letter-spacing: 0.01em;
+  border-radius: 10px;
   cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  position: relative;
-  overflow: hidden;
+  letter-spacing: 0.01em;
+  box-shadow: 0 8px 20px rgba(42, 157, 143, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
+  font-family: inherit;
+  margin-top: 4px;
 }
-
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  transform: scale(1.01);
-  box-shadow: 0 4px 20px var(--accent-glow);
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  box-shadow: 0 12px 28px rgba(42, 157, 143, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
-
-.btn-primary:active:not(:disabled) {
-  transform: scale(0.98);
+.btn-primary:active:not(:disabled) { transform: translateY(0); }
+.btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
   box-shadow: none;
 }
 
-.btn-primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-loading {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
+.btn-loading { display: inline-flex; align-items: center; gap: 8px; }
 .dot-spinner {
-  display: inline-block;
-  width: 16px; height: 16px;
-  border: 2px solid rgba(255,255,255,0.3);
+  width: 14px; height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
   border-top-color: #fff;
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
+  display: inline-block;
 }
-
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---------- 卡片底部 ---------- */
-.card-hint {
-  margin: 16px 0 0;
-  padding: 10px 14px;
-  background: var(--input-bg);
-  border-radius: 10px;
-  font-size: 12px;
-  color: var(--text-3);
-  text-align: center;
-  line-height: 1.5;
-}
-
-.card-footer {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin-top: 20px;
-  padding-top: 18px;
-  border-top: 1px solid var(--card-border);
-  color: var(--text-4);
-  font-size: 12px;
-}
-
-.card-footer svg { color: #34C759; flex-shrink: 0; }
-.is-light .card-footer svg { color: #30D158; }
-
-/* ---------- 重发 ---------- */
 .resend-row {
+  margin: 8px 0 0;
   text-align: center;
-  margin-top: 14px;
   font-size: 13px;
 }
-.muted { color: var(--text-4); }
-
+.resend-row .muted { color: var(--text-tertiary); }
 .link-btn {
-  background: none;
-  border: none;
-  color: var(--accent);
+  background: none; border: none; padding: 0;
+  color: var(--primary);
+  font-weight: 600;
   cursor: pointer;
   font-size: 13px;
-  font-weight: 500;
-  font-family: inherit;
-  padding: 0;
 }
 .link-btn:hover { text-decoration: underline; }
 
-/* ---------- 版权 ---------- */
+/* Card footer */
+.card-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 22px 0 14px;
+}
+.card-footer {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.card-footer svg { color: var(--success); }
+.card-website-link {
+  display: block;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: 600;
+}
+.card-website-link:hover { text-decoration: underline; }
+
+/* Copyright */
 .copyright {
-  margin-top: 36px;
+  margin-top: 32px;
   font-size: 12px;
-  color: var(--text-4);
+  color: var(--text-quaternary);
+  text-align: center;
   opacity: 0;
-  transform: translateY(10px);
-  transition: all 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.2s;
+  transition: opacity 0.6s ease 0.3s;
 }
-.copyright.show { opacity: 1; transform: translateY(0); }
+.copyright.show { opacity: 1; }
 
-/* ---------- 图标切换动画 ---------- */
-.icon-flip-enter-active,
-.icon-flip-leave-active {
-  transition: all 0.2s ease;
+/* Theme icon transition */
+.icon-flip-enter-active, .icon-flip-leave-active {
+  transition: transform 0.3s, opacity 0.3s;
 }
-.icon-flip-enter-from { opacity: 0; transform: rotate(-90deg) scale(0.6); }
-.icon-flip-leave-to { opacity: 0; transform: rotate(90deg) scale(0.6); }
-
-/* ---------- 覆盖 el-form 默认样式 ---------- */
-:deep(.el-form-item) { margin-bottom: 0; }
-:deep(.el-form-item__error) {
-  font-size: 12px;
-  padding-top: 4px;
-  color: #FF453A;
-}
-.is-light :deep(.el-form-item__error) { color: #FF3B30; }
-
-/* ---------- 响应式 ---------- */
-@media (max-width: 480px) {
-  .main { padding: 70px 16px 32px; }
-  .topbar { padding: 12px 16px; gap: 12px; }
-  .topbar-logo { font-size: 1.1rem; }
-  .topbar-nav { gap: 0; }
-  .topbar-nav-item { padding: 6px 10px; font-size: 12px; }
-  .card { padding: 24px 22px 22px; border-radius: 18px; }
-  .hero-title { font-size: 26px; }
-  .tab { font-size: 12px; padding: 8px 0; }
-}
-
-@media (min-height: 900px) {
-  .main { padding-top: 0; }
-}
+.icon-flip-enter-from { transform: rotate(-90deg); opacity: 0; }
+.icon-flip-leave-to { transform: rotate(90deg); opacity: 0; }
 </style>

@@ -219,7 +219,7 @@
         <el-row :gutter="24">
           <el-col :span="12">
             <el-form-item :label="$t('channels.channelCode')" prop="channel_code">
-              <el-input v-model="form.channel_code" :disabled="isEdit" :placeholder="$t('channels.channelCodePlaceholder')" />
+              <el-input v-model="form.channel_code" :placeholder="$t('channels.channelCodePlaceholder')" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -1441,6 +1441,7 @@ const submitForm = async () => {
   try {
     if (isEdit.value) {
       const updatePayload: any = {
+        channel_code: form.channel_code,
         channel_name: form.channel_name,
         max_tps: form.max_tps,
         concurrency: form.concurrency,

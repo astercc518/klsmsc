@@ -79,10 +79,10 @@
           </el-select>
         </div>
 
-        <div class="filter-item" v-if="isAdmin">
+        <div class="filter-item">
           <label class="filter-label">通道</label>
           <el-select v-model="searchForm.channel_id" placeholder="全部通道" clearable size="large" class="filter-select">
-            <el-option v-for="ch in channels" :key="ch.id" :label="ch.channel_code" :value="ch.id" />
+            <el-option v-for="ch in channels" :key="ch.id" :label="ch.channel_code ?? ch.code" :value="ch.id" />
           </el-select>
         </div>
 
@@ -165,7 +165,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column v-if="isAdmin" prop="channel_code" label="通道" width="140">
+          <el-table-column prop="channel_code" label="通道" width="140">
             <template #default="{ row }">
               <el-tag v-if="row.channel_code" size="small" :type="row.channel_code?.includes('SMPP') ? 'primary' : 'success'" effect="plain">
                 {{ row.channel_code }}
@@ -296,7 +296,7 @@
             <span class="dc-label">{{ $t('smsRecords.country') }}</span>
             <span class="dc-value">{{ countryDisplay(currentRecord.country_code) }}</span>
           </div>
-          <div class="detail-card" v-if="isAdmin && currentRecord.channel_code">
+          <div class="detail-card" v-if="currentRecord.channel_code">
             <span class="dc-label">发送通道</span>
             <el-tag size="small" effect="plain">{{ currentRecord.channel_code }}</el-tag>
           </div>
@@ -399,6 +399,7 @@ import { ElMessage } from 'element-plus'
 import { Refresh, Search, View } from '@element-plus/icons-vue'
 import { getSMSRecords } from '@/api/sms'
 import { getAccountsAdmin, getChannelsAdmin } from '@/api/admin'
+import { getChannels } from '@/api/channel'
 import { COUNTRY_LIST, findCountryByDial, findCountryByIso } from '@/constants/countries'
 
 const { t } = useI18n()
@@ -511,7 +512,7 @@ const buildParams = () => {
   if (searchForm.value.phone_number) params.phone_number = searchForm.value.phone_number
   if (searchForm.value.message_id) params.message_id = searchForm.value.message_id
   if (isAdmin.value && searchForm.value.account_id) params.account_id = searchForm.value.account_id
-  if (isAdmin.value && searchForm.value.channel_id) params.channel_id = searchForm.value.channel_id
+  if (searchForm.value.channel_id) params.channel_id = searchForm.value.channel_id
   if (searchForm.value.country_code) params.country_code = searchForm.value.country_code
   if (searchForm.value.batch_id) params.batch_id = searchForm.value.batch_id
   if (dateRange.value && dateRange.value.length === 2) {
@@ -636,10 +637,14 @@ const loadAccounts = async () => {
 }
 
 const loadChannels = async () => {
-  if (!isAdmin.value) return
   try {
-    const res: any = await getChannelsAdmin()
-    channels.value = (res?.channels || []).filter((c: any) => c.status === 'active')
+    if (isAdmin.value) {
+      const res: any = await getChannelsAdmin()
+      channels.value = (res?.channels || []).filter((c: any) => c.status === 'active')
+    } else {
+      const res: any = await getChannels()
+      channels.value = res?.channels || []
+    }
   } catch { /* ignore */ }
 }
 

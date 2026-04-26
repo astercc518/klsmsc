@@ -15,6 +15,7 @@ from sqlalchemy import (
     union_all,
     literal,
     cast,
+    collate,
     delete as sa_delete,
     Integer,
     desc,
@@ -299,7 +300,7 @@ def _my_numbers_union_subquery(
         PrivateLibraryNumber.account_id,
         PrivateLibraryNumber.last_used_at,
         PrivateLibraryNumber.created_at,
-        literal("manual").label("library_origin"),
+        collate(literal("manual"), "utf8mb4_unicode_ci").label("library_origin"),
     ).where(PrivateLibraryNumber.account_id == account_id, _pln_client_visible_clause())
     q_dn = select(
         DataNumber.id,
@@ -307,7 +308,7 @@ def _my_numbers_union_subquery(
         DataNumber.country_code,
         DataNumber.tags,
         DataNumber.carrier,
-        cast(DataNumber.status, String).label("status"),
+        collate(cast(DataNumber.status, String), "utf8mb4_unicode_ci").label("status"),
         DataNumber.source,
         DataNumber.purpose,
         DataNumber.data_date,
@@ -317,7 +318,7 @@ def _my_numbers_union_subquery(
         DataNumber.account_id,
         DataNumber.last_used_at,
         DataNumber.created_at,
-        literal("purchased").label("library_origin"),
+        collate(literal("purchased"), "utf8mb4_unicode_ci").label("library_origin"),
     ).where(DataNumber.account_id == account_id)
     if country is not None:
         q_pln = q_pln.where(_sql_dim_ci_trim_eq(PrivateLibraryNumber.country_code, country))

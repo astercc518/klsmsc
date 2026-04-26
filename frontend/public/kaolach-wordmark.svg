@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 56" width="240" height="56">
+  <defs>
+    <linearGradient id="kg2" x1="20%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34b1a2"/>
+      <stop offset="100%" stop-color="#1f7a70"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Mark -->
+  <g>
+    <rect width="56" height="56" rx="12" fill="url(#kg2)"/>
+    <g fill="#ffffff">
+      <circle cx="16.5" cy="17.5" r="8.5"/>
+      <circle cx="39.5" cy="17.5" r="8.5"/>
+      <path d="
+        M 10.5 24.5
+        Q 10.5 19.5 15.5 19.5
+        L 40.5 19.5
+        Q 45.5 19.5 45.5 24.5
+        L 45.5 36.5
+        Q 45.5 41.5 40.5 41.5
+        L 21 41.5
+        L 12 49
+        L 16 41.5
+        Q 10.5 41.5 10.5 36.5
+        Z
+      "/>
+    </g>
+    <ellipse cx="28" cy="31.5" rx="3.4" ry="2.6" fill="#1f7a70"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="70" y="38"
+        font-family="'Plus Jakarta Sans', system-ui, -apple-system, sans-serif"
+        font-size="26" font-weight="800" letter-spacing="-0.6"
+        fill="currentColor">kaolach</text>
+</svg>

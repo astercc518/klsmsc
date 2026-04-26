@@ -66,13 +66,13 @@ async def opening_start(update: Update, context: ContextTypes.DEFAULT_TYPE, biz_
     tg_id = query.from_user.id
 
     client = APIClient()
-    verify = await client.verify_bot_user(tg_id)
+    verify = await client.verify_bot_user(tg_id, include_monthly_performance=False)
     
     if not verify.get("authorized") or verify.get("role") not in ('sales', 'super_admin', 'admin'):
         await query.edit_message_text("❌ 仅销售/管理员可使用此功能")
         return None
 
-    context.user_data['opening_sales_id'] = verify.get("id") # 假设为员工 ID
+    context.user_data['opening_sales_id'] = verify.get("user_id")
     context.user_data['opening_sales_role'] = verify.get("role")
     context.user_data['opening_sales_tg_id'] = tg_id
 
@@ -727,7 +727,6 @@ async def _submit_data_order(query, context):
             country_code=cc,
             sales_id=sales_id,
             default_price=price,
-            account_name=f"{biz_type.upper()}_{cc}_{secrets.token_hex(3).upper()}"
         )
         if not account_res.get("success"):
             raise Exception(account_res.get("message", "Account creation failed"))

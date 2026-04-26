@@ -33,7 +33,7 @@ api = APIClient()
 
 async def _is_already_bound(tg_id: int) -> bool:
     """检查用户是否已有绑定账户"""
-    user_info = await api.verify_user(tg_id)
+    user_info = await api.verify_user(tg_id, include_monthly_performance=False)
     return user_info.get("valid", False)
 
 

@@ -29,6 +29,36 @@ class InvitationService:
         chars = string.ascii_uppercase + string.digits
         return ''.join(secrets.choice(chars) for _ in range(length))
 
+    async def _gen_account_name(self, sales_id: int, country_code: str) -> str:
+        """生成账户名: TG{员工工号数字}{国家区号3位}V{序号02d}"""
+        import re as _re
+        from sqlalchemy import func as _func
+        from app.utils.country_code import get_dial_code
+        from app.modules.common.admin_user import AdminUser
+        from app.modules.common.account import Account
+
+        admin_username = (await self.db.execute(
+            select(AdminUser.username).where(AdminUser.id == sales_id)
+        )).scalar_one_or_none() or ""
+        m = _re.search(r'\d+$', admin_username)
+        num_part = m.group(0) if m else ""
+
+        cc = (country_code or "").upper()
+        if cc == "GLOBAL":
+            cc = ""
+        dial = get_dial_code(cc) if cc else "000"
+
+        count = (await self.db.execute(
+            select(_func.count()).select_from(Account).where(
+                Account.sales_id == sales_id,
+                Account.country_code == (cc or None),
+                Account.is_deleted == False,
+            )
+        )).scalar() or 0
+        seq = count + 1
+
+        return f"TG{num_part}{dial}V{seq:02d}"
+
     async def create_code(
         self, 
         sales_id: int, 
@@ -103,8 +133,8 @@ class InvitationService:
 
         # 1. 创建账户（含登录密码）
         api_key_plain = secrets.token_hex(32)
-        account_name = f"TG_{tg_id}_{secrets.token_hex(2)}"
         login_password = secrets.token_urlsafe(10)
+        account_name = await self._gen_account_name(invite.sales_id, country_code)
 
         # 根据业务类型构建 services（短信账户默认同步开通数据服务）
         svc_list = [business_type]

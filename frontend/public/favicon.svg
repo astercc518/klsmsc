@@ -1,20 +1,36 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
   <defs>
-    <linearGradient id="sea" x1="0%" y1="100%" x2="0%" y2="0%">
-      <stop offset="0%" stop-color="#1e40af"/>
-      <stop offset="100%" stop-color="#3b82f6"/>
+    <linearGradient id="kg" x1="20%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34b1a2"/>
+      <stop offset="100%" stop-color="#1f7a70"/>
     </linearGradient>
   </defs>
-  <rect width="32" height="32" rx="6" fill="url(#sea)"/>
-  <path d="M6 20 L8 24 L24 24 L26 20 Z" fill="#1e3a5f"/>
-  <path d="M16 8 L16 20 L26 14 Z" fill="#60a5fa"/>
-  <circle cx="21" cy="12" r="1.2" fill="#fff"/>
-  <circle cx="12" cy="16" r="4" fill="#9ca3af"/>
-  <circle cx="10.5" cy="15" r="1" fill="#374151"/>
-  <circle cx="13.5" cy="15" r="1" fill="#374151"/>
-  <ellipse cx="12" cy="17" rx="1.5" ry="0.8" fill="#374151"/>
-  <circle cx="8" cy="14" r="2.5" fill="#9ca3af"/>
-  <circle cx="16" cy="14" r="2.5" fill="#9ca3af"/>
-  <circle cx="8" cy="14" r="1.2" fill="#e5e7eb"/>
-  <circle cx="16" cy="14" r="1.2" fill="#e5e7eb"/>
+
+  <!-- 圆角底板 -->
+  <rect width="64" height="64" rx="14" fill="url(#kg)"/>
+
+  <!-- 抽象考拉 = 聊天气泡（单一白色剪影） -->
+  <g fill="#ffffff">
+    <!-- 左耳 -->
+    <circle cx="19" cy="20" r="10"/>
+    <!-- 右耳 -->
+    <circle cx="45" cy="20" r="10"/>
+    <!-- 脸 / 气泡主体 + 左下气泡尾 -->
+    <path d="
+      M 12 28
+      Q 12 22 18 22
+      L 46 22
+      Q 52 22 52 28
+      L 52 42
+      Q 52 48 46 48
+      L 24 48
+      L 14 56
+      L 18 48
+      Q 12 48 12 42
+      Z
+    "/>
+  </g>
+
+  <!-- 鼻头（点睛之笔，让袋拉感觉立住） -->
+  <ellipse cx="32" cy="36" rx="4" ry="3" fill="#1f7a70"/>
 </svg>

@@ -45,8 +45,8 @@ async def invite_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tg_id = user.id
     
     api = APIClient()
-    user_info = await api.verify_user(tg_id)
-    
+    user_info = await api.verify_user(tg_id, include_monthly_performance=False)
+
     if not user_info or user_info.get("role") not in ['sales', 'super_admin', 'admin']:
         await update.message.reply_text("❌ 您尚未绑定销售账号，请先使用 `/bind_sales`", parse_mode='Markdown')
         return ConversationHandler.END

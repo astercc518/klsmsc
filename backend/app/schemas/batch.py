@@ -45,6 +45,7 @@ class SmsBatchResponse(BaseModel):
     status: BatchStatus
     error_message: Optional[str]
     sender_id: Optional[str]
+    channel_code: Optional[str] = None
     progress: int
     started_at: Optional[datetime]
     completed_at: Optional[datetime]

@@ -2,7 +2,7 @@
 管理员API路由
 """
 import asyncio
-from fastapi import APIRouter, Depends, Header, HTTPException, status, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, select, text, update as sa_update, func, and_
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -106,6 +106,7 @@ class ChannelCreateRequest(BaseModel):
 
 
 class ChannelUpdateRequest(BaseModel):
+    channel_code: Optional[str] = None
     channel_name: Optional[str] = None
     max_tps: Optional[int] = None
     concurrency: Optional[int] = None
@@ -212,61 +213,100 @@ get_current_admin = AuthService.get_current_admin
 @router.post("/login", response_model=AdminLoginResponse)
 async def admin_login(
     request: AdminLoginRequest,
+    http_request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """管理员登录"""
-    logger.info(f"管理员登录: {request.username}")
-    
+    from app.services.operation_log import log_operation
+    username = request.username
+    client_ip = http_request.client.host if http_request.client else None
+    logger.info(f"管理员登录: {username}")
+
     # 查询管理员
     result = await db.execute(
-        select(AdminUser).where(AdminUser.username == request.username)
+        select(AdminUser).where(AdminUser.username == username)
     )
     admin = result.scalar_one_or_none()
-    
+
     if not admin:
+        await log_operation(
+            db, admin_id=None, admin_name=username,
+            module="login", action="login",
+            title=f"管理员 {username} 登录失败：账号不存在",
+            ip_address=client_ip, status="failed",
+            error_message="账号不存在",
+        )
         return AdminLoginResponse(
             success=False,
             error="invalid_credentials"
         )
-    
+
     # 检查状态（密码验证前先检查，避免已锁定账户继续累加失败次数）
     if admin.status == "locked":
+        await log_operation(
+            db, admin_id=admin.id, admin_name=admin.username,
+            module="login", action="login",
+            title=f"管理员 {admin.username} 登录失败：账号已锁定",
+            ip_address=client_ip, status="failed",
+            error_message="账号已锁定",
+        )
         return AdminLoginResponse(
             success=False,
             error="account_locked"
         )
     if admin.status != "active":
+        await log_operation(
+            db, admin_id=admin.id, admin_name=admin.username,
+            module="login", action="login",
+            title=f"管理员 {admin.username} 登录失败：账号已停用",
+            ip_address=client_ip, status="failed",
+            error_message="账号已停用",
+        )
         return AdminLoginResponse(
             success=False,
             error="account_disabled"
         )
-    
+
     # 验证密码
     if not AuthService.verify_password(request.password, admin.password_hash):
         admin.login_failed_count += 1
         remaining = 5 - admin.login_failed_count
         if admin.login_failed_count >= 5:
             admin.status = "locked"
+            await log_operation(
+                db, admin_id=admin.id, admin_name=admin.username,
+                module="login", action="login",
+                title=f"管理员 {admin.username} 登录失败：密码错误次数过多，账号已锁定",
+                ip_address=client_ip, status="failed",
+                error_message="密码错误次数过多，账号已锁定",
+            )
             await db.commit()
             return AdminLoginResponse(
                 success=False,
                 error="account_locked"
             )
+        await log_operation(
+            db, admin_id=admin.id, admin_name=admin.username,
+            module="login", action="login",
+            title=f"管理员 {admin.username} 登录失败：密码错误，剩余 {remaining} 次",
+            ip_address=client_ip, status="failed",
+            error_message=f"密码错误，剩余 {remaining} 次机会",
+        )
         await db.commit()
         return AdminLoginResponse(
             success=False,
             error=f"invalid_credentials:{remaining}"
         )
-    
+
     # 更新登录信息
     admin.last_login_at = datetime.now()
     admin.login_failed_count = 0
-    
-    from app.services.operation_log import log_operation
+
     await log_operation(
         db, admin_id=admin.id, admin_name=admin.username,
         module="login", action="login", target_type="admin",
         target_id=str(admin.id), title=f"管理员 {admin.username} 登录成功",
+        ip_address=client_ip,
     )
     await db.commit()
     
@@ -735,6 +775,15 @@ async def create_account_admin(
     await db.commit()
     await db.refresh(new_account)
 
+    from app.services.operation_log import log_operation as _log_op
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="account", action="create", target_type="account",
+        target_id=str(new_account.id),
+        title=f"创建客户账户 {request.account_name}",
+        detail=f'{{"account_id": {new_account.id}, "business_type": "{request.business_type}", "protocol": "{request.protocol}"}}',
+    )
+
     # 新开短信账户赠送 1U：记录余额日志
     if initial_balance > 0:
         from app.modules.common.balance_log import BalanceLog
@@ -983,6 +1032,16 @@ async def update_account_admin(
 
     await db.commit()
 
+    from app.services.operation_log import log_operation as _log_op
+    updated_fields = request.model_dump(exclude_unset=True, exclude_none=True)
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="account", action="update", target_type="account",
+        target_id=str(account_id),
+        title=f"更新客户账户 #{account_id}",
+        detail=str(list(updated_fields.keys())),
+    )
+
     # 失效余额缓存（阈值/状态更新也可能影响展示）
     try:
         from app.utils.cache import get_cache_manager
@@ -1213,6 +1272,16 @@ async def adjust_account_balance(
     db.add(log)
     await db.commit()
 
+    from app.services.operation_log import log_operation as _log_op
+    sign = "+" if amount > 0 else ""
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="finance", action="update", target_type="account",
+        target_id=str(account_id),
+        title=f"余额调整 账户#{account_id} {sign}{float(amount)} {a.currency}（{change_type}）",
+        detail=f'{{"change_type": "{change_type}", "amount": {float(amount)}, "balance_before": {float(balance_before)}, "balance_after": {float(balance_after)}}}',
+    )
+
     # 失效余额缓存
     try:
         from app.utils.cache import get_cache_manager
@@ -1392,6 +1461,7 @@ async def delete_account_admin(
 
     from app.modules.common.telegram_binding import TelegramBinding
 
+    account_name = account.account_name or f"#{account_id}"
     # 软删除：将状态设为closed并标记删除
     account.status = "closed"
     account.is_deleted = True
@@ -1402,6 +1472,14 @@ async def delete_account_admin(
         delete(TelegramBinding).where(TelegramBinding.account_id == account_id)
     )
     await db.commit()
+
+    from app.services.operation_log import log_operation as _log_op
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="account", action="delete", target_type="account",
+        target_id=str(account_id),
+        title=f"删除客户账户 {account_name}",
+    )
 
     return {
         "success": True,
@@ -1604,7 +1682,7 @@ async def create_channel(
     db.add(channel)
     await db.commit()
     await db.refresh(channel)
-    
+
     # 关联供应商
     if request.supplier_id:
         from app.modules.sms.supplier import SupplierChannel
@@ -1615,9 +1693,17 @@ async def create_channel(
         )
         db.add(sc)
         await db.commit()
-    
+
     logger.info(f"通道创建成功: {channel.channel_code}")
-    
+
+    from app.services.operation_log import log_operation as _log_op
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="channel", action="create", target_type="channel",
+        target_id=str(channel.id),
+        title=f"创建通道 {channel.channel_name}（{channel.channel_code}）",
+    )
+
     return {
         "success": True,
         "channel_id": channel.id,
@@ -1644,6 +1730,8 @@ async def update_channel(
         raise HTTPException(status_code=404, detail="Channel not found")
     
     # 更新字段
+    if request.channel_code is not None:
+        channel.channel_code = request.channel_code
     if request.channel_name is not None:
         channel.channel_name = request.channel_name
     if request.max_tps is not None:
@@ -1709,8 +1797,18 @@ async def update_channel(
     
     await db.commit()
     await db.refresh(channel)
-    
+
     logger.info(f"通道更新成功: {channel.channel_code}")
+
+    from app.services.operation_log import log_operation as _log_op
+    _updated_fields = list(request.model_dump(exclude_unset=True).keys())
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="channel", action="update", target_type="channel",
+        target_id=str(channel_id),
+        title=f"更新通道 {channel.channel_name}（{channel.channel_code}）",
+        detail=str(_updated_fields),
+    )
 
     # 失效相关缓存（路由/价格）
     try:
@@ -1721,7 +1819,7 @@ async def update_channel(
     except Exception:
         # 缓存失效失败不阻断主流程
         pass
-    
+
     return {
         "success": True,
         "message": "Channel updated successfully"
@@ -1745,12 +1843,22 @@ async def delete_channel(
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
     
+    channel_name = channel.channel_name
+    channel_code = channel.channel_code
     channel.is_deleted = True
     channel.status = "inactive"
     await db.commit()
-    
-    logger.info(f"通道删除成功: {channel.channel_code}")
-    
+
+    logger.info(f"通道删除成功: {channel_code}")
+
+    from app.services.operation_log import log_operation as _log_op
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="channel", action="delete", target_type="channel",
+        target_id=str(channel_id),
+        title=f"删除通道 {channel_name}（{channel_code}）",
+    )
+
     return {
         "success": True,
         "message": "Channel deleted successfully"
@@ -3645,29 +3753,46 @@ async def list_admin_users(
     
     comm_map: dict = {}
     if include_monthly_stats:
-        # 获取本月起始时间
-        first_day = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        import json as _json
+        from app.utils.cache import get_redis_client
 
-        from app.modules.sms.sms_log import SMSLog
-        from app.modules.sms.channel import Channel
+        ym = datetime.now().strftime("%Y-%m")
+        _cache_key = f"admin:monthly_commission:{ym}"
+        _CACHE_TTL = 1800  # 30 分钟；员工业绩无需实时，避免每次扫描 200 万行 sms_logs
 
-        # 从 SMSLog 起表，便于命中 (submit_time, status, account_id) 等索引，减少全表扫描
-        comm_query = (
-            select(Account.sales_id, func.sum(SMSLog.profit * SMSLog.message_count).label("total_profit"))
-            .select_from(SMSLog)
-            .join(Account, SMSLog.account_id == Account.id)
-            .join(Channel, SMSLog.channel_id == Channel.id)
-            .where(
-                and_(
-                    SMSLog.submit_time >= first_day,
-                    SMSLog.status == "delivered",
-                    Channel.protocol != "VIRTUAL",
+        _redis = await get_redis_client()
+        _cached = await _redis.get(_cache_key)
+        if _cached:
+            try:
+                comm_map = {int(k): v for k, v in _json.loads(_cached).items()}
+            except Exception:
+                comm_map = {}
+        else:
+            # 缓存未命中：执行聚合查询，再存入 Redis
+            first_day = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            from app.modules.sms.sms_log import SMSLog
+            from app.modules.sms.channel import Channel
+
+            comm_query = (
+                select(Account.sales_id, func.sum(SMSLog.profit * SMSLog.message_count).label("total_profit"))
+                .select_from(SMSLog)
+                .join(Account, SMSLog.account_id == Account.id)
+                .join(Channel, SMSLog.channel_id == Channel.id)
+                .where(
+                    and_(
+                        SMSLog.submit_time >= first_day,
+                        SMSLog.status == "delivered",
+                        Channel.protocol != "VIRTUAL",
+                    )
                 )
+                .group_by(Account.sales_id)
             )
-            .group_by(Account.sales_id)
-        )
-        comm_result = await db.execute(comm_query)
-        comm_map = {r.sales_id: float(r.total_profit or 0) for r in comm_result}
+            comm_result = await db.execute(comm_query)
+            comm_map = {r.sales_id: float(r.total_profit or 0) for r in comm_result}
+            try:
+                await _redis.setex(_cache_key, _CACHE_TTL, _json.dumps(comm_map))
+            except Exception:
+                pass
     
     result = await db.execute(query)
     users = result.scalars().all()
@@ -3756,6 +3881,8 @@ async def create_staff(
     )
     existing_staff = existing_result.scalar_one_or_none()
     
+    from app.services.operation_log import log_operation as _log_op
+
     if existing_staff:
         # 若为在职状态，不允许重复创建
         if existing_staff.status == 'active':
@@ -3770,6 +3897,12 @@ async def create_staff(
         existing_staff.login_failed_count = 0  # 重置登录失败次数
         await db.commit()
         await db.refresh(existing_staff)
+        await _log_op(
+            db, admin_id=admin.id, admin_name=admin.username,
+            module="security", action="create", target_type="admin_user",
+            target_id=str(existing_staff.id),
+            title=f"重新激活管理员账号 {request.username}（{request.role}）",
+        )
         return {
             "success": True,
             "message": "员工创建成功",
@@ -3780,7 +3913,7 @@ async def create_staff(
                 "role": existing_staff.role
             }
         }
-    
+
     # 创建新员工
     new_staff = AdminUser(
         username=request.username,
@@ -3794,7 +3927,14 @@ async def create_staff(
     db.add(new_staff)
     await db.commit()
     await db.refresh(new_staff)
-    
+
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="security", action="create", target_type="admin_user",
+        target_id=str(new_staff.id),
+        title=f"创建管理员账号 {request.username}（{request.role}）",
+    )
+
     return {
         "success": True,
         "message": "员工创建成功",
@@ -3861,6 +4001,16 @@ async def update_staff(
         staff.password_hash = AuthService.hash_password(request.password)
     
     await db.commit()
+
+    from app.services.operation_log import log_operation as _log_op
+    _updated = list(request.model_dump(exclude_unset=True).keys())
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="security", action="update", target_type="admin_user",
+        target_id=str(user_id),
+        title=f"更新管理员账号 {staff.username}",
+        detail=str(_updated),
+    )
 
     msg = "员工信息已更新"
     if cleared_tg_for_username_change:
@@ -4081,11 +4231,20 @@ async def delete_staff(
     if staff.id == admin.id:
         raise HTTPException(status_code=400, detail="不能删除自己")
     
+    staff_username = staff.username
     staff.status = 'inactive'
     # 删除员工时同步清除业务助手绑定
     _clear_staff_telegram_binding(staff)
     await db.commit()
-    
+
+    from app.services.operation_log import log_operation as _log_op
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="security", action="delete", target_type="admin_user",
+        target_id=str(user_id),
+        title=f"删除管理员账号 {staff_username}",
+    )
+
     return {
         "success": True,
         "message": "员工已禁用"

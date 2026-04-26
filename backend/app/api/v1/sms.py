@@ -1449,7 +1449,7 @@ async def get_sms_records(
         conditions.append(SMSLog.phone_number.like(f"%{phone_number}%"))
     if message_id:
         conditions.append(SMSLog.message_id.like(f"%{message_id}%"))
-    if channel_id and auth_context["is_admin"]:
+    if channel_id:
         conditions.append(SMSLog.channel_id == channel_id)
     if country_code:
         conditions.append(SMSLog.country_code == country_code)
@@ -1516,15 +1516,9 @@ async def get_sms_records(
             "error_message": r.error_message,
             "sales_name": sales_name,
         }
-        if is_adm:
-            rec["channel_id"] = r.channel_id
-            rec["channel_code"] = ch_code
-            rec["channel_name"] = ch_name
-        else:
-            # 客户侧不暴露上游通道信息
-            rec["channel_id"] = None
-            rec["channel_code"] = None
-            rec["channel_name"] = None
+        rec["channel_id"] = r.channel_id
+        rec["channel_code"] = ch_code
+        rec["channel_name"] = ch_name
         out_records.append(rec)
 
     return {

@@ -44,26 +44,45 @@
   --el-text-color-disabled: var(--text-quaternary) !important;
   /* bordered 描述列表标签底来自该变量，缺省时易呈浅紫块+对比度崩坏 */
   --el-descriptions-item-bordered-label-background: var(--bg-input) !important;
-  --bg-primary: #0A0C10;
-  --bg-secondary: #0F1219;
-  --bg-tertiary: #141822;
-  --bg-elevated: #1A1F2C;
-  --bg-surface: #1E2433;
-  --bg-card: rgba(22, 28, 41, 0.85);
-  --bg-input: rgba(255, 255, 255, 0.03);
-  --bg-input-hover: rgba(255, 255, 255, 0.05);
-  --bg-hover: rgba(255, 255, 255, 0.03);
-  
-  --primary: #3B82F6;
-  --primary-hover: #60A5FA;
-  --gradient-primary: linear-gradient(135deg, #3B82F6 0%, #2DD4BF 100%);
-  --gradient-emerald: linear-gradient(135deg, #10B981 0%, #059669 100%);
-  --gradient-gold: linear-gradient(135deg, #F59E0B 0%, #D97706 100%);
-  
-  --success: #38EF7D;
-  --warning: #FFD200;
-  --danger: #F5576C;
-  --info: #4FACFE;
+  /* 背景色 - kaolach 深蓝紫系 */
+  --bg-primary: #080829;
+  --bg-secondary: #0a1425;
+  --bg-tertiary: #141834;
+  --bg-elevated: #181921;
+  --bg-surface: #232340;
+  --bg-card: rgba(20, 24, 52, 0.85);
+  --bg-input: rgba(255, 255, 255, 0.04);
+  --bg-input-hover: rgba(255, 255, 255, 0.07);
+  --bg-hover: rgba(255, 255, 255, 0.04);
+
+  /* 主色 - kaolach 青绿 */
+  --primary: #2a9d8f;
+  --primary-hover: #34b1a2;
+  --gradient-primary: linear-gradient(135deg, #2a9d8f 0%, #00ffd5 100%);
+  --gradient-emerald: linear-gradient(135deg, #2a9d8f 0%, #22c55e 100%);
+  --gradient-gold: linear-gradient(135deg, #fdb52a 0%, #ef652a 100%);
+
+  /* kaolach 系统色 */
+  --success: #22c55e;
+  --warning: #fdb52a;
+  --danger: #fa5b68;
+  --info: #1863dc;
+
+  /* Element Plus 暗色主题覆盖 - kaolach 配色 */
+  --el-color-primary: #2a9d8f !important;
+  --el-color-primary-light-3: #54b1a5 !important;
+  --el-color-primary-light-5: #7fc4ba !important;
+  --el-color-primary-light-7: #a9d7d0 !important;
+  --el-color-primary-light-8: #bfdfd9 !important;
+  --el-color-primary-light-9: #d4e8e3 !important;
+  --el-color-primary-dark-2: #228076 !important;
+  --el-color-success: #22c55e !important;
+  --el-color-warning: #fdb52a !important;
+  --el-color-danger: #fa5b68 !important;
+  --el-color-error: #fa5b68 !important;
+  --el-color-info: #64728f !important;
+  --el-font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  --el-border-radius-base: 8px !important;
   
   --text-primary: #F5F5F7;
   --text-secondary: rgba(245, 245, 247, 0.85);
@@ -85,58 +104,74 @@
   color-scheme: dark;
 }
 
-/* ========== 亮色主题 - Apple Style ========== */
+/* ========== 亮色主题 - kaolach Style ========== */
 [data-theme="light"] {
-  /* 背景色 - Apple 纯净白色系 */
-  --bg-primary: #FBFBFD;
-  --bg-secondary: #FFFFFF;
-  --bg-tertiary: #F5F5F7;
-  --bg-elevated: #FFFFFF;
-  --bg-surface: #FFFFFF;
-  --bg-card: rgba(255, 255, 255, 0.72);
-  --bg-input: rgba(118, 118, 128, 0.08);
-  --bg-input-hover: rgba(118, 118, 128, 0.12);
-  --bg-hover: rgba(0, 0, 0, 0.04);
+  /* 背景色 - kaolach 米白系 */
+  --bg-primary: #faf9ff;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f2f8fb;
+  --bg-elevated: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-card: rgba(255, 255, 255, 0.92);
+  --bg-input: rgba(10, 20, 37, 0.04);
+  --bg-input-hover: rgba(10, 20, 37, 0.08);
+  --bg-hover: rgba(10, 20, 37, 0.04);
 
-  /* Soft UI / Neumorphic - Refined for Light Mode */
-  --shadow-soft-out: 8px 8px 20px rgba(0, 0, 0, 0.06), -8px -8px 20px rgba(255, 255, 255, 0.95);
-  --shadow-soft-in: inset 6px 6px 12px rgba(0, 0, 0, 0.04), inset -6px -6px 12px rgba(255, 255, 255, 0.9);
-  --shadow-tactile: 0 10px 30px rgba(0, 0, 0, 0.04), 0 0 1px rgba(0, 0, 0, 0.08);
-  --shadow-glow-blue: 0 0 20px rgba(0, 122, 255, 0.15);
+  /* Soft UI / Neumorphic - kaolach Light */
+  --shadow-soft-out: 8px 8px 20px rgba(10, 20, 37, 0.06), -8px -8px 20px rgba(255, 255, 255, 0.95);
+  --shadow-soft-in: inset 6px 6px 12px rgba(10, 20, 37, 0.04), inset -6px -6px 12px rgba(255, 255, 255, 0.9);
+  --shadow-tactile: 0 10px 30px rgba(10, 20, 37, 0.04), 0 0 1px rgba(10, 20, 37, 0.08);
+  --shadow-glow-blue: 0 0 20px rgba(42, 157, 143, 0.18);
 
-  --t1: #1D1D1F;
-  --t2: #424245;
-  --t3: #86868B;
+  --t1: #0a1425;
+  --t2: #495057;
+  --t3: #64728f;
+
+  /* 主色 - kaolach 青绿 */
+  --primary: #2a9d8f;
+  --primary-hover: #34b1a2;
+  --gradient-primary: linear-gradient(135deg, #2a9d8f 0%, #00ffd5 100%);
+  --gradient-emerald: linear-gradient(135deg, #22c55e 0%, #2a9d8f 100%);
+  --gradient-gold: linear-gradient(135deg, #fdb52a 0%, #ef652a 100%);
+
+  /* kaolach 系统色 */
+  --success: #22c55e;
+  --warning: #fdb52a;
+  --danger: #fa5b68;
+  --info: #1863dc;
+
+  /* 文字色 - kaolach 深蓝黑系 */
+  --text-primary: #0a1425;
+  --text-secondary: #495057;
+  --text-tertiary: #64728f;
+  --text-quaternary: #adb5bd;
+
+  /* 边框 - kaolach 灰色分割线 */
+  --border-subtle: #f0f6f5;
+  --border-default: #e5e7eb;
+  --border-hover: #c5c5ca;
+
+  /* Element Plus 浅色主题覆盖 - kaolach 配色 */
+  --el-color-primary: #2a9d8f !important;
+  --el-color-primary-light-3: #54b1a5 !important;
+  --el-color-primary-light-5: #7fc4ba !important;
+  --el-color-primary-light-7: #a9d7d0 !important;
+  --el-color-primary-light-8: #bfdfd9 !important;
+  --el-color-primary-light-9: #d4e8e3 !important;
+  --el-color-primary-dark-2: #228076 !important;
+  --el-color-success: #22c55e !important;
+  --el-color-warning: #fdb52a !important;
+  --el-color-danger: #fa5b68 !important;
+  --el-color-error: #fa5b68 !important;
+  --el-color-info: #64728f !important;
+  --el-font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  --el-border-radius-base: 8px !important;
   
-  /* Apple 系统蓝 */
-  --primary: #007AFF;
-  --primary-hover: #0A84FF;
-  --gradient-primary: linear-gradient(180deg, #42A1EC 0%, #0070C9 100%);
-  --gradient-emerald: linear-gradient(180deg, #5AC855 0%, #34C759 100%);
-  --gradient-gold: linear-gradient(180deg, #FFB340 0%, #FF9500 100%);
-  
-  /* Apple 系统色 */
-  --success: #34C759;
-  --warning: #FF9500;
-  --danger: #FF3B30;
-  --info: #007AFF;
-  
-  /* 文字色 - Apple 黑色系 */
-  --text-primary: #1D1D1F;
-  --text-secondary: #424245;
-  --text-tertiary: #6E6E73;
-  --text-quaternary: #86868B;
-  
-  /* 边框 - Apple 精致分割线 */
-  --border-subtle: rgba(0, 0, 0, 0.04);
-  --border-default: rgba(0, 0, 0, 0.1);
-  --border-hover: rgba(0, 0, 0, 0.15);
-  
-  /* 阴影 - Apple 精致阴影 */
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06);
-  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.04), 0 0 1px rgba(0, 0, 0, 0.08);
+  /* 阴影 - kaolach 商务卡片阴影 */
+  --shadow-sm: 0 1px 3px rgba(10, 20, 37, 0.04), 0 1px 2px rgba(10, 20, 37, 0.06);
+  --shadow-md: 0 4px 12px rgba(10, 20, 37, 0.08), 0 2px 4px rgba(10, 20, 37, 0.04);
+  --shadow-lg: 0 12px 40px rgba(10, 20, 37, 0.12), 0 4px 12px rgba(10, 20, 37, 0.06);
+  --shadow-card: 0 2px 8px rgba(10, 20, 37, 0.04), 0 0 1px rgba(10, 20, 37, 0.08);
   
   /* Component Refinements for Light Mode */
   --portal-bg: linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(245, 245, 247, 0.95));
@@ -209,7 +244,7 @@
   --shadow-soft-out: 8px 8px 16px rgba(0, 0, 0, 0.45), -4px -4px 12px rgba(255, 255, 255, 0.02);
   --shadow-soft-in: inset 6px 6px 12px rgba(0, 0, 0, 0.5), inset -3px -3px 8px rgba(255, 255, 255, 0.015);
   --shadow-tactile: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 1px rgba(255, 255, 255, 0.15);
-  --shadow-glow-blue: 0 0 20px rgba(59, 130, 246, 0.3);
+  --shadow-glow-blue: 0 0 20px rgba(42, 157, 143, 0.3);
   
   --t1: #FFFFFF;
   --t2: #E2E8F0;
@@ -332,7 +367,7 @@ html {
 body {
   background: var(--bg-primary);
   color: var(--text-primary);
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   line-height: 1.5;
   letter-spacing: -0.01em;
   transition: background-color 0.3s ease, color 0.3s ease;
@@ -359,7 +394,7 @@ body {
 
 /* 选中 */
 ::selection {
-  background: rgba(102, 126, 234, 0.3);
+  background: rgba(42, 157, 143, 0.3);
   color: var(--text-primary);
 }
 
@@ -419,7 +454,7 @@ body {
 
 .el-input__wrapper.is-focus {
   background: var(--bg-input-hover) !important;
-  box-shadow: inset 0 0 0 1px var(--primary), 0 0 0 3px rgba(102, 126, 234, 0.15) !important;
+  box-shadow: inset 0 0 0 1px var(--primary), 0 0 0 3px rgba(42, 157, 143, 0.15) !important;
 }
 
 [data-theme="light"] .el-input__wrapper.is-focus {
@@ -504,7 +539,7 @@ html:not([data-theme="light"]) .el-select .el-input__wrapper.is-focus,
 html:not([data-theme="light"]) .el-select .el-input.is-focus .el-input__wrapper,
 html:not([data-theme="light"]) .el-select__wrapper.is-focused {
   background: var(--bg-input-hover) !important;
-  box-shadow: inset 0 0 0 1px var(--primary), 0 0 0 3px rgba(102, 126, 234, 0.15) !important;
+  box-shadow: inset 0 0 0 1px var(--primary), 0 0 0 3px rgba(42, 157, 143, 0.15) !important;
 }
 
 html:not([data-theme="light"]) .el-select .el-input__inner,
@@ -621,7 +656,7 @@ html:not([data-theme="light"]) .el-autocomplete {
 .el-textarea__inner:focus {
   background: var(--bg-input-hover) !important;
   border-color: var(--primary) !important;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15) !important;
+  box-shadow: 0 0 0 3px rgba(42, 157, 143, 0.15) !important;
 }
 
 [data-theme="light"] .el-textarea__inner:focus {
@@ -672,7 +707,7 @@ html:not([data-theme="light"]) .el-autocomplete {
 
 .el-button--primary:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.35) !important;
+  box-shadow: 0 4px 12px rgba(42, 157, 143, 0.35) !important;
 }
 
 [data-theme="light"] .el-button--primary {
@@ -853,7 +888,7 @@ html:not([data-theme="light"]) .el-autocomplete {
 }
 
 .el-tag--primary {
-  background: rgba(102, 126, 234, 0.12) !important;
+  background: rgba(42, 157, 143, 0.12) !important;
   color: var(--primary) !important;
 }
 
@@ -1181,7 +1216,7 @@ html:not([data-theme="light"]) .el-descriptions__content.el-descriptions__cell.i
 
 .el-date-editor.is-active {
   border-color: var(--primary) !important;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15) !important;
+  box-shadow: 0 0 0 3px rgba(42, 157, 143, 0.15) !important;
 }
 
 [data-theme="light"] .el-date-editor {

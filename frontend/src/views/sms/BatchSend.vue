@@ -67,11 +67,18 @@
       </el-alert>
 
       <el-empty v-if="!loading && batches.length === 0" :description="$t('batchSend.emptyList')" class="task-empty" />
-      <el-table v-else :data="batches" v-loading="loading" stripe class="task-table-inner">
+      <div v-else class="table-scroll-wrapper">
+      <el-table :data="batches" v-loading="loading" stripe class="task-table-inner" :table-layout="'auto'">
         <el-table-column prop="id" :label="$t('batchSend.batchIdCol')" width="72" />
-        <el-table-column prop="batch_name" :label="$t('batchSend.batchName')" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="total_count" :label="$t('batchSend.totalCount')" width="72" />
-        <el-table-column prop="success_count" width="88">
+        <el-table-column prop="batch_name" :label="$t('batchSend.batchName')" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="channel_code" :label="$t('smsSend.channel')" width="120" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-tag v-if="row.channel_code" size="small" effect="plain" type="info">{{ row.channel_code }}</el-tag>
+            <span v-else style="color:var(--text-quaternary)">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="total_count" :label="$t('batchSend.totalCount')" width="96" align="right" />
+        <el-table-column prop="success_count" width="116">
           <template #header>
             <el-tooltip :content="$t('batchSend.channelAcceptedTooltip')" placement="top" :show-after="400">
               <span class="batch-col-header">{{ $t('batchSend.successCount') }}</span>
@@ -81,7 +88,7 @@
             <span style="color: #409eff; font-weight: bold">{{ row.success_count }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="delivered_count" width="104" align="center">
+        <el-table-column prop="delivered_count" width="128" align="center">
           <template #header>
             <el-tooltip :content="$t('batchSend.deliveredReceiptTooltip')" placement="top" :show-after="400">
               <span class="batch-col-header">{{ $t('batchSend.deliveredReceiptCount') }}</span>
@@ -91,7 +98,7 @@
             <span style="color: #67c23a; font-weight: bold">{{ batchDeliveredCount(row) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="sent_awaiting_receipt_count" width="100" align="center">
+        <el-table-column prop="sent_awaiting_receipt_count" width="116" align="center">
           <template #header>
             <el-tooltip :content="$t('batchSend.awaitingReceiptTooltip')" placement="top" :show-after="400">
               <span class="batch-col-header">{{ $t('batchSend.awaitingReceiptCount') }}</span>
@@ -101,7 +108,7 @@
             <span :class="batchSentAwaitingCount(row) > 0 ? 'awaiting-receipt' : ''">{{ batchSentAwaitingCount(row) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="failed_count" :label="$t('batchSend.failedCount')" width="72">
+        <el-table-column prop="failed_count" :label="$t('batchSend.failedCount')" width="88">
           <template #default="{ row }">
             <span v-if="row.failed_count > 0" style="color: #f56c6c; font-weight: bold">{{ row.failed_count }}</span>
             <span v-else>0</span>
@@ -112,7 +119,7 @@
             <el-progress :percentage="row.progress" :status="row.status === 'completed' ? 'success' : undefined" />
           </template>
         </el-table-column>
-        <el-table-column width="140" align="center">
+        <el-table-column width="160" align="center">
           <template #header>
             <el-tooltip :content="$t('batchSend.successRateTooltip')" placement="top" :show-after="400">
               <span class="batch-rate-header">{{ $t('batchSend.successRate') }}</span>
@@ -136,18 +143,18 @@
             <el-tag v-else type="warning">{{ $t('batchSend.cancelled') }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('batchSend.createdAtLocal')" width="168">
+        <el-table-column :label="$t('batchSend.createdAtLocal')" width="148">
           <template #default="{ row }">
             {{ formatBatchDate(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column :label="$t('batchSend.completedAt')" width="168">
+        <el-table-column :label="$t('batchSend.completedAt')" width="148">
           <template #default="{ row }">
             <span v-if="row.completed_at" class="time-text">{{ formatBatchDate(row.completed_at) }}</span>
             <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('common.action')" min-width="300" fixed="right">
+        <el-table-column :label="$t('common.action')" width="240" fixed="right">
           <template #default="{ row }">
             <div class="task-actions">
               <el-button link type="primary" size="small" @click="viewDetail(row)">{{ $t('common.detail') }}</el-button>
@@ -182,6 +189,7 @@
           </template>
         </el-table-column>
       </el-table>
+      </div><!-- /table-scroll-wrapper -->
 
       <div class="pagination">
         <el-pagination
@@ -259,7 +267,6 @@
               <template #default="{ row }">{{ formatBatchDate(row.submit_time) }}</template>
             </el-table-column>
             <el-table-column
-              v-if="isAdmin"
               prop="channel_code"
               :label="$t('smsRecords.channel')"
               min-width="120"
@@ -912,8 +919,15 @@ onUnmounted(() => {
 }
 
 /* 表格 */
-.task-table {
-  --el-table-border-color: var(--border-default);
+.table-scroll-wrapper {
+  overflow-x: auto;
+}
+.task-table-inner :deep(.el-table__header th .cell),
+.task-table-inner :deep(.el-table__body td .cell) {
+  white-space: nowrap;
+  word-break: keep-all;
+  padding-left: 10px;
+  padding-right: 10px;
 }
 
 .task-actions {

@@ -8,6 +8,16 @@ from typing import Dict, List, Optional, Set, Tuple
 
 _COUNTRY_DATA: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     # (ISO2, 区号, (中文别名...))
+    ("CN", "86", ("中国",)),
+    ("HK", "852", ("香港",)),
+    ("TW", "886", ("台湾",)),
+    ("MO", "853", ("澳门",)),
+    ("SE", "46", ("瑞典",)),
+    ("NO", "47", ("挪威",)),
+    ("CZ", "420", ("捷克",)),
+    ("LT", "370", ("立陶宛",)),
+    ("LV", "371", ("拉脱维亚",)),
+    ("EE", "372", ("爱沙尼亚",)),
     ("TH", "66", ("泰国",)),
     ("BR", "55", ("巴西",)),
     ("BD", "880", ("孟加拉", "孟加拉国")),
@@ -86,6 +96,21 @@ for _iso, _dial, _cn_names in _COUNTRY_DATA:
         _TO_ISO[k] = _iso
         _TO_ISO[k.upper()] = _iso
         _TO_ISO[k.lower()] = _iso
+
+
+def get_dial_code(iso2: Optional[str]) -> str:
+    """
+    返回 ISO2 对应的国际区号，零补到 3 位（如 TH→066，BD→880，HK→852）。
+    CA/KZ 等带后缀的特殊值只取数字部分。未识别时返回 '000'。
+    """
+    if not iso2:
+        return "000"
+    key = str(iso2).strip().upper()
+    for _iso, _dial, _ in _COUNTRY_DATA:
+        if _iso == key:
+            numeric = "".join(c for c in _dial if c.isdigit())
+            return numeric.zfill(3)
+    return "000"
 
 
 def normalize_country_code(raw: Optional[str]) -> Optional[str]:

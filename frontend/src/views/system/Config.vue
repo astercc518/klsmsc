@@ -1,251 +1,486 @@
 <template>
-  <div class="config-container">
-    <el-card shadow="never" class="filter-card">
-      <div class="config-header">
-        <el-form :inline="true" class="filter-form">
-      <el-form-item :label="$t('systemConfig.search')">
-        <el-input 
-          v-model="searchText" 
-          :placeholder="$t('systemConfig.searchPlaceholder')" 
-          style="width: 300px"
+  <div class="config-layout" v-loading="loading">
+    <!-- 顶部 Header -->
+    <header class="config-header">
+      <div class="header-left">
+        <h2 class="page-title">⚙️ 系统配置</h2>
+        <el-input
+          v-model="searchText"
+          placeholder="🔍 搜索配置项（支持中英文）"
           clearable
-          @keyup.enter="loadData"
+          class="search-input"
+          @input="onSearchChange"
         />
-      </el-form-item>
-      <el-form-item :label="$t('systemConfig.configType')">
-        <el-select v-model="filterPublic" clearable :placeholder="$t('systemConfig.all')" style="width: 150px">
-          <el-option :label="$t('systemConfig.public')" :value="true" />
-          <el-option :label="$t('systemConfig.private')" :value="false" />
-        </el-select>
-      </el-form-item>
-      <el-form-item>
-        <el-button type="primary" @click="loadData">{{ $t('smsRecords.query') }}</el-button>
-        <el-button @click="resetFilters">{{ $t('common.reset') }}</el-button>
-      </el-form-item>
-      <el-form-item class="config-actions">
-        <el-button type="primary" @click="showCreateDialog">{{ $t('systemConfig.addConfig') }}</el-button>
-      </el-form-item>
-        </el-form>
       </div>
-    </el-card>
-    <el-card shadow="never" class="table-card">
-    <el-table :data="configs" v-loading="loading" stripe style="width: 100%">
-      <el-table-column prop="config_key" :label="$t('systemConfig.configKey')" width="200" />
-      <el-table-column prop="config_value" :label="$t('systemConfig.configValue')">
-        <template #default="scope">
-          <span v-if="scope.row.config_key.includes('token') || scope.row.config_key.includes('password')">
-            {{ maskSensitive(scope.row.config_value) }}
-          </span>
-          <span v-else>{{ scope.row.config_value }}</span>
+      <div class="header-right">
+        <el-button :icon="Document" @click="auditDrawerVisible = true">审计日志</el-button>
+        <el-button :icon="Download" @click="onExport">导出</el-button>
+        <el-button :icon="Upload" @click="importDialogVisible = true">导入</el-button>
+        <el-button
+          type="primary"
+          :icon="Check"
+          :disabled="dirtyKeys.size === 0"
+          :loading="saving"
+          @click="onSaveAll"
+        >
+          保存改动
+          <el-badge v-if="dirtyKeys.size > 0" :value="dirtyKeys.size" class="save-badge" />
+        </el-button>
+      </div>
+    </header>
+
+    <div class="config-body">
+      <!-- 左侧分类导航 -->
+      <aside class="config-nav">
+        <el-menu
+          :default-active="currentGroup"
+          @select="onGroupSelect"
+          class="nav-menu"
+        >
+          <el-menu-item
+            v-for="g in CONFIG_GROUPS"
+            :key="g.key"
+            :index="g.key"
+          >
+            <el-icon><component :is="resolveIcon(g.icon)" /></el-icon>
+            <span>{{ g.label }}</span>
+            <el-badge
+              v-if="dirtyByGroup[g.key] > 0"
+              :value="dirtyByGroup[g.key]"
+              class="nav-badge"
+              type="primary"
+            />
+            <el-badge
+              v-else-if="searchHitsByGroup[g.key] > 0"
+              :value="searchHitsByGroup[g.key]"
+              class="nav-badge"
+              type="warning"
+            />
+          </el-menu-item>
+        </el-menu>
+
+        <div v-if="dirtyKeys.size > 0" class="nav-footer">
+          <el-alert type="warning" :closable="false">
+            <template #title>
+              <span>{{ dirtyKeys.size }} 项未保存</span>
+            </template>
+            <el-button size="small" link @click="onDiscardAll">放弃全部改动</el-button>
+          </el-alert>
+        </div>
+      </aside>
+
+      <!-- 主内容区 -->
+      <main class="config-main">
+        <template v-for="g in CONFIG_GROUPS" :key="g.key">
+          <div v-show="currentGroup === g.key" class="group-section">
+            <ConfigGroup
+              v-for="sg in g.subgroups"
+              :key="sg.key"
+              ref="groupRefs"
+              :group="g.key"
+              :subgroup="sg"
+              :values="values"
+              :dirty-keys="dirtyKeys"
+              :audit-map="auditMap"
+              :highlight-key="highlightKey"
+              :visible-key-filter="searchActive ? searchHitsSet : undefined"
+              @change="onFieldChange"
+            />
+            <el-empty
+              v-if="searchActive && searchHitsByGroup[g.key] === 0"
+              description="该分类下无匹配的配置项"
+            />
+          </div>
         </template>
-      </el-table-column>
-      <el-table-column prop="config_type" :label="$t('systemConfig.type')" width="100" />
-      <el-table-column prop="description" :label="$t('systemConfig.description')" />
-      <el-table-column prop="is_public" :label="$t('systemConfig.isPublic')" width="80">
-        <template #default="scope">
-          <el-tag :type="scope.row.is_public ? 'success' : 'info'">
-            {{ scope.row.is_public ? $t('systemConfig.yes') : $t('systemConfig.no') }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column :label="$t('common.action')" width="150">
-        <template #default="scope">
-          <el-button link type="primary" size="small" @click="handleEdit(scope.row)">{{ $t('common.edit') }}</el-button>
-          <el-button link type="danger" size="small" @click="handleDelete(scope.row)">{{ $t('common.delete') }}</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-    </el-card>
-    <el-dialog 
-      v-model="dialogVisible" 
-      :title="editingConfig ? $t('systemConfig.editConfig') : $t('systemConfig.addConfig')" 
-      width="600px"
-    >
-      <el-form :model="form" :rules="formRules" ref="formRef" label-width="100px">
-        <el-form-item :label="$t('systemConfig.configKey')" prop="config_key" v-if="!editingConfig">
-          <el-input v-model="form.config_key" :placeholder="$t('systemConfig.configKeyPlaceholder')" />
-        </el-form-item>
-        <el-form-item v-else :label="$t('systemConfig.configKey')">
-          <el-input v-model="editingConfig.config_key" disabled />
-        </el-form-item>
-        <el-form-item :label="$t('systemConfig.configValue')" prop="config_value">
-          <el-input 
-            v-model="form.config_value" 
-            type="textarea" 
-            :rows="3"
-            :placeholder="$t('systemConfig.configValuePlaceholder')"
-          />
-        </el-form-item>
-        <el-form-item :label="$t('systemConfig.type')" prop="config_type" v-if="!editingConfig">
-          <el-select v-model="form.config_type" style="width: 100%">
-            <el-option :label="$t('systemConfig.string')" value="string" />
-            <el-option :label="$t('systemConfig.number')" value="number" />
-            <el-option :label="$t('systemConfig.boolean')" value="boolean" />
-            <el-option label="JSON" value="json" />
-          </el-select>
-        </el-form-item>
-        <el-form-item :label="$t('systemConfig.description')" prop="description">
-          <el-input v-model="form.description" :placeholder="$t('systemConfig.descriptionPlaceholder')" />
-        </el-form-item>
-        <el-form-item :label="$t('systemConfig.isPublic')" prop="is_public">
-          <el-switch v-model="form.is_public" />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="dialogVisible = false">{{ $t('common.cancel') }}</el-button>
-        <el-button type="primary" @click="handleSubmit" :loading="submitting">{{ $t('common.confirm') }}</el-button>
-      </template>
-    </el-dialog>
+
+        <!-- 重启提示 -->
+        <el-affix v-if="restartHint" :offset="20" position="bottom">
+          <el-alert
+            type="warning"
+            show-icon
+            :closable="true"
+            @close="restartHint = ''"
+          >
+            <template #title>
+              <strong>部分改动需重启服务才能生效</strong>
+            </template>
+            <pre class="restart-cmd">{{ restartHint }}</pre>
+          </el-alert>
+        </el-affix>
+      </main>
+    </div>
+
+    <!-- 审计日志 -->
+    <AuditLogDrawer v-model="auditDrawerVisible" />
+
+    <!-- 导入预览 -->
+    <ImportPreviewDialog
+      v-model="importDialogVisible"
+      :current-values="rawValuesForExport"
+      @imported="onImported"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
-import { useI18n } from 'vue-i18n'
-import { getConfigs, createConfig, updateConfig, deleteConfig } from '@/api/system'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { useRouter, onBeforeRouteLeave } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { FormInstance, FormRules } from 'element-plus'
-import type { SystemConfig } from '@/api/system'
+import {
+  Setting, Message, BellFilled, ChatDotRound, Lock,
+  Document, Download, Upload, Check,
+} from '@element-plus/icons-vue'
+import {
+  getConfigsGrouped, batchUpdateConfigs, exportConfigs,
+  type GroupedConfigItem,
+} from '@/api/system'
+import {
+  CONFIG_GROUPS, SYSTEM_CONFIG_META,
+  resolveMeta, parseValue, serializeValue,
+  type ConfigGroup as ConfigGroupKey,
+} from '@/config/system_config_meta'
+import ConfigGroup from './components/ConfigGroup.vue'
+import AuditLogDrawer from './components/AuditLogDrawer.vue'
+import ImportPreviewDialog from './components/ImportPreviewDialog.vue'
 
-const { t } = useI18n()
-const configs = ref<SystemConfig[]>([])
+const router = useRouter()
 const loading = ref(false)
-const searchText = ref('')
-const filterPublic = ref<boolean | null>(null)
+const saving = ref(false)
 
-const dialogVisible = ref(false)
-const submitting = ref(false)
-const editingConfig = ref<SystemConfig | null>(null)
-const formRef = ref<FormInstance>()
-const form = reactive({
-  config_key: '',
-  config_value: '',
-  config_type: 'string',
-  description: '',
-  is_public: false
+/** 当前编辑的运行时值（按 key 存原生类型） */
+const values = reactive<Record<string, any>>({})
+/** 后端返回的原始字符串值（用于 dirty 判断与 diff） */
+const originalValues = reactive<Record<string, string>>({})
+/** 修改人 / 时间映射 */
+const auditMap = reactive<Record<string, { name: string; time: string }>>({})
+
+/** dirty 集合（key） */
+const dirtyKeys = ref<Set<string>>(new Set())
+
+const currentGroup = ref<ConfigGroupKey>('basic')
+const searchText = ref('')
+const searchActive = computed(() => searchText.value.trim().length > 0)
+const highlightKey = ref<string>('')
+
+const auditDrawerVisible = ref(false)
+const importDialogVisible = ref(false)
+const restartHint = ref('')
+
+const groupRefs = ref<InstanceType<typeof ConfigGroup>[]>([])
+
+// ---- 计算 ----
+
+const dirtyByGroup = computed<Record<string, number>>(() => {
+  const result: Record<string, number> = {}
+  CONFIG_GROUPS.forEach(g => result[g.key] = 0)
+  dirtyKeys.value.forEach(k => {
+    const g = resolveMeta(k).group
+    result[g] = (result[g] || 0) + 1
+  })
+  return result
 })
 
-const formRules = computed<FormRules>(() => ({
-  config_key: [
-    { required: true, message: t('systemConfig.pleaseEnterConfigKey'), trigger: 'blur' },
-    { pattern: /^[a-z_][a-z0-9_]*$/, message: t('systemConfig.configKeyPattern'), trigger: 'blur' }
-  ],
-  config_value: [
-    { required: true, message: t('systemConfig.pleaseEnterConfigValue'), trigger: 'blur' }
-  ]
-}))
+/** 搜索命中的 key 集合 */
+const searchHitsSet = computed<Set<string>>(() => {
+  const q = searchText.value.trim().toLowerCase()
+  if (!q) return new Set()
+  const hits = new Set<string>()
+  Object.entries(SYSTEM_CONFIG_META).forEach(([k, m]) => {
+    if (
+      k.toLowerCase().includes(q)
+      || m.label.toLowerCase().includes(q)
+      || (m.hint || '').toLowerCase().includes(q)
+    ) {
+      hits.add(k)
+    }
+  })
+  return hits
+})
 
-const loadData = async () => {
+const searchHitsByGroup = computed<Record<string, number>>(() => {
+  const result: Record<string, number> = {}
+  CONFIG_GROUPS.forEach(g => result[g.key] = 0)
+  searchHitsSet.value.forEach(k => {
+    const g = resolveMeta(k).group
+    result[g] = (result[g] || 0) + 1
+  })
+  return result
+})
+
+/** 用于导出对比的「key -> 字符串值」映射（取后端原始值） */
+const rawValuesForExport = computed<Record<string, string>>(() => ({ ...originalValues }))
+
+// ---- 加载 ----
+
+async function loadAll() {
   loading.value = true
   try {
-    const res = await getConfigs({
-      search: searchText.value || undefined,
-      is_public: filterPublic.value !== null ? filterPublic.value : undefined
+    const res = await getConfigsGrouped()
+    Object.keys(values).forEach(k => delete values[k])
+    Object.keys(originalValues).forEach(k => delete originalValues[k])
+    Object.keys(auditMap).forEach(k => delete auditMap[k])
+
+    Object.values(res.groups).flat().forEach((c: GroupedConfigItem) => {
+      const meta = resolveMeta(c.config_key)
+      values[c.config_key] = parseValue(c.config_value, meta.uiType)
+      originalValues[c.config_key] = c.config_value ?? ''
+      if (c.updated_by_name || c.updated_at) {
+        auditMap[c.config_key] = {
+          name: c.updated_by_name || '',
+          time: c.updated_at || '',
+        }
+      }
     })
-    configs.value = res
+    dirtyKeys.value = new Set()
+  } catch (e: any) {
+    ElMessage.error(e?.message || '加载配置失败')
   } finally {
     loading.value = false
   }
 }
 
-const resetFilters = () => {
-  searchText.value = ''
-  filterPublic.value = null
-  loadData()
+// ---- 事件处理 ----
+
+function onFieldChange(key: string, value: any) {
+  values[key] = value
+  const meta = resolveMeta(key)
+  const newSerialized = serializeValue(value, meta.uiType)
+  const original = originalValues[key] ?? ''
+  if (newSerialized === original) {
+    dirtyKeys.value.delete(key)
+  } else {
+    dirtyKeys.value.add(key)
+  }
+  // 触发响应式更新
+  dirtyKeys.value = new Set(dirtyKeys.value)
 }
 
-const showCreateDialog = () => {
-  editingConfig.value = null
-  form.config_key = ''
-  form.config_value = ''
-  form.config_type = 'string'
-  form.description = ''
-  form.is_public = false
-  dialogVisible.value = true
+function onGroupSelect(key: string) {
+  currentGroup.value = key as ConfigGroupKey
+  highlightKey.value = ''
 }
 
-const handleEdit = (row: SystemConfig) => {
-  editingConfig.value = row
-  form.config_value = row.config_value
-  form.description = row.description || ''
-  form.is_public = row.is_public
-  dialogVisible.value = true
-}
-
-const handleSubmit = async () => {
-  if (!formRef.value) return
-  
-  await formRef.value.validate(async (valid) => {
-    if (!valid) return
-    
-    submitting.value = true
-    try {
-      if (editingConfig.value) {
-        await updateConfig(editingConfig.value.config_key, {
-          config_value: form.config_value,
-          description: form.description,
-          is_public: form.is_public
-        })
-        ElMessage.success(t('systemConfig.saveSuccess'))
-      } else {
-        await createConfig({
-          config_key: form.config_key,
-          config_value: form.config_value,
-          config_type: form.config_type,
-          description: form.description,
-          is_public: form.is_public
-        })
-        ElMessage.success(t('systemConfig.saveSuccess'))
-      }
-      dialogVisible.value = false
-      loadData()
-    } catch (error: any) {
-      ElMessage.error(error.message || t('common.failed'))
-    } finally {
-      submitting.value = false
-    }
-  })
-}
-
-const handleDelete = async (row: SystemConfig) => {
-  try {
-    await ElMessageBox.confirm(
-      t('systemConfig.confirmDeleteConfig', { key: row.config_key }),
-      t('dialog.warningTitle'),
-      {
-        type: 'warning',
-        confirmButtonText: t('common.delete'),
-        cancelButtonText: t('common.cancel')
-      }
-    )
-    
-    await deleteConfig(row.config_key)
-    ElMessage.success(t('systemConfig.deleteSuccess'))
-    loadData()
-  } catch (error: any) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('common.failed'))
+function onSearchChange() {
+  highlightKey.value = ''
+  // 自动跳到第一个有命中的分类
+  const q = searchText.value.trim()
+  if (!q) return
+  const hits = searchHitsByGroup.value
+  const firstHitGroup = CONFIG_GROUPS.find(g => hits[g.key] > 0)
+  if (firstHitGroup) {
+    currentGroup.value = firstHitGroup.key
+    // 滚动到第一个命中
+    const firstKey = [...searchHitsSet.value][0]
+    if (firstKey) {
+      highlightKey.value = firstKey
+      setTimeout(() => {
+        const el = document.querySelector(`[data-config-key="${firstKey}"]`)
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 100)
     }
   }
 }
 
-const maskSensitive = (value: string) => {
-  if (!value) return ''
-  if (value.length <= 8) return '****'
-  return value.substring(0, 4) + '****' + value.substring(value.length - 4)
+async function onSaveAll() {
+  if (dirtyKeys.value.size === 0) return
+  const items: Record<string, string> = {}
+  const restartItems: string[] = []
+
+  dirtyKeys.value.forEach(k => {
+    const meta = resolveMeta(k)
+    items[k] = serializeValue(values[k], meta.uiType)
+    if (meta.restartRequired) restartItems.push(k)
+  })
+
+  saving.value = true
+  try {
+    const res = await batchUpdateConfigs(items)
+    ElMessage.success(`已保存 ${res.updated} 项配置`)
+
+    // 同步原始值
+    Object.entries(items).forEach(([k, v]) => {
+      originalValues[k] = v
+      auditMap[k] = { name: '我', time: new Date().toISOString() }
+    })
+
+    // 重新锁定敏感字段
+    const sensitiveKeys = [...dirtyKeys.value].filter(k => resolveMeta(k).uiType === 'sensitive')
+    if (sensitiveKeys.length > 0) {
+      groupRefs.value.forEach(g => g?.lockSensitiveFields?.(sensitiveKeys))
+    }
+
+    dirtyKeys.value = new Set()
+
+    // 重启提示
+    if (restartItems.length > 0) {
+      const lines = restartItems.map(k => {
+        const m = resolveMeta(k)
+        return `• ${m.label}（${k}）：${m.restartHint || '需重启相关服务'}`
+      })
+      restartHint.value = lines.join('\n')
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
+  } finally {
+    saving.value = false
+  }
 }
 
+async function onDiscardAll() {
+  try {
+    await ElMessageBox.confirm(
+      `确定放弃 ${dirtyKeys.value.size} 项未保存的改动？`,
+      '放弃改动',
+      { type: 'warning', confirmButtonText: '放弃', cancelButtonText: '继续编辑' }
+    )
+    // 恢复原始值
+    dirtyKeys.value.forEach(k => {
+      const meta = resolveMeta(k)
+      values[k] = parseValue(originalValues[k], meta.uiType)
+    })
+    dirtyKeys.value = new Set()
+    ElMessage.success('已放弃改动')
+  } catch { /* 取消 */ }
+}
+
+async function onExport() {
+  try {
+    const res = await exportConfigs()
+    const blob = new Blob([JSON.stringify(res, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `system_configs_${new Date().toISOString().slice(0,10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success(`已导出 ${res.total} 项配置`)
+  } catch (e: any) {
+    ElMessage.error(e?.message || '导出失败')
+  }
+}
+
+function onImported() {
+  loadAll()
+}
+
+function resolveIcon(name: string) {
+  return ({ Setting, Message, BellFilled, ChatDotRound, Lock } as any)[name] || Setting
+}
+
+// ---- 离开拦截 ----
+
+function beforeUnloadHandler(e: BeforeUnloadEvent) {
+  if (dirtyKeys.value.size > 0) {
+    e.preventDefault()
+    e.returnValue = ''
+  }
+}
+
+onBeforeRouteLeave(async (_to, _from, next) => {
+  if (dirtyKeys.value.size === 0) return next()
+  try {
+    await ElMessageBox.confirm(
+      `还有 ${dirtyKeys.value.size} 项未保存的改动，确定离开？`,
+      '未保存提示',
+      { type: 'warning', confirmButtonText: '离开', cancelButtonText: '留下' }
+    )
+    next()
+  } catch {
+    next(false)
+  }
+})
+
 onMounted(() => {
-  loadData()
+  window.addEventListener('beforeunload', beforeUnloadHandler)
+  loadAll()
+})
+onUnmounted(() => {
+  window.removeEventListener('beforeunload', beforeUnloadHandler)
 })
 </script>
 
 <style scoped>
-.config-container { width: 100%; }
-.filter-card { margin-bottom: 16px; }
-.filter-card :deep(.el-card__body) { padding: 16px 20px; }
-.config-header { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
-.filter-form { margin-bottom: 0; flex: 1; }
-.config-actions { margin-left: auto; }
-.table-card :deep(.el-card__body) { padding: 16px 20px; }
+.config-layout {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 220px);
+  min-height: 500px;
+}
+
+.config-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--el-bg-color);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px 6px 0 0;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.header-left { display: flex; align-items: center; gap: 16px; flex: 1; min-width: 0; }
+.page-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--el-text-color-primary); }
+.search-input { max-width: 400px; }
+.header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.save-badge { margin-left: 6px; }
+
+.config-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  background: var(--el-bg-color);
+  border-radius: 0 0 6px 6px;
+}
+
+.config-nav {
+  width: 240px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--el-border-color-lighter);
+  display: flex;
+  flex-direction: column;
+  background: var(--el-fill-color-lighter);
+}
+.nav-menu { border-right: none; flex: 1; }
+.nav-menu :deep(.el-menu-item) {
+  position: relative;
+  height: 48px;
+  line-height: 48px;
+}
+.nav-badge {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.nav-footer { padding: 12px; }
+
+.config-main {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  background: var(--el-bg-color-page);
+}
+.group-section { display: flex; flex-direction: column; gap: 12px; }
+
+.restart-cmd {
+  margin: 8px 0 0;
+  padding: 8px;
+  background: var(--el-fill-color-darker);
+  color: var(--el-text-color-primary);
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 响应式：移动端折叠侧栏 */
+@media (max-width: 768px) {
+  .config-body { flex-direction: column; }
+  .config-nav { width: 100%; border-right: none; border-bottom: 1px solid var(--el-border-color-lighter); }
+  .nav-menu :deep(.el-menu) { display: flex; overflow-x: auto; }
+  .nav-menu :deep(.el-menu-item) { white-space: nowrap; }
+  .header-left { flex-direction: column; align-items: stretch; }
+  .search-input { max-width: 100%; }
+}
 </style>

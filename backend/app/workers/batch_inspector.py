@@ -348,3 +348,47 @@ async def _do_inspect_batches():
             }
     finally:
         await eng.dispose()
+
+
+@celery_app.task(name='refresh_staff_commission_cache_task')
+def refresh_staff_commission_cache_task():
+    """每 25 分钟预热员工月度业绩缓存，避免首次打开员工管理页需全表扫描 sms_logs"""
+    return _run_async(_do_refresh_staff_commission_cache())
+
+
+async def _do_refresh_staff_commission_cache():
+    import json as _json
+    from sqlalchemy import select, func, and_
+    from app.modules.sms.sms_log import SMSLog
+    from app.modules.sms.channel import Channel
+    from app.modules.common.account import Account
+    from app.utils.cache import get_redis_client
+
+    eng, Session = _make_session()
+    try:
+        async with Session() as db:
+            first_day = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            comm_query = (
+                select(Account.sales_id, func.sum(SMSLog.profit * SMSLog.message_count).label("total_profit"))
+                .select_from(SMSLog)
+                .join(Account, SMSLog.account_id == Account.id)
+                .join(Channel, SMSLog.channel_id == Channel.id)
+                .where(
+                    and_(
+                        SMSLog.submit_time >= first_day,
+                        SMSLog.status == "delivered",
+                        Channel.protocol != "VIRTUAL",
+                    )
+                )
+                .group_by(Account.sales_id)
+            )
+            comm_result = await db.execute(comm_query)
+            comm_map = {r.sales_id: float(r.total_profit or 0) for r in comm_result}
+
+        ym = datetime.now().strftime("%Y-%m")
+        redis = await get_redis_client()
+        await redis.setex(f"admin:monthly_commission:{ym}", 1800, _json.dumps(comm_map))
+        logger.info(f"员工月度业绩缓存已刷新: {len(comm_map)} 个销售, month={ym}")
+        return {"refreshed": len(comm_map), "month": ym}
+    finally:
+        await eng.dispose()

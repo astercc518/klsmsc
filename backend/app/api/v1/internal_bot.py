@@ -1204,6 +1204,31 @@ async def get_bot_sms_history(
         logger.error(f"获取历史失败: {e}")
         raise HTTPException(status_code=500)
 
+async def _gen_bot_account_name(db: AsyncSession, sales_id: int, country_code: str) -> str:
+    """生成账户名: TG{员工工号数字}{国家区号3位}V{序号02d}"""
+    from app.utils.country_code import get_dial_code
+
+    admin_username = (await db.execute(
+        select(AdminUser.username).where(AdminUser.id == sales_id)
+    )).scalar_one_or_none() or ""
+    m = re.search(r'\d+$', admin_username)
+    num_part = m.group(0) if m else ""
+
+    cc = (country_code or "").upper()
+    dial = get_dial_code(cc)
+
+    count = (await db.execute(
+        select(func.count()).select_from(Account).where(
+            Account.sales_id == sales_id,
+            Account.country_code == cc,
+            Account.is_deleted == False,
+        )
+    )).scalar() or 0
+    seq = count + 1
+
+    return f"TG{num_part}{dial}V{seq:02d}"
+
+
 @router.post("/accounts", dependencies=[Depends(verify_internal_secret)])
 async def create_bot_account(
     request: BotAccountCreate,
@@ -1213,15 +1238,17 @@ async def create_bot_account(
     try:
         from app.core.auth import AuthService
         from app.modules.common.account import Account
-        
+
         # 简化逻辑：生成随机密码和 API Key
         import secrets
         import string
         plain_pwd = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(12))
         hashed_pwd = AuthService.hash_password(plain_pwd)
         api_key = f"ak_{str(uuid.uuid4().hex)}"
-        
-        account_name = request.account_name or f"BotClient_{str(uuid.uuid4().hex)[:6]}"
+
+        account_name = request.account_name or await _gen_bot_account_name(
+            db, request.sales_id, request.country_code
+        )
         
         account = Account(
             account_name=account_name,

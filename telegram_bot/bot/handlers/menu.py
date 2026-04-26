@@ -284,7 +284,7 @@ async def show_pricing_all(query, context):
     """显示我的资费详情"""
     tg_id = query.from_user.id
     client = APIClient()
-    user_info = await client.verify_bot_user(tg_id)
+    user_info = await client.verify_bot_user(tg_id, include_monthly_performance=False)
     # verify-user 客户为 account_id / account.id，无顶层 id
     acc_id = user_info.get("account_id") or (user_info.get("account") or {}).get("id")
     if not user_info or user_info.get("role") != "customer" or not acc_id:
@@ -491,7 +491,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if data == "menu_invite":
         # 检查是否是销售
         client = APIClient()
-        user_info = await client.verify_user(tg_id)
+        user_info = await client.verify_user(tg_id, include_monthly_performance=False)
         
         if not user_info or not user_info.get("is_admin") or user_info.get("role") not in ['sales', 'super_admin', 'admin']:
             await query.edit_message_text(
@@ -942,7 +942,7 @@ async def show_account_info(query, context):
     tg_id = query.from_user.id
 
     client = APIClient()
-    user_info = await client.verify_user(tg_id)
+    user_info = await client.verify_user(tg_id, include_monthly_performance=False)
 
     if not user_info or not user_info.get("valid") or user_info.get("role") != "customer":
         await edit_and_log(
@@ -1148,7 +1148,7 @@ async def show_tickets(query, context: ContextTypes.DEFAULT_TYPE):
     client = APIClient()
     
     # 首先验证用户并获取 account_id
-    user_info = await client.verify_bot_user(tg_id)
+    user_info = await client.verify_bot_user(tg_id, include_monthly_performance=False)
     if not user_info or user_info.get("role") != "customer":
         await query.edit_message_text(
             "❌ 未绑定有效账户或该账户已停用/删除。",
@@ -2865,7 +2865,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ticket_title = context.user_data.get('ticket_title', '无标题')
         
         # 通过 API 获取当前活跃绑定的 account_id
-        verify = await api.verify_bot_user(tg_id)
+        verify = await api.verify_bot_user(tg_id, include_monthly_performance=False)
         if not verify or not verify.get("account_id"):
             await update.message.reply_text("❌ 未绑定有效账户，跳转至主菜单", reply_markup=await get_main_menu_guest())
             context.user_data["waiting_for"] = None

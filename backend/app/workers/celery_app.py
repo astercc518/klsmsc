@@ -157,6 +157,11 @@ celery_app.conf.beat_schedule = {
         'task': 'flush_dlr_retry_buffer_task',
         'schedule': 5.0,
     },
+    # 每25分钟预热员工月度业绩缓存（员工管理页避免全表扫描 sms_logs）
+    'refresh-staff-commission-cache-25min': {
+        'task': 'refresh_staff_commission_cache_task',
+        'schedule': 1500.0,
+    },
 }
 
 # OKCC 余额定时全量同步（可通过 OKCC_BEAT_SYNC_ENABLED=false 关闭）

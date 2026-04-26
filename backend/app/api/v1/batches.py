@@ -2,6 +2,7 @@
 批量发送 API
 """
 import re
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,7 @@ from app.schemas.batch import (
     SmsBatchStats, BatchUploadResponse, BatchRetryFailedResponse,
 )
 from app.modules.sms.sms_log import SMSLog
+from app.modules.sms.channel import Channel
 from app.core.pricing import PricingEngine
 from app.utils.queue import QueueManager
 from app.utils.errors import InsufficientBalanceError, PricingNotFoundError
@@ -170,58 +172,86 @@ async def upload_batch_file(
     +8613800138001,李四,654321
     ```
     """
+    CHUNK_SIZE = 64 * 1024
+    MAX_FILE_SIZE = 100 * 1024 * 1024
+    HEADER_PEEK_LIMIT = 1024 * 1024  # 表头行最多在前 1MB 内出现
+
+    file_path: Optional[str] = None
     try:
-        # 验证文件类型
         import os as _os
         clean_name = _os.path.basename(file.filename or "upload.csv")
         if not clean_name.lower().endswith('.csv'):
             raise HTTPException(status_code=400, detail="仅支持CSV文件")
-        
-        # 读取文件内容
-        content = await file.read()
-        file_size = len(content)
-        
-        if file_size > 100 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="文件大小不能超过100MB")
-        
-        # 解析CSV
-        csv_content = content.decode('utf-8')
-        csv_reader = csv.DictReader(io.StringIO(csv_content))
-        
-        # 验证表头
-        if 'phone' not in csv_reader.fieldnames:
-            raise HTTPException(status_code=400, detail="CSV必须包含'phone'列")
-        
-        # 统计行数
-        rows = list(csv_reader)
-        total_count = len(rows)
-        
-        if total_count == 0:
-            raise HTTPException(status_code=400, detail="CSV文件为空")
-        
-        if total_count > 2000000:
-            raise HTTPException(status_code=400, detail="单次批量最多支持200万条")
-        
-        # 如果使用模板，验证模板存在
+
+        # 模板校验前置：避免无效请求也走完整个写盘流程
         if template_id:
             template_query = select(SmsTemplate).where(
                 SmsTemplate.id == template_id,
                 SmsTemplate.account_id == current_account.id
             )
             template_result = await db.execute(template_query)
-            template = template_result.scalar_one_or_none()
-            if not template:
+            if not template_result.scalar_one_or_none():
                 raise HTTPException(status_code=404, detail="模板不存在")
-        
-        # 保存文件
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_filename = f"{current_account.id}_{timestamp}_{clean_name}"
         file_path = os.path.join(UPLOAD_DIR, safe_filename)
-        
-        with open(file_path, 'wb') as f:
-            f.write(content)
-        
-        # 创建批次记录
+
+        # 流式落盘 + 边写边数行 + 边写边校验表头
+        file_size = 0
+        newline_count = 0
+        last_byte: Optional[int] = None
+        header_buf = bytearray()
+        header_validated = False
+
+        f = await asyncio.to_thread(open, file_path, 'wb')
+        try:
+            while True:
+                chunk = await file.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                if file_size > MAX_FILE_SIZE:
+                    raise HTTPException(status_code=400, detail="文件大小不能超过100MB")
+
+                if not header_validated:
+                    header_buf.extend(chunk)
+                    nl_idx = header_buf.find(b'\n')
+                    if nl_idx >= 0:
+                        header_line = bytes(header_buf[:nl_idx]).decode('utf-8', errors='replace')
+                        header_line = header_line.lstrip('﻿').rstrip('\r').strip()
+                        try:
+                            cols = next(csv.reader(io.StringIO(header_line)))
+                        except StopIteration:
+                            cols = []
+                        cols_lower = [c.strip().lower() for c in cols]
+                        if 'phone' not in cols_lower:
+                            raise HTTPException(status_code=400, detail="CSV必须包含'phone'列")
+                        header_validated = True
+                        header_buf = bytearray()  # 释放
+                    elif len(header_buf) > HEADER_PEEK_LIMIT:
+                        raise HTTPException(status_code=400, detail="CSV格式异常：表头行过长或缺少换行")
+
+                newline_count += chunk.count(b'\n')
+                last_byte = chunk[-1]
+                await asyncio.to_thread(f.write, chunk)
+        finally:
+            await asyncio.to_thread(f.close)
+
+        if not header_validated:
+            raise HTTPException(status_code=400, detail="CSV缺少表头")
+
+        # 末行无换行也算一行
+        if last_byte is not None and last_byte != ord('\n'):
+            newline_count += 1
+
+        total_count = max(0, newline_count - 1)  # 减去表头
+
+        if total_count == 0:
+            raise HTTPException(status_code=400, detail="CSV文件为空")
+        if total_count > 2000000:
+            raise HTTPException(status_code=400, detail="单次批量最多支持200万条")
+
         batch = SmsBatch(
             account_id=current_account.id,
             batch_name=batch_name,
@@ -232,17 +262,16 @@ async def upload_batch_file(
             sender_id=sender_id,
             status=BatchStatus.PENDING
         )
-        
+
         db.add(batch)
         await db.commit()
         await db.refresh(batch)
-        
+
         logger.info(f"Batch uploaded: id={batch.id}, account={current_account.id}, count={total_count}")
-        
-        # 触发异步处理任务（Celery）
+
         from app.workers.batch_worker import process_batch
         process_batch.delay(batch.id)
-        
+
         return BatchUploadResponse(
             batch_id=batch.id,
             file_name=file.filename,
@@ -250,8 +279,21 @@ async def upload_batch_file(
             total_count=total_count,
             message="上传成功，正在处理中"
         )
-        
+
+    except HTTPException:
+        # 校验失败：清理已落盘的不完整文件，避免占用磁盘
+        if file_path:
+            try:
+                await asyncio.to_thread(os.remove, file_path)
+            except OSError:
+                pass
+        raise
     except Exception as e:
+        if file_path:
+            try:
+                await asyncio.to_thread(os.remove, file_path)
+            except OSError:
+                pass
         logger.error(f"Failed to upload batch: {str(e)}")
         raise HTTPException(status_code=500, detail=f"上传失败: {str(e)}")
 
@@ -289,6 +331,18 @@ async def list_batches(
 
         total_by_id = {int(b.id): int(b.total_count or 0) for b in batches}
 
+        # 批量查各批次使用的通道代码（取第一条有 channel_id 的日志）
+        batch_ids = [b.id for b in batches]
+        channel_by_batch: Dict[int, str] = {}
+        if batch_ids:
+            ch_rows = (await db.execute(
+                select(SMSLog.batch_id, func.any_value(Channel.channel_code))
+                .join(Channel, SMSLog.channel_id == Channel.id)
+                .where(SMSLog.batch_id.in_(batch_ids), SMSLog.channel_id.isnot(None))
+                .group_by(SMSLog.batch_id)
+            )).all()
+            channel_by_batch = {int(r[0]): r[1] for r in ch_rows if r[0] is not None}
+
         # 只对仍在处理中的批次扫 sms_logs；已完成批次直接用存量字段，避免全表聚合
         live_ids = [b.id for b in batches if b.status in (BatchStatus.PROCESSING, BatchStatus.PENDING)]
         patches = await _smslog_batch_display_patches(db, live_ids, total_by_id) if live_ids else {}
@@ -301,7 +355,7 @@ async def list_batches(
                 succ = int(b.success_count or 0)
                 p: Dict[str, int] = {
                     "delivered_count": dlv,
-                    "sent_awaiting_receipt_count": 0,
+                    "sent_awaiting_receipt_count": max(0, succ - dlv),
                     "success_count": succ,
                     "failed_count": int(b.failed_count or 0),
                     "processing_count": 0,
@@ -311,6 +365,7 @@ async def list_batches(
                 p = patches.get(b.id, {})
                 p = await _maybe_sync_batch_row_from_logs(db, b, p, total_by_id)
                 patches[b.id] = p
+            p["channel_code"] = channel_by_batch.get(int(b.id))
             base = SmsBatchResponse.model_validate(b, from_attributes=True)
             items.append(base.model_copy(update=p))
 
