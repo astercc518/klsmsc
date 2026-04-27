@@ -59,6 +59,13 @@ export const retryBatchFailed = (id: number) => {
   )
 }
 
+/** 补发未发送：处理 CSV 中尚未写入 sms_logs 的剩余号码（仅 CSV 上传批次可用） */
+export const resendUnsentBatch = (id: number) => {
+  return request.post<{ triggered: boolean; unsent_count: number; message: string }>(
+    `/batches/${id}/resend-unsent`
+  )
+}
+
 /** 导出批次明细 CSV（后端手机号脱敏） */
 export const exportBatchRecordsCsv = (id: number) => {
   return request.get(`/batches/${id}/export`, { responseType: 'blob' })

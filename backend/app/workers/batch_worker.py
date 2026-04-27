@@ -83,7 +83,18 @@ def process_batch(self, batch_id: int):
     logger.info(f"开始处理批量发送任务: batch_id={batch_id}")
     return _run_async(_do_process_batch(batch_id))
 
-async def _do_process_batch(batch_id: int):
+
+@celery_app.task(name='process_batch_resume', bind=True)
+def process_batch_resume(self, batch_id: int):
+    """
+    补发未发送：跳过已在 sms_logs 的号码，处理 CSV 中剩余的行。
+    用于「批次卡 processing / 中途异常 / 部分号码未入队」等场景。
+    """
+    logger.info(f"开始补发未发送行: batch_id={batch_id}")
+    return _run_async(_do_process_batch(batch_id, resume=True))
+
+
+async def _do_process_batch(batch_id: int, resume: bool = False):
     db = _get_worker_session()
     try:
         # 1. 获取批次记录
@@ -92,15 +103,40 @@ async def _do_process_batch(batch_id: int):
         if not batch:
             logger.error(f"批次记录不存在: {batch_id}")
             return
-        
-        if batch.status != BatchStatus.PENDING:
-            logger.warning(f"批次状态不是 PENDING: {batch_id}, status={batch.status}")
-            return
+
+        if not resume:
+            if batch.status != BatchStatus.PENDING:
+                logger.warning(f"批次状态不是 PENDING: {batch_id}, status={batch.status}")
+                return
+        else:
+            # 补发模式：要求批次属于 CSV 上传来源；状态可以是 processing/completed/failed
+            if not batch.file_path:
+                logger.error(f"补发跳过: 批次无 file_path（非 CSV 来源）, batch_id={batch_id}")
+                return
+            if batch.status == BatchStatus.CANCELLED:
+                logger.warning(f"补发跳过: 批次已取消, batch_id={batch_id}")
+                return
 
         # 2. 更新状态为处理中
         batch.status = BatchStatus.PROCESSING
-        batch.started_at = datetime.now()
+        if not resume:
+            batch.started_at = datetime.now()
+        else:
+            batch.completed_at = None
+            batch.error_message = None
         await db.commit()
+
+        # 补发模式：预先加载已处理过的号码集合，遍历 CSV 时直接跳过
+        already_processed_phones: set = set()
+        if resume:
+            existing_res = await db.execute(
+                select(SMSLog.phone_number).where(SMSLog.batch_id == batch_id)
+            )
+            already_processed_phones = {row[0] for row in existing_res.all()}
+            logger.info(
+                f"补发预加载: batch={batch_id}, 已处理 {len(already_processed_phones)} 条，"
+                f"将跳过这些号码继续处理 CSV 剩余行"
+            )
 
         # 3. 准备工具
         pricing_engine = PricingEngine(db)
@@ -188,6 +224,10 @@ async def _do_process_batch(batch_id: int):
                     e164, country_code = validator.validate_phone(phone)
                     if not e164:
                         failed_count += 1
+                        continue
+
+                    # 补发模式：跳过已处理的号码
+                    if already_processed_phones and e164 in already_processed_phones:
                         continue
 
                     try:
@@ -857,7 +897,8 @@ async def _do_process_chunk(
                         )
                     else:
                         # 余额不足时逐条回退：尽可能扣到余额耗尽
-                        for phone_info, cc, final_msg, msg_count, batch_index, ch in valid_items:
+                        balance_exhausted_at: Optional[int] = None
+                        for _idx, (phone_info, cc, final_msg, msg_count, batch_index, ch) in enumerate(valid_items):
                             try:
                                 charge_result = await pricing_engine.calculate_and_charge(
                                     account_id=account_id, channel_id=ch.id,
@@ -922,8 +963,9 @@ async def _do_process_chunk(
                                                 failed += 1
                                     commit_batch.clear()
                             except (InsufficientBalanceError, PricingNotFoundError):
-                                failed += 1
-                                break  # 余额耗尽，终止
+                                # 余额耗尽：记录中断位置，剩余未处理项稍后批量补 failed sms_logs
+                                balance_exhausted_at = _idx
+                                break
                             except Exception as e:
                                 logger.warning(f"逐条回退失败: batch={batch_id}, {e}")
                                 failed += 1
@@ -964,10 +1006,36 @@ async def _do_process_chunk(
                                     else:
                                         failed += 1
                             commit_batch.clear()
-                        # 剩余未处理的标记为失败
-                        remaining_failed = len(valid_items) - succeeded - failed
-                        if remaining_failed > 0:
-                            failed += remaining_failed
+                        # 余额耗尽后未处理项：批量写入 sms_logs(status='failed')，让 batch 进度能正确收口
+                        # 历史 bug：仅累加 `failed += remaining`，sms_logs 不写入 → batch_utils.update_batch_progress
+                        # 用 sms_logs 实际行数算 done，永远 done < total，批次卡 processing 不结束（参考 batch 352 事故）
+                        if balance_exhausted_at is not None:
+                            unprocessed = valid_items[balance_exhausted_at:]
+                            if unprocessed:
+                                now_fail = datetime.now()
+                                fail_logs: List[SMSLog] = []
+                                for phone_info, cc, final_msg, msg_count, _bi, ch in unprocessed:
+                                    fail_logs.append(SMSLog(
+                                        message_id=f"msg_{uuid.uuid4().hex}",
+                                        account_id=account_id, channel_id=ch.id,
+                                        phone_number=phone_info['e164_format'], country_code=cc,
+                                        message=final_msg, message_count=msg_count,
+                                        status='failed', cost_price=0, selling_price=0,
+                                        currency='USD',
+                                        submit_time=now_fail, batch_id=batch_id,
+                                        error_message='Insufficient balance',
+                                    ))
+                                # 大批量分片写库，避免单事务过大
+                                _fail_chunk = 5000
+                                for _f0 in range(0, len(fail_logs), _fail_chunk):
+                                    db.add_all(fail_logs[_f0:_f0 + _fail_chunk])
+                                    await db.flush()
+                                    await db.commit()
+                                failed += len(fail_logs)
+                                logger.warning(
+                                    f"批次余额耗尽: batch={batch_id}, offset={start_offset}, "
+                                    f"未处理 {len(fail_logs)} 条已批量写入 sms_logs(failed)"
+                                )
 
             # 分片写库/入队完成后：按 sms_logs 真实状态汇总批次。
             # 禁止把「入队成功条数」累加到 success_count，否则会出现「批次 completed 且 success=总量但全是 queued」的假象（如批次 246/247）。

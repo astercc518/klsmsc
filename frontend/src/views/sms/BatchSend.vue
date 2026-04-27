@@ -176,6 +176,15 @@
               >
                 {{ $t('batchSend.retryFailed') }}
               </el-button>
+              <el-button
+                v-if="canResendUnsentBatch(row)"
+                link
+                type="primary"
+                size="small"
+                @click="resendUnsentBatch(row)"
+              >
+                {{ $t('batchSend.resendUnsent') }}
+              </el-button>
               <el-button 
                 v-if="row.status === 'pending' || row.status === 'processing'" 
                 link 
@@ -361,6 +370,7 @@ import {
   uploadBatchFile,
   cancelBatch as cancelBatchApi,
   retryBatchFailed as retryBatchFailedApi,
+  resendUnsentBatch as resendUnsentBatchApi,
   exportBatchRecordsCsv,
   type SmsBatch,
 } from '@/api/batch'
@@ -460,6 +470,24 @@ function batchFailedCount(row: SmsBatch & Record<string, unknown>): number {
 /** 是否显示「失败重发」：有失败记录，且非待处理/已取消（含处理中部分失败、已完成、全失败） */
 function canRetryFailedBatch(row: SmsBatch & Record<string, unknown>): boolean {
   if (batchFailedCount(row) <= 0) return false
+  const st = String(row.status ?? '').toLowerCase()
+  if (st === 'pending' || st === 'cancelled') return false
+  return true
+}
+
+/** 未发送（=未入库到 sms_logs）条数 */
+function batchUnsentCount(row: SmsBatch & Record<string, unknown>): number {
+  const total = Number(row.total_count) || 0
+  const ok = Number(row.success_count) || 0
+  const fl = Number(row.failed_count) || 0
+  const wait = Number(row.sent_awaiting_receipt_count ?? 0) || 0
+  return Math.max(0, total - ok - fl - wait)
+}
+
+/** 是否显示「补发未发送」：有缺口、是 CSV 上传的批次、状态非待处理/已取消 */
+function canResendUnsentBatch(row: SmsBatch & Record<string, unknown>): boolean {
+  if (!row.file_path) return false
+  if (batchUnsentCount(row) <= 0) return false
   const st = String(row.status ?? '').toLowerCase()
   if (st === 'pending' || st === 'cancelled') return false
   return true
@@ -752,6 +780,33 @@ const retryFailedBatch = (row: SmsBatch & Record<string, unknown>) => {
     } catch (error: any) {
       const d = error.response?.data?.detail
       ElMessage.error(typeof d === 'string' ? d : t('batchSend.retryFailedMsg'))
+    }
+  }).catch(() => {})
+}
+
+const resendUnsentBatch = (row: SmsBatch & Record<string, unknown>) => {
+  const unsent = batchUnsentCount(row)
+  if (unsent <= 0) return
+  ElMessageBox.confirm(
+    t('batchSend.confirmResendUnsent', { name: row.batch_name || `#${row.id}` }),
+    t('common.info'),
+    {
+      confirmButtonText: t('common.confirm'),
+      cancelButtonText: t('common.cancel'),
+      type: 'warning',
+    },
+  ).then(async () => {
+    try {
+      const res = await resendUnsentBatchApi(row.id)
+      ElMessage.success(
+        res.message ||
+          t('batchSend.resendUnsentSuccess', { count: res.unsent_count }),
+      )
+      loadBatches()
+      loadStats()
+    } catch (error: any) {
+      const d = error.response?.data?.detail
+      ElMessage.error(typeof d === 'string' ? d : t('batchSend.resendUnsentFailed'))
     }
   }).catch(() => {})
 }

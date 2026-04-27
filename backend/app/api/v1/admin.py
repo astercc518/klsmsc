@@ -2905,14 +2905,22 @@ async def get_admin_dashboard(
     import json
     import redis.asyncio as aioredis
 
-    _cache_key = f"admin_dashboard:{admin.id}:{admin.role}"
-    _cache_ttl = 60  # 秒
+    # super_admin/admin/finance/tech 看到的数据完全一致，按 role 共享缓存，避免每个用户单独 cold start
+    # sales 看到的是「自己名下客户」，仍按 admin.id 隔离
+    if admin.role in ("super_admin", "admin", "finance", "tech"):
+        _cache_key = f"admin_dashboard:role:{admin.role}"
+    else:
+        _cache_key = f"admin_dashboard:{admin.id}:{admin.role}"
+    _cache_ttl = 300  # 秒；配合 beat 任务每 4 分钟预热，用户访问时常态命中
     try:
         _rc = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
         try:
             _cached = await _rc.get(_cache_key)
             if _cached:
-                return json.loads(_cached)
+                _r = json.loads(_cached)
+                # role 共享缓存里的 admin_name 是首个请求者的名字，按当前请求者覆盖
+                _r["admin_name"] = admin.username
+                return _r
         finally:
             await _rc.aclose()
     except Exception:

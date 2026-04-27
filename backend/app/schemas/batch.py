@@ -133,3 +133,10 @@ class BatchRetryFailedResponse(BaseModel):
     skipped: int = Field(0, description="未重发条数（缺数据、计费或入队失败等）")
     errors: List[str] = Field(default_factory=list, description="失败原因摘要（最多若干条）")
     message: str = Field(default="", description="说明")
+
+
+class BatchResendUnsentResponse(BaseModel):
+    """补发未发送响应"""
+    triggered: bool = Field(..., description="是否已触发补发")
+    unsent_count: int = Field(..., description="检测到的未发送条数")
+    message: str = Field(default="", description="说明")

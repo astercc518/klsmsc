@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, update
 from typing import Optional, List, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 import csv
 import os
 import io
@@ -19,6 +19,7 @@ from app.modules.sms.sms_template import SmsTemplate
 from app.schemas.batch import (
     SmsBatchCreate, SmsBatchResponse, SmsBatchListResponse,
     SmsBatchStats, BatchUploadResponse, BatchRetryFailedResponse,
+    BatchResendUnsentResponse,
 )
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
@@ -87,16 +88,26 @@ def _smslog_counts_to_response_patch(m: Dict[str, int], batch_total: int = 0) ->
 
 
 async def _smslog_batch_display_patches(
-    db: AsyncSession, batch_ids: List[int], batch_total_by_id: Optional[Dict[int, int]] = None
+    db: AsyncSession,
+    batch_ids: List[int],
+    batch_total_by_id: Optional[Dict[int, int]] = None,
+    since: Optional[datetime] = None,
 ) -> Dict[int, Dict[str, int]]:
-    """按批次聚合 sms_logs，生成 model_copy(update=...) 用的字段字典。"""
+    """
+    按批次聚合 sms_logs，生成 model_copy(update=...) 用的字段字典。
+
+    `since`: 当传入时，附加 `submit_time >= since` 条件，触发 sms_logs 分区裁剪
+    （表按 submit_time 月分区；不加时间过滤会扫所有 15 个分区，性能急剧下降）。
+    调用方应传入「目标批次中最早的 created_at - 60s 缓冲」，确保不漏数。
+    """
     if not batch_ids:
         return {}
-    stmt = (
-        select(SMSLog.batch_id, SMSLog.status, func.count(SMSLog.id))
-        .where(SMSLog.batch_id.in_(batch_ids))
-        .group_by(SMSLog.batch_id, SMSLog.status)
+    stmt = select(SMSLog.batch_id, SMSLog.status, func.count(SMSLog.id)).where(
+        SMSLog.batch_id.in_(batch_ids)
     )
+    if since is not None:
+        stmt = stmt.where(SMSLog.submit_time >= since - timedelta(seconds=60))
+    stmt = stmt.group_by(SMSLog.batch_id, SMSLog.status)
     rows = (await db.execute(stmt)).all()
     acc: Dict[int, Dict[str, int]] = {int(bid): {} for bid in batch_ids}
     for batch_id, status, cnt in rows:
@@ -331,21 +342,51 @@ async def list_batches(
 
         total_by_id = {int(b.id): int(b.total_count or 0) for b in batches}
 
-        # 批量查各批次使用的通道代码（取第一条有 channel_id 的日志）
+        # 批量查各批次使用的通道代码（取首条 channel_id 即可）
+        # 旧实现用 GROUP BY 触发 sms_logs 全表扫描（百万行表 → 80s+），改为按批次相关子查询 + LIMIT 1，
+        # 优化器自然走 idx_sms_logs_batch_id，单批 1 行命中，整体降到亚秒级。
         batch_ids = [b.id for b in batches]
         channel_by_batch: Dict[int, str] = {}
         if batch_ids:
-            ch_rows = (await db.execute(
-                select(SMSLog.batch_id, func.any_value(Channel.channel_code))
-                .join(Channel, SMSLog.channel_id == Channel.id)
-                .where(SMSLog.batch_id.in_(batch_ids), SMSLog.channel_id.isnot(None))
-                .group_by(SMSLog.batch_id)
+            _cid_subq = (
+                select(SMSLog.channel_id)
+                .where(
+                    SMSLog.batch_id == SmsBatch.id,
+                    SMSLog.channel_id.isnot(None),
+                )
+                .limit(1)
+                .correlate(SmsBatch)
+                .scalar_subquery()
+            )
+            cid_rows = (await db.execute(
+                select(SmsBatch.id, _cid_subq).where(SmsBatch.id.in_(batch_ids))
             )).all()
-            channel_by_batch = {int(r[0]): r[1] for r in ch_rows if r[0] is not None}
+            batch_to_cid = {int(r[0]): int(r[1]) for r in cid_rows if r[1] is not None}
+            if batch_to_cid:
+                code_rows = (await db.execute(
+                    select(Channel.id, Channel.channel_code)
+                    .where(Channel.id.in_(set(batch_to_cid.values())))
+                )).all()
+                cid_to_code = {int(r[0]): r[1] for r in code_rows}
+                channel_by_batch = {
+                    bid: cid_to_code[cid]
+                    for bid, cid in batch_to_cid.items()
+                    if cid in cid_to_code
+                }
 
         # 只对仍在处理中的批次扫 sms_logs；已完成批次直接用存量字段，避免全表聚合
-        live_ids = [b.id for b in batches if b.status in (BatchStatus.PROCESSING, BatchStatus.PENDING)]
-        patches = await _smslog_batch_display_patches(db, live_ids, total_by_id) if live_ids else {}
+        live_batches = [b for b in batches if b.status in (BatchStatus.PROCESSING, BatchStatus.PENDING)]
+        live_ids = [b.id for b in live_batches]
+        # 传 since=最早 created_at，让 sms_logs 分区裁剪生效（按月分区，跨分区扫描会很慢）
+        live_since: Optional[datetime] = None
+        if live_batches:
+            _cts = [b.created_at for b in live_batches if b.created_at]
+            if _cts:
+                live_since = min(_cts)
+        patches = (
+            await _smslog_batch_display_patches(db, live_ids, total_by_id, since=live_since)
+            if live_ids else {}
+        )
 
         items = []
         for b in batches:
@@ -773,6 +814,72 @@ async def retry_batch_failed(
         skipped=skipped,
         errors=err_lines,
         message=msg,
+    )
+
+
+@router.post(
+    "/batches/{batch_id}/resend-unsent",
+    response_model=BatchResendUnsentResponse,
+    summary="补发未发送（仅 CSV 上传批次）",
+)
+async def resend_unsent_batch(
+    batch_id: int,
+    current_account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    补发未发送：处理 CSV 中尚未写入 sms_logs 的剩余号码。
+    与「失败重发」区别：「失败重发」处理 sms_logs 中 status=failed/expired；本接口处理「根本没入库」的号码。
+
+    限制：
+    - 仅支持 CSV 上传创建的批次（依赖 sms_batches.file_path 重读 CSV）
+    - 私库筛选 / 直接传号码列表 的批次不可用，号码源不可恢复
+    - 已取消的批次不可补发
+    """
+    q_batch = select(SmsBatch).where(
+        SmsBatch.id == batch_id,
+        SmsBatch.account_id == current_account.id,
+        SmsBatch.is_deleted == False,
+    )
+    batch = (await db.execute(q_batch)).scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="批次不存在")
+
+    if batch.status == BatchStatus.CANCELLED:
+        raise HTTPException(status_code=400, detail="已取消的批次无法补发")
+
+    if not batch.file_path:
+        raise HTTPException(
+            status_code=400,
+            detail="该批次来源不可重放（仅 CSV 上传创建的批次支持自动补发）。请用「新建发送任务」重新上传剩余号码。",
+        )
+
+    if not os.path.exists(batch.file_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"原始 CSV 文件已不存在：{batch.file_path}（可能被清理）。无法自动补发。",
+        )
+
+    # 检测当前缺口
+    log_total = (await db.execute(
+        select(func.count()).select_from(SMSLog).where(SMSLog.batch_id == batch_id)
+    )).scalar() or 0
+    unsent = max(0, int(batch.total_count or 0) - int(log_total))
+    if unsent <= 0:
+        raise HTTPException(status_code=400, detail="没有未发送记录（CSV 行数已全部入库，是否要用「失败重发」？）")
+
+    # 触发异步任务
+    from app.workers.batch_worker import process_batch_resume
+    process_batch_resume.delay(batch_id)
+
+    logger.info(
+        f"补发未发送已触发: batch={batch_id}, account={current_account.id}, "
+        f"total={batch.total_count}, log_total={log_total}, unsent={unsent}"
+    )
+    return BatchResendUnsentResponse(
+        triggered=True,
+        unsent_count=unsent,
+        message=f"已触发补发约 {unsent} 条未发送号码（实际数量以 CSV 重新解析后为准）",
     )
 
 

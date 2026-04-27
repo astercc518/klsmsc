@@ -638,6 +638,69 @@ async def send_batch_sms(
     use_rotate = len(rot_messages) > 0
     total_numbers = len(request.phone_numbers)
 
+    # === 余额预检 ===
+    # 防止「余额远小于估算总额 → worker 跑完只发出极少部分 → 批次卡 processing 不结束」（参考 batch 352 事故）。
+    # 估算口径：抽样首个国家 + 通道，按当前账户单价 × 段数 × 总数。多国混发场景为近似值；价格不可知时跳过预检。
+    _est_country: Optional[str] = None
+    if request.private_library_filters and request.private_library_filters.get("country_code"):
+        _est_country = str(request.private_library_filters["country_code"]).strip().upper() or None
+    if not _est_country:
+        for _p in request.phone_numbers[:50]:
+            _ok, _, _info = Validator.validate_phone_number(str(_p).strip())
+            if _ok:
+                _est_country = (_info.get("country_code") or "").strip() or None
+                if _est_country:
+                    break
+
+    _est_price: Optional[float] = None
+    _est_currency = "USD"
+    if _est_country:
+        _pricing_chk = PricingEngine(db)
+        _ch_for_est = request.channel_id
+        if not _ch_for_est:
+            try:
+                _ch_obj = await RoutingEngine(db).select_channel(
+                    country_code=_est_country, strategy='priority', account_id=account.id,
+                )
+                if _ch_obj:
+                    _ch_for_est = _ch_obj.id
+            except Exception:
+                _ch_for_est = None
+        if _ch_for_est:
+            try:
+                _pi = await _pricing_chk.get_price(_ch_for_est, _est_country, None, account.id)
+                if _pi and _pi.get("price"):
+                    _est_price = float(_pi["price"])
+                    _est_currency = _pi.get("currency", "USD")
+            except Exception:
+                pass
+
+    if _est_price and _est_price > 0:
+        _msg_for_estimate = max(rot_messages, key=len) if rot_messages else request.message
+        _parts = max(1, PricingEngine(db)._count_sms_parts(_msg_for_estimate))
+        _est_total = total_numbers * _parts * _est_price
+        _bal_row = await db.execute(select(Account.balance).where(Account.id == account.id))
+        _bal = float(_bal_row.scalar() or 0)
+        if _bal < _est_total:
+            return BatchSMSResponse(
+                success=False, total=total_numbers, succeeded=0, failed=0,
+                messages=[], batch_id=None,
+                error={
+                    "code": "INSUFFICIENT_BALANCE",
+                    "message": (
+                        f"余额不足：当前 {_bal:.4f} {_est_currency}，"
+                        f"预估需要 {_est_total:.4f} {_est_currency}（{total_numbers} 条 × "
+                        f"{_parts} 段 × {_est_price:.4f}）。请充值后重试。"
+                    ),
+                    "balance": round(_bal, 4),
+                    "estimated_cost": round(_est_total, 4),
+                    "currency": _est_currency,
+                    "total_count": total_numbers,
+                    "parts_per_sms": _parts,
+                    "price_per_part": round(_est_price, 6),
+                },
+            )
+
     batch_label = (request.batch_name or "").strip() or f"发送页-{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     sms_batch = SmsBatch(
         account_id=account.id,
