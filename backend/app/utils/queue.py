@@ -286,7 +286,42 @@ class QueueManager:
             
             logger.info(f"DLR已加入队列, task_id: {task.id}")
             return True
-            
+
         except Exception as e:
             logger.error(f"DLR加入队列失败: {str(e)}", exc_info=e)
+            return False
+
+    @staticmethod
+    def queue_inbound_dlr(payload: dict) -> bool:
+        """
+        发布 DLR 到 sms_inbound_dlr 队列，供 Go SMPP 入站网关推送给在线的客户 RECEIVER 会话。
+
+        payload 结构（与 Go 侧 inbound_dlr_consumer 解析对齐）:
+            {
+                "system_id":   str,   # 客户 SMPP system_id
+                "message_id":  str,   # SMSLog.message_id（Go 网关生成的入站 msgid）
+                "source_addr": str,
+                "dest_addr":   str,
+                "stat":        str,   # DELIVRD / UNDELIV / EXPIRED / REJECTD / ACCEPTD
+                "err":         str,   # 三位错误码
+                "submit_date": str,   # YYMMDDhhmm
+                "done_date":   str,   # YYMMDDhhmm
+                "text_preview": str,  # 短信文本前 20 字符
+            }
+        无 Python worker 消费此队列；Celery envelope 仅作为传输载体。
+        """
+        try:
+            celery_app.send_task(
+                "_inbound_dlr_dispatch",  # 占位任务名，Python 端无 worker 注册
+                args=[payload],
+                queue="sms_inbound_dlr",
+                routing_key="sms_inbound_dlr",
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                f"queue_inbound_dlr 失败: system_id={payload.get('system_id')} "
+                f"msgid={payload.get('message_id')}: {e}",
+                exc_info=e,
+            )
             return False

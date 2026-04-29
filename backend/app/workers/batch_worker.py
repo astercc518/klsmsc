@@ -616,11 +616,13 @@ async def _do_process_chunk(
                     deduct_ok = True
                     if total_sell > 0:
                         from sqlalchemy import update as sa_update
-                        dr = await db.execute(
-                            sa_update(Account)
-                            .where(Account.id == account_id, Account.balance >= total_sell)
-                            .values(balance=Account.balance - total_sell)
-                        )
+                        _is_postpaid = (getattr(batch_account, 'payment_type', None) == 'postpaid')
+                        _deduct_stmt = sa_update(Account).values(balance=Account.balance - total_sell)
+                        if _is_postpaid:
+                            _deduct_stmt = _deduct_stmt.where(Account.id == account_id)
+                        else:
+                            _deduct_stmt = _deduct_stmt.where(Account.id == account_id, Account.balance >= total_sell)
+                        dr = await db.execute(_deduct_stmt)
                         if dr.rowcount == 0:
                             deduct_ok = False
                             failed += len(valid_items)
@@ -764,15 +766,17 @@ async def _do_process_chunk(
                     if total_sell > 0:
                         from sqlalchemy import update as sa_update
                         from sqlalchemy.exc import OperationalError as _OpErr
+                        _is_postpaid = (getattr(batch_account, 'payment_type', None) == 'postpaid')
                         dr = None
                         _attempts = 5
                         for _atmpt in range(_attempts):
                             try:
-                                dr = await db.execute(
-                                    sa_update(Account)
-                                    .where(Account.id == account_id, Account.balance >= total_sell)
-                                    .values(balance=Account.balance - total_sell)
-                                )
+                                _deduct_stmt = sa_update(Account).values(balance=Account.balance - total_sell)
+                                if _is_postpaid:
+                                    _deduct_stmt = _deduct_stmt.where(Account.id == account_id)
+                                else:
+                                    _deduct_stmt = _deduct_stmt.where(Account.id == account_id, Account.balance >= total_sell)
+                                dr = await db.execute(_deduct_stmt)
                                 break
                             except _OpErr as _err:
                                 _orig = getattr(_err, 'orig', None)

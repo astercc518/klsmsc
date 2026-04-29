@@ -2,6 +2,7 @@
 管理员API路由
 """
 import asyncio
+import random
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, select, text, update as sa_update, func, and_
@@ -21,6 +22,12 @@ from datetime import timedelta
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+# 无歧义字符集：排除 0/O、1/I/l 等易混淆字符
+_UNAMBIGUOUS = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz"
+
+def _gen_api_secret(length: int = 8) -> str:
+    return "".join(random.SystemRandom().choices(_UNAMBIGUOUS, k=length))
 
 
 # Schemas
@@ -160,6 +167,7 @@ class AdminAccountCreateRequest(BaseModel):
     currency: str = "USD"
     # 风控配置
     rate_limit: int = 30  # 发送限速(条/秒)
+    smpp_max_binds: int = 5  # SMPP 最大并发绑定数
     ip_whitelist: Optional[List[str]] = None
     low_balance_threshold: Optional[float] = None
     # 绑定配置
@@ -183,6 +191,7 @@ class AdminAccountUpdateRequest(BaseModel):
     currency: Optional[str] = None
     # 风控配置
     rate_limit: Optional[int] = None  # 发送限速(条/秒)
+    smpp_max_binds: Optional[int] = None  # SMPP 最大并发绑定数
     ip_whitelist: Optional[List[str]] = None
     low_balance_threshold: Optional[float] = None
     # 绑定配置
@@ -726,12 +735,19 @@ async def create_account_admin(
     if len(request.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
 
+    # 检查账户名是否已被未删除的账户使用
+    _dup = await db.execute(
+        select(Account.id).where(Account.account_name == request.account_name, Account.is_deleted == False)
+    )
+    if _dup.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=400, detail=f"账户名 '{request.account_name}' 已存在，请使用其他名称")
+
     # 生成唯一邮箱（内部使用）
     unique_email = f"{uuid.uuid4().hex[:12]}@internal.sms"
 
     # 生成API Key/Secret（注意长度限制）
     api_key = f"ak_{secrets.token_hex(30)}"  # <= 64
-    api_secret = secrets.token_urlsafe(4)[:6]  # 6 位随机接口密码
+    api_secret = _gen_api_secret()  # 8 位无歧义接口密码
     
     # 生成SMPP System ID (如果是SMPP协议)
     smpp_system_id = None
@@ -766,6 +782,7 @@ async def create_account_admin(
         api_secret=api_secret,
         ip_whitelist=ip_whitelist_raw,
         rate_limit=request.rate_limit,
+        smpp_max_binds=request.smpp_max_binds,
         low_balance_threshold=request.low_balance_threshold,
         created_by=admin.id,
         sales_id=request.sales_id,
@@ -917,6 +934,7 @@ async def get_account_admin(
             # 风控配置
             "low_balance_threshold": float(a.low_balance_threshold) if a.low_balance_threshold is not None else None,
             "rate_limit": a.rate_limit,
+            "smpp_max_binds": a.smpp_max_binds if a.smpp_max_binds is not None else 5,
             "ip_whitelist": whitelist,
             # API凭证
             "api_key": a.api_key,
@@ -1005,6 +1023,8 @@ async def update_account_admin(
     # 风控配置
     if request.rate_limit is not None:
         a.rate_limit = request.rate_limit
+    if request.smpp_max_binds is not None:
+        a.smpp_max_binds = max(1, request.smpp_max_binds)
     if request.low_balance_threshold is not None:
         a.low_balance_threshold = request.low_balance_threshold
     if request.ip_whitelist is not None:
@@ -1056,6 +1076,33 @@ async def update_account_admin(
     return {"success": True, "message": "Account updated successfully"}
 
 
+@router.post("/accounts/{account_id}/generate-password", response_model=dict)
+async def generate_account_password(
+    account_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理员：仅生成/重置接口密码（不动 API Key）"""
+    from app.modules.common.account import Account
+    import secrets
+
+    result = await db.execute(select(Account).where(Account.id == account_id, Account.is_deleted == False))
+    a = result.scalar_one_or_none()
+    if not a:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if admin.role == "sales":
+        raise HTTPException(status_code=403, detail="销售人员无权生成接口密码")
+
+    a.api_secret = _gen_api_secret()  # 8 位无歧义接口密码
+    await db.commit()
+
+    return {
+        "success": True,
+        "api_secret": a.api_secret,
+    }
+
+
 @router.post("/accounts/{account_id}/reset-api-key", response_model=dict)
 async def reset_account_api_key(
     account_id: int,
@@ -1075,7 +1122,7 @@ async def reset_account_api_key(
         raise HTTPException(status_code=403, detail="销售人员无权重置 API Key")
 
     a.api_key = f"ak_{secrets.token_hex(30)}"
-    a.api_secret = secrets.token_urlsafe(4)[:6]  # 6 位随机接口密码
+    a.api_secret = _gen_api_secret()  # 8 位无歧义接口密码
     await db.commit()
 
     return {
@@ -1239,6 +1286,12 @@ async def adjust_account_balance(
         change_type = "deposit" if amount > 0 else "withdraw"
     if change_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Invalid change_type")
+
+    # 按类型强制符号：扣减类型始终为负，充值类型始终为正
+    if change_type in {"withdraw"} and amount > 0:
+        amount = -amount
+    elif change_type in {"deposit", "refund_recharge"} and amount < 0:
+        amount = -amount
 
     if admin.role == "sales":
         raise HTTPException(status_code=403, detail="销售人员无权为客户充值或调账")

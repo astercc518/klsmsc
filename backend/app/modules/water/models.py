@@ -131,3 +131,18 @@ class WaterInjectionLog(Base):
     error_message = Column(Text, nullable=True, comment="错误信息")
     screenshot_path = Column(String(500), nullable=True, comment="截图存储路径")
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), comment="创建时间")
+
+
+class WaterUrlResolution(Base):
+    """短链替换映射：用于绕过 Cloudflare Interactive Challenge 的短链服务"""
+
+    __tablename__ = "water_url_resolutions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    short_url = Column(String(500), nullable=False, unique=True, comment="SMS 中出现的短链")
+    resolved_url = Column(String(2000), nullable=False, comment="人工浏览器解析得到的真实落地页 URL")
+    enabled = Column(Boolean, nullable=False, default=True)
+    hit_count = Column(Integer, nullable=False, default=0, comment="累计命中次数")
+    notes = Column(String(500), nullable=True)
+    created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
+    updated_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), onupdate=func.now())

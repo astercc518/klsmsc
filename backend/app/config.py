@@ -137,8 +137,12 @@ class Settings(BaseSettings):
     PUBLIC_WEB_BASE_URL: str = "https://www.kaolach.com"
 
     # 对外 SMPP 服务配置（客户连接用）
-    SMPP_SERVER_HOST: str = "www.kaolach.com"
+    SMPP_SERVER_HOST: str = "smpp.kaolach.com"
     SMPP_SERVER_PORT: int = 2775
+
+    # 内部端点共享密钥：Go SMPP 入站网关回调 /api/v1/_internal/smpp_submit 时携带 X-Internal-Token
+    # 生产环境必须改为 openssl rand -hex 32 生成的强随机值
+    INTERNAL_TOKEN: str = "change-me-internal-token"
 
     # 通道管理「真实 SMPP bind」：由 go-smpp-gateway 内网 HTTP 执行（须与网关 SMPP_PROBE_TOKEN 一致）
     SMPP_GATEWAY_PROBE_URL: Optional[str] = None  # 例 http://smpp-gateway:8090

@@ -26,6 +26,18 @@ func main() {
     rabbitURL := os.Getenv("RABBITMQ_URL")
     go RunConsumerForever(rabbitURL)
 
+    // 3c. SMPP 入站服务器（客户接入）
+    inboundListen := os.Getenv("INBOUND_LISTEN")
+    if inboundListen == "" {
+        inboundListen = ":2775"
+    }
+    startSubmitWorkerPool(
+        getEnvInt("INBOUND_SUBMIT_WORKERS", 8),
+        getEnvInt("INBOUND_QUEUE_CAP", 10000),
+    )
+    go startInboundServer(inboundListen)
+    go RunInboundDLRConsumerForever(rabbitURL)
+
     // 3b. 管理端「真实 bind」探测（仅内网 + Token；供 Python API 调用）
     if probeListen := os.Getenv("SMPP_PROBE_BIND_LISTEN"); probeListen != "" {
         go startProbeBindServer(probeListen)

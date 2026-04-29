@@ -7,10 +7,44 @@ import time
 from typing import Optional, Dict
 from datetime import datetime
 
+from celery.exceptions import SoftTimeLimitExceeded
 from app.workers.celery_app import celery_app
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _apply_stealth(page):
+    """应用 playwright-stealth 反指纹检测补丁（支持 v1 stealth_sync / v2 Stealth().use_sync）"""
+    try:
+        from playwright_stealth import Stealth
+        Stealth().use_sync(page)
+        return
+    except Exception:
+        pass
+    try:
+        from playwright_stealth import stealth_sync
+        stealth_sync(page)
+    except Exception:
+        pass
+
+
+def _wait_through_cf(page, max_wait_ms: int = 25000):
+    """检测并等待 Cloudflare Managed Challenge 自动通过（住宅 IP + stealth 通常 5-15s）"""
+    deadline = time.time() + max_wait_ms / 1000
+    while time.time() < deadline:
+        try:
+            title = (page.title() or "").lower()
+        except Exception:
+            break
+        if "just a moment" in title or "checking your browser" in title:
+            page.wait_for_timeout(1500)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception:
+                pass
+        else:
+            break
 
 
 def _run_async(coro):
@@ -196,9 +230,9 @@ async def _increment_script_counter(factory, script_id: int, success: bool):
 
 # ========== Celery 任务 ==========
 
-@celery_app.task(name="web_click_task", bind=True, max_retries=2,
-                 autoretry_for=(Exception,), retry_backoff=10, retry_backoff_max=120,
-                 soft_time_limit=120, time_limit=180)
+@celery_app.task(name="web_click_task", bind=True, max_retries=1,
+                 autoretry_for=(OSError, ConnectionError), retry_backoff=15,
+                 soft_time_limit=90, time_limit=120)
 def web_click_task(self, sms_log_id: int, url: str, channel_id: int,
                    task_config_id: int = None, account_id: int = None,
                    country_code: str = "",
@@ -210,16 +244,20 @@ def web_click_task(self, sms_log_id: int, url: str, channel_id: int,
         from app.utils.water_task_tracking import untrack_water_task
         untrack_water_task(account_id, self.request.id)
     logger.info(f"注水点击开始: sms_log={sms_log_id}, account={account_id}, batch={batch_id}, url={url[:80]}")
-    return _do_click_sync(
-        sms_log_id, url, channel_id, task_config_id, account_id, country_code,
-        proxy_id, ua_type, register_enabled, register_rate_min, register_rate_max,
-        batch_id=batch_id
-    )
+    try:
+        return _do_click_sync(
+            sms_log_id, url, channel_id, task_config_id, account_id, country_code,
+            proxy_id, ua_type, register_enabled, register_rate_min, register_rate_max,
+            batch_id=batch_id
+        )
+    except SoftTimeLimitExceeded:
+        logger.warning(f"注水点击软超时: sms_log={sms_log_id}")
+        return {"success": False, "error": "soft_time_limit"}
 
 
 @celery_app.task(name="web_register_task", bind=True, max_retries=1,
-                 autoretry_for=(Exception,), retry_backoff=15, retry_backoff_max=60,
-                 soft_time_limit=180, time_limit=240)
+                 autoretry_for=(OSError, ConnectionError), retry_backoff=15,
+                 soft_time_limit=100, time_limit=130)
 def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
                       task_config_id: int = None, account_id: int = None,
                       country_code: str = "",
@@ -230,10 +268,14 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
         from app.utils.water_task_tracking import untrack_water_task
         untrack_water_task(account_id, self.request.id)
     logger.info(f"注水注册开始: sms_log={sms_log_id}, account={account_id}, batch={batch_id}, url={url[:80]}")
-    return _do_register_sync(
-        sms_log_id, url, channel_id, task_config_id, account_id, country_code,
-        proxy_id, ua_type, click_log_id, batch_id=batch_id
-    )
+    try:
+        return _do_register_sync(
+            sms_log_id, url, channel_id, task_config_id, account_id, country_code,
+            proxy_id, ua_type, click_log_id, batch_id=batch_id
+        )
+    except SoftTimeLimitExceeded:
+        logger.warning(f"注水注册软超时: sms_log={sms_log_id}")
+        return {"success": False, "error": "soft_time_limit"}
 
 
 # ========== 同步实现（Playwright sync API） ==========
@@ -286,10 +328,12 @@ def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, coun
                     user_agent=ua, viewport=viewport, locale=locale, timezone_id=tz,
                 )
                 page = context.new_page()
+                _apply_stealth(page)
 
                 # 先探测出口 IP（轻量 API，不影响主流程）
                 try:
                     ip_page = context.new_page()
+                    _apply_stealth(ip_page)
                     ip_page.goto("https://api.ipify.org?format=text", timeout=8000)
                     detected_ip = (ip_page.content() or "").strip()
                     # 提取纯 IP（去除 HTML 标签）
@@ -300,7 +344,8 @@ def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, coun
                 except Exception:
                     detected_ip = None
 
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                _wait_through_cf(page)  # 等待 Cloudflare 挑战自动通过
                 page.wait_for_timeout(random.randint(2000, 5000))
 
                 for _ in range(random.randint(2, 5)):
@@ -405,10 +450,12 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
                     user_agent=ua, viewport=viewport, locale=locale, timezone_id=tz,
                 )
                 page = context.new_page()
+                _apply_stealth(page)
 
                 # 探测出口 IP
                 try:
                     ip_page = context.new_page()
+                    _apply_stealth(ip_page)
                     ip_page.goto("https://api.ipify.org?format=text", timeout=8000)
                     import re
                     m = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', ip_page.content() or "")
@@ -417,7 +464,8 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
                 except Exception:
                     detected_ip = None
 
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                _wait_through_cf(page)  # 等待 Cloudflare 挑战自动通过
                 page.wait_for_timeout(random.randint(2000, 4000))
 
                 if script_data and script_data.get("steps"):

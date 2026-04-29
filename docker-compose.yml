@@ -150,6 +150,7 @@ services:
       DOCKER_PROXY_URL: http://docker-proxy:2375
       SMPP_GATEWAY_PROBE_URL: ${SMPP_GATEWAY_PROBE_URL:-http://smpp-gateway:8090}
       SMPP_PROBE_TOKEN: ${SMPP_PROBE_TOKEN:-}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
     ports:
       - "8000:8000"
     volumes:
@@ -528,6 +529,7 @@ services:
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
@@ -563,6 +565,15 @@ services:
       SMPP_GATEWAY_PREFETCH: ${SMPP_GATEWAY_PREFETCH:-32}
       SMPP_PROBE_BIND_LISTEN: ${SMPP_PROBE_BIND_LISTEN:-:8090}
       SMPP_PROBE_TOKEN: ${SMPP_PROBE_TOKEN:-}
+      # SMPP 入站服务器
+      BACKEND_INTERNAL_URL: http://api:8000
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      INBOUND_LISTEN: ${INBOUND_LISTEN:-:2775}
+      INBOUND_SUBMIT_WORKERS: ${INBOUND_SUBMIT_WORKERS:-8}
+      INBOUND_MAX_BINDS_PER_ACCOUNT: ${INBOUND_MAX_BINDS_PER_ACCOUNT:-5}
+      INBOUND_MAX_CONNS_PER_IP: ${INBOUND_MAX_CONNS_PER_IP:-20}
+    ports:
+      - "2775:2775"
     depends_on:
       proxysql:
         condition: service_started

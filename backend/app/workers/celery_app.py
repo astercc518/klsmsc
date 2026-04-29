@@ -86,6 +86,14 @@ celery_app.conf.task_queues = {
         'exchange': 'sms_result_queue',
         'routing_key': 'sms_result_queue',
     },
+    # SMPP 入站服务器：DLR 回推给在线客户的 RECEIVER 会话
+    # Python 在 _process_smpp_dlr_async 完成 sms_logs 更新后投递；Go inbound_dlr_consumer 消费
+    # 24h 消息 TTL，避免网关长时间停摆累积无限增长
+    'sms_inbound_dlr': {
+        'exchange': 'sms_inbound_dlr',
+        'routing_key': 'sms_inbound_dlr',
+        'queue_arguments': {'x-message-ttl': 86_400_000},
+    },
 }
 
 # 任务路由 - 数据业务
@@ -113,6 +121,8 @@ celery_app.conf.task_routes.update({
     'data_buy_send_async': {'queue': 'data_tasks'},
     'web_click_task': {'queue': 'web_automation'},
     'web_register_task': {'queue': 'web_automation'},
+    # SMPP 入站待发 DLR 清理（与其他 sms_dlr 任务同队列；任务体本身只跑短 SQL）
+    'smpp_pending_dlr_cleanup': {'queue': 'sms_dlr'},
 })
 
 # 定时任务配置（Celery Beat）
@@ -161,6 +171,11 @@ celery_app.conf.beat_schedule = {
     'refresh-staff-commission-cache-25min': {
         'task': 'refresh_staff_commission_cache_task',
         'schedule': 1500.0,
+    },
+    # 每天 00:30 清理过期 SMPP 待发 DLR
+    'smpp-pending-dlr-cleanup-daily': {
+        'task': 'smpp_pending_dlr_cleanup',
+        'schedule': crontab(hour=0, minute=30),
     },
 }
 

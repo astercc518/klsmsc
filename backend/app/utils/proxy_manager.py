@@ -110,7 +110,7 @@ async def test_proxy_connectivity(endpoint: str, country_code: str = "", country
 
     start = time.time()
     try:
-        async with httpx.AsyncClient(proxy=proxy_url, timeout=20) as client:
+        async with httpx.AsyncClient(proxies={"all://": proxy_url}, timeout=20) as client:
             resp = await client.get("https://api.ipify.org?format=json")
             latency = int((time.time() - start) * 1000)
             data = resp.json()

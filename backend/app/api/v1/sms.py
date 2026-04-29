@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, BackgroundTasks, Header, HTTPException, Body
+from fastapi import APIRouter, Depends, BackgroundTasks, Header, HTTPException, Body, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, HTTPBasicCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -82,6 +82,7 @@ optional_bearer = HTTPBearer(auto_error=False)
 
 
 async def get_current_account_or_admin(
+    request: Request,
     api_key: Optional[str] = Depends(api_key_header),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_bearer),
     basic_creds: Optional[HTTPBasicCredentials] = Depends(optional_basic),
@@ -90,12 +91,13 @@ async def get_current_account_or_admin(
     """
     获取当前认证账户 - 支持多种认证方式
 
-    优先级：API Key > HTTP Basic Auth (用户名+密码) > JWT Token (管理员)
+    优先级：X-API-Key Header > URL ?api_key= > Basic Auth > JWT Token (管理员)
     """
-    # 1. 优先使用 API Key
-    if api_key:
+    # 1. X-API-Key Header 或 URL ?api_key= 参数
+    effective = api_key or request.query_params.get("api_key")
+    if effective:
         try:
-            return await AuthService.verify_api_key(api_key, db)
+            return await AuthService.verify_api_key(effective, db)
         except AuthenticationError:
             pass
 
@@ -205,32 +207,32 @@ async def get_current_account(
     return await AuthService.verify_api_key(api_key, db)
 
 
-@router.post("/send", response_model=SMSSendResponse)
-async def send_sms(
-    request: SMSSendRequest,
-    account: Account = Depends(get_current_account_or_admin),
-    db: AsyncSession = Depends(get_db)
-):
+async def submit_sms_core(
+    db: AsyncSession,
+    account: Account,
+    phone_number: str,
+    message: str,
+    channel_id: Optional[int] = None,
+    http_credentials: Optional[dict] = None,
+    message_id_hint: Optional[str] = None,
+) -> SMSSendResponse:
     """
-    发送单条短信
-    
-    - **phone_number**: 目标电话号码（E.164格式）
-    - **message**: 短信内容
-    - **sender_id**: (废弃字段，自动使用通道默认SID)
-    - **channel_id**: 指定通道ID（可选）
-    - **callback_url**: 状态回调URL（可选）
+    SMS 提交核心逻辑。供 HTTP /sms/send 与 SMPP 入站内部端点共享。
+
+    流程：号码校验 → 国家限制 → 模板渲染 → 内容校验 → 通道路由 → 计费扣费 → 落库 → 入队。
+    返回与 send_sms 完全一致的 SMSSendResponse。
     """
     try:
-        logger.info(f"收到短信发送请求: 账户={account.id}, 号码={request.phone_number}")
-        
+        logger.info(f"收到短信发送请求: 账户={account.id}, 号码={phone_number}")
+
         # 1. 验证号码
-        is_valid_phone, error_msg, phone_info = Validator.validate_phone_number(request.phone_number)
+        is_valid_phone, error_msg, phone_info = Validator.validate_phone_number(phone_number)
         if not is_valid_phone:
             return SMSSendResponse(
                 success=False,
                 error={"code": "INVALID_PHONE", "message": error_msg}
             )
-        
+
         country_code = phone_info['country_code']
         logger.debug(f"号码解析: 国家={country_code}")
 
@@ -246,13 +248,13 @@ async def send_sms(
         # 2. 内置变量替换（{随机码} 等）后再校验长度与计费
         final_message = (
             render_sms_variables(
-                request.message,
+                message,
                 index=1,
                 phone_e164=phone_info["e164_format"],
                 country_code=country_code,
             )
-            if sms_template_has_variables(request.message)
-            else request.message
+            if sms_template_has_variables(message)
+            else message
         )
 
         is_valid_content, error_msg, content_info = Validator.validate_content(final_message)
@@ -261,27 +263,27 @@ async def send_sms(
                 success=False,
                 error={"code": "INVALID_CONTENT", "message": error_msg}
             )
-        
+
         # 3. 路由选择通道（账户已绑定通道时，仅在绑定通道中路由）
         routing_engine = RoutingEngine(db)
         channel = await routing_engine.select_channel(
             country_code=country_code,
-            preferred_channel=request.channel_id,
+            preferred_channel=channel_id,
             strategy='priority',
             account_id=account.id
         )
-        
+
         if not channel:
             return SMSSendResponse(
                 success=False,
                 error={"code": "NO_CHANNEL", "message": "No available channel"}
             )
-        
+
         logger.info(f"选择通道: {channel.channel_code}")
-        
+
         # 4. 获取发送方ID (从通道获取默认SID)
         sender_id = channel.default_sender_id
-        
+
         # 5. 计费 (Cost + Sell)
         pricing_engine = PricingEngine(db)
         charge_result = await pricing_engine.calculate_and_charge(
@@ -290,16 +292,16 @@ async def send_sms(
             country_code=country_code,
             message=final_message
         )
-        
+
         if not charge_result['success']:
             return SMSSendResponse(
                 success=False,
                 error={"code": "BILLING_ERROR", "message": charge_result.get('error', 'Billing failed')}
             )
-        
-        # 6. 生成消息ID
-        message_id = f"msg_{uuid.uuid4().hex}"
-        
+
+        # 6. 生成消息ID（允许调用方传入提示值，例如 SMPP 入站会先生成 msgid 返回客户）
+        message_id = message_id_hint or f"msg_{uuid.uuid4().hex}"
+
         # 7. 创建短信记录 (包含成本与利润)
         sms_log = SMSLog(
             message_id=message_id,
@@ -310,18 +312,15 @@ async def send_sms(
             message=final_message,
             message_count=charge_result['message_count'],
             status='queued',
-            # 结算数据
             cost_price=charge_result['total_base_cost'],
             selling_price=charge_result['total_cost'],
-            # profit 由数据库生成列自动计算，或手动传入
-            # profit=charge_result['total_cost'] - charge_result['total_base_cost'], 
             currency=charge_result['currency'],
             submit_time=datetime.now(),
             sent_time=None,
             delivery_time=None,
             error_message=None
         )
-        
+
         db.add(sms_log)
         await db.flush()
 
@@ -332,15 +331,7 @@ async def send_sms(
 
         # 8. 发送到消息队列（后台任务）
         from app.utils.queue import QueueManager
-        
-        # 如果是HTTP通道且提供了HTTP凭据，传递给Worker
-        http_credentials = None
-        if request.http_username or request.http_password:
-            http_credentials = {
-                "username": request.http_username,
-                "password": request.http_password
-            }
-        
+
         queue_success = QueueManager.queue_sms(message_id, http_credentials)
 
         if not queue_success:
@@ -377,7 +368,7 @@ async def send_sms(
             currency=charge_result['currency'],
             message_count=charge_result['message_count']
         )
-        
+
     except ValidationError as e:
         logger.error(f"参数验证错误: {str(e)}")
         return SMSSendResponse(
@@ -395,6 +386,154 @@ async def send_sms(
             success=False,
             error={"code": "INTERNAL_ERROR", "message": "An internal error occurred. Please try again later."}
         )
+
+
+@router.post("/send", response_model=SMSSendResponse)
+async def send_sms(
+    request: SMSSendRequest,
+    account: Account = Depends(get_current_account_or_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    发送单条短信
+
+    - **phone_number**: 目标电话号码（E.164格式）
+    - **message**: 短信内容
+    - **sender_id**: (废弃字段，自动使用通道默认SID)
+    - **channel_id**: 指定通道ID（可选）
+    - **callback_url**: 状态回调URL（可选）
+    """
+    http_credentials = None
+    if request.http_username or request.http_password:
+        http_credentials = {
+            "username": request.http_username,
+            "password": request.http_password,
+        }
+    return await submit_sms_core(
+        db=db,
+        account=account,
+        phone_number=request.phone_number,
+        message=request.message,
+        channel_id=request.channel_id,
+        http_credentials=http_credentials,
+    )
+
+
+@router.get("/send")
+async def send_sms_ruanwei_compat(
+    request: Request,
+    action: Optional[str] = None,
+    account: Optional[str] = None,
+    mobile: Optional[str] = None,
+    content: Optional[str] = None,
+    extno: Optional[str] = "",
+    password: Optional[str] = None,
+    rt: Optional[str] = "json",
+    db: AsyncSession = Depends(get_db)
+):
+    """软维HTTP协议短信兼容端点（OKCC等呼叫中心系统）"""
+    import hashlib
+
+    def _resp(status: str, items=None):
+        return JSONResponse({"status": status, "list": items or []})
+
+    if action != "send":
+        return _resp("100")
+
+    if not all([account, mobile, content, password]):
+        return _resp("21")
+
+    extno = extno or ""
+
+    result = await db.execute(
+        select(Account).where(Account.account_name == account, Account.status == "active")
+    )
+    acc = result.scalar_one_or_none()
+    if not acc or not acc.api_secret:
+        logger.warning(f"软维协议认证失败: account={account} 不存在或无密钥")
+        return _resp("3")
+
+    # 验证签名: md5(api_secret + extno + content + mobile)
+    # FastAPI已自动URL解码content参数，与PHP端原始内容一致
+    expected = hashlib.md5(f"{acc.api_secret}{extno}{content}{mobile}".encode()).hexdigest()
+    if expected != password:
+        logger.warning(f"软维协议签名校验失败: account={account}")
+        return _resp("3")
+
+    mobile_list = [m.strip() for m in mobile.split(",") if m.strip()]
+    if not mobile_list:
+        return _resp("21")
+
+    routing_engine = RoutingEngine(db)
+    pricing_engine = PricingEngine(db)
+    items = []
+
+    for phone in mobile_list:
+        is_valid, err, phone_info = Validator.validate_phone_number(phone)
+        if not is_valid:
+            items.append({"mobile": phone, "mid": "", "result": 15})
+            continue
+
+        country_code = phone_info["country_code"]
+
+        try:
+            from app.utils.account_country_restrict import assert_sms_destination_allowed, AccountCountryNotAllowedError
+            assert_sms_destination_allowed(acc, country_code)
+        except Exception:
+            items.append({"mobile": phone, "mid": "", "result": 17})
+            continue
+
+        final_message = (
+            render_sms_variables(content, index=1, phone_e164=phone_info["e164_format"], country_code=country_code)
+            if sms_template_has_variables(content) else content
+        )
+
+        is_valid_c, _, _ = Validator.validate_content(final_message)
+        if not is_valid_c:
+            items.append({"mobile": phone, "mid": "", "result": 17})
+            continue
+
+        channel = await routing_engine.select_channel(
+            country_code=country_code, strategy='priority', account_id=acc.id
+        )
+        if not channel:
+            items.append({"mobile": phone, "mid": "", "result": 17})
+            continue
+
+        charge_result = await pricing_engine.calculate_and_charge(
+            account_id=acc.id, channel_id=channel.id,
+            country_code=country_code, message=final_message
+        )
+        if not charge_result["success"]:
+            items.append({"mobile": phone, "mid": "", "result": 10})
+            continue
+
+        mid = f"msg_{uuid.uuid4().hex}"
+        sms_log = SMSLog(
+            message_id=mid, account_id=acc.id, channel_id=channel.id,
+            phone_number=phone_info["e164_format"], country_code=country_code,
+            message=final_message, message_count=charge_result["message_count"],
+            status="queued", cost_price=charge_result["total_base_cost"],
+            selling_price=charge_result["total_cost"], currency=charge_result["currency"],
+            submit_time=datetime.now()
+        )
+        db.add(sms_log)
+        await db.flush()
+        await db.commit()
+
+        from app.utils.queue import QueueManager
+        if QueueManager.queue_sms(mid, None):
+            items.append({"mobile": phone, "mid": mid, "result": 0})
+            logger.info(f"软维协议短信已入队: account={account}, phone={phone_info['e164_format']}, mid={mid}")
+        else:
+            await _refund_line_charge(db, acc.id, charge_result["total_cost"], f"软维SMS入队失败 {mid}")
+            await db.execute(
+                update(SMSLog).where(SMSLog.message_id == mid).values(status="failed", error_message="queue failed")
+            )
+            await db.flush()
+            items.append({"mobile": phone, "mid": mid, "result": 17})
+
+    return _resp("0", items)
 
 
 @router.get("/status/{message_id}", response_model=SMSStatusResponse)

@@ -410,8 +410,12 @@
           <!-- 风控限制 -->
           <el-divider content-position="left">{{ $t('customers.riskControl') }}</el-divider>
           <el-form-item :label="$t('customers.sendRateLimit')">
-            <el-input-number v-model="form.rate_limit" :min="1" :max="1000" style="width: 150px" />
+            <el-input-number v-model="form.rate_limit" :min="1" :max="10000" style="width: 150px" />
             <span style="margin-left: 8px; color: #909399">{{ $t('customers.messagesPerSecond') }}</span>
+          </el-form-item>
+          <el-form-item v-if="form.protocol === 'SMPP'" :label="$t('customers.maxConnections')">
+            <el-input-number v-model="form.smpp_max_binds" :min="1" :max="50" style="width: 150px" />
+            <span style="margin-left: 8px; color: #909399">{{ $t('customers.smppConnHint') }}</span>
           </el-form-item>
           <el-form-item :label="$t('customers.balanceAlert')">
             <el-input-number v-model="form.low_balance_threshold" :min="0" :precision="2" style="width: 150px" />
@@ -508,8 +512,8 @@
           <el-tag type="info" effect="plain">{{ current?.account_name }} (#{{ current?.id }})</el-tag>
         </el-form-item>
         <el-form-item :label="$t('customers.amount')" required>
-          <el-input-number v-model="adjustForm.amount" :precision="4" style="width: 100%" />
-          <div class="hint">{{ $t('customers.amountHint') }}</div>
+          <el-input-number v-model="adjustForm.amount" :precision="4" :min="0" style="width: 100%" />
+          <div class="hint">{{ adjustForm.change_type === 'withdraw' ? $t('customers.amountHintWithdraw') : $t('customers.amountHintDeposit') }}</div>
         </el-form-item>
         <el-form-item :label="$t('customers.type')">
           <el-select v-model="adjustForm.change_type" style="width: 100%" :placeholder="$t('customers.autoDetect')">
@@ -617,7 +621,12 @@
                   <code class="mono-val">{{ summaryData.api_secret }}</code>
                   <el-button link size="small" @click="copyText(summaryData.api_secret)">{{ $t('common.copy') }}</el-button>
                 </template>
-                <span v-else class="text-placeholder">{{ $t('customers.notGenerated') }}</span>
+                <template v-else>
+                  <span class="text-placeholder">{{ $t('customers.notGenerated') }}</span>
+                  <el-button type="primary" link size="small" style="margin-left: 8px" @click="handleGeneratePassword">
+                    {{ $t('customers.generateNow') }}
+                  </el-button>
+                </template>
               </el-descriptions-item>
               <el-descriptions-item :label="$t('customers.requestUrl')">
                 <code class="mono-val">{{ summaryData.api_base_url }}/sms/send</code>
@@ -685,7 +694,7 @@
               <el-descriptions-item :label="$t('customers.maxThroughput')">
                 {{ summaryData.rate_limit || 100 }} {{ $t('customers.perSecond') }}
               </el-descriptions-item>
-              <el-descriptions-item :label="$t('customers.maxConnections')">1</el-descriptions-item>
+              <el-descriptions-item :label="$t('customers.maxConnections')">{{ summaryData.smpp_max_binds ?? 5 }} {{ $t('customers.perConnection') }}</el-descriptions-item>
               <el-descriptions-item :label="$t('customers.ipWhitelist')">
                 {{ (summaryData.ip_whitelist && summaryData.ip_whitelist.length) ? summaryData.ip_whitelist.join(', ') : $t('customers.noRestriction') }}
               </el-descriptions-item>
@@ -891,6 +900,7 @@ import {
   adjustAccountBalance,
   resetAccountApiKey,
   resetAccountPassword,
+  generateAccountPassword,
   getAccountBalanceLogs,
   syncOkccBalances,
   type AdminAccount,
@@ -1124,6 +1134,7 @@ const form = reactive<any>({
   currency: 'USD',
   // 风控配置
   rate_limit: 30,
+  smpp_max_binds: 5,
   low_balance_threshold: 100,
 })
 
@@ -1150,6 +1161,7 @@ const openCreate = () => {
     currency: 'USD',
     // 风控配置
     rate_limit: 30,
+    smpp_max_binds: 5,
     low_balance_threshold: 100,
     // 绑定配置
     sales_id: null,
@@ -1195,6 +1207,7 @@ const openEdit = async (row: AdminAccount) => {
     status: row.status,
     currency: row.currency,
     rate_limit: row.rate_limit ?? 1000,
+    smpp_max_binds: (row as any).smpp_max_binds ?? 5,
     low_balance_threshold: row.low_balance_threshold ?? 100,
     sales_id: (row as any).sales_id || accountDetail.sales_id || null,
     channel_ids: accountDetail.channel_ids || [],
@@ -1236,6 +1249,7 @@ const submitForm = async () => {
       currency: form.currency,
       // 风控配置
       rate_limit: form.rate_limit,
+      smpp_max_binds: form.smpp_max_binds,
       low_balance_threshold: form.low_balance_threshold,
       ip_whitelist: normalizeWhitelist(),
       // 绑定配置
@@ -1347,6 +1361,18 @@ const resetAndRefreshSummary = async () => {
     if (e !== 'cancel') {
       ElMessage.error(e?.response?.data?.detail || e?.message || t('customers.operationFailed'))
     }
+  }
+}
+
+const handleGeneratePassword = async () => {
+  if (!summaryData.value) return
+  try {
+    const res = await generateAccountPassword(summaryData.value.id)
+    ElMessage.success(t('customers.resetSuccess'))
+    const detail = await getAccountAdminDetail(summaryData.value.id)
+    summaryData.value = detail.account
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || t('customers.operationFailed'))
   }
 }
 

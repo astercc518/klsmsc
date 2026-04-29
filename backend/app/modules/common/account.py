@@ -73,7 +73,8 @@ class Account(Base):
     api_key = Column(String(64), unique=True, comment="API密钥")
     api_secret = Column(String(128), comment="API密钥（加密存储）")
     ip_whitelist = Column(Text, comment="IP白名单（JSON数组）")
-    rate_limit = Column(Integer, default=1000, comment="每分钟请求限制")
+    rate_limit = Column(Integer, default=1000, comment="TPS 限速（条/秒）")
+    smpp_max_binds = Column(Integer, default=5, comment="SMPP 最大并发绑定数")
     low_balance_threshold = Column(DECIMAL(12, 4), nullable=True, default=100.0000, comment="余额预警阈值")
     # Webhook配置
     webhook_url = Column(String(255), nullable=True, comment="Webhook回调地址")

@@ -150,28 +150,41 @@ class PricingEngine:
 
             logger.debug(f"计费: Sell={total_sell_price}, Cost={total_base_cost}")
 
-            # 5. 原子扣减余额：WHERE balance >= total 防止并发超扣
-            stmt = (
-                update(Account)
-                .where(
-                    Account.id == account_id,
-                    Account.balance >= total_sell_price,
-                )
-                .values(balance=Account.balance - total_sell_price)
+            # 5. 扣减余额
+            # 查账户付费类型（避免重复查库，与后续余额查询合并在一次 SELECT 中）
+            acct_meta = await self.db.execute(
+                select(Account.payment_type, Account.balance).where(Account.id == account_id)
             )
+            acct_meta_row = acct_meta.first()
+            if acct_meta_row is None:
+                return {'success': False, 'error': 'Account not found'}
+
+            is_postpaid = (acct_meta_row[0] == "postpaid")
+
+            if is_postpaid:
+                # 后付费：直接扣减，允许余额为负（无需下限检查）
+                stmt = (
+                    update(Account)
+                    .where(Account.id == account_id)
+                    .values(balance=Account.balance - total_sell_price)
+                )
+            else:
+                # 预付费：原子检查余额 >= 费用，防止并发超扣
+                stmt = (
+                    update(Account)
+                    .where(
+                        Account.id == account_id,
+                        Account.balance >= total_sell_price,
+                    )
+                    .values(balance=Account.balance - total_sell_price)
+                )
             result = await self.db.execute(stmt)
 
             if result.rowcount == 0:
-                # 扣减失败：账户不存在或余额不足
-                acct_result = await self.db.execute(
-                    select(Account.balance).where(Account.id == account_id)
-                )
-                row = acct_result.first()
-                if row is None:
-                    return {'success': False, 'error': 'Account not found'}
+                # 仅预付费会走到此处（余额不足）
                 raise InsufficientBalanceError(
                     required=float(total_sell_price),
-                    available=float(row[0])
+                    available=float(acct_meta_row[1])
                 )
 
             if skip_balance_log:
@@ -248,21 +261,27 @@ class PricingEngine:
             return cached
         
         # 1. 检查账户统一单价 (Account Unit Price) - 最高优先级
+        # unit_price > 0：按设定值计费；unit_price == 0：明确设置为免费（0价格），均优先于 account_pricing
         if account_id:
             result = await self.db.execute(
                 select(Account).where(Account.id == account_id)
             )
             account = result.scalar_one_or_none()
-            
-            if account and account.unit_price and float(account.unit_price) > 0:
-                price_info = {
-                    'price': float(account.unit_price),
-                    'currency': account.currency or 'USD',
-                    'source': 'account_unit_price'
-                }
-                logger.info(f"使用账户统一单价: account={account_id}, price={account.unit_price}")
-                await cache_manager.set(cache_key, price_info, ttl=3600)
-                return price_info
+
+            if account and account.unit_price is not None and float(account.unit_price) >= 0:
+                up_val = float(account.unit_price)
+                # unit_price 为默认值 0.0500 且存在 account_pricing 时，优先用后者（保持原有多档定价逻辑）
+                # unit_price 明确设为 0（免费）或非默认正数时直接返回
+                is_default_rate = (up_val == 0.05)
+                if not is_default_rate:
+                    price_info = {
+                        'price': up_val,
+                        'currency': account.currency or 'USD',
+                        'source': 'account_unit_price'
+                    }
+                    logger.info(f"使用账户统一单价: account={account_id}, price={up_val}")
+                    await cache_manager.set(cache_key, price_info, ttl=3600)
+                    return price_info
             
         # 2. 检查账户专属国家定价 (Account Specific Country Pricing)
         if account_id:

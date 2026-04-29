@@ -25,6 +25,29 @@ def _calc_delay(delay_min: int, delay_max: int, curve: float) -> int:
     return int(delay_min + (delay_max - delay_min) * raw)
 
 
+async def _resolve_water_url(db, url: str) -> str:
+    """
+    短链替换：若 url 命中 water_url_resolutions 表，返回人工解析后的真实落地页 URL。
+    用于绕过 shorturl.at 等带 Cloudflare Interactive Challenge 的短链服务（headless 浏览器无法通过）。
+    未命中则原样返回。命中计数由 worker 异步更新，不阻塞 DLR 主路径。
+    """
+    try:
+        from sqlalchemy import text as _sa_text
+        resolved = (await db.execute(
+            _sa_text(
+                "SELECT resolved_url FROM water_url_resolutions "
+                "WHERE short_url = :u AND enabled = 1"
+            ),
+            {"u": url},
+        )).scalar_one_or_none()
+        if resolved:
+            logger.info(f"短链替换: {url} -> {resolved}")
+            return resolved
+    except Exception as e:
+        logger.warning(f"短链替换查询失败（按原 URL 投递）: {e}")
+    return url
+
+
 async def trigger_water_for_delivered(
     db,
     delivered_items: List[Tuple],
@@ -76,6 +99,7 @@ async def trigger_water_for_delivered(
                 continue
 
             url = urls[0]
+            url = await _resolve_water_url(db, url)
             curve = float(getattr(task_config, 'click_delay_curve', 1.0) or 1.0)
             delay = _calc_delay(task_config.click_delay_min, task_config.click_delay_max, curve)
 

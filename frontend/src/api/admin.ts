@@ -449,6 +449,10 @@ export async function resetAccountApiKey(accountId: number): Promise<any> {
   return request.post(`/admin/accounts/${accountId}/reset-api-key`);
 }
 
+export async function generateAccountPassword(accountId: number): Promise<any> {
+  return request.post(`/admin/accounts/${accountId}/generate-password`);
+}
+
 export async function resetAccountPassword(accountId: number, password: string): Promise<any> {
   return request.post(`/admin/accounts/${accountId}/reset-password`, { password });
 }

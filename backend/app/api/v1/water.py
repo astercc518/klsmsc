@@ -24,6 +24,7 @@ from app.modules.water.models import (
     WaterProxy,
     WaterRegisterScript,
     WaterTaskConfig,
+    WaterUrlResolution,
 )
 from app.utils.logger import get_logger
 from app.utils.proxy_manager import test_proxy_connectivity
@@ -992,3 +993,90 @@ async def test_script(
     )
 
     return {"task_id": task.id, "message": f"测试任务已提交，脚本: {script.name}"}
+
+
+# ========== 短链替换映射（绕过 Cloudflare 拦截短链）==========
+
+
+class UrlResolutionPayload(BaseModel):
+    short_url: str = Field(..., max_length=500, description="SMS 中出现的短链，如 https://shorturl.at/UdTAy")
+    resolved_url: str = Field(..., max_length=2000, description="人工浏览器解析得到的真实落地页 URL")
+    enabled: bool = True
+    notes: Optional[str] = None
+
+
+@router.get("/url-resolutions")
+async def list_url_resolutions(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin_user),
+):
+    rows = (await db.execute(
+        select(WaterUrlResolution).order_by(desc(WaterUrlResolution.id))
+    )).scalars().all()
+    return [{
+        "id": r.id, "short_url": r.short_url, "resolved_url": r.resolved_url,
+        "enabled": bool(r.enabled), "hit_count": r.hit_count, "notes": r.notes,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+    } for r in rows]
+
+
+@router.post("/url-resolutions")
+async def create_url_resolution(
+    payload: UrlResolutionPayload,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin_user),
+):
+    short = payload.short_url.strip()
+    resolved = payload.resolved_url.strip()
+    if not short or not resolved:
+        raise HTTPException(status_code=400, detail="short_url 与 resolved_url 必填")
+    exists = (await db.execute(
+        select(WaterUrlResolution).where(WaterUrlResolution.short_url == short)
+    )).scalar_one_or_none()
+    if exists:
+        raise HTTPException(status_code=400, detail=f"短链已存在: {short}")
+    item = WaterUrlResolution(
+        short_url=short, resolved_url=resolved,
+        enabled=payload.enabled, notes=payload.notes,
+    )
+    db.add(item)
+    await db.commit()
+    await db.refresh(item)
+    return {"id": item.id, "message": "短链替换映射已创建"}
+
+
+@router.put("/url-resolutions/{rid}")
+async def update_url_resolution(
+    rid: int,
+    payload: UrlResolutionPayload,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin_user),
+):
+    item = (await db.execute(
+        select(WaterUrlResolution).where(WaterUrlResolution.id == rid)
+    )).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="映射不存在")
+    item.short_url = payload.short_url.strip()
+    item.resolved_url = payload.resolved_url.strip()
+    item.enabled = payload.enabled
+    item.notes = payload.notes
+    await db.commit()
+    return {"message": "已更新"}
+
+
+@router.delete("/url-resolutions/{rid}")
+async def delete_url_resolution(
+    rid: int,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(get_current_admin_user),
+):
+    item = (await db.execute(
+        select(WaterUrlResolution).where(WaterUrlResolution.id == rid)
+    )).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="映射不存在")
+    await db.delete(item)
+    await db.commit()
+    return {"message": "已删除"}

@@ -167,6 +167,7 @@ from app.api.v1 import (
     channel_relations,
     account_templates, ai, admin_logs,
     water,
+    _internal_smpp,
 )
 from app.api.v1.data import (
     admin_numbers_router, admin_products_router, admin_orders_router,
@@ -180,6 +181,7 @@ app.include_router(admin.router, prefix="/api/v1", tags=["Admin"])
 app.include_router(reports.router, prefix="/api/v1", tags=["Reports"])
 app.include_router(bot_admin.router, prefix="/api/v1/admin/bot", tags=["Bot Admin"])
 app.include_router(internal_bot.router, prefix="/api/v1/internal/bot", tags=["Bot Internal"])
+app.include_router(_internal_smpp.router, prefix="/api/v1/_internal", tags=["Internal SMPP"])
 app.include_router(system_config.router, prefix="/api/v1/admin", tags=["System Config"])
 app.include_router(templates.router, prefix="/api/v1", tags=["Templates"])
 app.include_router(api_keys.router, prefix="/api/v1", tags=["API Keys"])

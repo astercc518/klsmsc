@@ -887,6 +887,29 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
 
             # 批次进度由 sync_processing_batch_progress_task 等定时汇总，避免海量 DLR 并发抢锁 sms_batches。
 
+            # SMPP 入站账户：将 DLR 转发给在线客户端（或落库等待补发）
+            try:
+                from app.modules.common.account import Account
+                from app.utils.queue import queue_inbound_dlr
+                _acct = await db.get(Account, sms_log.account_id)
+                if _acct and getattr(_acct, "protocol", None) == "SMPP" and _acct.smpp_system_id:
+                    def _fmt_dlr_date(dt):
+                        from datetime import datetime as _dt
+                        return (dt or _dt.now()).strftime("%y%m%d%H%M")
+                    queue_inbound_dlr({
+                        "system_id":    _acct.smpp_system_id,
+                        "message_id":   sms_log.message_id,
+                        "source_addr":  source_addr or "",
+                        "dest_addr":    dest_addr or sms_log.phone_number,
+                        "stat":         stat,
+                        "err":          err or "000",
+                        "submit_date":  _fmt_dlr_date(sms_log.submit_time),
+                        "done_date":    _fmt_dlr_date(sms_log.delivery_time),
+                        "text_preview": (sms_log.message or "")[:20],
+                    })
+            except Exception as _dlr_fwd_err:
+                logger.warning(f"SMPP 入站 DLR 转发入队失败: {_dlr_fwd_err}")
+
             try:
                 send_webhook_task.apply_async(
                     args=[
@@ -1910,3 +1933,23 @@ def process_sms_result_task(item: dict):
     except Exception as e:
         logger.error(f"process_sms_result_task 写库失败: log_id={item.get('log_id')}, err={e}", exc_info=e)
     return {"ok": True}
+
+
+@celery_app.task(name="smpp_pending_dlr_cleanup")
+def smpp_pending_dlr_cleanup():
+    """每天清理过期的 SMPP 待发 DLR 行（入库时设置 24h TTL，过期即删）。"""
+    from sqlalchemy import text as _sql_text
+    try:
+        async def _do():
+            async with _make_session()() as session:
+                res = await session.execute(
+                    _sql_text("DELETE FROM smpp_pending_dlrs WHERE expires_at < NOW()")
+                )
+                await session.commit()
+                return res.rowcount or 0
+        deleted = _run_async(_do())
+        logger.info(f"smpp_pending_dlr_cleanup: 清理 {deleted} 条过期记录")
+        return {"deleted": deleted}
+    except Exception as e:
+        logger.error(f"smpp_pending_dlr_cleanup 失败: {e}", exc_info=e)
+        return {"error": str(e)}

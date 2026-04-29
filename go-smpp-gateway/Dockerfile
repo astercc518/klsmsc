@@ -25,4 +25,6 @@ COPY --from=builder /app/gateway .
 # Explicitly set permissions
 RUN chmod +x ./gateway
 
+EXPOSE 2775
+
 CMD ["./gateway"]

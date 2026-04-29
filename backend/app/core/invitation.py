@@ -30,7 +30,7 @@ class InvitationService:
         return ''.join(secrets.choice(chars) for _ in range(length))
 
     async def _gen_account_name(self, sales_id: int, country_code: str) -> str:
-        """生成账户名: TG{员工工号数字}{国家区号3位}V{序号02d}"""
+        """生成账户名: TG{员工工号数字}{国家区号3位}V{序号02d}，确保全局唯一"""
         import re as _re
         from sqlalchemy import func as _func
         from app.utils.country_code import get_dial_code
@@ -48,16 +48,26 @@ class InvitationService:
             cc = ""
         dial = get_dial_code(cc) if cc else "000"
 
-        count = (await self.db.execute(
-            select(_func.count()).select_from(Account).where(
-                Account.sales_id == sales_id,
-                Account.country_code == (cc or None),
-                Account.is_deleted == False,
-            )
-        )).scalar() or 0
-        seq = count + 1
+        prefix = f"TG{num_part}{dial}V"
 
-        return f"TG{num_part}{dial}V{seq:02d}"
+        # 查已存在的同前缀账户最大序号（含已删除），确保序号单调递增不重用
+        existing = (await self.db.execute(
+            select(Account.account_name).where(
+                Account.account_name.like(f"{prefix}%")
+            )
+        )).scalars().all()
+
+        used_seqs = set()
+        for name in existing:
+            suffix = name[len(prefix):]
+            if suffix.isdigit():
+                used_seqs.add(int(suffix))
+
+        seq = 1
+        while seq in used_seqs:
+            seq += 1
+
+        return f"{prefix}{seq:02d}"
 
     async def create_code(
         self, 
