@@ -2051,6 +2051,8 @@ export default {
     sendStats: '发送统计',
     sendTasks: '发送任务',
     smsAccounts: '短信账户',
+    smsTaskManagement: '任务管理',
+    smsRefundAudit: '退款审核',
     smsApprovals: '短信审核',
     smsAudit: '短信审核',
     smsBusiness: '短信业务',

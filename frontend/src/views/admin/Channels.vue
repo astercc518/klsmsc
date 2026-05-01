@@ -133,24 +133,26 @@
             <span v-else style="color: var(--text-tertiary)">-</span>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('common.action')" width="280" fixed="right" align="center">
+        <el-table-column :label="$t('common.action')" min-width="280" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button type="primary" link size="small" @click="handleEdit(row)">{{ $t('common.edit') }}</el-button>
-            <el-button type="success" link size="small" @click="manageCountries(row)">{{ $t('channels.countries') }}</el-button>
-            <el-button type="warning" link size="small" @click="manageSids(row)">SID</el-button>
-            <el-button 
-              :type="row.status === 'active' ? 'info' : 'success'"
-              link
-              size="small"
-              @click="handleToggleStatus(row)"
-            >
-              {{ row.status === 'active' ? $t('common.disable') : $t('common.enable') }}
-            </el-button>
-            <el-popconfirm :title="$t('channels.confirmDelete')" @confirm="handleDelete(row)">
-              <template #reference>
-                <el-button type="danger" link size="small">{{ $t('common.delete') }}</el-button>
-              </template>
-            </el-popconfirm>
+            <div class="action-btns">
+              <el-button type="primary" link size="small" @click="handleEdit(row)">{{ $t('common.edit') }}</el-button>
+              <el-button type="success" link size="small" @click="manageCountries(row)">{{ $t('channels.countries') }}</el-button>
+              <el-button type="warning" link size="small" @click="manageSids(row)">SID</el-button>
+              <el-button 
+                :type="row.status === 'active' ? 'info' : 'success'"
+                link
+                size="small"
+                @click="handleToggleStatus(row)"
+              >
+                {{ row.status === 'active' ? $t('common.disable') : $t('common.enable') }}
+              </el-button>
+              <el-popconfirm :title="$t('channels.confirmDelete')" @confirm="handleDelete(row)">
+                <template #reference>
+                  <el-button type="danger" link size="small">{{ $t('common.delete') }}</el-button>
+                </template>
+              </el-popconfirm>
+            </div>
           </template>
         </el-table-column>
       </el-table>

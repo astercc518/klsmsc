@@ -336,6 +336,28 @@
                   </div>
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.sendStats') }}</span>
                 </div>
+
+                <div class="nav-item" :class="{ active: isActive('/admin/sms/tasks') }" @click="navigate('/admin/sms/tasks')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <rect x="3" y="4" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M7 8H13M7 11H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                      <path d="M13 13L15 15L17 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.smsTaskManagement') }}</span>
+                </div>
+
+                <div class="nav-item" :class="{ active: isActive('/admin/sms/refund-audit') }" @click="navigate('/admin/sms/refund-audit')">
+                  <div class="nav-icon">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <rect x="2" y="5" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M2 9H18" stroke="currentColor" stroke-width="1.5"/>
+                      <path d="M7 13H9M11 13H13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.smsRefundAudit') }}</span>
+                </div>
               </div>
 
 

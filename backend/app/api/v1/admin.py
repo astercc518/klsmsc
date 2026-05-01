@@ -18,6 +18,7 @@ from app.services.okcc_sync import OKCC_SERVERS, fetch_okcc_customers, sync_okcc
 from app.core.auth import AuthService
 from app.config import settings
 from app.utils.logger import get_logger
+from app.utils.errors import InsufficientBalanceError
 from datetime import timedelta
 
 logger = get_logger(__name__)
@@ -103,13 +104,24 @@ class ChannelCreateRequest(BaseModel):
         if v not in ['HTTP', 'SMPP', 'VIRTUAL']:
             raise ValueError('protocol must be HTTP, SMPP or VIRTUAL')
         return v
-    
+
     @field_validator('default_sender_id')
     @classmethod
     def validate_default_sender_id(cls, v: Optional[str]) -> Optional[str]:
         if v is None or v == '':
             return None
         return v.strip()
+
+    @field_validator(
+        'host', 'username', 'password',
+        'smpp_system_type', 'api_url', 'api_key',
+        mode='before',
+    )
+    @classmethod
+    def _strip_credential_str(cls, v):
+        if isinstance(v, str):
+            return v.strip()
+        return v
 
 
 class ChannelUpdateRequest(BaseModel):
@@ -137,6 +149,17 @@ class ChannelUpdateRequest(BaseModel):
     banned_words: Optional[str] = None
     virtual_config: Optional[dict] = None
     gateway_config: Optional[dict] = None
+
+    @field_validator(
+        'host', 'username', 'password',
+        'smpp_system_type', 'api_url', 'api_key',
+        mode='before',
+    )
+    @classmethod
+    def _strip_credential_str(cls, v):
+        if isinstance(v, str):
+            return v.strip()
+        return v
 
 
 class PricingCreateRequest(BaseModel):
@@ -4669,3 +4692,470 @@ async def okcc_customer_list(
         all_customers.extend(customers)
 
     return {"success": True, "total": len(all_customers), "data": all_customers}
+
+
+# ============ SMS 退款（P0-1：系统问题导致提交失败的人工审核退款） ============
+
+class SmsRefundExecuteRequest(BaseModel):
+    note: Optional[str] = None  # 可选备注，记入 BalanceLog
+
+
+class SmsRefundBatchRequest(BaseModel):
+    sms_log_ids: List[int]
+    note: Optional[str] = None
+
+
+@router.get("/sms/refundable", response_model=dict)
+async def list_sms_refundable(
+    account_id: Optional[int] = None,
+    batch_id: Optional[int] = None,
+    channel_id: Optional[int] = None,
+    keyword: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出退款候选（仅 status=failed 且未退款且未拿到 upstream_message_id 且非"已到上游"模式的失败短信）
+
+    需管理员二次审核每一条；本接口仅做粗筛。
+    """
+    from app.services.sms_refund import list_refundable
+    total, candidates = await list_refundable(
+        db,
+        account_id=account_id, batch_id=batch_id, channel_id=channel_id,
+        keyword=keyword, page=page, page_size=page_size,
+    )
+    items = []
+    for c in candidates:
+        log = c.sms_log
+        items.append({
+            "sms_log_id": log.id,
+            "message_id": log.message_id,
+            "account_id": log.account_id,
+            "channel_id": log.channel_id,
+            "batch_id": log.batch_id,
+            "phone_number": log.phone_number,
+            "country_code": log.country_code,
+            "cost_price": float(log.cost_price or 0),
+            "selling_price": float(log.selling_price or 0),
+            "currency": log.currency,
+            "status": log.status,
+            "error_message": log.error_message,
+            "submit_time": log.submit_time.isoformat() if log.submit_time else None,
+            "upstream_message_id": log.upstream_message_id,
+            "category": c.reason,
+        })
+    return {
+        "success": True,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": items,
+    }
+
+
+@router.get("/sms/{sms_log_id}/refund/preview", response_model=dict)
+async def preview_sms_refund(
+    sms_log_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """预览单条退款资格（不执行）。"""
+    from app.services.sms_refund import get_refund_preview
+    cand = await get_refund_preview(db, sms_log_id)
+    if not cand:
+        return {"success": False, "error": "not_found"}
+    log = cand.sms_log
+    return {
+        "success": True,
+        "eligible": cand.eligible,
+        "reason": cand.reason,
+        "sms_log_id": log.id,
+        "message_id": log.message_id,
+        "account_id": log.account_id,
+        "amount_to_refund": float(log.selling_price or 0),
+        "currency": log.currency,
+        "error_message": log.error_message,
+        "upstream_message_id": log.upstream_message_id,
+        "refunded_at": log.refunded_at.isoformat() if log.refunded_at else None,
+    }
+
+
+@router.post("/sms/{sms_log_id}/refund", response_model=dict)
+async def execute_sms_refund(
+    sms_log_id: int,
+    request: SmsRefundExecuteRequest,
+    http_request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """对单条短信执行退款（管理员手动审核确认）。"""
+    from app.services.sms_refund import execute_refund
+    from app.services.operation_log import log_operation
+
+    result = await execute_refund(db, sms_log_id, admin.username, note=request.note)
+    client_ip = http_request.client.host if http_request.client else None
+
+    if result.get("success"):
+        await log_operation(
+            db, admin_id=admin.id, admin_name=admin.username,
+            module="finance", action="refund",
+            title=f"短信退款 message_id={result.get('message_id')} amount={result.get('amount')}",
+            detail={
+                "sms_log_id": sms_log_id,
+                "message_id": result.get("message_id"),
+                "account_id": result.get("account_id"),
+                "amount": result.get("amount"),
+                "balance_after": result.get("balance_after"),
+                "category": result.get("category"),
+                "note": request.note,
+            },
+            ip_address=client_ip, status="success",
+        )
+    else:
+        await log_operation(
+            db, admin_id=admin.id, admin_name=admin.username,
+            module="finance", action="refund",
+            title=f"短信退款失败 sms_log_id={sms_log_id} reason={result.get('reason')}",
+            detail={"sms_log_id": sms_log_id, "reason": result.get("reason")},
+            ip_address=client_ip, status="failed",
+            error_message=str(result.get("reason"))[:500],
+        )
+    return result
+
+
+@router.post("/sms/refund-batch", response_model=dict)
+async def execute_sms_refund_batch(
+    request: SmsRefundBatchRequest,
+    http_request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量退款（每条独立事务）。一次最多 200 条。"""
+    from app.services.sms_refund import execute_refund_batch
+    from app.services.operation_log import log_operation
+
+    ids = list(request.sms_log_ids or [])
+    if len(ids) == 0:
+        return {"success": False, "error": "sms_log_ids 为空"}
+    if len(ids) > 200:
+        return {"success": False, "error": "单次最多 200 条"}
+
+    result = await execute_refund_batch(db, ids, admin.username, note=request.note)
+    client_ip = http_request.client.host if http_request.client else None
+    await log_operation(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="finance", action="refund_batch",
+        title=f"批量退款：成功 {result['ok']} 条 / 失败 {result['failed']} 条 / 总额 {result['total_amount']}",
+        detail={
+            "requested": len(ids),
+            "ok": result["ok"],
+            "failed": result["failed"],
+            "total_amount": result["total_amount"],
+            "first_failures": result["failures"][:10],
+            "note": request.note,
+        },
+        ip_address=client_ip,
+        status="success" if result["failed"] == 0 else "partial",
+    )
+    return {"success": True, **result}
+
+
+# ============ 管理员批次任务管理（暂停/恢复/清空/通道切换） ============
+
+class BatchResumeRequest(BaseModel):
+    new_channel_id: Optional[int] = None
+
+
+class BatchPreviewSwitchRequest(BaseModel):
+    new_channel_id: int
+
+
+def _serialize_batch_row(b, patch: Optional[dict] = None) -> dict:
+    """统一序列化 SmsBatch 行（管理员视图）。patch 来自 _smslog_batch_display_patches 修正。"""
+    p = patch or {}
+    return {
+        "id": b.id,
+        "account_id": b.account_id,
+        "batch_name": b.batch_name,
+        "total_count": b.total_count,
+        "success_count": p.get("success_count", b.success_count or 0),
+        "delivered_count": p.get("delivered_count", b.delivered_count or 0),
+        "failed_count": p.get("failed_count", b.failed_count or 0),
+        "processing_count": p.get("processing_count", b.processing_count or 0),
+        "status": (b.status.value if hasattr(b.status, "value") else b.status),
+        "progress": p.get("progress", b.progress or 0),
+        "error_message": b.error_message,
+        "created_at": b.created_at.isoformat() if b.created_at else None,
+        "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+        "started_at": b.started_at.isoformat() if b.started_at else None,
+        "completed_at": b.completed_at.isoformat() if b.completed_at else None,
+    }
+
+
+@router.get("/batches", response_model=dict)
+async def admin_list_batches(
+    account_id: Optional[int] = None,
+    channel_id: Optional[int] = None,
+    status: Optional[str] = None,
+    keyword: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """全局批次列表（管理员）。支持账户/通道/状态/关键词/时间范围筛选。"""
+    from app.modules.sms.sms_batch import SmsBatch, BatchStatus
+    from app.modules.sms.sms_log import SMSLog
+    from app.api.v1.batches import _smslog_batch_display_patches
+    from sqlalchemy import or_ as sa_or, func as sa_func
+    from datetime import datetime as _dt
+
+    if admin.role not in ("admin", "super_admin"):
+        return {"success": False, "error": "permission_denied"}
+
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 20), 100))
+
+    where = [SmsBatch.is_deleted == False]  # noqa: E712
+    if account_id:
+        where.append(SmsBatch.account_id == int(account_id))
+    if status:
+        try:
+            where.append(SmsBatch.status == BatchStatus(status))
+        except Exception:
+            return {"success": False, "error": f"invalid status: {status}"}
+    if keyword:
+        kw = f"%{keyword.strip()}%"
+        where.append(SmsBatch.batch_name.like(kw))
+    if start_date:
+        try:
+            where.append(SmsBatch.created_at >= _dt.fromisoformat(start_date))
+        except Exception:
+            pass
+    if end_date:
+        try:
+            where.append(SmsBatch.created_at <= _dt.fromisoformat(end_date))
+        except Exception:
+            pass
+
+    # channel_id 筛选：批次本身没存通道，需要通过 sms_logs 反查；用 EXISTS 子查询避免大表 JOIN
+    if channel_id:
+        where.append(
+            SmsBatch.id.in_(
+                select(SMSLog.batch_id).where(SMSLog.channel_id == int(channel_id)).distinct()
+            )
+        )
+
+    total = (await db.execute(
+        select(sa_func.count(SmsBatch.id)).where(*where)
+    )).scalar() or 0
+
+    rows = (await db.execute(
+        select(SmsBatch).where(*where).order_by(SmsBatch.id.desc())
+        .offset((page - 1) * page_size).limit(page_size)
+    )).scalars().all()
+
+    # 用 sms_logs 实时校正 processing/paused 批次的进度
+    live_ids = [
+        b.id for b in rows
+        if b.status in (BatchStatus.PROCESSING, BatchStatus.PAUSED, BatchStatus.PENDING)
+    ]
+    patches = {}
+    if live_ids:
+        totals_map = {b.id: (b.total_count or 0) for b in rows if b.id in live_ids}
+        from datetime import timedelta as _td
+        live_since = min(b.created_at for b in rows if b.id in live_ids) - _td(seconds=60)
+        patches = await _smslog_batch_display_patches(db, live_ids, totals_map, since=live_since)
+
+    items = [_serialize_batch_row(b, patches.get(b.id)) for b in rows]
+
+    # 关联账户名（一次性查）
+    if items:
+        acct_ids = list({i["account_id"] for i in items if i.get("account_id")})
+        if acct_ids:
+            from app.modules.common.account import Account as _Acc
+            r = await db.execute(select(_Acc.id, _Acc.account_name).where(_Acc.id.in_(acct_ids)))
+            name_map = {row[0]: row[1] for row in r.all()}
+            for i in items:
+                i["account_name"] = name_map.get(i["account_id"])
+
+    return {
+        "success": True,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": items,
+    }
+
+
+@router.get("/batches/{batch_id}", response_model=dict)
+async def admin_get_batch(
+    batch_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """批次详情：基础字段 + 各状态计数 + 当前主用通道 + 可退款数量。"""
+    from app.modules.sms.sms_batch import SmsBatch, BatchStatus
+    from app.modules.sms.sms_log import SMSLog
+    from app.modules.sms.channel import Channel as _Ch
+    from app.modules.common.account import Account as _Acc
+    from sqlalchemy import func as sa_func
+
+    if admin.role not in ("admin", "super_admin"):
+        return {"success": False, "error": "permission_denied"}
+
+    b = (await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))).scalar_one_or_none()
+    if not b:
+        return {"success": False, "error": "not_found"}
+
+    # 状态分布
+    status_rows = (await db.execute(
+        select(SMSLog.status, sa_func.count(SMSLog.id))
+        .where(SMSLog.batch_id == batch_id)
+        .group_by(SMSLog.status)
+    )).all()
+    status_counts = {str(s or ""): int(c or 0) for s, c in status_rows}
+
+    # 当前未发主用通道（取众数）
+    ch_rows = (await db.execute(
+        select(SMSLog.channel_id, sa_func.count(SMSLog.id))
+        .where(and_(SMSLog.batch_id == batch_id, SMSLog.status.in_(["pending", "queued"])))
+        .group_by(SMSLog.channel_id)
+        .order_by(sa_func.count(SMSLog.id).desc()).limit(1)
+    )).first()
+    current_channel = None
+    if ch_rows and ch_rows[0]:
+        ch = (await db.execute(select(_Ch).where(_Ch.id == ch_rows[0]))).scalar_one_or_none()
+        if ch:
+            current_channel = {
+                "id": ch.id, "channel_code": ch.channel_code, "channel_name": ch.channel_name,
+                "protocol": ch.protocol, "status": ch.status, "connection_status": ch.connection_status,
+            }
+
+    # 可退款数量（与 sms_refund.list_refundable 资格规则一致）
+    refundable = (await db.execute(
+        select(sa_func.count(SMSLog.id)).where(and_(
+            SMSLog.batch_id == batch_id,
+            SMSLog.status == "failed",
+            SMSLog.refunded_at.is_(None),
+            SMSLog.cost_price > 0,
+            SMSLog.upstream_message_id.is_(None),
+        ))
+    )).scalar() or 0
+
+    # 账户名
+    acct_name = None
+    if b.account_id:
+        r = await db.execute(select(_Acc.account_name).where(_Acc.id == b.account_id))
+        acct_name = r.scalar()
+
+    base = _serialize_batch_row(b)
+    base.update({
+        "account_name": acct_name,
+        "status_counts": status_counts,
+        "current_channel": current_channel,
+        "refundable_count": refundable,
+    })
+    return {"success": True, "batch": base}
+
+
+@router.post("/batches/{batch_id}/pause", response_model=dict)
+async def admin_pause_batch(
+    batch_id: int,
+    http_request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if admin.role not in ("admin", "super_admin"):
+        return {"success": False, "error": "permission_denied"}
+    from app.services.batch_admin import pause_batch
+    from app.services.operation_log import log_operation
+    result = await pause_batch(db, batch_id, admin.username)
+    client_ip = http_request.client.host if http_request.client else None
+    await log_operation(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="sms", action="batch_pause",
+        title=f"暂停批次 #{batch_id}",
+        detail={"batch_id": batch_id, **{k: v for k, v in result.items() if k != "success"}},
+        ip_address=client_ip,
+        status="success" if result.get("success") else "failed",
+        error_message=str(result.get("reason"))[:500] if not result.get("success") else None,
+    )
+    return result
+
+
+@router.post("/batches/{batch_id}/resume", response_model=dict)
+async def admin_resume_batch(
+    batch_id: int,
+    request: BatchResumeRequest,
+    http_request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if admin.role not in ("admin", "super_admin"):
+        return {"success": False, "error": "permission_denied"}
+    from app.services.batch_admin import resume_batch
+    from app.services.operation_log import log_operation
+    try:
+        result = await resume_batch(db, batch_id, admin.username, new_channel_id=request.new_channel_id)
+    except InsufficientBalanceError as e:
+        result = {"success": False, "reason": f"余额不足，无法切换通道: 需 {e.required}, 当前 {e.available}"}
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+    client_ip = http_request.client.host if http_request.client else None
+    await log_operation(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="sms", action="batch_resume",
+        title=f"恢复批次 #{batch_id}" + (f"（切换通道→#{request.new_channel_id}）" if request.new_channel_id else ""),
+        detail={"batch_id": batch_id, "new_channel_id": request.new_channel_id,
+                **{k: v for k, v in result.items() if k != "success"}},
+        ip_address=client_ip,
+        status="success" if result.get("success") else "failed",
+        error_message=str(result.get("reason"))[:500] if not result.get("success") else None,
+    )
+    return result
+
+
+@router.post("/batches/{batch_id}/clear-queue", response_model=dict)
+async def admin_clear_batch_queue(
+    batch_id: int,
+    http_request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    if admin.role not in ("admin", "super_admin"):
+        return {"success": False, "error": "permission_denied"}
+    from app.services.batch_admin import clear_batch_queue
+    from app.services.operation_log import log_operation
+    result = await clear_batch_queue(db, batch_id, admin.username)
+    client_ip = http_request.client.host if http_request.client else None
+    await log_operation(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="sms", action="batch_clear_queue",
+        title=f"清空批次 #{batch_id} 未发队列",
+        detail={"batch_id": batch_id, **{k: v for k, v in result.items() if k != "success"}},
+        ip_address=client_ip,
+        status="success" if result.get("success") else "failed",
+        error_message=str(result.get("reason"))[:500] if not result.get("success") else None,
+    )
+    return result
+
+
+@router.post("/batches/{batch_id}/preview-switch-channel", response_model=dict)
+async def admin_preview_switch_channel(
+    batch_id: int,
+    request: BatchPreviewSwitchRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """通道切换预览（只读）：返回未发条数、调差、余额变化预估。"""
+    if admin.role not in ("admin", "super_admin"):
+        return {"success": False, "error": "permission_denied"}
+    from app.services.batch_admin import preview_switch_channel
+    return await preview_switch_channel(db, batch_id, request.new_channel_id)

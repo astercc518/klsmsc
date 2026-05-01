@@ -6,6 +6,7 @@ import httpx
 import hmac
 import hashlib
 import json
+import os
 from datetime import datetime
 from typing import Any, Dict, Optional
 from app.workers.celery_app import celery_app
@@ -17,12 +18,19 @@ from sqlalchemy import select
 
 logger = get_logger(__name__)
 
+# webhook 整体超时：HTTP 调用本身已限制 30s，留点余量给 DB 查询
+_WEBHOOK_TASK_TIMEOUT = float(os.getenv("WORKER_WEBHOOK_TASK_TIMEOUT_SEC", "60"))
 
-@celery_app.task(name='send_webhook', bind=True, max_retries=3)
+
+@celery_app.task(
+    name='send_webhook', bind=True, max_retries=3,
+    soft_time_limit=int(os.getenv("WORKER_WEBHOOK_SOFT_TIMEOUT_SEC", "55")),
+    time_limit=int(os.getenv("WORKER_WEBHOOK_HARD_TIMEOUT_SEC", "75")),
+)
 def send_webhook_task(self, account_id: int, message_id: str, status: str, data: Dict):
     """
     发送Webhook回调任务
-    
+
     Args:
         account_id: 账户ID
         message_id: 消息ID
@@ -32,7 +40,12 @@ def send_webhook_task(self, account_id: int, message_id: str, status: str, data:
     try:
         loop = asyncio.new_event_loop()
         try:
-            result = loop.run_until_complete(_send_webhook_async(account_id, message_id, status, data))
+            result = loop.run_until_complete(
+                asyncio.wait_for(
+                    _send_webhook_async(account_id, message_id, status, data),
+                    timeout=_WEBHOOK_TASK_TIMEOUT,
+                )
+            )
         finally:
             loop.close()
         
@@ -207,6 +220,8 @@ def notify_status_change(message_id: str, status: str, **kwargs):
     """
     loop = asyncio.new_event_loop()
     try:
-        loop.run_until_complete(trigger_webhook(message_id, status, kwargs))
+        loop.run_until_complete(
+            asyncio.wait_for(trigger_webhook(message_id, status, kwargs), timeout=_WEBHOOK_TASK_TIMEOUT)
+        )
     finally:
         loop.close()

@@ -141,6 +141,25 @@
               @keyup="saveCursorPos"
             />
 
+            <!-- 字符计数 & 多条计费提示 -->
+            <div class="sms-char-bar">
+              <span
+                class="sms-char-count"
+                :class="{ 'over-limit': smsContentLen > smsSingleSegmentLimit }"
+              >
+                {{ smsContentLen }} 字符
+                <template v-if="smsContentLen > smsSingleSegmentLimit">
+                  （超过 {{ smsSingleSegmentLimit }} 字符）
+                </template>
+              </span>
+              <span v-if="smsContentParts > 1" class="sms-parts-warn">
+                ⚠ 将拆分为 <strong>{{ smsContentParts }}</strong> 条计费，建议缩短内容
+              </span>
+              <span v-else class="sms-parts-ok">
+                共 {{ smsContentParts }} 条
+              </span>
+            </div>
+
             <!-- 变量预览 -->
             <div v-if="hasVariables" class="sms-preview">
               <span class="preview-label">预览效果:</span>
@@ -311,6 +330,7 @@ import { ShoppingCart, User, Check, Filter, Search, Message, Promotion, List, Ma
 import { getDataProducts, buyAndSend, previewDataSelection, getMyOrders, type DataProduct } from '@/api/data'
 import { getAiConfig, generateSmsContent } from '@/api/ai'
 import request from '@/api/index'
+import { smsCodePointLength, isGsm7Message, countSmsParts } from '@/utils/smsParts'
 
 const { t } = useI18n()
 
@@ -589,6 +609,11 @@ const canSubmit = computed(() => {
     && orderForm.value.smsContent.trim()
 })
 
+const smsContentLen = computed(() => smsCodePointLength(orderForm.value.smsContent))
+const smsContentIsGsm7 = computed(() => isGsm7Message(orderForm.value.smsContent))
+const smsSingleSegmentLimit = computed(() => smsContentIsGsm7.value ? 160 : 70)
+const smsContentParts = computed(() => countSmsParts(orderForm.value.smsContent))
+
 const hasVariables = computed(() => {
   const msg = orderForm.value.smsContent
   if (/\{(序号|国家|日期|时间|随机码|号码|随机字母|index|country|date|time|code|phone|letters)\}/.test(msg)) return true
@@ -810,6 +835,17 @@ const previewCustomFilter = async () => {
 }
 
 const submitOrder = async () => {
+  const parts = countSmsParts(orderForm.value.smsContent)
+  if (parts > 1) {
+    try {
+      await ElMessageBox.confirm(
+        `当前短信内容较长，将拆分为 ${parts} 条计费。建议缩短内容以降低费用，或确认按多条计费发送。`,
+        '多条计费提醒',
+        { confirmButtonText: '确认发送', cancelButtonText: '返回修改', type: 'warning' }
+      )
+    } catch { return }
+  }
+
   try {
     await ElMessageBox.confirm(
       t('dataSend.confirmOrderMessage', { quantity: orderForm.value.quantity.toLocaleString(), cost: totalFee.value }),
@@ -830,7 +866,7 @@ const submitOrder = async () => {
       payload.filter_criteria = customFilter.value
     }
 
-    const res = await buyAndSend({ ...payload, message: orderForm.value.smsContent })
+    const res = await buyAndSend({ ...payload, message: orderForm.value.smsContent, channel_id: orderForm.value.channelId || undefined })
     if (res.success) {
       ElMessage.success(`订单创建成功! 订单号: ${res.order_no}`)
       loadMyOrders()
@@ -1075,6 +1111,33 @@ onMounted(() => {
   color: var(--el-text-color-secondary);
   white-space: nowrap;
   font-weight: 500;
+}
+
+/* 字符计数条 */
+.sms-char-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.sms-char-count {
+  color: var(--el-text-color-secondary);
+}
+
+.sms-char-count.over-limit {
+  color: #e6a23c;
+  font-weight: 500;
+}
+
+.sms-parts-warn {
+  color: #e6a23c;
+  font-weight: 500;
+}
+
+.sms-parts-ok {
+  color: var(--el-text-color-placeholder);
 }
 
 /* 短信预览 */

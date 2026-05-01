@@ -49,3 +49,13 @@ func GetChannelConfigs() ([]ChannelConfig, error) {
 }
 
 // 发送结果写库已迁至 Python process_sms_result_task（队列 sms_result_queue）；本文件仅保留通道配置加载。
+
+// UpdateChannelConnectionStatus 把 SMPPManager 当前持有的真实 bind 状态回写到 channels 表。
+// status 取值与 Python 侧一致：online / offline / unknown。
+func UpdateChannelConnectionStatus(channelID int, status string) error {
+	_, err := db.Exec(
+		"UPDATE channels SET connection_status=?, connection_checked_at=NOW() WHERE id=?",
+		status, channelID,
+	)
+	return err
+}

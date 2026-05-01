@@ -2,6 +2,7 @@
 注水自动化 Worker：使用 Playwright 无头浏览器模拟点击和注册
 """
 import asyncio
+import os
 import random
 import time
 from typing import Optional, Dict
@@ -47,10 +48,18 @@ def _wait_through_cf(page, max_wait_ms: int = 25000):
             break
 
 
-def _run_async(coro):
-    """在 Celery worker 中安全执行异步协程（仅用于数据库操作）"""
+_RUN_ASYNC_DEFAULT_TIMEOUT = float(os.getenv("WORKER_RUN_ASYNC_TIMEOUT_SEC", "60"))
+
+
+def _run_async(coro, *, timeout: Optional[float] = None):
+    """在 Celery worker 中安全执行异步协程（仅用于数据库操作）。
+    超时保护：避免任一异步操作永久阻塞 ForkPoolWorker。
+    """
+    eff_timeout = timeout if timeout is not None else _RUN_ASYNC_DEFAULT_TIMEOUT
     loop = asyncio.new_event_loop()
     try:
+        if eff_timeout and eff_timeout > 0:
+            return loop.run_until_complete(asyncio.wait_for(coro, timeout=eff_timeout))
         return loop.run_until_complete(coro)
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
@@ -61,9 +70,15 @@ def _make_session():
     """创建独立数据库会话"""
     from app.config import settings
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    connect_timeout = int(os.getenv("WORKER_DB_CONNECT_TIMEOUT_SEC", "10"))
+    read_timeout = int(os.getenv("WORKER_DB_READ_TIMEOUT_SEC", "30"))
     eng = create_async_engine(
         settings.SQLALCHEMY_DATABASE_URL,
         echo=False, pool_size=2, max_overflow=2, pool_pre_ping=True,
+        connect_args={
+            "connect_timeout": connect_timeout,
+            "read_timeout": read_timeout,
+        },
     )
     factory = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
     return eng, factory

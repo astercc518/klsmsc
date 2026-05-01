@@ -1930,9 +1930,9 @@ async function handlePrivateSend() {
   if (currentParts > 1) {
     try {
       await ElMessageBox.confirm(
-        `当前短信内容较长，将拆分为 ${currentParts} 条计费。是否确认发送？`,
-        '长短信提醒',
-        { confirmButtonText: '确认发送', cancelButtonText: '取消', type: 'warning' }
+        `当前短信内容较长，将拆分为 ${currentParts} 条计费。建议缩短内容以降低费用，或确认按多条计费发送。`,
+        '多条计费提醒',
+        { confirmButtonText: '确认发送', cancelButtonText: '返回修改', type: 'warning' }
       )
     } catch { return }
   }
@@ -2195,8 +2195,8 @@ const handleSubmitApproval = async () => {
   if (currentParts > 1) {
     try {
       await ElMessageBox.confirm(
-        `当前短信内容较长，将拆分为 ${currentParts} 条计费。是否确认提交审核？`,
-        '长短信提醒',
+        `当前短信内容较长，将拆分为 ${currentParts} 条计费。建议缩短内容以降低费用，或确认按多条计费提交审核。`,
+        '多条计费提醒',
         { confirmButtonText: '确认提交', cancelButtonText: '返回修改', type: 'warning' }
       )
     } catch { return }
@@ -2247,13 +2247,13 @@ const handleSend = async () => {
   if (currentParts > 1) {
     try {
       await ElMessageBox.confirm(
-        `当前短信内容较长，将拆分为 ${currentParts} 条计费。是否确认发送？`,
-        '长短信提醒',
-        { confirmButtonText: '确认发送', cancelButtonText: '取消', type: 'warning' }
+        `当前短信内容较长，将拆分为 ${currentParts} 条计费。建议缩短内容以降低费用，或确认按多条计费发送。`,
+        '多条计费提醒',
+        { confirmButtonText: '确认发送', cancelButtonText: '返回修改', type: 'warning' }
       )
     } catch { return }
   }
-  
+
   if (!isPrivate && numbers.length > 2000000) {
     ElMessage.warning('单次最多提交 200 万个号码')
     return
@@ -2432,13 +2432,21 @@ const selectProduct = (product: DataProduct) => {
 
 const handleStoreSend = async () => {
   const currentParts = countSmsParts(form.value.message)
-  const longSmsHint = currentParts > 1 ? `\n(内容较长，将按 ${currentParts} 条计费)` : ''
-  
+  if (currentParts > 1) {
+    try {
+      await ElMessageBox.confirm(
+        `当前短信内容较长，将拆分为 ${currentParts} 条计费。建议缩短内容以降低费用，或确认按多条计费发送。`,
+        '多条计费提醒',
+        { confirmButtonText: '确认发送', cancelButtonText: '返回修改', type: 'warning' }
+      )
+    } catch { return }
+  }
+
   try {
     await ElMessageBox.confirm(
       storeSmsCost.value > 0
-        ? `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？${longSmsHint}\n数据费: $${formatUsdEstimate(storeDataCost.value)} + 短信费: $${formatUsdEstimate(storeSmsCost.value)} = 合计: $${storeCost.value}`
-        : `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？${longSmsHint}\n费用: $${storeCost.value}`,
+        ? `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n数据费: $${formatUsdEstimate(storeDataCost.value)} + 短信费: $${formatUsdEstimate(storeSmsCost.value)} = 合计: $${storeCost.value}`
+        : `确认购买 ${storeQuantity.value.toLocaleString()} 条数据并发送短信？\n费用: $${storeCost.value}`,
       '确认购买发送', { type: 'warning' },
     )
   } catch { return }
@@ -2451,6 +2459,7 @@ const handleStoreSend = async () => {
       message: stripEmoji(replaceCustomVars(form.value.message)),
     }
     if (selectedCarrier.value) payload.carrier = selectedCarrier.value
+    if (form.value.channel_id) payload.channel_id = form.value.channel_id
     if (multiMessages.value.length > 1) {
       payload.messages = multiMessages.value.map(m => stripEmoji(replaceCustomVars(m)))
     }

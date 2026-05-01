@@ -99,6 +99,7 @@ celery_app.conf.task_queues = {
 # 任务路由 - 数据业务
 celery_app.conf.task_routes.update({
     'data_refresh_all_product_stock': {'queue': 'data_tasks'},
+    'data_refresh_carriers_cache': {'queue': 'data_tasks'},
     'data_recycle_expired_numbers': {'queue': 'data_tasks'},
     'data_expire_pending_orders': {'queue': 'data_tasks'},
     'data_import_numbers': {'queue': 'data_tasks'},
@@ -135,6 +136,12 @@ celery_app.conf.beat_schedule = {
     # 每10分钟刷新所有活跃商品库存（含时效过期自动下架）
     'data-refresh-stock-10min': {
         'task': 'data_refresh_all_product_stock',
+        'schedule': 600.0,
+    },
+    # 每10分钟预热客户端 /data/carriers 接口的聚合缓存。data_numbers 现 1500w+ 行，
+    # 按 country_code GROUP BY 在 TH/BD 等大国可达 130s+，必须由 beat 离线刷新避免请求超时。
+    'data-refresh-carriers-cache-10min': {
+        'task': 'data_refresh_carriers_cache',
         'schedule': 600.0,
     },
     # 每天 03:00 回收过期私库号码

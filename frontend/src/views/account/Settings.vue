@@ -165,7 +165,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getAccountInfo, generateAccountTgBindCode, unbindAccountTelegram, type AccountInfo } from '@/api/account'
+import { getAccountInfo, generateAccountTgBindCode, unbindAccountTelegram, changeAccountPassword, type AccountInfo } from '@/api/account'
 import AccountOverviewPanel from '@/components/account/AccountOverviewPanel.vue'
 
 const { t } = useI18n()
@@ -306,14 +306,11 @@ const changePassword = async () => {
   
   passwordLoading.value = true
   try {
-    // TODO: 调用修改密码API
-    // await changeAccountPassword({
-    //   old_password: passwordForm.old_password,
-    //   new_password: passwordForm.new_password
-    // })
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    await changeAccountPassword({
+      old_password: passwordForm.old_password,
+      new_password: passwordForm.new_password,
+    })
     ElMessage.success(t('accountSettings.passwordChangeSuccess'))
-    // 清空表单
     passwordForm.old_password = ''
     passwordForm.new_password = ''
     passwordForm.confirm_password = ''

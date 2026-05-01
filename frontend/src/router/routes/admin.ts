@@ -183,4 +183,16 @@ export const adminRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/admin/water/Scripts.vue'),
     meta: { titleKey: 'menu.waterScripts', icon: 'Edit' },
   },
+  {
+    path: '/admin/sms/tasks',
+    name: 'AdminSmsTasks',
+    component: () => import('@/views/admin/sms/Tasks.vue'),
+    meta: { titleKey: 'menu.smsTaskManagement', icon: 'Operation' },
+  },
+  {
+    path: '/admin/sms/refund-audit',
+    name: 'SmsRefundAudit',
+    component: () => import('@/views/admin/sms/RefundAudit.vue'),
+    meta: { titleKey: 'menu.smsRefundAudit', icon: 'Money' },
+  },
 ]

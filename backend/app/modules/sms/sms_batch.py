@@ -11,6 +11,7 @@ class BatchStatus(str, enum.Enum):
     """批量任务状态"""
     PENDING = "pending"          # 待处理
     PROCESSING = "processing"    # 处理中
+    PAUSED = "paused"            # 已暂停（管理员手动暂停；可恢复或清空队列）
     COMPLETED = "completed"      # 已完成
     FAILED = "failed"           # 失败
     CANCELLED = "cancelled"      # 已取消

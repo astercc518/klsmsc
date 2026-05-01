@@ -1337,6 +1337,40 @@ html:not([data-theme="light"]) .el-upload-dragger .el-upload__text {
   }
 }
 
+/* ========== 表格操作列：窄视口 / 系统缩放时避免按钮重叠 ==========
+ * EP 默认 .cell 为 nowrap，固定右侧多枚 link 按钮时易挤在一行重叠。
+ */
+.el-table .el-table__fixed-right .el-table__cell .cell {
+  white-space: normal !important;
+  overflow: visible;
+}
+
+/* 项目内统一的操作按钮容器（客户/通道/员工等列表） */
+.el-table .action-btns {
+  display: inline-flex !important;
+  flex-wrap: wrap !important;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 10px;
+  max-width: 100%;
+  white-space: normal !important;
+}
+
+/* 页面顶栏右侧按钮组：中等宽度即允许换行（笔记本 1920×1080 + 125% 缩放常见） */
+.page-header .header-right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+@media (max-width: 1600px) {
+  .page-header {
+    align-items: flex-start;
+  }
+}
+
 /* 减少动画 */
 @media (prefers-reduced-motion: reduce) {
   * {

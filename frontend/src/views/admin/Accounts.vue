@@ -1992,12 +1992,14 @@ onMounted(() => {
   color: var(--text-tertiary);
 }
 
-/* 操作按钮 */
+/* 操作按钮（允许换行） */
 .action-btns {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 8px 12px;
+  max-width: 100%;
 }
 
 /* 分页 */

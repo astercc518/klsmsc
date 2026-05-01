@@ -1843,6 +1843,11 @@ onMounted(() => {
   padding: 14px 0;
 }
 
+/* 固定操作列允许换行（覆盖表头/其它列 nowrap 对操作格的影响） */
+:deep(.channel-table .el-table__fixed-right .cell) {
+  white-space: normal !important;
+}
+
 /* 文字样式 */
 .code-text {
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
@@ -1888,13 +1893,14 @@ onMounted(() => {
   font-weight: 500;
 }
 
-/* 操作按钮 */
+/* 操作按钮（允许换行，避免窄屏与固定列重叠） */
 .action-btns {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  white-space: nowrap;
+  gap: 6px 10px;
+  max-width: 100%;
 }
 
 /* 创建/编辑通道对话框 */

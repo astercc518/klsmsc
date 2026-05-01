@@ -395,11 +395,17 @@ async def get_available_carriers(
     db: AsyncSession = Depends(get_db),
     account: Account = Depends(get_current_account),
 ):
-    """获取可用的运营商列表（去重后的 carrier 值）"""
+    """
+    获取可用的运营商列表（去重后的 carrier 值）。
+
+    data_numbers 现已 1500w+ 行，按 country_code 做 GROUP BY 在 9M 量级国家上需 130s+。
+    冷启动场景（L1 空、Redis 过期）下会触发前端 axios 120s 超时。
+    解决：缓存由 Celery beat（data_refresh_carriers_cache_task）每 10 分钟全量预热，TTL=24h；
+    本接口只读缓存，未命中时立刻返回 [] 并异步触发预热，绝不在请求线程内跑全表 GROUP BY。
+    """
     cache_manager = await get_cache_manager()
     cache_key = f"data:public_carriers:{country_code or 'all'}"
     if not country_code:
-        # 如果是按账户国家锁定的，也打入缓存 key
         da_result = await db.execute(
             select(DataAccount).where(DataAccount.account_id == account.id)
         )
@@ -409,31 +415,17 @@ async def get_available_carriers(
             country_code = da.country_code
 
     cached = await cache_manager.get(cache_key)
-    if cached:
+    if cached is not None:
         return {"success": True, "carriers": cached}
 
-    query = select(DataNumber.carrier, func.count(DataNumber.id).label("cnt")).where(
-        DataNumber.status == 'active',
-        DataNumber.account_id.is_(None),
-        DataNumber.carrier.isnot(None),
-        DataNumber.carrier != '',
-        DataNumber.carrier != 'Unknown',
-    )
+    # 冷启动：beat 还未跑过一次。立刻异步触发预热（不阻塞本请求）后返回空。
+    try:
+        from app.workers.celery_app import celery_app
+        celery_app.send_task("data_refresh_carriers_cache", queue="data_tasks")
+    except Exception as e:
+        logger.warning(f"触发 carriers 缓存预热失败: {e}")
 
-    if country_code:
-        query = query.where(DataNumber.country_code == country_code)
-
-    query = query.group_by(DataNumber.carrier).order_by(func.count(DataNumber.id).desc())
-    result = await db.execute(query)
-    rows = result.fetchall()
-    
-    carriers_list = [{"name": row[0], "count": row[1]} for row in rows]
-    await cache_manager.set(cache_key, carriers_list, ttl=300)
-
-    return {
-        "success": True,
-        "carriers": carriers_list,
-    }
+    return {"success": True, "carriers": []}
 
 
 @router.get("/products")
@@ -1072,6 +1064,7 @@ async def buy_and_send(
         "message": data.message,
         "messages": data.messages,
         "sender_id": getattr(data, "sender_id", None),
+        "channel_id": data.channel_id,
     }
     _kw.pop("number_ids", None)
 

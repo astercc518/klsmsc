@@ -2,6 +2,8 @@
 OKCC 余额全量同步 — 由 Celery Beat 定时触发
 """
 import asyncio
+import os
+from typing import Optional
 
 from app.database import AsyncSessionLocal
 from app.services.okcc_sync import sync_okcc_to_accounts
@@ -10,11 +12,18 @@ from app.workers.celery_app import celery_app
 
 logger = get_logger(__name__)
 
+# OKCC 全量同步可能慢（网络拉取 + 大量账户）；本任务自身就有 soft_time_limit=3600，
+# 这里的协程级超时取相同量级避免误杀。
+_RUN_ASYNC_DEFAULT_TIMEOUT = float(os.getenv("WORKER_OKCC_RUN_ASYNC_TIMEOUT_SEC", "3300"))
 
-def _run_async(coro):
-    """在 Celery 同步 worker 中执行异步协程"""
+
+def _run_async(coro, *, timeout: Optional[float] = None):
+    """在 Celery 同步 worker 中执行异步协程，带协程级超时保护。"""
+    eff_timeout = timeout if timeout is not None else _RUN_ASYNC_DEFAULT_TIMEOUT
     loop = asyncio.new_event_loop()
     try:
+        if eff_timeout and eff_timeout > 0:
+            return loop.run_until_complete(asyncio.wait_for(coro, timeout=eff_timeout))
         return loop.run_until_complete(coro)
     finally:
         loop.close()

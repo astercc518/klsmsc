@@ -427,6 +427,32 @@ async def account_telegram_verify(
     )
 
 
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+@router.post("/change-password", response_model=dict)
+async def change_account_password(
+    request: ChangePasswordRequest,
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    """客户在账户管理修改自己的登录密码"""
+    if not account.password_hash or not AuthService.verify_password(
+        request.old_password, account.password_hash
+    ):
+        raise HTTPException(status_code=400, detail="原密码不正确")
+
+    if len(request.new_password) < 8:
+        raise HTTPException(status_code=400, detail="新密码至少 8 位")
+
+    account.password_hash = AuthService.hash_password(request.new_password)
+    await db.commit()
+    logger.info(f"客户修改密码成功: account_id={account.id}")
+    return {"success": True, "message": "password_changed"}
+
+
 @router.post("/telegram-bind-code", response_model=dict)
 async def generate_account_tg_bind_code(
     account: Account = Depends(get_current_account),

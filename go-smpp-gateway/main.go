@@ -55,6 +55,17 @@ func main() {
         }
     }()
 
+    // 5. Start periodic connection_status writeback (every 20s).
+    // 让前端 channels.connection_status 反映 SMPPManager 真实 bind 情况，
+    // 避免「配置 active 但 bind 失败」长期显示为假阳性。
+    go func() {
+        ticker := time.NewTicker(20 * time.Second)
+        defer ticker.Stop()
+        for range ticker.C {
+            manager.ReconcileConnectionStatus()
+        }
+    }()
+
     log.Println("Gateway is running. Press CTRL+C to exit.")
 
     // Wait for termination

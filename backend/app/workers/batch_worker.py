@@ -32,6 +32,13 @@ _worker_engine = None
 _worker_session_factory = None
 
 
+_DB_CONNECT_ARGS = {
+    "connect_timeout": int(os.getenv("WORKER_DB_CONNECT_TIMEOUT_SEC", "10")),
+    "read_timeout": int(os.getenv("WORKER_DB_READ_TIMEOUT_SEC", "30")),
+}
+_RUN_ASYNC_DEFAULT_TIMEOUT = float(os.getenv("WORKER_RUN_ASYNC_TIMEOUT_SEC", "60"))
+
+
 def _get_worker_session():
     """复用进程级单例引擎，避免每次任务新建连接池"""
     global _worker_engine, _worker_session_factory
@@ -43,6 +50,7 @@ def _get_worker_session():
             poolclass=NullPool,
             pool_pre_ping=True,
             pool_recycle=600,
+            connect_args=_DB_CONNECT_ARGS,
         )
         _worker_session_factory = async_sessionmaker(
             _worker_engine, class_=AsyncSession, expire_on_commit=False
@@ -58,15 +66,21 @@ def _make_fresh_session():
         max_overflow=0,
         pool_pre_ping=True,
         pool_recycle=600,
+        connect_args=_DB_CONNECT_ARGS,
     )
     factory = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
     return eng, factory
 
 
-def _run_async(coro):
-    """在 Celery 同步 worker 中安全地执行异步协程"""
+def _run_async(coro, *, timeout: Optional[float] = None):
+    """在 Celery 同步 worker 中安全地执行异步协程。
+    超时保护：批量任务里某次 DB 卡死会拖死整个 worker 进程，硬上限避免长期占槽。
+    """
+    eff_timeout = timeout if timeout is not None else _RUN_ASYNC_DEFAULT_TIMEOUT
     loop = asyncio.new_event_loop()
     try:
+        if eff_timeout and eff_timeout > 0:
+            return loop.run_until_complete(asyncio.wait_for(coro, timeout=eff_timeout))
         return loop.run_until_complete(coro)
     finally:
         try:
@@ -81,7 +95,11 @@ def process_batch(self, batch_id: int):
     异步处理批量发送任务
     """
     logger.info(f"开始处理批量发送任务: batch_id={batch_id}")
-    return _run_async(_do_process_batch(batch_id))
+    # 大批次（10w+）CSV 解析 + 入队需要数分钟，给单独的长超时（1 小时）
+    return _run_async(
+        _do_process_batch(batch_id),
+        timeout=float(os.getenv("WORKER_BATCH_TASK_TIMEOUT_SEC", "3600")),
+    )
 
 
 @celery_app.task(name='process_batch_resume', bind=True)
@@ -91,7 +109,10 @@ def process_batch_resume(self, batch_id: int):
     用于「批次卡 processing / 中途异常 / 部分号码未入队」等场景。
     """
     logger.info(f"开始补发未发送行: batch_id={batch_id}")
-    return _run_async(_do_process_batch(batch_id, resume=True))
+    return _run_async(
+        _do_process_batch(batch_id, resume=True),
+        timeout=float(os.getenv("WORKER_BATCH_TASK_TIMEOUT_SEC", "3600")),
+    )
 
 
 async def _do_process_batch(batch_id: int, resume: bool = False):

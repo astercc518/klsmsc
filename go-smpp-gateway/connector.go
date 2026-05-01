@@ -338,6 +338,31 @@ func (m *SMPPManager) ReloadChannels() error {
 	return nil
 }
 
+// ReconcileConnectionStatus 把 manager 当前的真实 bind 情况回写到 channels.connection_status。
+// 真相来源：m.configs 中存在的活跃 SMPP 通道，若 m.connections[id] 非空记为 online，否则 offline。
+// 不在 m.configs 中的通道（非 SMPP / inactive / 软删）不在本网关职责范围内，不动其状态。
+// 写库走 ProxySQL，每通道一次 UPDATE；通道数量级远小于流量级，无需批量化。
+func (m *SMPPManager) ReconcileConnectionStatus() {
+	m.mu.RLock()
+	statuses := make(map[int]string, len(m.configs))
+	codes := make(map[int]string, len(m.configs))
+	for id, cfg := range m.configs {
+		if len(m.connections[id]) > 0 {
+			statuses[id] = "online"
+		} else {
+			statuses[id] = "offline"
+		}
+		codes[id] = cfg.ChannelCode
+	}
+	m.mu.RUnlock()
+
+	for id, status := range statuses {
+		if err := UpdateChannelConnectionStatus(id, status); err != nil {
+			log.Printf("[STATUS-WARN] write connection_status for channel %s (id=%d) failed: %v", codes[id], id, err)
+		}
+	}
+}
+
 // throttleChannel 在检测到 SMSC 静默限流后临时降低该通道的发送 TPS。
 // 降速比例和持续时间可通过 config_json 中的 throttle_tps / throttle_duration_s 精确控制；
 // 缺省：降至 max_tps 的 1/10（最低 1），持续 120 秒后自动恢复。
@@ -780,7 +805,26 @@ func (m *SMPPManager) SendSMS(logID int64, messageID string, phoneNumber string,
 		destDigits = destAddrNoPlus(phoneNumber)
 	}
 	s.DestAddr.SetAddress(destDigits)
-	_ = s.Message.SetMessageWithEncoding(message, data.UCS2)
+	encoded, encErr := data.UCS2.Encode(message)
+	if encErr != nil {
+		log.Printf("[SMPP-ERROR] UCS2 Encode failed: channel=%s, msg=%s err=%v", cfg.ChannelCode, messageID, encErr)
+		return fmt.Errorf("ucs2 encode: %w", encErr)
+	}
+	if len(encoded) <= data.SM_MSG_LEN {
+		if err := s.Message.SetMessageDataWithEncoding(encoded, data.UCS2); err != nil {
+			log.Printf("[SMPP-ERROR] SetMessageDataWithEncoding failed: channel=%s, msg=%s len=%d err=%v",
+				cfg.ChannelCode, messageID, len(encoded), err)
+			return fmt.Errorf("short_message: %w", err)
+		}
+	} else {
+		if err := s.Message.SetMessageDataWithEncoding(nil, data.UCS2); err != nil {
+			log.Printf("[SMPP-ERROR] clear short_message failed: channel=%s, msg=%s err=%v", cfg.ChannelCode, messageID, err)
+			return fmt.Errorf("empty short_message: %w", err)
+		}
+		payload := make([]byte, len(encoded))
+		copy(payload, encoded)
+		s.RegisterOptionalParam(pdu.Field{Tag: pdu.TagMessagePayload, Data: payload})
+	}
 	s.RegisteredDelivery = 1
 
 	trans := session.Transmitter()
@@ -794,8 +838,8 @@ func (m *SMPPManager) SendSMS(logID int64, messageID string, phoneNumber string,
 		submitTime: time.Now(),
 	})
 
-	log.Printf("[SMPP-DEBUG] Submitting SM: channel=%s, sequence=%d, dest=%s, sender=%s, len=%d",
-		cfg.ChannelCode, s.SequenceNumber, destDigits, cfg.DefaultSenderID, len(message))
+	log.Printf("[SMPP-DEBUG] Submitting SM: channel=%s, sequence=%d, dest=%s, sender=%s, utf16_len=%d message_payload=%v",
+		cfg.ChannelCode, s.SequenceNumber, destDigits, cfg.DefaultSenderID, len(encoded), len(encoded) > data.SM_MSG_LEN)
 
 	err := trans.Submit(s)
 	if err != nil {

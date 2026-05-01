@@ -83,6 +83,11 @@ export const getAccountInfo = (): Promise<AccountInfo> => {
   return request.get('/account/info')
 }
 
+// 修改客户登录密码
+export const changeAccountPassword = (data: { old_password: string; new_password: string }) => {
+  return request.post('/account/change-password', data)
+}
+
 // 生成客户 TG 绑定码
 export const generateAccountTgBindCode = () => {
   return request.post('/account/telegram-bind-code')

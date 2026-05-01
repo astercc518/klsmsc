@@ -100,7 +100,7 @@ export function buyCombo(data: { product_id: number; quantity: number }) {
   return request({ url: '/data/buy-combo', method: 'post', data })
 }
 
-export function buyAndSend(data: { product_id?: number; filter_criteria?: any; quantity: number; message: string; messages?: string[]; carrier?: string }) {
+export function buyAndSend(data: { product_id?: number; filter_criteria?: any; quantity: number; message: string; messages?: string[]; carrier?: string; channel_id?: number | null }) {
   return request({ url: '/data/buy-and-send', method: 'post', data, timeout: 300000 })
 }
 

@@ -47,6 +47,7 @@ backend/check_*.py
 
 # IDE / 编辑器
 .cursor/
+.claude/
 .idea/
 .vscode/
 *.swp
@@ -61,6 +62,9 @@ Thumbs.db
 htmlcov/
 .pytest_cache/
 .tox/
+
+# Go 网关本地构建二进制（勿提交）
+/go-smpp-gateway/go-smpp-gateway
 
 # PDF 生成用中文字体（约 8MB，运行 backend/scripts/md2pdf.py 时自动下载）
 backend/scripts/fonts/*.otf

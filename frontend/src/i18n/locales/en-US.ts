@@ -2047,6 +2047,8 @@ export default {
     sendStats: 'Send Statistics',
     sendTasks: 'Send Tasks',
     smsAccounts: 'SMS Accounts',
+    smsTaskManagement: 'Task Management',
+    smsRefundAudit: 'Refund Audit',
     smsApprovals: 'SMS Approvals',
     smsAudit: 'SMS Audit',
     smsBusiness: 'SMS Business',

@@ -960,6 +960,8 @@ onUnmounted(() => {
 
 .panel-header {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   justify-content: space-between;
   align-items: center;
   padding: 16px 20px;
@@ -983,6 +985,12 @@ onUnmounted(() => {
   word-break: keep-all;
   padding-left: 10px;
   padding-right: 10px;
+}
+
+/* 操作列：排除整表 nowrap，否则多按钮重叠 */
+.task-table-inner :deep(.el-table__fixed-right .cell) {
+  white-space: normal !important;
+  word-break: normal;
 }
 
 .task-actions {

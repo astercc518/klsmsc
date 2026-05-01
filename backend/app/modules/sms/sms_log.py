@@ -39,6 +39,11 @@ class SMSLog(Base):
     sent_time = Column(TIMESTAMP, comment="发送时间")
     delivery_time = Column(TIMESTAMP, comment="送达时间")
     error_message = Column(Text, comment="错误信息")
-    
+
+    # 退款追踪（管理员手动审核退款；NULL 表示未退款）
+    refunded_at = Column(TIMESTAMP, comment="退款时间")
+    refunded_by = Column(String(100), comment="执行退款的管理员用户名")
+    refunded_amount = Column(DECIMAL(18, 6), comment="实际退款金额")
+
     def __repr__(self):
         return f"<SMSLog(id={self.id}, phone={self.phone_number}, status={self.status})>"

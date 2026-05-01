@@ -99,10 +99,19 @@ def _update_progress(redis_client, batch_id: str, data: dict):
     redis_client.setex(key, 3600, json.dumps(data, ensure_ascii=False))
 
 
-def _run_async(coro):
-    """在 Celery 同步 worker 中安全地执行异步协程，始终使用全新事件循环"""
+_RUN_ASYNC_DEFAULT_TIMEOUT = float(os.getenv("WORKER_RUN_ASYNC_TIMEOUT_SEC", "60"))
+
+
+def _run_async(coro, *, timeout: Optional[float] = None):
+    """在 Celery 同步 worker 中安全地执行异步协程，始终使用全新事件循环。
+    超时保护：避免任一异步操作（DB 查询/HTTP/Redis）永久阻塞，把单个 ForkPoolWorker 进程
+    长期占用造成消费槽耗尽。超时则抛 asyncio.TimeoutError。
+    """
+    eff_timeout = timeout if timeout is not None else _RUN_ASYNC_DEFAULT_TIMEOUT
     loop = asyncio.new_event_loop()
     try:
+        if eff_timeout and eff_timeout > 0:
+            return loop.run_until_complete(asyncio.wait_for(coro, timeout=eff_timeout))
         return loop.run_until_complete(coro)
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
@@ -115,10 +124,17 @@ def _make_session():
     from app.config import settings
 
     from sqlalchemy.pool import NullPool
+    # asyncmy 默认无超时；显式注入避免网络抖动时单次查询永久阻塞
+    connect_timeout = int(os.getenv("WORKER_DB_CONNECT_TIMEOUT_SEC", "10"))
+    read_timeout = int(os.getenv("WORKER_DB_READ_TIMEOUT_SEC", "30"))
     eng = create_async_engine(
         settings.SQLALCHEMY_DATABASE_URL, echo=False,
         poolclass=NullPool,
         pool_pre_ping=True, pool_recycle=600,
+        connect_args={
+            "connect_timeout": connect_timeout,
+            "read_timeout": read_timeout,
+        },
     )
     factory = async_sessionmaker(eng, class_=AsyncSession,
                                  expire_on_commit=False, autocommit=False, autoflush=False)
@@ -186,7 +202,7 @@ async def _finalize_buy_send_failure_state(order_id: int, batch_id: int, reason:
     finally:
         await eng.dispose()
 
-async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids, message, messages, sender_id):
+async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids, message, messages, sender_id, channel_id=None):
     """
     购数并发送单次事务：按 5000 条分片从关联表或 legacy 列表取号，Core 批量 insert sms_logs，
     避免 ORM 膨胀；提交后按 id 分页组负载入队，控制峰值内存。
@@ -241,7 +257,17 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
     country_channel_cache = {}
     country_price_cache = {}
 
+    # 用户指定通道时预加载，避免每条号码都查一次 DB
+    _pinned_channel = None
+    if channel_id:
+        _ch_res = await db.execute(
+            select(Channel).where(Channel.id == channel_id, Channel.is_deleted == False)
+        )
+        _pinned_channel = _ch_res.scalar_one_or_none()
+
     async def _get_channel_for_country(cc_country):
+        if _pinned_channel is not None:
+            return _pinned_channel
         if cc_country in country_channel_cache:
             return country_channel_cache[cc_country]
         dial_code = country_to_dial_code(cc_country)
@@ -648,7 +674,7 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
 
 
 async def _do_buy_send_async(order_id, batch_id, account_id, number_ids,
-                              message, messages, sender_id):
+                              message, messages, sender_id, channel_id=None):
     """购数并发送：含 InnoDB 死锁重试与失败落库。"""
     # None：仅走 data_order_numbers；列表：legacy Celery 大包（若关联表有数据则强制忽略）
     legacy = None if number_ids is None else list(number_ids)
@@ -684,7 +710,7 @@ async def _do_buy_send_async(order_id, batch_id, account_id, number_ids,
             async with Session() as db:
                 try:
                     return await _do_buy_send_async_once(
-                        db, order_id, batch_id, account_id, legacy, message, messages, sender_id,
+                        db, order_id, batch_id, account_id, legacy, message, messages, sender_id, channel_id,
                     )
                 except OperationalError as e:
                     if _is_mysql_deadlock(e) and _attempt < _deadlock_attempts - 1:
@@ -771,10 +797,12 @@ def data_buy_send_async(
     messages: list = None,
     sender_id: str = None,
     number_ids: list = None,
+    channel_id: int = None,
 ):
     """异步处理大批量数据购买+发送：路由、定价、创建 SMS 记录、入队。
 
     number_ids 可选；缺省时由 data_order_numbers 按 order_id 反查（与 buy_and_send 瘦消息体对齐）。
+    channel_id 可选；指定时跳过自动路由，直接使用该通道。
     """
     return _run_async(
         _do_buy_send_async(
@@ -785,8 +813,68 @@ def data_buy_send_async(
             message,
             messages,
             sender_id,
+            channel_id,
         )
     )
+
+
+@celery_app.task(name='data_refresh_carriers_cache', soft_time_limit=600, time_limit=660)
+def data_refresh_carriers_cache():
+    """
+    定时预热 /api/v1/data/carriers 用的运营商聚合缓存。
+
+    data_numbers 现 1500w+ 行，按 country_code 做 GROUP BY 在 TH(9.3M)/BD(1.3M) 等大国
+    会跑到 130s+，远超前端 120s timeout；客户接口已改为只读 Redis 缓存，
+    本任务每 10 分钟把每个 country_code 的结果重算一次，TTL=24h（远大于 beat 间隔，
+    确保任意时刻都有可用缓存）。
+    """
+    return _run_async(_refresh_carriers_cache())
+
+
+async def _refresh_carriers_cache():
+    from app.utils.cache import get_cache_manager
+    cache_manager = await get_cache_manager()
+    eng, Session = _make_session()
+    refreshed: list[dict] = []
+    try:
+        async with Session() as db:
+            country_rows = await db.execute(
+                select(DataNumber.country_code, func.count(DataNumber.id))
+                .where(DataNumber.status == 'active', DataNumber.account_id.is_(None))
+                .group_by(DataNumber.country_code)
+                .having(func.count(DataNumber.id) > 0)
+            )
+            country_codes = [r[0] for r in country_rows.fetchall() if r[0]]
+
+            for cc in country_codes:
+                t0 = time.time()
+                rows = await db.execute(
+                    select(DataNumber.carrier, func.count(DataNumber.id))
+                    .where(
+                        DataNumber.status == 'active',
+                        DataNumber.account_id.is_(None),
+                        DataNumber.country_code == cc,
+                        DataNumber.carrier.isnot(None),
+                        DataNumber.carrier != '',
+                        DataNumber.carrier != 'Unknown',
+                    )
+                    .group_by(DataNumber.carrier)
+                    .order_by(func.count(DataNumber.id).desc())
+                )
+                carriers_list = [{"name": r[0], "count": r[1]} for r in rows.fetchall()]
+                await cache_manager.set(
+                    f"data:public_carriers:{cc}", carriers_list, ttl=86400
+                )
+                refreshed.append({
+                    "country_code": cc,
+                    "carriers": len(carriers_list),
+                    "ms": int((time.time() - t0) * 1000),
+                })
+    finally:
+        await eng.dispose()
+
+    logger.info(f"运营商缓存预热完成: {refreshed}")
+    return {"refreshed": refreshed}
 
 
 @celery_app.task(name='data_backfill_carriers', bind=True, soft_time_limit=7200, time_limit=7500)

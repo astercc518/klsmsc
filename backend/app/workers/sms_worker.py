@@ -3,6 +3,7 @@
 """
 import contextlib
 import json
+import os
 import threading
 import time
 from datetime import datetime
@@ -50,12 +51,22 @@ from app.workers.webhook_worker import send_webhook_task
 
 
 
-def _run_async(coro):
+_RUN_ASYNC_DEFAULT_TIMEOUT = float(os.getenv("WORKER_RUN_ASYNC_TIMEOUT_SEC", "60"))
+
+
+def _run_async(coro, *, timeout: Optional[float] = None):
     """在 Celery 同步 worker 中安全地执行异步协程，始终使用全新事件循环。
     这是最稳妥的模式，彻底避免 'Event loop is closed' 错误。
+
+    超时保护：避免任一异步操作（DB 查询、RabbitMQ publish、HTTP webhook 等）永久阻塞，
+    把单个 ForkPoolWorker 进程长期占用造成消费槽耗尽。超时则抛 asyncio.TimeoutError，
+    Celery task 退出（必要时由 task 装饰器/调用方决定是否重试），ForkPoolWorker 释放回池。
     """
+    eff_timeout = timeout if timeout is not None else _RUN_ASYNC_DEFAULT_TIMEOUT
     loop = asyncio.new_event_loop()
     try:
+        if eff_timeout and eff_timeout > 0:
+            return loop.run_until_complete(asyncio.wait_for(coro, timeout=eff_timeout))
         return loop.run_until_complete(coro)
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
@@ -73,12 +84,21 @@ def _make_session():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from sqlalchemy.pool import NullPool
 
+    # asyncmy 默认无超时；显式注入 connect/read 超时，避免 ProxySQL/MySQL 网络抖动时
+    # 单次查询永远阻塞，把 ForkPoolWorker 进程长期挂起。asyncmy 不支持 write_timeout
+    # （tcp 写缓冲满会被 OS 卡住，但实践中由 read_timeout 覆盖大多数 hang 场景）。
+    connect_timeout = int(os.getenv("WORKER_DB_CONNECT_TIMEOUT_SEC", "10"))
+    read_timeout = int(os.getenv("WORKER_DB_READ_TIMEOUT_SEC", "30"))
     eng = create_async_engine(
         settings.SQLALCHEMY_DATABASE_URL,
         echo=False,
         poolclass=NullPool,
         pool_pre_ping=True,
         pool_recycle=600,
+        connect_args={
+            "connect_timeout": connect_timeout,
+            "read_timeout": read_timeout,
+        },
     )
     factory = async_sessionmaker(
         eng, class_=AsyncSession,
@@ -293,6 +313,10 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
                         await update_batch_progress(db, sms_log.batch_id)
                     logger.info(f"批次已取消，跳过发送: batch={sms_log.batch_id}, message_id={message_id}")
                     return {"success": True, "message_id": message_id, "status": "failed", "skipped": True}
+                # 批次已暂停：ack-and-skip — 不动 sms_log.status（保留 queued 以便 resume 时重新入队）
+                if _bsv == "paused" and sms_log.status in ("pending", "queued"):
+                    logger.info(f"批次已暂停，跳过发送: batch={sms_log.batch_id}, message_id={message_id}")
+                    return {"success": True, "message_id": message_id, "status": sms_log.status, "skipped": "paused"}
 
             # 已为终态则不再走发送逻辑（避免与批量虚拟回执等竞态把 delivered 覆盖回 sent）
             if sms_log.status in ("delivered", "failed", "expired"):
@@ -767,9 +791,19 @@ async def _process_dlr_async(dlr_data: dict):
         await eng.dispose()
 
 
-@celery_app.task(name='process_smpp_dlr_task', max_retries=3)
+@celery_app.task(
+    name='process_smpp_dlr_task',
+    max_retries=3,
+    soft_time_limit=int(os.getenv("WORKER_DLR_TASK_SOFT_TIMEOUT_SEC", "25")),
+    time_limit=int(os.getenv("WORKER_DLR_TASK_HARD_TIMEOUT_SEC", "40")),
+)
 def process_smpp_dlr_task(channel_id: int, upstream_id: str, new_status: str, stat: str, err: str, dest_addr: str, source_addr: str, receipted_message_id: str):
-    """处理 SMPP DLR 发送到异步队列，避免在 PDU 接收线程中消耗过多 FD 资源导致服务崩溃。"""
+    """处理 SMPP DLR 发送到异步队列，避免在 PDU 接收线程中消耗过多 FD 资源导致服务崩溃。
+
+    time_limit/soft_time_limit：防止单条 DLR 在 DB 阻塞或外部依赖卡死时永久占住 ForkPoolWorker。
+    硬超时触发后 Celery 会强制 kill 这个 worker process（pool=prefork 时由主进程重启子进程），
+    确保消费槽不会被一条卡死任务长期占用（历史曾因此 6 天累积 hung 任务）。
+    """
     logger.info(f"队列接手SMPP DLR: id={upstream_id}")
     try:
         _run_async(_process_smpp_dlr_async(channel_id, upstream_id, new_status, stat, err, dest_addr, source_addr, receipted_message_id))
@@ -825,13 +859,18 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                     )
                 ).order_by(SMSLog.submit_time.desc()).limit(1)
 
-                for _attempt in range(5):
+                # DLR 偶尔比 SubmitSMResp 落库还快（上游 1 秒内回执，sms_logs.upstream_message_id
+                # 的写入由 sms_result_queue 异步处理可能滞后）。重试覆盖到 ~2 秒，覆盖大多数 race；
+                # 仍未命中则 buffer_unmatched_dlr 缓冲后由 flush 任务接力。
+                _retry_attempts = int(os.getenv("WORKER_DLR_MATCH_RETRY_ATTEMPTS", "10"))
+                _retry_sleep_sec = float(os.getenv("WORKER_DLR_MATCH_RETRY_SLEEP_SEC", "0.2"))
+                for _attempt in range(_retry_attempts):
                     result = await db.execute(stmt)
                     sms_log = result.scalar_one_or_none()
                     if sms_log:
                         break
-                    if _attempt < 4:
-                        await asyncio.sleep(0.08)
+                    if _attempt < _retry_attempts - 1:
+                        await asyncio.sleep(_retry_sleep_sec)
 
             if not sms_log:
                 for addr in (dest_addr, source_addr):
@@ -951,7 +990,11 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
 
 # ============ DLR 重试缓冲 Flush 任务 ============
 
-@celery_app.task(name='flush_dlr_retry_buffer_task')
+@celery_app.task(
+    name='flush_dlr_retry_buffer_task',
+    soft_time_limit=int(os.getenv("WORKER_FLUSH_DLR_SOFT_TIMEOUT_SEC", "25")),
+    time_limit=int(os.getenv("WORKER_FLUSH_DLR_HARD_TIMEOUT_SEC", "40")),
+)
 def flush_dlr_retry_buffer_task():
     """
     每 5 秒重试一次「DLR 先于 SubmitSMResp 到达」导致未匹配的回执。
@@ -966,7 +1009,11 @@ def flush_dlr_retry_buffer_task():
 async def _flush_dlr_retry_buffer_async():
     from app.utils.dlr_buffer import (
         pop_retry_buffer, remove_retry_item, increment_retry_count, retry_buffer_size,
+        cleanup_expired,
     )
+
+    # 先把 expire-at 已过的条目清掉（per-field TTL 自管理，避免堆积无意义重试）
+    await cleanup_expired()
 
     size = await retry_buffer_size()
     if size <= 0:
@@ -1372,13 +1419,7 @@ async def _dlr_timeout_check_async():
                  autoretry_for=(Exception,), retry_backoff=2, retry_backoff_max=30)
 def virtual_dlr_generate_task(self, message_id: str, channel_id: int):
     """延迟生成虚拟通道的模拟回执（单条，兼容旧逻辑）"""
-    import asyncio
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_do_virtual_dlr(message_id, channel_id))
-    finally:
-        loop.run_until_complete(loop.shutdown_asyncgens())
-        loop.close()
+    return _run_async(_do_virtual_dlr(message_id, channel_id))
 
 
 @celery_app.task(name="virtual_submit_simulate", bind=True, max_retries=2,
@@ -1387,26 +1428,19 @@ def virtual_dlr_generate_task(self, message_id: str, channel_id: int):
                  acks_late=True, reject_on_worker_lost=True)
 def virtual_submit_simulate_task(self, message_ids: list, channel_id: int, batch_id: int = None):
     """模拟虚拟通道上游提交：将 pending 状态批量更新为 sent"""
-    import asyncio
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_do_virtual_submit(message_ids, channel_id, batch_id))
-    finally:
-        loop.run_until_complete(loop.shutdown_asyncgens())
-        loop.close()
+    # 协程级超时设在 Celery soft_time_limit(10min)之前触发，便于干净地 raise asyncio.TimeoutError
+    return _run_async(
+        _do_virtual_submit(message_ids, channel_id, batch_id),
+        timeout=float(os.getenv("WORKER_VIRTUAL_SUBMIT_TIMEOUT_SEC", "570")),
+    )
 
 
 async def _do_virtual_submit(message_ids: list, channel_id: int, batch_id: int = None):
     """批量将 pending 消息更新为 sent，模拟上游提交完成"""
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession as _AS
     from sqlalchemy import update as sa_update
     from app.modules.sms.sms_batch import SmsBatch
 
-    eng = create_async_engine(
-        settings.SQLALCHEMY_DATABASE_URL, echo=False,
-        pool_size=2, max_overflow=1, pool_pre_ping=True, pool_recycle=300,
-    )
-    factory = async_sessionmaker(eng, class_=_AS, expire_on_commit=False)
+    eng, factory = _make_session()
     updated = 0
     now = datetime.now()
 
@@ -1450,26 +1484,18 @@ async def _do_virtual_submit(message_ids: list, channel_id: int, batch_id: int =
                  acks_late=True, reject_on_worker_lost=True)
 def virtual_dlr_batch_generate_task(self, message_ids: list, channel_id: int, batch_id: int = None):
     """批量生成虚拟通道回执，一个任务处理一整个分片（最多500条）"""
-    import asyncio
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_do_virtual_dlr_batch(message_ids, channel_id, batch_id))
-    finally:
-        loop.run_until_complete(loop.shutdown_asyncgens())
-        loop.close()
+    return _run_async(
+        _do_virtual_dlr_batch(message_ids, channel_id, batch_id),
+        timeout=float(os.getenv("WORKER_VIRTUAL_DLR_BATCH_TIMEOUT_SEC", "870")),
+    )
 
 
 async def _do_virtual_dlr_batch(message_ids: list, channel_id: int, batch_id: int = None):
     """批量处理虚拟DLR：一个DB连接处理整个分片"""
     import random
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession as _AS
     from app.modules.sms.sms_batch import SmsBatch
 
-    eng = create_async_engine(
-        settings.SQLALCHEMY_DATABASE_URL, echo=False,
-        pool_size=2, max_overflow=1, pool_pre_ping=True, pool_recycle=300,
-    )
-    factory = async_sessionmaker(eng, class_=_AS, expire_on_commit=False)
+    eng, factory = _make_session()
     delivered = 0
     failed_cnt = 0
     expired_cnt = 0
@@ -1577,12 +1603,8 @@ async def _do_virtual_dlr_batch(message_ids: list, channel_id: int, batch_id: in
 async def _do_virtual_dlr(message_id: str, channel_id: int):
     """根据虚拟通道配置，随机决定回执状态并更新 SMSLog（单条兼容）"""
     import random
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession as _AS
-    eng = create_async_engine(
-        settings.SQLALCHEMY_DATABASE_URL, echo=False,
-        pool_size=1, max_overflow=0, pool_pre_ping=True, pool_recycle=300,
-    )
-    factory = async_sessionmaker(eng, class_=_AS, expire_on_commit=False)
+
+    eng, factory = _make_session()
     try:
         async with factory() as db:
             result = await db.execute(

@@ -95,6 +95,7 @@ class DataBuyAndSend(BaseModel):
     message: str
     messages: Optional[List[str]] = None
     carrier: Optional[str] = None
+    channel_id: Optional[int] = None
 
 
 class ComboBuyRequest(BaseModel):
