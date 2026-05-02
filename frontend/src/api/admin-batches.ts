@@ -56,30 +56,26 @@ export interface ListBatchesParams {
   page_size?: number
 }
 
-export const listAdminBatches = (params: ListBatchesParams = {}) =>
-  request.get<{ success: boolean; total: number; page: number; page_size: number; items: AdminBatchItem[] }>(
-    '/admin/batches',
-    { params }
-  )
+export async function listAdminBatches(params: ListBatchesParams = {}): Promise<{ success: boolean; total: number; page: number; page_size: number; items: AdminBatchItem[] }> {
+  return request.get('/admin/batches', { params })
+}
 
-export const getAdminBatch = (id: number) =>
-  request.get<{ success: boolean; batch: AdminBatchDetail; error?: string }>(`/admin/batches/${id}`)
+export async function getAdminBatch(id: number): Promise<{ success: boolean; batch: AdminBatchDetail; error?: string }> {
+  return request.get(`/admin/batches/${id}`)
+}
 
-export const pauseBatch = (id: number) =>
-  request.post<{ success: boolean; reason?: string; unsent_count?: number; warning?: string }>(
-    `/admin/batches/${id}/pause`
-  )
+export async function pauseBatch(id: number): Promise<{ success: boolean; reason?: string; unsent_count?: number; warning?: string }> {
+  return request.post(`/admin/batches/${id}/pause`)
+}
 
-export const resumeBatch = (id: number, body: { new_channel_id?: number } = {}) =>
-  request.post<{ success: boolean; reason?: string; unsent_count?: number; requeued_ok?: number; switch_channel?: any }>(
-    `/admin/batches/${id}/resume`,
-    body
-  )
+export async function resumeBatch(id: number, body: { new_channel_id?: number } = {}): Promise<{ success: boolean; reason?: string; unsent_count?: number; requeued_ok?: number; switch_channel?: any }> {
+  return request.post(`/admin/batches/${id}/resume`, body)
+}
 
-export const clearBatchQueue = (id: number) =>
-  request.post<{ success: boolean; reason?: string; cancelled_logs?: number }>(
-    `/admin/batches/${id}/clear-queue`
-  )
+export async function clearBatchQueue(id: number): Promise<{ success: boolean; reason?: string; cancelled_logs?: number }> {
+  return request.post(`/admin/batches/${id}/clear-queue`)
+}
 
-export const previewSwitchChannel = (id: number, new_channel_id: number) =>
-  request.post<PreviewSwitchResult>(`/admin/batches/${id}/preview-switch-channel`, { new_channel_id })
+export async function previewSwitchChannel(id: number, new_channel_id: number): Promise<PreviewSwitchResult> {
+  return request.post(`/admin/batches/${id}/preview-switch-channel`, { new_channel_id })
+}

@@ -27,44 +27,32 @@ export interface ListRefundableParams {
   page_size?: number
 }
 
-export const listRefundable = (params: ListRefundableParams = {}) =>
-  request.get<{ success: boolean; total: number; page: number; page_size: number; items: RefundCandidate[] }>(
-    '/admin/sms/refundable',
-    { params }
-  )
+export interface RefundPreview {
+  success: boolean
+  eligible: boolean
+  reason: string
+  sms_log_id: number
+  message_id: string
+  account_id: number
+  amount_to_refund: number
+  currency?: string
+  error_message?: string | null
+  upstream_message_id?: string | null
+  refunded_at?: string | null
+}
 
-export const previewRefund = (smsLogId: number) =>
-  request.get<{
-    success: boolean
-    eligible: boolean
-    reason: string
-    sms_log_id: number
-    message_id: string
-    account_id: number
-    amount_to_refund: number
-    currency?: string
-    error_message?: string | null
-    upstream_message_id?: string | null
-    refunded_at?: string | null
-  }>(`/admin/sms/${smsLogId}/refund/preview`)
+export async function listRefundable(params: ListRefundableParams = {}): Promise<{ success: boolean; total: number; page: number; page_size: number; items: RefundCandidate[] }> {
+  return request.get('/admin/sms/refundable', { params })
+}
 
-export const executeRefund = (smsLogId: number, note?: string) =>
-  request.post<{
-    success: boolean
-    reason?: string
-    amount?: number
-    balance_after?: number
-    message_id?: string
-    account_id?: number
-    category?: string
-  }>(`/admin/sms/${smsLogId}/refund`, { note })
+export async function previewRefund(smsLogId: number): Promise<RefundPreview> {
+  return request.get(`/admin/sms/${smsLogId}/refund/preview`)
+}
 
-export const executeRefundBatch = (sms_log_ids: number[], note?: string) =>
-  request.post<{
-    success: boolean
-    error?: string
-    ok?: number
-    failed?: number
-    total_amount?: number
-    failures?: { sms_log_id: number; reason: string }[]
-  }>('/admin/sms/refund-batch', { sms_log_ids, note })
+export async function executeRefund(smsLogId: number, note?: string): Promise<{ success: boolean; reason?: string; amount?: number; balance_after?: number; message_id?: string; account_id?: number; category?: string }> {
+  return request.post(`/admin/sms/${smsLogId}/refund`, { note })
+}
+
+export async function executeRefundBatch(sms_log_ids: number[], note?: string): Promise<{ success: boolean; error?: string; ok?: number; failed?: number; total_amount?: number; failures?: { sms_log_id: number; reason: string }[] }> {
+  return request.post('/admin/sms/refund-batch', { sms_log_ids, note })
+}

@@ -306,16 +306,6 @@
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.sendRecords') }}</span>
                 </div>
 
-                <div class="nav-item" :class="{ active: isActive('/reports') }" @click="navigate('/reports')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <path d="M2 16H18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                      <path d="M4 16V10M8 16V6M12 16V8M16 16V4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.dataReport') }}</span>
-                </div>
-
                 <div class="nav-item" :class="{ active: isActive('/sms/recharge-records') }" @click="navigate('/sms/recharge-records')">
                   <div class="nav-icon">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -348,16 +338,6 @@
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.smsTaskManagement') }}</span>
                 </div>
 
-                <div class="nav-item" :class="{ active: isActive('/admin/sms/refund-audit') }" @click="navigate('/admin/sms/refund-audit')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <rect x="2" y="5" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M2 9H18" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M7 13H9M11 13H13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.smsRefundAudit') }}</span>
-                </div>
               </div>
 
 

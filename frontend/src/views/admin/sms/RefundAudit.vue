@@ -182,7 +182,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Loading } from '@element-plus/icons-vue'
 import {
   listRefundable, previewRefund, executeRefund, executeRefundBatch,
-  type RefundCandidate,
+  type RefundCandidate, type RefundPreview,
 } from '@/api/sms-refund'
 
 const route = useRoute()
@@ -194,7 +194,7 @@ const filters = reactive<{ keyword?: string; account_id?: number; batch_id?: num
 const selected = ref<number[]>([])
 
 const singleVisible = ref(false)
-const preview = ref<Awaited<ReturnType<typeof previewRefund>>['data'] | null>(null)
+const preview = ref<RefundPreview | null>(null)
 const previewLoading = ref(false)
 const auditNote = ref('')
 const submitting = ref(false)
@@ -210,14 +210,14 @@ function onSelectionChange(rows: RefundCandidate[]) {
 async function loadList() {
   loading.value = true
   try {
-    const { data } = await listRefundable({
+    const res = await listRefundable({
       ...filters,
       page: pagination.page,
       page_size: pagination.page_size,
     })
-    if (data.success) {
-      items.value = data.items
-      pagination.total = data.total
+    if (res.success) {
+      items.value = res.items
+      pagination.total = res.total
     }
   } finally {
     loading.value = false
@@ -230,8 +230,7 @@ async function openSingle(row: RefundCandidate) {
   singleVisible.value = true
   previewLoading.value = true
   try {
-    const { data } = await previewRefund(row.sms_log_id)
-    preview.value = data
+    preview.value = await previewRefund(row.sms_log_id)
   } finally {
     previewLoading.value = false
   }
@@ -253,13 +252,13 @@ async function confirmSingle() {
 
   submitting.value = true
   try {
-    const { data } = await executeRefund(preview.value.sms_log_id, auditNote.value || undefined)
-    if (data.success) {
-      ElMessage.success(`退款成功，退还 ${fmtMoney(data.amount)} ${data.category || ''}`)
+    const res = await executeRefund(preview.value.sms_log_id, auditNote.value || undefined)
+    if (res.success) {
+      ElMessage.success(`退款成功，退还 ${fmtMoney(res.amount)} ${res.category || ''}`)
       closeSingle()
       loadList()
     } else {
-      ElMessage.error(data.reason || '退款失败')
+      ElMessage.error(res.reason || '退款失败')
     }
   } finally {
     submitting.value = false
@@ -275,18 +274,18 @@ async function submitBatch() {
   if (selected.value.length === 0) return
   batchSubmitting.value = true
   try {
-    const { data } = await executeRefundBatch(selected.value, batchNote.value || undefined)
-    if (data.success) {
-      ElMessage.success(`批量退款完成：成功 ${data.ok ?? 0} 条，失败 ${data.failed ?? 0} 条，总计退还 ${fmtMoney(data.total_amount)}`)
-      if (data.failures && data.failures.length > 0) {
-        const failList = data.failures.slice(0, 5).map(f => `#${f.sms_log_id}: ${f.reason}`).join('\n')
+    const res = await executeRefundBatch(selected.value, batchNote.value || undefined)
+    if (res.success) {
+      ElMessage.success(`批量退款完成：成功 ${res.ok ?? 0} 条，失败 ${res.failed ?? 0} 条，总计退还 ${fmtMoney(res.total_amount)}`)
+      if (res.failures && res.failures.length > 0) {
+        const failList = res.failures.slice(0, 5).map(f => `#${f.sms_log_id}: ${f.reason}`).join('\n')
         ElMessage.warning(`部分退款失败：\n${failList}`)
       }
       batchVisible.value = false
       selected.value = []
       loadList()
     } else {
-      ElMessage.error(data.error || '批量退款失败')
+      ElMessage.error(res.error || '批量退款失败')
     }
   } finally {
     batchSubmitting.value = false
