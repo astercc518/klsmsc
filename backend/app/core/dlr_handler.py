@@ -383,15 +383,18 @@ async def process_dlr_reports(
                 result = await db.execute(query)
                 sms_log = result.scalars().first()
             
-            # 如果没找到，尝试用手机号匹配
-            if not sms_log and report.get('mobile'):
+            # 如果没找到，尝试用手机号匹配（兜底）
+            # 多账号共上游账号场景下，phone-suffix LIKE 易跨账户错配；
+            # 强制要求 channel_id（限定本通道）+ 24h 时间窗，缺失 channel_id 时直接放弃
+            if not sms_log and report.get('mobile') and channel_id is not None:
+                from datetime import timedelta as _td
                 clean_mobile = str(report['mobile']).lstrip('+').strip()
                 conds3 = [
                     SMSLog.phone_number.like(f"%{clean_mobile}"),
                     SMSLog.status == 'sent',
+                    SMSLog.channel_id == channel_id,
+                    SMSLog.submit_time > datetime.now() - _td(hours=24),
                 ]
-                if channel_id is not None:
-                    conds3.append(SMSLog.channel_id == channel_id)
                 query = (
                     select(SMSLog)
                     .where(and_(*conds3))
