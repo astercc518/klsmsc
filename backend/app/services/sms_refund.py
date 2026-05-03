@@ -162,46 +162,32 @@ async def get_refund_preview(db: AsyncSession, sms_log_id: int) -> RefundCandida
     return classify_refund_candidate(row)
 
 
-async def execute_refund(
+async def _do_refund(
     db: AsyncSession,
-    sms_log_id: int,
-    admin_username: str,
+    row: SMSLog,
+    amount: Decimal,
+    refunded_by: str,
+    category: str,
     note: Optional[str] = None,
+    auto_commit: bool = True,
 ) -> dict:
     """
-    执行退款。原子操作：
-      1. SELECT ... FOR UPDATE 锁住 sms_log，二次确认资格
-      2. UPDATE accounts.balance += amount
-      3. INSERT balance_logs (change_type='refund')
-      4. UPDATE sms_logs.refunded_at/by/amount
-      5. 失效余额缓存
-
-    返回结构：{"success": bool, "reason"?, "amount"?, "balance_after"?, "message_id"?}
+    退款核心：余额回退 + BalanceLog + sms_logs 写回 + 缓存失效。
+    资格校验由调用方完成（管理员审核走 execute_refund，系统自动退款走 execute_auto_refund）。
+    auto_commit=False 用于嵌入调用方事务（如批次提交链路）。
     """
-    # 1. 锁住 sms_log
-    row = (await db.execute(
-        select(SMSLog).where(SMSLog.id == int(sms_log_id)).with_for_update()
-    )).scalar_one_or_none()
-    if not row:
-        return {"success": False, "reason": "not_found"}
-
-    cand = classify_refund_candidate(row)
-    if not cand.eligible:
-        return {"success": False, "reason": cand.reason, "message_id": row.message_id}
-
-    amount = Decimal(str(row.selling_price or 0))
     if amount <= 0:
         return {"success": False, "reason": "金额非正", "message_id": row.message_id}
 
-    # 2. 加回账户余额
+    # 1. 加回账户余额
     await db.execute(
         update(Account).where(Account.id == row.account_id).values(balance=Account.balance + amount)
     )
     bal = (await db.execute(select(Account.balance).where(Account.id == row.account_id))).scalar()
     bal_f = float(bal) if bal is not None else 0.0
 
-    # 3. 记账
-    desc = f"SMS退款: message_id={row.message_id} reason={cand.reason}"
+    # 2. 记账
+    desc = f"SMS退款: message_id={row.message_id} reason={category}"
     if note:
         desc += f" note={note[:200]}"
     db.add(
@@ -214,21 +200,22 @@ async def execute_refund(
         )
     )
 
-    # 4. 写回 sms_logs
+    # 3. 写回 sms_logs（refunded_at IS NULL 幂等保护）
     from datetime import datetime as _dt
     await db.execute(
         update(SMSLog)
-        .where(SMSLog.id == row.id, SMSLog.refunded_at.is_(None))  # 再次幂等保护
+        .where(SMSLog.id == row.id, SMSLog.refunded_at.is_(None))
         .values(
             refunded_at=_dt.now(),
-            refunded_by=admin_username[:100],
+            refunded_by=refunded_by[:100],
             refunded_amount=amount,
         )
     )
 
-    await db.commit()
+    if auto_commit:
+        await db.commit()
 
-    # 5. 失效余额缓存
+    # 4. 失效余额缓存
     try:
         cm = await get_cache_manager()
         await cm.set(f"account:{row.account_id}:balance", bal_f, ttl=60)
@@ -237,7 +224,7 @@ async def execute_refund(
 
     logger.info(
         f"SMS退款成功 sms_log_id={row.id} message_id={row.message_id} "
-        f"amount={amount} account_id={row.account_id} admin={admin_username} reason={cand.reason}"
+        f"amount={amount} account_id={row.account_id} by={refunded_by} category={category}"
     )
     return {
         "success": True,
@@ -245,8 +232,72 @@ async def execute_refund(
         "balance_after": bal_f,
         "message_id": row.message_id,
         "account_id": row.account_id,
-        "category": cand.reason,
+        "category": category,
     }
+
+
+async def execute_refund(
+    db: AsyncSession,
+    sms_log_id: int,
+    admin_username: str,
+    note: Optional[str] = None,
+) -> dict:
+    """管理员审批退款：严格资格校验后执行。"""
+    row = (await db.execute(
+        select(SMSLog).where(SMSLog.id == int(sms_log_id)).with_for_update()
+    )).scalar_one_or_none()
+    if not row:
+        return {"success": False, "reason": "not_found"}
+
+    cand = classify_refund_candidate(row)
+    if not cand.eligible:
+        return {"success": False, "reason": cand.reason, "message_id": row.message_id}
+
+    amount = Decimal(str(row.selling_price or 0))
+    return await _do_refund(
+        db, row, amount,
+        refunded_by=admin_username,
+        category=cand.reason,
+        note=note,
+        auto_commit=True,
+    )
+
+
+async def execute_auto_refund(
+    db: AsyncSession,
+    sms_log_id: int,
+    source: str,
+    note: Optional[str] = None,
+    auto_commit: bool = True,
+) -> dict:
+    """
+    系统自动退款（入队失败/提交失败/批次取消）。绕过 eligible 校验，但写完整审计字段
+    使 Refund Audit 页面可见。
+    source: 'submit_failed' | 'queue_failed' | 'batch_cancelled' | 'batch_queue_fail' | 'ruanwei_queue_failed'
+    auto_commit=False 用于嵌入调用方事务。
+    """
+    if auto_commit:
+        row = (await db.execute(
+            select(SMSLog).where(SMSLog.id == int(sms_log_id)).with_for_update()
+        )).scalar_one_or_none()
+    else:
+        row = (await db.execute(
+            select(SMSLog).where(SMSLog.id == int(sms_log_id))
+        )).scalar_one_or_none()
+
+    if not row:
+        return {"success": False, "reason": "not_found"}
+    if row.refunded_at is not None:
+        return {"success": False, "reason": "already_refunded", "message_id": row.message_id}
+
+    amount = Decimal(str(row.selling_price or 0))
+    return await _do_refund(
+        db, row, amount,
+        refunded_by=f"system:{source}",
+        category=source,
+        note=note,
+        auto_commit=auto_commit,
+    )
 
 
 async def execute_refund_batch(

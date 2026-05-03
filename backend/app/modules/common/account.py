@@ -59,7 +59,7 @@ class Account(Base):
         default="prepaid",
         comment="付费方式：prepaid预付费/postpaid后付费"
     )
-    unit_price = Column(DECIMAL(10, 4), default=0.0500, comment="短信单价(USD/条)")
+    unit_price = Column(DECIMAL(10, 4), nullable=True, default=None, comment="短信单价(USD/条)；NULL=未配置时由 account_pricing/country_pricing 兜底")
     password_hash = Column(String(255), comment="密码哈希")
     balance = Column(DECIMAL(12, 4), nullable=False, default=0.0000, comment="账户余额")
     currency = Column(String(10), nullable=False, default="USD", comment="币种")

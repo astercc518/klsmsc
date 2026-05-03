@@ -363,21 +363,30 @@ async def _do_process_batch(batch_id: int, resume: bool = False):
         await db.close()
 
 async def _refund_single(db, account_id: int, amount: float, message_id: str):
-    """入队失败退款"""
+    """
+    批次入队失败退款。走 services/sms_refund.execute_auto_refund 统一路径，
+    会写完整 refunded_at/by/amount 使 Refund Audit 可见。
+    保留 account_id/amount 参数兼容旧调用，但实际由 execute_auto_refund 按 sms_log 重新解析。
+    """
     if amount <= 0:
         return
     try:
-        from app.modules.common.balance_log import BalanceLog
-        await db.execute(
-            update(Account).where(Account.id == account_id)
-            .values(balance=Account.balance + amount)
+        from app.services.sms_refund import execute_auto_refund
+        from app.modules.sms.sms_log import SMSLog as _SMSLog
+
+        row = (await db.execute(
+            select(_SMSLog).where(_SMSLog.message_id == message_id).limit(1)
+        )).scalar_one_or_none()
+        if not row:
+            logger.warning(f"_refund_single: sms_log 未找到 message_id={message_id}")
+            return
+        # 嵌入批次事务，不自己 commit；批次链路统一在 _flush_commit_chunk 里 commit
+        await execute_auto_refund(
+            db, row.id,
+            source="batch_queue_fail",
+            note=f"batch queue fail",
+            auto_commit=False,
         )
-        bal = await db.execute(select(Account.balance).where(Account.id == account_id))
-        db.add(BalanceLog(
-            account_id=account_id, change_type='refund', amount=amount,
-            balance_after=float(bal.scalar()),
-            description=f"Batch queue fail refund: {message_id}"
-        ))
     except Exception as e:
         logger.error(f"退款失败: {message_id}, {e}")
 

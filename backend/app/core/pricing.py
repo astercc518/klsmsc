@@ -261,7 +261,8 @@ class PricingEngine:
             return cached
         
         # 1. 检查账户统一单价 (Account Unit Price) - 最高优先级
-        # unit_price > 0：按设定值计费；unit_price == 0：明确设置为免费（0价格），均优先于 account_pricing
+        # 语义：unit_price IS NOT NULL 即视为已配置，按字面值计费（含 0=免费、0.05=客户真实定价）
+        # unit_price IS NULL 才 fall-through 到 account_pricing / country_pricing
         if account_id:
             result = await self.db.execute(
                 select(Account).where(Account.id == account_id)
@@ -270,18 +271,14 @@ class PricingEngine:
 
             if account and account.unit_price is not None and float(account.unit_price) >= 0:
                 up_val = float(account.unit_price)
-                # unit_price 为默认值 0.0500 且存在 account_pricing 时，优先用后者（保持原有多档定价逻辑）
-                # unit_price 明确设为 0（免费）或非默认正数时直接返回
-                is_default_rate = (up_val == 0.05)
-                if not is_default_rate:
-                    price_info = {
-                        'price': up_val,
-                        'currency': account.currency or 'USD',
-                        'source': 'account_unit_price'
-                    }
-                    logger.info(f"使用账户统一单价: account={account_id}, price={up_val}")
-                    await cache_manager.set(cache_key, price_info, ttl=3600)
-                    return price_info
+                price_info = {
+                    'price': up_val,
+                    'currency': account.currency or 'USD',
+                    'source': 'account_unit_price'
+                }
+                logger.info(f"使用账户统一单价: account={account_id}, price={up_val}")
+                await cache_manager.set(cache_key, price_info, ttl=3600)
+                return price_info
             
         # 2. 检查账户专属国家定价 (Account Specific Country Pricing)
         if account_id:

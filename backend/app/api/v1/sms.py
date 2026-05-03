@@ -45,36 +45,25 @@ logger = get_logger(__name__)
 
 async def _refund_line_charge(
     db: AsyncSession,
-    account_id: int,
-    amount: float,
-    description: str,
+    message_id: str,
+    source: str,
+    note: Optional[str] = None,
 ) -> None:
-    """单条短信已扣费但后续失败（如入队失败）时退回余额"""
-    if amount is None or float(amount) <= 0:
-        return
-    amt = Decimal(str(amount))
-    await db.execute(
-        update(Account).where(Account.id == account_id).values(balance=Account.balance + amt)
-    )
-    res = await db.execute(select(Account.balance).where(Account.id == account_id))
-    bal = res.scalar()
-    db.add(
-        BalanceLog(
-            account_id=account_id,
-            change_type="refund",
-            amount=float(amt),
-            balance_after=float(bal) if bal is not None else 0.0,
-            description=description[:500],
-        )
-    )
-    await db.flush()
-    try:
-        from app.utils.cache import get_cache_manager
+    """
+    单条短信已扣费但后续失败（如入队失败）时退回余额。
+    走 services/sms_refund.execute_auto_refund 统一审计：会写 sms_logs.refunded_at/by/amount。
+    source: 'queue_failed' | 'submit_failed' | 'ruanwei_queue_failed' 等
+    """
+    from app.services.sms_refund import execute_auto_refund
 
-        cm = await get_cache_manager()
-        await cm.set(f"account:{account_id}:balance", float(bal) if bal is not None else 0.0, ttl=60)
-    except Exception:
-        pass
+    row = (await db.execute(
+        select(SMSLog).where(SMSLog.message_id == message_id).limit(1)
+    )).scalar_one_or_none()
+    if not row:
+        logger.warning(f"_refund_line_charge: sms_log 未找到 message_id={message_id}")
+        return
+    # auto_commit=False：嵌入调用方事务，由调用方决定提交时机
+    await execute_auto_refund(db, row.id, source=source, note=note, auto_commit=False)
 router = APIRouter()
 
 # Optional bearer token for admin access
@@ -336,12 +325,7 @@ async def submit_sms_core(
 
         if not queue_success:
             logger.error(f"加入队列失败，已退款并标记失败: {message_id}")
-            await _refund_line_charge(
-                db,
-                account.id,
-                charge_result["total_cost"],
-                f"SMS入队失败退款 {message_id}",
-            )
+            await _refund_line_charge(db, message_id, source="queue_failed")
             await db.execute(
                 update(SMSLog)
                 .where(SMSLog.message_id == message_id)
@@ -526,7 +510,7 @@ async def send_sms_ruanwei_compat(
             items.append({"mobile": phone, "mid": mid, "result": 0})
             logger.info(f"软维协议短信已入队: account={account}, phone={phone_info['e164_format']}, mid={mid}")
         else:
-            await _refund_line_charge(db, acc.id, charge_result["total_cost"], f"软维SMS入队失败 {mid}")
+            await _refund_line_charge(db, mid, source="ruanwei_queue_failed")
             await db.execute(
                 update(SMSLog).where(SMSLog.message_id == mid).values(status="failed", error_message="queue failed")
             )
@@ -1514,12 +1498,7 @@ async def execute_approved_sms(
     from app.utils.queue import QueueManager
 
     if not QueueManager.queue_sms(message_id):
-        await _refund_line_charge(
-            db,
-            account.id,
-            charge_result["total_cost"],
-            f"审核短信入队失败退款 {message_id}",
-        )
+        await _refund_line_charge(db, message_id, source="review_queue_failed")
         await db.execute(
             update(SMSLog)
             .where(SMSLog.message_id == message_id)
