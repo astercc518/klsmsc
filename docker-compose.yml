@@ -20,7 +20,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
-    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --character-set-client-handshake=FALSE --default-time-zone=+08:00 --max-connections=500 --range-optimizer-max-mem-size=67108864
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --character-set-client-handshake=FALSE --default-time-zone=+08:00 --max-connections=500 --range-optimizer-max-mem-size=67108864 --innodb-buffer-pool-size=${INNODB_BUFFER_POOL_SIZE:-4G} --innodb-buffer-pool-instances=${INNODB_BUFFER_POOL_INSTANCES:-4} --innodb-log-buffer-size=${INNODB_LOG_BUFFER_SIZE:-64M}
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpass123}"]
       interval: 10s
@@ -225,7 +225,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-8} -Q celery,data_tasks,webhook_tasks,integrations
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-8} --max-tasks-per-child=${WORKER_MAX_TASKS_PER_CHILD:-1000} -Q celery,data_tasks,webhook_tasks,integrations
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -265,7 +265,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${DLR_WORKER_CONCURRENCY:-8} -Q sms_dlr
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${DLR_WORKER_CONCURRENCY:-8} --max-tasks-per-child=${DLR_WORKER_MAX_TASKS_PER_CHILD:-2000} -Q sms_dlr
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -306,7 +306,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${RESULT_WORKER_CONCURRENCY:-12} -Q sms_result_queue
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${RESULT_WORKER_CONCURRENCY:-12} --max-tasks-per-child=${RESULT_WORKER_MAX_TASKS_PER_CHILD:-2000} -Q sms_result_queue
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -353,7 +353,7 @@ services:
       rabbitmq:
         condition: service_healthy
     # HTTP 通道高并发；SMPP 通道受连接限制需单独评估
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${SMS_WORKER_CONCURRENCY:-32} -Q sms_send
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${SMS_WORKER_CONCURRENCY:-32} --max-tasks-per-child=${SMS_WORKER_MAX_TASKS_PER_CHILD:-2000} -Q sms_send
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -479,41 +479,6 @@ services:
     networks:
       - smsc-network
 
-  # Prometheus 监控（生产默认启用；极简/边缘环境可自行停服或拆 overlay）
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: smsc-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-    restart: unless-stopped
-    logging: *default-logging
-    networks:
-      - smsc-network
-
-  # Grafana 可视化（生产务必在 .env 设置 GRAFANA_ADMIN_PASSWORD）
-  grafana:
-    image: grafana/grafana:latest
-    container_name: smsc-grafana
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-changeme_set_in_env}
-      GF_USERS_ALLOW_SIGN_UP: false
-    ports:
-      - "3000:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-    depends_on:
-      - prometheus
-    restart: unless-stopped
-    logging: *default-logging
-    networks:
-      - smsc-network
-
   # Playwright 注水 Worker（无头浏览器自动点击/注册）
   worker-web:
     build:
@@ -546,7 +511,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork --concurrency=4 -Q web_automation
+    command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork --concurrency=4 --max-tasks-per-child=${WEB_WORKER_MAX_TASKS_PER_CHILD:-500} -Q web_automation
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -578,6 +543,11 @@ services:
       INBOUND_SUBMIT_WORKERS: ${INBOUND_SUBMIT_WORKERS:-8}
       INBOUND_MAX_BINDS_PER_ACCOUNT: ${INBOUND_MAX_BINDS_PER_ACCOUNT:-5}
       INBOUND_MAX_CONNS_PER_IP: ${INBOUND_MAX_CONNS_PER_IP:-20}
+      # DLR 归属过滤：与外部系统共用同一上游 SMPP 账号时启用，过滤掉别人的 DLR
+      DLR_OWNERSHIP_FILTER: ${DLR_OWNERSHIP_FILTER:-true}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     ports:
       - "2775:2775"
     depends_on:
@@ -585,6 +555,8 @@ services:
         condition: service_started
       rabbitmq:
         condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -597,10 +569,6 @@ volumes:
   redis_data:
     driver: local
   rabbitmq_data:
-    driver: local
-  prometheus_data:
-    driver: local
-  grafana_data:
     driver: local
   import_uploads:
     driver: local

@@ -16,6 +16,8 @@ export interface RefundCandidate {
   submit_time?: string | null
   upstream_message_id?: string | null
   category: string
+  eligible?: boolean
+  ineligible_reason?: string | null
 }
 
 export interface ListRefundableParams {
@@ -25,6 +27,7 @@ export interface ListRefundableParams {
   keyword?: string
   page?: number
   page_size?: number
+  include_ineligible?: boolean
 }
 
 export interface RefundPreview {

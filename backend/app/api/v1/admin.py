@@ -4713,18 +4713,19 @@ async def list_sms_refundable(
     keyword: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
+    include_ineligible: bool = False,
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """列出退款候选（仅 status=failed 且未退款且未拿到 upstream_message_id 且非"已到上游"模式的失败短信）
-
-    需管理员二次审核每一条；本接口仅做粗筛。
+    """列出退款候选。include_ineligible=true 时返回批次内所有失败记录（含不可退款的），
+    供管理员查看完整失败情况；默认仅返回可退款记录。
     """
     from app.services.sms_refund import list_refundable
     total, candidates = await list_refundable(
         db,
         account_id=account_id, batch_id=batch_id, channel_id=channel_id,
         keyword=keyword, page=page, page_size=page_size,
+        include_ineligible=include_ineligible,
     )
     items = []
     for c in candidates:
@@ -4745,6 +4746,8 @@ async def list_sms_refundable(
             "submit_time": log.submit_time.isoformat() if log.submit_time else None,
             "upstream_message_id": log.upstream_message_id,
             "category": c.reason,
+            "eligible": c.eligible,
+            "ineligible_reason": None if c.eligible else c.reason,
         })
     return {
         "success": True,

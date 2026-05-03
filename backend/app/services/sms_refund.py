@@ -91,27 +91,34 @@ async def list_refundable(
     keyword: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
+    include_ineligible: bool = False,
 ) -> Tuple[int, List[RefundCandidate]]:
-    """列出退款候选（仅返回 eligible=True 的项）"""
+    """列出退款候选。include_ineligible=True 时返回批次内所有 failed 记录（含不可退款的），
+    供管理员查看完整失败情况；默认仅返回 eligible=True 的项。"""
     page = max(1, int(page or 1))
     page_size = max(1, min(int(page_size or 50), 200))
 
-    base_where = [
-        SMSLog.status == "failed",
-        SMSLog.refunded_at.is_(None),
-        SMSLog.cost_price > 0,
-        SMSLog.upstream_message_id.is_(None),
-    ]
-    # 排除已知"已到上游"的错误码模式
-    base_where.append(
-        or_(
-            SMSLog.error_message.is_(None),
-            and_(
-                ~SMSLog.error_message.like("%SMPP Error:%"),
-                ~SMSLog.error_message.like("%SMPP DLR:%"),
-            ),
+    if include_ineligible:
+        # 宽松过滤：仅要求 status=failed，不排除已到上游的
+        base_where: list = [SMSLog.status == "failed"]
+    else:
+        base_where = [
+            SMSLog.status == "failed",
+            SMSLog.refunded_at.is_(None),
+            SMSLog.cost_price > 0,
+            SMSLog.upstream_message_id.is_(None),
+        ]
+        # 排除已知"已到上游"的错误码模式
+        base_where.append(
+            or_(
+                SMSLog.error_message.is_(None),
+                and_(
+                    ~SMSLog.error_message.like("%SMPP Error:%"),
+                    ~SMSLog.error_message.like("%SMPP DLR:%"),
+                ),
+            )
         )
-    )
+
     if account_id:
         base_where.append(SMSLog.account_id == int(account_id))
     if batch_id:
@@ -141,6 +148,8 @@ async def list_refundable(
     )).scalars().all()
 
     candidates = [classify_refund_candidate(r) for r in rows]
+    if include_ineligible:
+        return total, candidates
     # 二次过滤（基础 SQL 过滤可能有边缘漏网；以分类器结果为准）
     return total, [c for c in candidates if c.eligible]
 

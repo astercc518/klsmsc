@@ -14,6 +14,10 @@ func main() {
     // 1. Initialize Database
     InitDB()
 
+    // 1b. DLR 归属过滤（多系统共用同一上游 SMPP 账号时过滤外来 DLR）
+    //     依赖 DB 用于启动回填，必须在 InitDB 之后
+    InitDLROwnership()
+
     // 2. Initialize SMPP Manager
     InitSMPPManager()
     go func() {

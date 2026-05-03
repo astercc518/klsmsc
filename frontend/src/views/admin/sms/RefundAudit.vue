@@ -8,10 +8,10 @@
       <div class="header-actions">
         <el-button :icon="Refresh" @click="loadList">刷新</el-button>
         <el-button
-          v-if="selected.length > 0"
+          v-if="selectedEligible.length > 0"
           type="primary"
           @click="openBatchRefund"
-        >批量退款 ({{ selected.length }})</el-button>
+        >批量退款 ({{ selectedEligible.length }})</el-button>
       </div>
     </div>
 
@@ -21,6 +21,39 @@
       <el-input v-model.number="filters.account_id" placeholder="账户ID" clearable style="width: 130px" @change="loadList" />
       <el-input v-model.number="filters.batch_id" placeholder="批次ID" clearable style="width: 130px" @change="loadList" />
       <el-input v-model.number="filters.channel_id" placeholder="通道ID" clearable style="width: 130px" @change="loadList" />
+      <el-tooltip v-if="filters.batch_id" content="批次模式：显示批次内所有失败记录（含不符合退款条件的）" placement="top">
+        <el-switch
+          v-model="showAllFailed"
+          active-text="全部失败"
+          inactive-text="仅可退款"
+          @change="loadList"
+        />
+      </el-tooltip>
+    </div>
+
+    <!-- 批次内无可退款时的说明（仅"仅可退款"模式下显示） -->
+    <el-alert
+      v-if="!loading && items.length === 0 && filters.batch_id && !showAllFailed"
+      type="info"
+      :closable="false"
+      show-icon
+      style="margin-bottom: 14px"
+    >
+      <template #title>批次 #{{ filters.batch_id }} 暂无符合退款条件的记录</template>
+      <template #default>
+        退款仅适用于消息在<b>提交到上游运营商之前</b>因系统原因失败的情况（如通道未建立连接、路由无可用通道等）。<br>
+        已成功提交到上游、收到 DLR 回执后显示未送达（UNDELIV / FAILED）的消息，属于运营商侧失败，不在系统退款范围内。<br>
+        可切换上方「全部失败」开关查看批次内所有失败记录。
+      </template>
+    </el-alert>
+
+    <!-- 批次统计条（批次模式 + 全部失败时显示） -->
+    <div v-if="filters.batch_id && items.length > 0 && showAllFailed" class="batch-summary">
+      <span class="summary-item">共 <b>{{ pagination.total }}</b> 条失败记录</span>
+      <span class="summary-sep">·</span>
+      <span class="summary-item eligible"><b>{{ eligibleCount }}</b> 条可退款</span>
+      <span class="summary-sep">·</span>
+      <span class="summary-item ineligible"><b>{{ pagination.total - eligibleCount }}</b> 条运营商侧失败（不退款）</span>
     </div>
 
     <!-- 列表 -->
@@ -31,7 +64,7 @@
       class="audit-table"
       @selection-change="onSelectionChange"
     >
-      <el-table-column type="selection" width="45" />
+      <el-table-column type="selection" width="45" :selectable="isSelectable" />
       <el-table-column prop="sms_log_id" label="SMS ID" width="90" />
       <el-table-column label="账户" width="100">
         <template #default="{ row }">
@@ -57,6 +90,14 @@
           <el-tag type="danger" size="small">{{ row.status }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column v-if="showAllFailed && filters.batch_id" label="退款资格" width="110">
+        <template #default="{ row }">
+          <el-tag v-if="row.eligible !== false" type="success" size="small">可退款</el-tag>
+          <el-tooltip v-else :content="row.ineligible_reason || '已到达上游运营商'" placement="top">
+            <el-tag type="info" size="small" style="cursor:help">不可退款</el-tag>
+          </el-tooltip>
+        </template>
+      </el-table-column>
       <el-table-column label="分类" width="130">
         <template #default="{ row }">
           <el-tag :type="categoryType(row.category)" size="small">{{ row.category }}</el-tag>
@@ -74,7 +115,10 @@
       </el-table-column>
       <el-table-column label="操作" width="90" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openSingle(row)">审核</el-button>
+          <el-tooltip v-if="row.eligible === false" :content="row.ineligible_reason || '不符合退款条件'" placement="top">
+            <span><el-button link type="info" disabled size="small">不可退款</el-button></span>
+          </el-tooltip>
+          <el-button v-else link type="primary" @click="openSingle(row)">审核</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -154,12 +198,12 @@
     <el-dialog v-model="batchVisible" title="批量退款确认" width="500px" :close-on-click-modal="false">
       <div class="batch-confirm">
         <el-alert type="warning" :closable="false" style="margin-bottom: 16px">
-          <template #title>即将对 {{ selected.length }} 条记录执行退款，此操作不可撤销</template>
+          <template #title>即将对 {{ selectedEligible.length }} 条记录执行退款，此操作不可撤销</template>
         </el-alert>
         <p class="batch-ids">
           涉及 SMS ID：
-          <span v-for="id in selected.slice(0, 10)" :key="id" class="id-chip">{{ id }}</span>
-          <span v-if="selected.length > 10" class="muted">...等共 {{ selected.length }} 条</span>
+          <span v-for="id in selectedEligible.slice(0, 10)" :key="id" class="id-chip">{{ id }}</span>
+          <span v-if="selectedEligible.length > 10" class="muted">...等共 {{ selectedEligible.length }} 条</span>
         </p>
         <el-form label-width="80px" style="margin-top: 12px">
           <el-form-item label="备注">
@@ -176,7 +220,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Loading } from '@element-plus/icons-vue'
@@ -191,7 +235,17 @@ const items = ref<RefundCandidate[]>([])
 const pagination = reactive({ total: 0, page: 1, page_size: 20 })
 const filters = reactive<{ keyword?: string; account_id?: number; batch_id?: number; channel_id?: number }>({})
 
-const selected = ref<number[]>([])
+// 批次模式下：是否显示全部失败（含不可退款的）
+const showAllFailed = ref(false)
+
+// 选中行（过滤出可退款的 ID）
+const selectedRows = ref<RefundCandidate[]>([])
+const selectedEligible = computed(() =>
+  selectedRows.value.filter(r => r.eligible !== false).map(r => r.sms_log_id)
+)
+
+// 当前页中可退款的数量（用于摘要统计）
+const eligibleCount = computed(() => items.value.filter(r => r.eligible !== false).length)
 
 const singleVisible = ref(false)
 const preview = ref<RefundPreview | null>(null)
@@ -203,8 +257,12 @@ const batchVisible = ref(false)
 const batchNote = ref('')
 const batchSubmitting = ref(false)
 
+function isSelectable(row: RefundCandidate): boolean {
+  return row.eligible !== false
+}
+
 function onSelectionChange(rows: RefundCandidate[]) {
-  selected.value = rows.map(r => r.sms_log_id)
+  selectedRows.value = rows
 }
 
 async function loadList() {
@@ -214,6 +272,7 @@ async function loadList() {
       ...filters,
       page: pagination.page,
       page_size: pagination.page_size,
+      include_ineligible: !!(filters.batch_id && showAllFailed.value),
     })
     if (res.success) {
       items.value = res.items
@@ -271,10 +330,10 @@ function openBatchRefund() {
 }
 
 async function submitBatch() {
-  if (selected.value.length === 0) return
+  if (selectedEligible.value.length === 0) return
   batchSubmitting.value = true
   try {
-    const res = await executeRefundBatch(selected.value, batchNote.value || undefined)
+    const res = await executeRefundBatch(selectedEligible.value, batchNote.value || undefined)
     if (res.success) {
       ElMessage.success(`批量退款完成：成功 ${res.ok ?? 0} 条，失败 ${res.failed ?? 0} 条，总计退还 ${fmtMoney(res.total_amount)}`)
       if (res.failures && res.failures.length > 0) {
@@ -282,7 +341,7 @@ async function submitBatch() {
         ElMessage.warning(`部分退款失败：\n${failList}`)
       }
       batchVisible.value = false
-      selected.value = []
+      selectedRows.value = []
       loadList()
     } else {
       ElMessage.error(res.error || '批量退款失败')
@@ -311,7 +370,10 @@ function fmtTime(t?: string | null) {
 
 onMounted(() => {
   const batchId = route.query.batch_id
-  if (batchId) filters.batch_id = Number(batchId)
+  if (batchId) {
+    filters.batch_id = Number(batchId)
+    showAllFailed.value = true  // 批次模式默认展示所有失败记录
+  }
   loadList()
 })
 </script>
@@ -324,6 +386,22 @@ onMounted(() => {
 .header-actions { display: flex; gap: 8px; }
 
 .filter-bar { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+
+/* 批次摘要条 */
+.batch-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--el-fill-color-light);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.summary-sep { color: var(--el-text-color-placeholder); }
+.summary-item { color: var(--el-text-color-regular); }
+.summary-item.eligible b { color: var(--el-color-success); }
+.summary-item.ineligible b { color: var(--el-text-color-secondary); }
 
 .audit-table { margin-bottom: 12px; }
 .muted { color: var(--el-text-color-secondary); font-size: 12px; }

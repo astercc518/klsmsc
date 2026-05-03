@@ -189,7 +189,7 @@
                 <el-button v-if="row.status === 'paused'" link type="primary" size="small" @click="onResume(row)">继续</el-button>
                 <el-button v-if="row.status === 'paused'" link type="primary" size="small" @click="openSwitch(row)">切换通道</el-button>
                 <el-button v-if="row.status === 'paused'" link type="danger" size="small" @click="onClearQueue(row)">清空队列</el-button>
-                <el-button v-if="['completed','failed'].includes(row.status)" link type="success" size="small" @click="goRefund(row)">失败退款</el-button>
+                <el-button v-if="['completed','failed'].includes(row.status)" link type="success" size="small" @click="goRefund(row)">系统退款</el-button>
                 <el-button link size="small" @click="openDetail(row)">详情</el-button>
               </div>
             </template>

@@ -535,19 +535,31 @@
     </el-dialog>
 
     <!-- 余额日志 -->
-    <el-dialog v-model="logsVisible" :title="$t('customers.balanceLogs')" width="860px" :close-on-click-modal="false">
-      <el-table :data="logs" stripe v-loading="logsLoading">
+    <el-dialog v-model="logsVisible" :title="$t('customers.balanceLogs')" width="960px" :close-on-click-modal="false">
+      <el-table :data="logs" stripe v-loading="logsLoading" size="small" :empty-text="$t('customers.balanceLogEmpty')">
         <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="change_type" :label="$t('customers.type')" width="120" />
-        <el-table-column prop="amount" :label="$t('customers.amount')" width="140">
+        <el-table-column :label="$t('customers.changeType')" width="100">
           <template #default="{ row }">
-            <span :class="row.amount >= 0 ? 'pos' : 'neg'">{{ row.amount }}</span>
+            <el-tag :type="changeTypeTagType(row.change_type)" size="small" effect="light">
+              {{ changeTypeLabel(row.change_type) }}
+            </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="balance_before" :label="$t('customers.balanceBefore')" width="140" />
-        <el-table-column prop="balance_after" :label="$t('customers.balanceAfter')" width="140" />
-        <el-table-column prop="description" :label="$t('customers.description')" min-width="220" />
-        <el-table-column prop="created_at" :label="$t('customers.time')" width="180">
+        <el-table-column :label="$t('customers.amount')" width="120" align="right">
+          <template #default="{ row }">
+            <span :class="Number(row.amount) >= 0 ? 'pos' : 'neg'">
+              {{ formatAmount(row.amount) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="$t('customers.balanceBefore')" width="130" align="right">
+          <template #default="{ row }">{{ formatBalance(row.balance_before) }}</template>
+        </el-table-column>
+        <el-table-column :label="$t('customers.balanceAfter')" width="130" align="right">
+          <template #default="{ row }">{{ formatBalance(row.balance_after) }}</template>
+        </el-table-column>
+        <el-table-column prop="description" :label="$t('common.description')" min-width="220" show-overflow-tooltip />
+        <el-table-column :label="$t('customers.time')" width="170">
           <template #default="{ row }">
             {{ row.created_at ? new Date(row.created_at).toLocaleString() : '-' }}
           </template>
@@ -1472,6 +1484,48 @@ const impersonateAccount = async (row: AdminAccount) => {
 const logsVisible = ref(false)
 const logsLoading = ref(false)
 const logs = ref<any[]>([])
+
+const CHANGE_TYPE_TAG: Record<string, '' | 'success' | 'warning' | 'info' | 'danger'> = {
+  charge: 'danger',
+  withdraw: 'warning',
+  deposit: 'success',
+  recharge: 'success',
+  refund: '',
+  refund_recharge: '',
+  adjustment: 'info',
+}
+
+const changeTypeTagType = (type: string): '' | 'success' | 'warning' | 'info' | 'danger' => {
+  return CHANGE_TYPE_TAG[type] ?? 'info'
+}
+
+const changeTypeLabel = (type: string): string => {
+  if (!type) return '-'
+  const map: Record<string, string> = {
+    charge: 'customers.changeTypeCharge',
+    deposit: 'customers.changeTypeDeposit',
+    withdraw: 'customers.changeTypeWithdraw',
+    adjustment: 'customers.changeTypeAdjustment',
+    refund: 'customers.changeTypeRefund',
+    recharge: 'customers.changeTypeRecharge',
+    refund_recharge: 'customers.changeTypeRefundRecharge',
+  }
+  const key = map[type]
+  return key ? t(key) : type
+}
+
+const formatAmount = (v: any): string => {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '-'
+  const sign = n > 0 ? '+' : ''
+  return sign + n.toFixed(4)
+}
+
+const formatBalance = (v: any): string => {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '-'
+  return n.toFixed(4)
+}
 
 const openLogs = async (row: AdminAccount) => {
   current.value = row

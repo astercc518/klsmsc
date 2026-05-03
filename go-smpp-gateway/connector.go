@@ -445,6 +445,8 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 						log.Printf("[SMPP-DEBUG] Found matching sequence for msg: %s (internal log ID: %d)", seqData.messageID, seqData.logID)
 
 						if pd.CommandStatus == data.ESME_ROK {
+							// 标记为本系统所有：后续 DeliverSM 将以此作为归属判断依据，外来 DLR 直接丢弃。
+							MarkOwned(cfg.ID, pd.MessageID)
 							if err := publishSmsSubmitResult(seqData.logID, seqData.messageID, pd.MessageID, "sent", ""); err != nil {
 								log.Printf("[SMPP-ERROR] Failed to publish submit result for %s: %v", seqData.messageID, err)
 							} else {
@@ -686,6 +688,13 @@ func (m *SMPPManager) handleDeliverSM(deliver *pdu.DeliverSM, cfg ChannelConfig)
 	if len(idMatch) > 1 && len(statMatch) > 1 {
 		upstreamID := idMatch[1]
 		stat := statMatch[1]
+
+		// 归属过滤：当多套系统共用同一上游 SMPP 账号时，过滤掉不属于本系统的外来 DLR。
+		// 未启用时 IsOwned 永远返回 true，行为与之前一致。
+		if owns, _ := IsOwned(cfg.ID, upstreamID); !owns {
+			log.Printf("[SMPP-DEBUG] DLR dropped (not owned by this system): channel=%s upstream=%s stat=%s", cfg.ChannelCode, upstreamID, stat)
+			return
+		}
 
 		// Map SMPP stat to system status
 		finalStatus := "sent"
