@@ -28,18 +28,22 @@ async def create_sub_account(
 ):
     """
     创建子账户
-    
-    - **username**: 用户名（唯一）
+
+    - **username**: 用户名（在本租户内唯一，不同租户可同名）
     - **password**: 密码
     - **role**: 角色（viewer/operator/manager）
     """
     try:
-        # 检查用户名是否存在
+        # 检查用户名在本租户内是否已存在
         existing = await db.execute(
-            select(SubAccount).where(SubAccount.username == data.username)
+            select(SubAccount).where(
+                SubAccount.parent_account_id == current_account.id,
+                SubAccount.username == data.username,
+                SubAccount.is_deleted == False,
+            )
         )
         if existing.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail="用户名已存在")
+            raise HTTPException(status_code=400, detail="用户名在本账户下已存在")
         
         # 创建子账户
         sub_account = SubAccount(

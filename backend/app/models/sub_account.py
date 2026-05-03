@@ -1,7 +1,7 @@
 """
 子账户模型（P2-2）
 """
-from sqlalchemy import Column, Integer, String, Enum, TIMESTAMP, Boolean, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Enum, TIMESTAMP, Boolean, ForeignKey, JSON, UniqueConstraint
 from sqlalchemy.sql import func
 from app.database import Base
 import enum
@@ -29,7 +29,8 @@ class SubAccount(Base):
     parent_account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, index=True, comment="父账户ID")
     
     # 基本信息
-    username = Column(String(100), unique=True, nullable=False, comment="用户名")
+    # username 在租户内唯一（与 parent_account_id 联合 unique）
+    username = Column(String(100), nullable=False, index=True, comment="用户名（租户内唯一）")
     email = Column(String(255), comment="邮箱")
     password_hash = Column(String(255), nullable=False, comment="密码哈希")
     
@@ -68,5 +69,9 @@ class SubAccount(Base):
     updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
     is_deleted = Column(Boolean, default=False, nullable=False, comment="软删除标记")
     
+    __table_args__ = (
+        UniqueConstraint('parent_account_id', 'username', name='uq_sub_accounts_parent_username'),
+    )
+
     def __repr__(self):
         return f"<SubAccount(id={self.id}, username='{self.username}', role='{self.role}')>"
