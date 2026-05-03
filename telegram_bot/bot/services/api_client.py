@@ -1,31 +1,64 @@
 """
 后端API客户端
+
+调用 backend /api/v1/internal/bot/* 的内部凭证：
+- X-Internal-Token：旧路径凭证（保留以便平滑切换）
+- X-Bot-Ts / X-Bot-Sig：新签名头（HMAC-SHA256，附时间戳防重放）
+  签名公式：HMAC(SECRET, f"{ts}\\n{METHOD}\\n{PATH}\\n" + raw_body_bytes)
+后端默认两者任一通过即可（BOT_REQUIRE_HMAC=true 时强制只接受 HMAC）。
 """
+import hashlib
+import hmac
+import json as _json
 import os
-import httpx
+import time
 from typing import Dict, Optional
+
+import httpx
 from loguru import logger
+
 from bot.config import settings
 
 
 class APIClient:
     """API客户端"""
-    
+
     def __init__(self):
         self.base_url = settings.API_BASE_URL
         self.internal_secret = settings.TELEGRAM_STAFF_API_SECRET
         self.timeout = 30.0
-    
+
+    def _sign(self, method: str, path: str, body: bytes) -> Dict[str, str]:
+        """生成 HMAC 签名头"""
+        ts = str(int(time.time()))
+        secret = (self.internal_secret or "").encode()
+        payload = f"{ts}\n{method.upper()}\n{path}\n".encode() + (body or b"")
+        sig = hmac.new(secret, payload, hashlib.sha256).hexdigest()
+        return {"X-Bot-Ts": ts, "X-Bot-Sig": sig}
+
+    def _internal_headers(self, method: str, path: str, body: bytes) -> Dict[str, str]:
+        """X-Internal-Token + HMAC 双重凭证"""
+        h = {"X-Internal-Token": self.internal_secret or ""}
+        h.update(self._sign(method, path, body))
+        return h
+
     def _get_internal_headers(self) -> Dict[str, str]:
-        """获取内部 API 认证头"""
+        """
+        向后兼容入口（无签名，仅 X-Internal-Token）。
+        历史代码用 client.get(url, headers=self._get_internal_headers()) 直接拼 URL，
+        保留它使后端的双轨鉴权可以接受 token-only 路径；
+        新代码请走 _get/_post（自动签名）。
+        """
         return {"X-Internal-Token": self.internal_secret or ""}
 
     async def _get(self, endpoint: str, params: dict = None) -> Dict:
         """内部 GET 请求封装"""
-        url = f"{self.base_url}/api/v1/internal/bot{endpoint}"
+        path = f"/api/v1/internal/bot{endpoint}"
+        url = f"{self.base_url}{path}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url, params=params, headers=self._get_internal_headers())
+                headers = self._internal_headers("GET", path, b"")
+                response = await client.get(url, params=params, headers=headers)
                 return response.json()
         except Exception as e:
             logger.error(f"API GET {endpoint} failed: {e}")
@@ -33,10 +66,15 @@ class APIClient:
 
     async def _post(self, endpoint: str, json: dict = None) -> Dict:
         """内部 POST 请求封装"""
-        url = f"{self.base_url}/api/v1/internal/bot{endpoint}"
+        path = f"/api/v1/internal/bot{endpoint}"
+        url = f"{self.base_url}{path}"
         try:
+            # 用 content=raw_body 确保签名所基于的字节与 httpx 实际发送一致
+            body_bytes = _json.dumps(json or {}, ensure_ascii=False, separators=(",", ":")).encode()
+            headers = self._internal_headers("POST", path, body_bytes)
+            headers["Content-Type"] = "application/json"
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(url, json=json, headers=self._get_internal_headers())
+                response = await client.post(url, content=body_bytes, headers=headers)
                 return response.json()
         except Exception as e:
             logger.error(f"API POST {endpoint} failed: {e}")

@@ -29,14 +29,64 @@ import uuid
 logger = get_logger(__name__)
 router = APIRouter()
 
-async def verify_internal_secret(x_internal_token: str = Header(..., alias="X-Internal-Token")):
-    """验证内部调用秘钥"""
-    if not app_settings.TELEGRAM_STAFF_API_SECRET:
-        # 如果未配置秘钥，则拒绝所有外部调用（仅允许本地通过主测试？不，通常直接报错）
+import hashlib as _hashlib
+import hmac as _hmac
+import os as _os
+import time as _time
+
+from fastapi import Request as _FRequest
+
+
+async def verify_internal_secret(
+    request: _FRequest,
+    x_internal_token: Optional[str] = Header(None, alias="X-Internal-Token"),
+    x_bot_ts: Optional[str] = Header(None, alias="X-Bot-Ts"),
+    x_bot_sig: Optional[str] = Header(None, alias="X-Bot-Sig"),
+):
+    """
+    内部调用鉴权。两条路径任一通过即放行（默认）：
+      A) X-Internal-Token 与配置匹配（旧路径，未签名）
+      B) X-Bot-Ts + X-Bot-Sig HMAC-SHA256 + 时间窗 ±60s 防重放（新路径）
+
+    设置环境变量 BOT_REQUIRE_HMAC=true 时强制要求路径 B（彻底关闭纯 token 路径）。
+    """
+    secret = app_settings.TELEGRAM_STAFF_API_SECRET
+    if not secret:
         raise HTTPException(status_code=500, detail="Internal secret not configured")
-    if x_internal_token != app_settings.TELEGRAM_STAFF_API_SECRET:
-        raise HTTPException(status_code=403, detail="Invalid internal token")
-    return x_internal_token
+
+    require_hmac = (_os.getenv("BOT_REQUIRE_HMAC", "false").lower() == "true")
+
+    # 路径 B：HMAC + timestamp
+    hmac_ok = False
+    hmac_reason = ""
+    if x_bot_ts and x_bot_sig:
+        try:
+            ts_int = int(x_bot_ts)
+            now = int(_time.time())
+            if abs(now - ts_int) > 60:
+                hmac_reason = f"timestamp out of ±60s window (skew={now-ts_int}s)"
+            else:
+                body = await request.body()
+                payload = f"{x_bot_ts}\n{request.method.upper()}\n{request.url.path}\n".encode() + body
+                expected = _hmac.new(secret.encode(), payload, _hashlib.sha256).hexdigest()
+                if _hmac.compare_digest(expected, x_bot_sig):
+                    hmac_ok = True
+                else:
+                    hmac_reason = "signature mismatch"
+        except (ValueError, TypeError) as e:
+            hmac_reason = f"invalid header: {e}"
+
+    if hmac_ok:
+        return "hmac"
+
+    # 路径 A：X-Internal-Token
+    if not require_hmac:
+        if x_internal_token and _hmac.compare_digest(x_internal_token, secret):
+            return "token"
+
+    if hmac_reason:
+        logger.warning(f"verify_internal_secret rejected: {hmac_reason} path={request.url.path}")
+    raise HTTPException(status_code=403, detail="Invalid internal credentials")
 
 class BotMessageLogRequest(BaseModel):
     tg_user_id: int
