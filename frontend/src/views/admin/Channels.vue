@@ -80,8 +80,9 @@
     
     <!-- 通道列表 -->
     <div class="table-card">
-      <el-table :data="filteredChannels" v-loading="loading" class="data-table">
-        <el-table-column prop="channel_code" :label="$t('channels.channelCode')" width="160">
+      <el-table :data="filteredChannels" v-loading="loading" class="data-table" :default-sort="{ prop: 'id', order: 'ascending' }">
+        <el-table-column prop="id" label="ID" width="80" sortable align="center" />
+        <el-table-column prop="channel_code" :label="$t('channels.channelCode')" width="160" sortable>
           <template #default="{ row }">
             <div class="channel-code">
               <span class="code-text">{{ row.channel_code }}</span>
@@ -104,19 +105,19 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="status" :label="$t('channels.channelStatus')" width="100" align="center">
+        <el-table-column prop="status" :label="$t('channels.channelStatus')" width="100" align="center" sortable>
           <template #default="{ row }">
             <el-tag :type="statusTagType(row.status)" size="small">
               {{ getStatusLabel(row.status) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="cost_rate" :label="$t('channels.costPrice')" width="100" align="right">
+        <el-table-column prop="cost_rate" :label="$t('channels.costPrice')" width="100" align="right" sortable>
           <template #default="{ row }">
             <span class="cost-text">${{ (row.cost_rate || 0).toFixed(4) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="priority" :label="$t('channels.priority')" width="80" align="center">
+        <el-table-column prop="priority" :label="$t('channels.priority')" width="80" align="center" sortable>
           <template #default="{ row }">
             <el-tag type="info" size="small" effect="plain">{{ row.priority }}</el-tag>
           </template>
@@ -521,7 +522,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search, Connection, CircleCheck, Promotion, Link } from '@element-plus/icons-vue'
@@ -592,12 +594,39 @@ const showCreateDialog = ref(false)
 const editingChannel = ref<any>(null)
 
 // 筛选
+const route = useRoute()
+const router = useRouter()
+
 const filters = reactive({ keyword: '', protocol: '', status: '' })
+
+// URL ↔ filters 双向同步：
+// - 进入页面时按 URL query 初始化（onMounted 里调）
+// - filters 改变时 push 新 URL，方便分享链接 / F5 不丢筛选
+function syncFiltersToUrl() {
+  const q: Record<string, string> = {}
+  if (filters.keyword) q.search = filters.keyword
+  if (filters.protocol) q.protocol = filters.protocol
+  if (filters.status) q.status = filters.status
+  router.replace({ query: q })
+}
+
+function syncUrlToFilters() {
+  const q = route.query
+  filters.keyword = (q.search as string) || ''
+  filters.protocol = (q.protocol as string) || ''
+  filters.status = (q.status as string) || ''
+}
+
 const resetFilters = () => {
   filters.keyword = ''
   filters.protocol = ''
   filters.status = ''
+  syncFiltersToUrl()
 }
+
+watch(() => [filters.keyword, filters.protocol, filters.status], () => {
+  syncFiltersToUrl()
+})
 
 // 统计
 const stats = computed(() => {
@@ -610,10 +639,18 @@ const stats = computed(() => {
 })
 
 // 过滤后的通道
+// 关键词命中范围：channel_code / channel_name / id（数字字符串子串）
 const filteredChannels = computed(() => {
+  const kw = filters.keyword.trim().toLowerCase()
   return channels.value.filter(c => {
-    if (filters.keyword && !c.channel_code.toLowerCase().includes(filters.keyword.toLowerCase()) 
-        && !c.channel_name.toLowerCase().includes(filters.keyword.toLowerCase())) return false
+    if (kw) {
+      const hit =
+        c.channel_code.toLowerCase().includes(kw) ||
+        c.channel_name.toLowerCase().includes(kw) ||
+        String(c.id) === kw ||                          // 精确 ID 匹配（如 "79"）
+        (kw.length >= 2 && String(c.id).includes(kw))   // 模糊 ID（≥2 位避免单字误命中）
+      if (!hit) return false
+    }
     if (filters.protocol && c.protocol !== filters.protocol) return false
     if (filters.status && c.status !== filters.status) return false
     return true
@@ -985,6 +1022,7 @@ const removeSid = async (sid: any) => {
 }
 
 onMounted(() => {
+  syncUrlToFilters()
   loadChannels()
 })
 </script>
