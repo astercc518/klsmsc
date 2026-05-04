@@ -156,6 +156,10 @@ services:
       SMPP_GATEWAY_PROBE_URL: ${SMPP_GATEWAY_PROBE_URL:-http://smpp-gateway:8090}
       SMPP_PROBE_TOKEN: ${SMPP_PROBE_TOKEN:-}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      # 工单附件存储：默认值是 path 拼接 bug 的产物（/data/tickets），显式指定容器内路径
+      TICKET_UPLOAD_DIR: /app/data/tickets
+      # 批次 CSV 上传：复用 import_uploads 命名卷
+      BATCH_UPLOAD_DIR: /tmp/smsc_imports
     ports:
       - "127.0.0.1:8000:8000"   # API：仅本机；前端 nginx 经 docker network 内部访问
     volumes:
@@ -164,6 +168,7 @@ services:
       - ./.cursor:/var/smsc/.cursor
       - ./data:/app/data:ro
       - ./data/knowledge:/app/data/knowledge
+      - ./data/tickets:/app/data/tickets
       - ./logs:/app/logs
       - import_uploads:/tmp/smsc_imports
       # 私库异步上传：API 写临时文件与 Worker 读文件必须同卷，否则跨容器路径不可见

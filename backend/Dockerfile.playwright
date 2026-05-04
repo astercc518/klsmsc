@@ -17,4 +17,11 @@ RUN pip install --no-cache-dir --break-system-packages "playwright==1.52.0" play
 
 COPY . .
 
+# 创建非 root 用户（uid 1000），与 Dockerfile 一致
+# pwuser 通常是 1000，但显式重建避免环境差异
+RUN id appuser 2>/dev/null || useradd --uid 1000 --create-home --shell /bin/bash appuser; \
+    chown -R 1000:1000 /app
+
+USER 1000
+
 CMD ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--pool=threads", "--concurrency=4", "-Q", "web_automation"]

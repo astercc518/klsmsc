@@ -147,7 +147,10 @@ def _mask_phone_for_export(phone: Optional[str]) -> str:
     return digits[0] + "**" + digits[-1]
 
 # 上传目录配置
-UPLOAD_DIR = "/var/smsc/backend/uploads/batches"
+# 旧值 "/var/smsc/backend/uploads/batches" 是宿主机路径误用为容器内路径，
+# 容器内会建到 /var/smsc/...（不持久且非 root 无写权）。改为合法容器路径，
+# 默认走 import_uploads 命名卷（与其它批量上传共卷，跨重启持久）。
+UPLOAD_DIR = os.environ.get("BATCH_UPLOAD_DIR", "/tmp/smsc_imports")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
