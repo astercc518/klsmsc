@@ -16,7 +16,7 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
       TZ: Asia/Shanghai
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"   # MySQL：仅本机访问，外部用 SSH 隧道
     volumes:
       - mysql_data:/var/lib/mysql
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
@@ -39,8 +39,8 @@ services:
       - ./proxysql.cnf:/etc/proxysql.cnf:ro
       - proxysql_data:/var/lib/proxysql
     ports:
-      - "6033:6033"
-      - "6032:6032" # 管理端口
+      - "127.0.0.1:6033:6033"   # ProxySQL data：仅本机
+      - "127.0.0.1:6032:6032"   # ProxySQL admin：仅本机（默认 admin/admin 高危！）
     depends_on:
       mysql:
         condition: service_healthy
@@ -62,7 +62,7 @@ services:
     container_name: smsc-redis
     command: redis-server --appendonly yes
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"   # Redis：仅本机（无密码！）
     volumes:
       - redis_data:/data
     healthcheck:
@@ -83,9 +83,9 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-smsc_mq}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
     ports:
-      - "5672:5672"   # AMQP端口
-      - "15672:15672" # 管理界面
-      - "15692:15692" # Prometheus 插件指标（供 Prometheus 抓取）
+      - "127.0.0.1:5672:5672"     # AMQP：仅本机
+      - "127.0.0.1:15672:15672"   # 管理界面：仅本机
+      - "127.0.0.1:15692:15692"   # Prometheus 抓取：仅本机
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
       # 启用 rabbitmq_prometheus，与 prometheus/prometheus.yml 中 rabbitmq job 一致
@@ -152,7 +152,7 @@ services:
       SMPP_PROBE_TOKEN: ${SMPP_PROBE_TOKEN:-}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"   # API：仅本机；前端 nginx 经 docker network 内部访问
     volumes:
       - ./backend:/app
       # customer.py 等写入 /var/smsc/.cursor/，挂载后日志落在工作区而非仅容器内
