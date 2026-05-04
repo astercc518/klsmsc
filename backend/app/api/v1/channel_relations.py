@@ -9,6 +9,7 @@ from datetime import datetime
 
 from app.database import get_db
 from app.modules.sms.channel_relations import ChannelCountry, ChannelCountrySenderId
+from app.modules.sms.routing_rule import RoutingRule
 from app.modules.sms.channel import Channel
 from app.modules.common.account import Account
 from app.modules.common.admin_user import AdminUser
@@ -53,6 +54,28 @@ class ChannelCountrySenderIdUpdate(BaseModel):
 
 # ============ 通道-国家关系管理 ============
 
+def _routing_status_filter(query, status: Optional[str]):
+    """前端用 'active'/'inactive'，DB 是 is_active boolean"""
+    if status == "active":
+        return query.where(RoutingRule.is_active == True)
+    if status == "inactive":
+        return query.where(RoutingRule.is_active == False)
+    return query
+
+
+def _routing_to_country_dict(r: RoutingRule) -> dict:
+    """RoutingRule → ChannelCountry 形态（保持前端向后兼容）"""
+    return {
+        "id": r.id,
+        "channel_id": r.channel_id,
+        "country_code": r.country_code,
+        "country_name": None,  # routing_rules 不存名字；前端可自行查映射表
+        "status": "active" if r.is_active else "inactive",
+        "priority": r.priority,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    }
+
+
 @router.get("/channels/{channel_id}/countries")
 async def list_channel_countries(
     channel_id: int,
@@ -60,28 +83,18 @@ async def list_channel_countries(
     db: AsyncSession = Depends(get_db),
     admin = Depends(get_current_admin)
 ):
-    """获取通道支持的国家列表"""
-    query = select(ChannelCountry).where(ChannelCountry.channel_id == channel_id)
-    
-    if status:
-        query = query.where(ChannelCountry.status == status)
-    
-    query = query.order_by(ChannelCountry.priority.desc(), ChannelCountry.country_code)
+    """获取通道支持的国家列表（实际从 routing_rules 读取，单一权威数据源）"""
+    query = select(RoutingRule).where(RoutingRule.channel_id == channel_id)
+    query = _routing_status_filter(query, status)
+    query = query.order_by(RoutingRule.priority.desc(), RoutingRule.country_code)
+
     result = await db.execute(query)
-    countries = result.scalars().all()
-    
+    rules = result.scalars().all()
+
     return {
         "success": True,
-        "items": [{
-            "id": c.id,
-            "channel_id": c.channel_id,
-            "country_code": c.country_code,
-            "country_name": c.country_name,
-            "status": c.status,
-            "priority": c.priority,
-            "created_at": c.created_at.isoformat() if c.created_at else None
-        } for c in countries],
-        "total": len(countries)
+        "items": [_routing_to_country_dict(r) for r in rules],
+        "total": len(rules),
     }
 
 
@@ -92,9 +105,8 @@ async def add_channel_country(
     db: AsyncSession = Depends(get_db),
     auth = Depends(audited("channel", "add_country")),
 ):
-    """为通道添加支持的国家"""
+    """为通道添加支持的国家（写入 routing_rules，调度真正生效）"""
     admin, audit = auth
-    # 验证通道存在
     channel_result = await db.execute(
         select(Channel).where(Channel.id == channel_id)
     )
@@ -102,33 +114,31 @@ async def add_channel_country(
     if not channel:
         raise HTTPException(status_code=404, detail="通道不存在")
 
-    # 检查是否已存在
     existing = await db.execute(
-        select(ChannelCountry).where(
-            ChannelCountry.channel_id == channel_id,
-            ChannelCountry.country_code == data.country_code
+        select(RoutingRule).where(
+            RoutingRule.channel_id == channel_id,
+            RoutingRule.country_code == data.country_code,
         )
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="该国家已关联到此通道")
 
-    country = ChannelCountry(
+    rule = RoutingRule(
         channel_id=channel_id,
         country_code=data.country_code,
-        country_name=data.country_name,
-        status=data.status,
-        priority=data.priority
+        priority=data.priority or 0,
+        is_active=(data.status != "inactive"),
     )
-    db.add(country)
+    db.add(rule)
     await db.commit()
-    await db.refresh(country)
+    await db.refresh(rule)
 
-    await audit(target_id=channel_id, target_type="channel_country",
+    await audit(target_id=channel_id, target_type="routing_rule",
                 title=f"通道{channel.channel_code}添加国家 {data.country_code}",
-                detail={"country_code": data.country_code, "priority": data.priority,
-                        "status": data.status})
+                detail={"country_code": data.country_code, "priority": rule.priority,
+                        "is_active": rule.is_active})
     await db.commit()
-    return {"success": True, "message": "添加成功", "id": country.id}
+    return {"success": True, "message": "添加成功", "id": rule.id}
 
 
 @router.put("/channels/{channel_id}/countries/{country_id}")
@@ -139,26 +149,32 @@ async def update_channel_country(
     db: AsyncSession = Depends(get_db),
     auth = Depends(audited("channel", "update_country")),
 ):
-    """更新通道-国家关系"""
+    """更新通道-国家关系（routing_rules）"""
     admin, audit = auth
     result = await db.execute(
-        select(ChannelCountry).where(
-            ChannelCountry.id == country_id,
-            ChannelCountry.channel_id == channel_id
+        select(RoutingRule).where(
+            RoutingRule.id == country_id,
+            RoutingRule.channel_id == channel_id,
         )
     )
-    country = result.scalar_one_or_none()
-    if not country:
+    rule = result.scalar_one_or_none()
+    if not rule:
         raise HTTPException(status_code=404, detail="关系不存在")
 
     update_data = data.dict(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(country, key, value)
+    # status (active/inactive) → is_active boolean 翻译
+    if "status" in update_data:
+        rule.is_active = (update_data.pop("status") != "inactive")
+    if "priority" in update_data:
+        rule.priority = update_data.pop("priority")
+    if "country_code" in update_data:
+        rule.country_code = update_data.pop("country_code")
+    # country_name 字段忽略（routing_rules 不存）
 
     await db.commit()
-    await audit(target_id=country_id, target_type="channel_country",
-                title=f"更新通道国家关系 channel={channel_id} country={country.country_code}",
-                detail={"changed_fields": list(update_data.keys())})
+    await audit(target_id=country_id, target_type="routing_rule",
+                title=f"更新通道国家关系 channel={channel_id} country={rule.country_code}",
+                detail={"priority": rule.priority, "is_active": rule.is_active})
     await db.commit()
     return {"success": True, "message": "更新成功"}
 
@@ -170,23 +186,23 @@ async def remove_channel_country(
     db: AsyncSession = Depends(get_db),
     auth = Depends(audited("channel", "delete_country")),
 ):
-    """移除通道-国家关系"""
+    """移除通道-国家关系（routing_rules）"""
     admin, audit = auth
     result = await db.execute(
-        select(ChannelCountry).where(
-            ChannelCountry.id == country_id,
-            ChannelCountry.channel_id == channel_id
+        select(RoutingRule).where(
+            RoutingRule.id == country_id,
+            RoutingRule.channel_id == channel_id,
         )
     )
-    country = result.scalar_one_or_none()
-    if not country:
+    rule = result.scalar_one_or_none()
+    if not rule:
         raise HTTPException(status_code=404, detail="关系不存在")
 
-    snap = {"channel_id": channel_id, "country_code": country.country_code,
-            "priority": country.priority}
-    await db.delete(country)
+    snap = {"channel_id": channel_id, "country_code": rule.country_code,
+            "priority": rule.priority}
+    await db.delete(rule)
     await db.commit()
-    await audit(target_id=country_id, target_type="channel_country",
+    await audit(target_id=country_id, target_type="routing_rule",
                 title=f"删除通道国家关系 channel={channel_id} country={snap['country_code']}",
                 detail=snap)
     await db.commit()
