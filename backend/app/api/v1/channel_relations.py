@@ -13,6 +13,7 @@ from app.modules.sms.channel import Channel
 from app.modules.common.account import Account
 from app.modules.common.admin_user import AdminUser
 from app.api.v1.admin import get_current_admin
+from app.core.audit_dep import audited
 
 router = APIRouter(prefix="/admin/channel-relations", tags=["通道关系管理"])
 
@@ -89,9 +90,10 @@ async def add_channel_country(
     channel_id: int,
     data: ChannelCountryCreate,
     db: AsyncSession = Depends(get_db),
-    admin = Depends(get_current_admin)
+    auth = Depends(audited("channel", "add_country")),
 ):
     """为通道添加支持的国家"""
+    admin, audit = auth
     # 验证通道存在
     channel_result = await db.execute(
         select(Channel).where(Channel.id == channel_id)
@@ -99,7 +101,7 @@ async def add_channel_country(
     channel = channel_result.scalar_one_or_none()
     if not channel:
         raise HTTPException(status_code=404, detail="通道不存在")
-    
+
     # 检查是否已存在
     existing = await db.execute(
         select(ChannelCountry).where(
@@ -109,7 +111,7 @@ async def add_channel_country(
     )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="该国家已关联到此通道")
-    
+
     country = ChannelCountry(
         channel_id=channel_id,
         country_code=data.country_code,
@@ -120,12 +122,13 @@ async def add_channel_country(
     db.add(country)
     await db.commit()
     await db.refresh(country)
-    
-    return {
-        "success": True,
-        "message": "添加成功",
-        "id": country.id
-    }
+
+    await audit(target_id=channel_id, target_type="channel_country",
+                title=f"通道{channel.channel_code}添加国家 {data.country_code}",
+                detail={"country_code": data.country_code, "priority": data.priority,
+                        "status": data.status})
+    await db.commit()
+    return {"success": True, "message": "添加成功", "id": country.id}
 
 
 @router.put("/channels/{channel_id}/countries/{country_id}")
@@ -134,9 +137,10 @@ async def update_channel_country(
     country_id: int,
     data: ChannelCountryUpdate,
     db: AsyncSession = Depends(get_db),
-    admin = Depends(get_current_admin)
+    auth = Depends(audited("channel", "update_country")),
 ):
     """更新通道-国家关系"""
+    admin, audit = auth
     result = await db.execute(
         select(ChannelCountry).where(
             ChannelCountry.id == country_id,
@@ -146,11 +150,15 @@ async def update_channel_country(
     country = result.scalar_one_or_none()
     if not country:
         raise HTTPException(status_code=404, detail="关系不存在")
-    
+
     update_data = data.dict(exclude_unset=True)
     for key, value in update_data.items():
         setattr(country, key, value)
-    
+
+    await db.commit()
+    await audit(target_id=country_id, target_type="channel_country",
+                title=f"更新通道国家关系 channel={channel_id} country={country.country_code}",
+                detail={"changed_fields": list(update_data.keys())})
     await db.commit()
     return {"success": True, "message": "更新成功"}
 
@@ -160,9 +168,10 @@ async def remove_channel_country(
     channel_id: int,
     country_id: int,
     db: AsyncSession = Depends(get_db),
-    admin = Depends(get_current_admin)
+    auth = Depends(audited("channel", "delete_country")),
 ):
     """移除通道-国家关系"""
+    admin, audit = auth
     result = await db.execute(
         select(ChannelCountry).where(
             ChannelCountry.id == country_id,
@@ -172,8 +181,14 @@ async def remove_channel_country(
     country = result.scalar_one_or_none()
     if not country:
         raise HTTPException(status_code=404, detail="关系不存在")
-    
+
+    snap = {"channel_id": channel_id, "country_code": country.country_code,
+            "priority": country.priority}
     await db.delete(country)
+    await db.commit()
+    await audit(target_id=country_id, target_type="channel_country",
+                title=f"删除通道国家关系 channel={channel_id} country={snap['country_code']}",
+                detail=snap)
     await db.commit()
     return {"success": True, "message": "删除成功"}
 
@@ -395,9 +410,10 @@ async def bind_account_sales(
     account_id: int,
     sales_id: int,
     db: AsyncSession = Depends(get_db),
-    admin = Depends(get_current_admin)
+    auth = Depends(audited("account", "bind_sales")),
 ):
     """绑定账户与销售"""
+    admin, audit = auth
     # 验证账户存在
     account_result = await db.execute(
         select(Account).where(Account.id == account_id)
@@ -405,8 +421,7 @@ async def bind_account_sales(
     account = account_result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="账户不存在")
-    
-    # 验证销售存在且角色为sales
+
     sales_result = await db.execute(
         select(AdminUser).where(
             AdminUser.id == sales_id,
@@ -417,10 +432,15 @@ async def bind_account_sales(
     sales = sales_result.scalar_one_or_none()
     if not sales:
         raise HTTPException(status_code=404, detail="销售不存在或状态异常")
-    
+
+    old_sales_id = account.sales_id
     account.sales_id = sales_id
     await db.commit()
-    
+    await audit(target_id=account_id, target_type="account",
+                title=f"绑定销售 account={account.account_name} → {sales.username}",
+                detail={"old_sales_id": old_sales_id, "new_sales_id": sales_id,
+                        "sales_username": sales.username})
+    await db.commit()
     return {
         "success": True,
         "message": "绑定成功",
@@ -436,17 +456,22 @@ async def bind_account_sales(
 async def unbind_account_sales(
     account_id: int,
     db: AsyncSession = Depends(get_db),
-    admin = Depends(get_current_admin)
+    auth = Depends(audited("account", "unbind_sales")),
 ):
     """解绑账户与销售"""
+    admin, audit = auth
     result = await db.execute(
         select(Account).where(Account.id == account_id)
     )
     account = result.scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="账户不存在")
-    
+
+    old_sales_id = account.sales_id
     account.sales_id = None
     await db.commit()
-    
+    await audit(target_id=account_id, target_type="account",
+                title=f"解绑销售 account={account.account_name}",
+                detail={"old_sales_id": old_sales_id})
+    await db.commit()
     return {"success": True, "message": "解绑成功"}

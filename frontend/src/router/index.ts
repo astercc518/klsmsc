@@ -16,7 +16,8 @@ async function ensureAdminRoleVerified(): Promise<string | null> {
   if (cached) return cached
   try {
     const profile = await request.get<any>('/admin/profile')
-    const role = (profile && (profile.role || profile.data?.role)) || ''
+    // 后端返回 {success, profile: {role, ...}}；axios 拦截器已 unwrap 到 .data
+    const role = (profile && (profile.profile?.role || profile.role || profile.data?.role)) || ''
     if (role) {
       sessionStorage.setItem('admin_role_verified', role)
       // 把可信角色同步回 localStorage（被读的多处一起更新）

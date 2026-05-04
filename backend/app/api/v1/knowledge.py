@@ -20,6 +20,7 @@ from app.database import get_db
 from app.api.v1.admin import get_current_admin
 from app.modules.common.admin_user import AdminUser
 from app.modules.common.knowledge import KnowledgeArticle, KnowledgeAttachment
+from app.core.audit_dep import audited
 
 router = APIRouter(prefix="/admin/knowledge", tags=["知识库"])
 
@@ -213,9 +214,10 @@ async def create_article(
     is_pinned: bool = Form(False),
     files: List[UploadFile] = File(default=[]),
     db: AsyncSession = Depends(get_db),
-    admin: AdminUser = Depends(get_current_admin),
+    auth = Depends(audited("knowledge", "create")),
 ):
     """创建知识文章（可上传附件）"""
+    admin, audit = auth
     if admin.role not in ("super_admin", "admin", "tech"):
         raise HTTPException(status_code=403, detail="无权限")
 
@@ -257,6 +259,11 @@ async def create_article(
         db.add(att)
 
     await db.commit()
+    await audit(target_id=article.id, target_type="knowledge",
+                title=f"创建知识文章: {title[:60]}",
+                detail={"category": category, "status": article.status,
+                        "attachments": len(files or [])})
+    await db.commit()
     return {"success": True, "id": article.id, "message": "创建成功"}
 
 
@@ -265,9 +272,10 @@ async def update_article(
     article_id: int,
     data: KnowledgeUpdate,
     db: AsyncSession = Depends(get_db),
-    admin: AdminUser = Depends(get_current_admin),
+    auth = Depends(audited("knowledge", "update")),
 ):
     """更新知识文章"""
+    admin, audit = auth
     if admin.role not in ("super_admin", "admin", "tech"):
         raise HTTPException(status_code=403, detail="无权限")
 
@@ -290,6 +298,10 @@ async def update_article(
         article.is_pinned = 1 if data.is_pinned else 0
 
     await db.commit()
+    await audit(target_id=article_id, target_type="knowledge",
+                title=f"更新知识文章 {article.title[:60]}",
+                detail={"changed_fields": [k for k, v in data.dict().items() if v is not None]})
+    await db.commit()
     return {"success": True, "message": "更新成功"}
 
 
@@ -298,9 +310,10 @@ async def add_attachments(
     article_id: int,
     files: List[UploadFile] = File(default=[]),
     db: AsyncSession = Depends(get_db),
-    admin: AdminUser = Depends(get_current_admin),
+    auth = Depends(audited("knowledge", "add_attachments")),
 ):
     """为文章追加附件"""
+    admin, audit = auth
     if admin.role not in ("super_admin", "admin", "tech"):
         raise HTTPException(status_code=403, detail="无权限")
 
@@ -334,6 +347,11 @@ async def add_attachments(
         db.add(att)
 
     await db.commit()
+    file_count = sum(1 for f in (files or []) if f.filename)
+    await audit(target_id=article_id, target_type="knowledge",
+                title=f"追加附件 article={article_id}",
+                detail={"count": file_count})
+    await db.commit()
     return {"success": True, "message": "上传成功"}
 
 
@@ -341,9 +359,10 @@ async def add_attachments(
 async def delete_article(
     article_id: int,
     db: AsyncSession = Depends(get_db),
-    admin: AdminUser = Depends(get_current_admin),
+    auth = Depends(audited("knowledge", "delete")),
 ):
     """删除知识文章"""
+    admin, audit = auth
     if admin.role not in ("super_admin", "admin", "tech"):
         raise HTTPException(status_code=403, detail="无权限")
 
@@ -369,7 +388,12 @@ async def delete_article(
         except Exception:
             pass
 
+    snap = {"title": article.title, "category": article.category, "status": article.status,
+            "attachment_count": len(article.attachments or [])}
     await db.delete(article)
+    await db.commit()
+    await audit(target_id=article_id, target_type="knowledge",
+                title=f"删除知识文章 {snap['title'][:60]}", detail=snap)
     await db.commit()
     return {"success": True, "message": "删除成功"}
 

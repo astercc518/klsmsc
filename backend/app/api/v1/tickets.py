@@ -21,6 +21,7 @@ from app.modules.common.telegram_binding import TelegramBinding
 from app.services.notification_service import notification_service
 from app.api.v1.admin import get_current_admin
 from app.api.v1.account import get_current_account
+from app.core.audit_dep import audited
 
 router = APIRouter(tags=["工单系统"])
 
@@ -516,25 +517,29 @@ async def assign_ticket(
     ticket_id: int,
     data: TicketAssign,
     db: AsyncSession = Depends(get_db),
-    admin: AdminUser = Depends(get_current_admin)
+    auth = Depends(audited("ticket", "assign")),
 ):
     """分配工单"""
+    admin, audit = auth
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="工单不存在")
-    
+
     # 验证管理员存在
     assignee = await db.get(AdminUser, data.admin_id)
     if not assignee:
         raise HTTPException(status_code=404, detail="分配目标管理员不存在")
-    
+
     ticket.assigned_to = data.admin_id
     ticket.assigned_at = datetime.now()
     if ticket.status == 'open':
         ticket.status = 'assigned'
-    
+
     await db.commit()
-    
+    await audit(target_id=ticket_id, target_type="ticket",
+                title=f"分配工单 {ticket.ticket_no} → {assignee.username}",
+                detail={"ticket_no": ticket.ticket_no, "assigned_to": assignee.username})
+    await db.commit()
     return {"success": True, "message": "工单分配成功"}
 
 
@@ -600,9 +605,10 @@ async def resolve_ticket(
     resolution: str = Form(..., description="解决方案"),
     files: List[UploadFile] = File(default=[]),
     db: AsyncSession = Depends(get_db),
-    admin: AdminUser = Depends(get_current_admin)
+    auth = Depends(audited("ticket", "resolve")),
 ):
     """解决工单（支持图片上传）"""
+    admin, audit = auth
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="工单不存在")
@@ -671,7 +677,13 @@ async def resolve_ticket(
                 file_path = upload_dir / fn
                 if file_path.exists():
                     await notification_service.send_photo(str(tg_id), file_path)
-    
+
+    await audit(target_id=ticket_id, target_type="ticket",
+                title=f"解决工单 {ticket.ticket_no}",
+                detail={"ticket_no": ticket.ticket_no,
+                        "resolution_len": len(resolution or ""),
+                        "attachment_count": len(attachment_paths)})
+    await db.commit()
     return {"success": True, "message": "工单已解决"}
 
 
@@ -680,20 +692,24 @@ async def close_ticket(
     ticket_id: int,
     reason: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-    admin: AdminUser = Depends(get_current_admin)
+    auth = Depends(audited("ticket", "close")),
 ):
     """关闭工单"""
+    admin, audit = auth
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="工单不存在")
-    
+
     ticket.status = 'closed'
     ticket.closed_at = datetime.now()
     ticket.closed_by = admin.id
     ticket.close_reason = reason
-    
+
     await db.commit()
-    
+    await audit(target_id=ticket_id, target_type="ticket",
+                title=f"关闭工单 {ticket.ticket_no}",
+                detail={"ticket_no": ticket.ticket_no, "reason": reason})
+    await db.commit()
     return {"success": True, "message": "工单已关闭"}
 
 
@@ -702,9 +718,10 @@ async def update_ticket_status_admin(
     ticket_id: int,
     status: str = Query(..., description="目标状态"),
     db: AsyncSession = Depends(get_db),
-    admin: AdminUser = Depends(get_current_admin)
+    auth = Depends(audited("ticket", "update_status")),
 ):
     """更新工单状态（与前端 PUT /admin/tickets/{id}/status 对齐）"""
+    admin, audit = auth
     valid_statuses = {
         "open",
         "assigned",
@@ -721,6 +738,7 @@ async def update_ticket_status_admin(
     if not ticket:
         raise HTTPException(status_code=404, detail="工单不存在")
 
+    old_status = ticket.status
     ticket.status = status
     now = datetime.now()
     if status == "closed":
@@ -731,6 +749,10 @@ async def update_ticket_status_admin(
         ticket.resolved_by = admin.id
 
     await db.commit()
+    await audit(target_id=ticket_id, target_type="ticket",
+                title=f"工单状态变更 {ticket.ticket_no}: {old_status} → {status}",
+                detail={"ticket_no": ticket.ticket_no, "from": old_status, "to": status})
+    await db.commit()
     return {"success": True, "message": "状态已更新"}
 
 
@@ -738,12 +760,15 @@ async def update_ticket_status_admin(
 async def delete_ticket_admin(
     ticket_id: int,
     db: AsyncSession = Depends(get_db),
-    _admin: AdminUser = Depends(get_current_admin)
+    auth = Depends(audited("ticket", "delete")),
 ):
     """管理员删除工单（级联删除回复，并清理附件目录）"""
+    admin, audit = auth
     ticket = await db.get(Ticket, ticket_id)
     if not ticket:
         raise HTTPException(status_code=404, detail="工单不存在")
+    snap = {"ticket_no": ticket.ticket_no, "subject": getattr(ticket, "subject", None),
+            "status": ticket.status, "account_id": ticket.account_id}
     await db.execute(delete(TicketReply).where(TicketReply.ticket_id == ticket_id))
     await db.delete(ticket)
     await db.commit()
@@ -753,6 +778,10 @@ async def delete_ticket_admin(
             shutil.rmtree(upload_dir)
         except OSError:
             pass
+    await audit(target_id=ticket_id, target_type="ticket",
+                title=f"删除工单 {snap['ticket_no']}",
+                detail=snap)
+    await db.commit()
     return {"success": True, "message": "工单已删除"}
 
 
