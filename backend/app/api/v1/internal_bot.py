@@ -14,7 +14,6 @@ from app.config import settings as app_settings
 from app.database import get_db
 from app.modules.common.telegram_message import TelegramMessage
 from app.modules.common.telegram_binding import TelegramBinding
-from app.modules.common.telegram_binding import TelegramBinding
 from app.modules.common.admin_user import AdminUser
 from app.modules.common.account import Account
 from app.modules.common.system_config import SystemConfig
@@ -602,12 +601,11 @@ async def reply_bot_ticket(
         logger.error(f"回复工单失败: {e}")
         raise HTTPException(status_code=500)
 
-@router.patch("/tickets/{ticket_id}/take")
+@router.patch("/tickets/{ticket_id}/take", dependencies=[Depends(verify_internal_secret)])
 async def take_bot_ticket(
     ticket_id: int,
     request: Dict[str, Any], # { "tg_id": ... }
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """接单：指派给特定管理员"""
     try:
@@ -689,11 +687,10 @@ def _parse_bot_supplier_creds(text: str) -> dict:
     if sections: creds['sections'] = sections
     return creds
 
-@router.post("/tickets/finalize")
+@router.post("/tickets/finalize", dependencies=[Depends(verify_internal_secret)])
 async def finalize_bot_ticket(
     request: Dict[str, Any], # { "ticket_id": ..., "ticket_no": ..., "reply_text": ..., "tg_id": ... }
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """完结工单：解析回复凭据，同步更新账户"""
     try:
@@ -852,11 +849,10 @@ async def bind_admin_internal(data: dict, db: AsyncSession = Depends(get_db)):
         logger.error(f"绑定管理员失败: {e}", exc_info=True)
         return {"success": False, "msg": str(e)}
 
-@router.get("/admins/{tg_id}")
+@router.get("/admins/{tg_id}", dependencies=[Depends(verify_internal_secret)])
 async def get_bot_admin(
     tg_id: int,
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """获取管理员信息"""
     try:
@@ -961,11 +957,10 @@ async def create_mass_task_internal(
         logger.error(f"创建批量任务失败: {e}")
         return {"success": False, "msg": str(e)}
 
-@router.get("/data-pool/stats")
+@router.get("/data-pool/stats", dependencies=[Depends(verify_internal_secret)])
 async def get_data_pool_stats(
     account_id: int,
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """获取数据池国家统计"""
     try:
@@ -988,12 +983,11 @@ async def get_data_pool_stats(
         logger.error(f"获取数据池统计失败: {e}")
         raise HTTPException(status_code=500)
 
-@router.get("/data-pool/count")
+@router.get("/data-pool/count", dependencies=[Depends(verify_internal_secret)])
 async def get_data_pool_count(
     account_id: int,
     country_code: str,
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """获取指定国家可用数量"""
     try:
@@ -1011,10 +1005,9 @@ async def get_data_pool_count(
         logger.error(f"获取国家计数失败: {e}")
         raise HTTPException(status_code=500)
 
-@router.get("/task-categories")
+@router.get("/task-categories", dependencies=[Depends(verify_internal_secret)])
 async def get_task_categories(
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """获取任务分类 (AccountTemplate)"""
     try:
@@ -1029,11 +1022,10 @@ async def get_task_categories(
         logger.error(f"获取分类失败: {e}")
         raise HTTPException(status_code=500)
 
-@router.get("/sending-stats")
+@router.get("/sending-stats", dependencies=[Depends(verify_internal_secret)])
 async def get_sending_stats(
     account_id: int,
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """获取发送统计 (今日发送量等)"""
     try:
@@ -1064,45 +1056,14 @@ async def get_sending_stats(
         logger.error(f"获取统计失败: {e}")
         raise HTTPException(status_code=500)
 
-@router.post("/auth/verify")
-async def create_bot_ticket(
-    request: Dict[str, Any],
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
-):
-    """创建工单"""
-    try:
-        from app.modules.common.ticket import Ticket
-        
-        ticket = Ticket(
-            ticket_no=request.get("ticket_no"),
-            account_id=request.get("account_id"),
-            tg_user_id=str(request.get("tg_user_id")),
-            ticket_type=request.get("ticket_type"),
-            priority=request.get("priority", "normal"),
-            title=request.get("title"),
-            description=request.get("description"),
-            status='open',
-            created_by_type=request.get("created_by_type"),
-            created_by_id=request.get("created_by_id")
-        )
-        db.add(ticket)
-        await db.commit()
-        await db.refresh(ticket)
-        return {"success": True, "ticket_id": ticket.id, "ticket_no": ticket.ticket_no}
-    except Exception as e:
-        logger.error(f"创建工单失败: {e}")
-        raise HTTPException(status_code=500)
-
-@router.get("/tickets")
+@router.get("/tickets", dependencies=[Depends(verify_internal_secret)])
 async def get_bot_tickets(
     account_id: int = None,
     admin_id: int = None,
     ticket_type: str = None,
     review_status: str = None,
     limit: int = 10,
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """获取工单列表"""
     try:
@@ -1132,12 +1093,11 @@ async def get_bot_tickets(
         logger.error(f"查询工单列表失败: {e}")
         raise HTTPException(status_code=500)
 
-@router.get("/tickets/{ticket_no}")
+@router.get("/tickets/{ticket_no}", dependencies=[Depends(verify_internal_secret)])
 async def get_bot_ticket_detail(
     ticket_no: str,
     account_id: Optional[int] = None,
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """获取工单详情"""
     try:
@@ -1181,12 +1141,11 @@ async def get_bot_ticket_detail(
         logger.error(f"获取详情失败: {e}")
         raise HTTPException(status_code=500)
 
-@router.post("/tickets/{ticket_id}/action")
+@router.post("/tickets/{ticket_id}/action", dependencies=[Depends(verify_internal_secret)])
 async def ticket_action_internal(
     ticket_id: int,
     request: Dict[str, Any],
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """实施接单或解决动作"""
     try:
@@ -1223,12 +1182,11 @@ async def ticket_action_internal(
         logger.error(f"操作工单失败: {e}")
         raise HTTPException(status_code=500)
 
-@router.get("/sms-log")
+@router.get("/sms-log", dependencies=[Depends(verify_internal_secret)])
 async def get_bot_sms_history(
     account_id: int,
     limit: int = 10,
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """获取短信历史"""
     try:
@@ -1344,11 +1302,10 @@ async def create_bot_account(
         logger.error(f"Bot开户失败: {e}")
         raise HTTPException(status_code=500)
 
-@router.get("/accounts/{account_id}/test-countries")
+@router.get("/accounts/{account_id}/test-countries", dependencies=[Depends(verify_internal_secret)])
 async def get_bot_account_test_countries(
     account_id: int,
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """获取账户关联通道的测试国家（不泄露敏感信息）"""
     try:
@@ -1385,8 +1342,8 @@ async def get_bot_account_test_countries(
         logger.error(f"获取测试国家失败: {e}")
         return {"countries": "Error"}
 
-@router.get("/sms-approvals")
-async def get_bot_sms_approvals(db: AsyncSession = Depends(get_db), dependencies=[Depends(verify_internal_secret)]):
+@router.get("/sms-approvals", dependencies=[Depends(verify_internal_secret)])
+async def get_bot_sms_approvals(db: AsyncSession = Depends(get_db)):
     """获取待审核的短信列表"""
     try:
         from sqlalchemy.orm import joinedload
@@ -1409,11 +1366,10 @@ async def get_bot_sms_approvals(db: AsyncSession = Depends(get_db), dependencies
         logger.error(f"获取审核列表失败: {e}")
         raise HTTPException(status_code=500)
 
-@router.get("/sms-approvals/{approval_id}")
+@router.get("/sms-approvals/{approval_id}", dependencies=[Depends(verify_internal_secret)])
 async def get_bot_sms_approval_detail(
     approval_id: int,
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """获取审核详情"""
     try:
@@ -1445,13 +1401,12 @@ async def get_bot_sms_approval_detail(
         logger.error(f"获取审核详情失败: {e}")
         raise HTTPException(status_code=500)
 
-@router.post("/sms-approvals/{approval_id}/action")
+@router.post("/sms-approvals/{approval_id}/action", dependencies=[Depends(verify_internal_secret)])
 async def action_bot_sms_approval(
     approval_id: int,
     action: str, # 'approve' or 'reject'
     reason: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
-    dependencies=[Depends(verify_internal_secret)]
+    db: AsyncSession = Depends(get_db)
 ):
     """审核短信内容"""
     try:
