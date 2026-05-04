@@ -45,6 +45,7 @@ export const useAuthStore = defineStore('auth', () => {
     adminId.value = ''
     accountName.value = ''
     localStorage.removeItem('admin_token')
+    localStorage.removeItem('admin_refresh_token')
     localStorage.removeItem('admin_id')
     localStorage.removeItem('admin_role')
     localStorage.removeItem('api_key')

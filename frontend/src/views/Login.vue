@@ -362,6 +362,7 @@ const handleTgVerify = async () => {
         localStorage.removeItem('api_key'); localStorage.removeItem('account_id'); localStorage.removeItem('account_name')
         sessionStorage.removeItem('impersonate_mode')
         localStorage.setItem('admin_token', res.token)
+        if ((res as any).refresh_token) localStorage.setItem('admin_refresh_token', (res as any).refresh_token)
         localStorage.setItem('admin_id', String(res.admin_id || ''))
         localStorage.setItem('admin_role', res.role || '')
         localStorage.setItem('account_name', res.username || tgForm.username)
@@ -414,10 +415,11 @@ const rules: FormRules = {
 }
 
 // 管理员登录成功后的处理
-const doAdminSuccess = (adminResp: { token?: string; admin_id?: number; role?: string; username?: string }) => {
+const doAdminSuccess = (adminResp: { token?: string; refresh_token?: string; admin_id?: number; role?: string; username?: string }) => {
   localStorage.removeItem('api_key'); localStorage.removeItem('account_id'); localStorage.removeItem('account_name')
   sessionStorage.removeItem('impersonate_mode')
   localStorage.setItem('admin_token', adminResp.token!)
+  if (adminResp.refresh_token) localStorage.setItem('admin_refresh_token', adminResp.refresh_token)
   localStorage.setItem('admin_id', String(adminResp.admin_id || ''))
   localStorage.setItem('admin_role', adminResp.role || '')
   localStorage.setItem('account_name', adminResp.username || form.username)

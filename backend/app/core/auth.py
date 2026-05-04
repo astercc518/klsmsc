@@ -260,43 +260,43 @@ class AuthService:
     
     @staticmethod
     def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
-        """
-        创建JWT访问令牌
-        
-        Args:
-            data: 要编码的数据（通常是用户ID和角色）
-            expires_delta: 过期时间增量
-            
-        Returns:
-            JWT token字符串
-        """
+        """创建 JWT access token（短期，含 token_type='access'）"""
         to_encode = data.copy()
         if "sub" in to_encode and to_encode["sub"] is not None:
             to_encode["sub"] = str(to_encode["sub"])
         now = _utcnow()
         expire = now + (expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES))
-        
-        to_encode.update({"exp": expire, "iat": now})
-        encoded_jwt = pyjwt.encode(
+
+        to_encode.update({"exp": expire, "iat": now, "token_type": "access"})
+        return pyjwt.encode(
             to_encode,
             settings.JWT_SECRET_KEY,
-            algorithm=settings.JWT_ALGORITHM
+            algorithm=settings.JWT_ALGORITHM,
         )
-        return encoded_jwt
+
+    @staticmethod
+    def create_refresh_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+        """创建 JWT refresh token（长期，含 token_type='refresh'）。
+        仅用于 /auth/refresh 端点；不能直接换取业务接口访问权限。"""
+        to_encode = {"sub": data.get("sub")}  # refresh 只携带最小信息：subject
+        if to_encode["sub"] is not None:
+            to_encode["sub"] = str(to_encode["sub"])
+        now = _utcnow()
+        expire = now + (expires_delta or timedelta(hours=settings.JWT_REFRESH_TOKEN_EXPIRE_HOURS))
+        to_encode.update({"exp": expire, "iat": now, "token_type": "refresh"})
+        return pyjwt.encode(
+            to_encode,
+            settings.JWT_SECRET_KEY,
+            algorithm=settings.JWT_ALGORITHM,
+        )
     
     @staticmethod
-    def verify_token(token: str) -> Dict[str, Any]:
+    def verify_token(token: str, expected_type: Optional[str] = "access") -> Dict[str, Any]:
         """
-        验证JWT令牌
-        
-        Args:
-            token: JWT token字符串
-            
-        Returns:
-            解码后的payload
-            
-        Raises:
-            AuthenticationError: token无效或过期
+        验证 JWT 令牌。
+        expected_type='access' 时拒绝 refresh token（业务端点用），反之亦然。
+        历史 token 没有 token_type 字段时按 access 处理（向后兼容）。
+        传 None 表示不校验类型（特殊场景）。
         """
         try:
             payload = pyjwt.decode(
@@ -304,10 +304,17 @@ class AuthService:
                 settings.JWT_SECRET_KEY,
                 algorithms=[settings.JWT_ALGORITHM]
             )
-            return payload
         except JWTError as e:
             logger.warning(f"JWT验证失败: {str(e)}")
             raise AuthenticationError("Invalid token")
+
+        # token_type 校验：防止 refresh token 被当作 access token 用（反之亦然）
+        actual_type = payload.get("token_type", "access")  # 历史 token 默认 access
+        if expected_type and actual_type != expected_type:
+            logger.warning(f"JWT type mismatch: expected={expected_type} actual={actual_type}")
+            raise AuthenticationError(f"Token type mismatch (need {expected_type})")
+
+        return payload
     
     @staticmethod
     async def get_current_admin(

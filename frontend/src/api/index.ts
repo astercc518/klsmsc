@@ -14,6 +14,33 @@ export const request: AxiosInstance = axios.create({
 // 防止 401 时重复弹窗
 let isRedirecting = false
 
+// ---------- access token 自动刷新 ----------
+// 拦截器在第一次 401 时调 /admin/auth/refresh 换新 token；
+// 队列其他并发请求等待刷新完成后用新 token 重发，全部失败再跳登录。
+let isRefreshing = false
+let refreshWaiters: Array<(t: string | null) => void> = []
+
+async function tryRefreshAdminToken(): Promise<string | null> {
+  const refreshToken = localStorage.getItem('admin_refresh_token')
+  if (!refreshToken) return null
+  try {
+    const resp = await axios.post(`${apiBaseURL}/admin/auth/refresh`, {
+      refresh_token: refreshToken,
+    }, { timeout: 15000 })
+    const data = resp.data || {}
+    if (data.success && data.token) {
+      localStorage.setItem('admin_token', data.token)
+      if (data.refresh_token) {
+        localStorage.setItem('admin_refresh_token', data.refresh_token)
+      }
+      return data.token
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 /**
  * 客户控制台走「账户 API Key」鉴权的接口（后端 Depends(get_current_account)）。
  * 管理员若同时存在 admin_token 与本地 api_key，原先只发 Bearer 会导致 /batches 等 401，
@@ -79,20 +106,57 @@ request.interceptors.response.use(
   (response: AxiosResponse) => {
     return response.data
   },
-  (error) => {
+  async (error) => {
     if (error.response) {
       const { status, data, config: reqConfig } = error.response
       const requestUrl = reqConfig?.url || ''
 
       switch (status) {
         case 401: {
+          // 先尝试 refresh token 自动续期（仅 admin 路径 + 非 refresh 端点本身）
+          const isAdminCall = requestUrl.startsWith('/admin/') && !requestUrl.startsWith('/admin/auth/refresh')
+          const hasRefresh = !!localStorage.getItem('admin_refresh_token')
+          const alreadyRetried = (reqConfig as any)._retried
+          if (isAdminCall && hasRefresh && !alreadyRetried) {
+            // 标记防递归
+            ;(reqConfig as any)._retried = true
+            // 多个并发 401 共用一次刷新
+            if (isRefreshing) {
+              return new Promise((resolve, reject) => {
+                refreshWaiters.push((newToken) => {
+                  if (newToken) {
+                    reqConfig.headers = reqConfig.headers || {}
+                    reqConfig.headers['Authorization'] = `Bearer ${newToken}`
+                    resolve(request(reqConfig))
+                  } else {
+                    reject(error)
+                  }
+                })
+              })
+            }
+            isRefreshing = true
+            const newToken = await tryRefreshAdminToken()
+            isRefreshing = false
+            const waiters = refreshWaiters
+            refreshWaiters = []
+            waiters.forEach((cb) => cb(newToken))
+            if (newToken) {
+              reqConfig.headers = reqConfig.headers || {}
+              reqConfig.headers['Authorization'] = `Bearer ${newToken}`
+              return request(reqConfig)
+            }
+            // refresh 失败 → 走下面的强制登出流程
+          }
+
           if (!isRedirecting) {
             isRedirecting = true
             ElMessage.error('认证失败，请重新登录')
             localStorage.removeItem('api_key')
             localStorage.removeItem('admin_token')
+            localStorage.removeItem('admin_refresh_token')
             localStorage.removeItem('admin_id')
             localStorage.removeItem('admin_role')
+            sessionStorage.removeItem('admin_role_verified')
             sessionStorage.removeItem('impersonate_mode')
             sessionStorage.removeItem('impersonate_api_key')
             window.location.href = '/login'

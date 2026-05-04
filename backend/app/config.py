@@ -83,7 +83,8 @@ class Settings(BaseSettings):
     # JWT配置（默认值仅用于开发，生产必须通过环境变量覆盖）
     JWT_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 120
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30        # access token 30 分钟
+    JWT_REFRESH_TOKEN_EXPIRE_HOURS: int = 24         # refresh token 24 小时
     
     @field_validator("JWT_SECRET_KEY", mode="before")
     @classmethod

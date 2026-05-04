@@ -16,6 +16,7 @@ from app.modules.common.admin_user import AdminUser
 from app.modules.common.account import Account
 from app.services.okcc_sync import OKCC_SERVERS, fetch_okcc_customers, sync_okcc_to_accounts
 from app.core.auth import AuthService
+from app.utils.errors import AuthenticationError
 from app.core.auth_scope import (
     apply_account_scope,
     assert_account_in_scope,
@@ -45,10 +46,24 @@ class AdminLoginRequest(BaseModel):
 
 class AdminLoginResponse(BaseModel):
     success: bool
-    token: Optional[str] = None
+    token: Optional[str] = None              # access token (短期 30min)
+    refresh_token: Optional[str] = None      # refresh token (长期 24h)
+    expires_in: Optional[int] = None         # access token 剩余秒数（前端用于调度刷新）
     admin_id: Optional[int] = None
     username: Optional[str] = None
     role: Optional[str] = None
+    error: Optional[str] = None
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+class RefreshTokenResponse(BaseModel):
+    success: bool
+    token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    expires_in: Optional[int] = None
     error: Optional[str] = None
 
 
@@ -350,19 +365,57 @@ async def admin_login(
     
     logger.info(f"管理员登录成功: {admin.username} ({admin.role})")
     
-    # 生成JWT token
-    access_token_expires = timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    token = AuthService.create_access_token(
+    # 生成 access + refresh token 对
+    access_token = AuthService.create_access_token(
         data={"sub": admin.id, "role": admin.role, "username": admin.username},
-        expires_delta=access_token_expires
     )
-    
+    refresh_token = AuthService.create_refresh_token(data={"sub": admin.id})
+
     return AdminLoginResponse(
         success=True,
-        token=token,
+        token=access_token,
+        refresh_token=refresh_token,
+        expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         admin_id=admin.id,
         username=admin.username,
-        role=admin.role
+        role=admin.role,
+    )
+
+
+@router.post("/auth/refresh", response_model=RefreshTokenResponse)
+async def refresh_admin_token(
+    request: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    用 refresh token 换新 access token + 新 refresh token（轮换式刷新）。
+    旧 refresh token 立即失效（前端必须用新发的 refresh，否则下次刷新会 401）。
+    """
+    try:
+        payload = AuthService.verify_token(request.refresh_token, expected_type="refresh")
+    except AuthenticationError as e:
+        return RefreshTokenResponse(success=False, error=str(e))
+
+    admin_id = payload.get("sub")
+    if not admin_id:
+        return RefreshTokenResponse(success=False, error="invalid_subject")
+
+    # 重新读取 admin 当前状态（角色可能已变 / 已禁用）
+    res = await db.execute(select(AdminUser).where(AdminUser.id == int(admin_id)))
+    admin = res.scalar_one_or_none()
+    if not admin or admin.status != "active":
+        return RefreshTokenResponse(success=False, error="admin_not_active")
+
+    new_access = AuthService.create_access_token(
+        data={"sub": admin.id, "role": admin.role, "username": admin.username},
+    )
+    new_refresh = AuthService.create_refresh_token(data={"sub": admin.id})
+
+    return RefreshTokenResponse(
+        success=True,
+        token=new_access,
+        refresh_token=new_refresh,
+        expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
 
@@ -483,18 +536,19 @@ async def telegram_login_verify(
 
     logger.info(f"Telegram 验证登录成功: {admin.username} ({admin.role})")
 
-    access_token_expires = timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    token = AuthService.create_access_token(
+    access_token = AuthService.create_access_token(
         data={"sub": admin.id, "role": admin.role, "username": admin.username},
-        expires_delta=access_token_expires
     )
+    refresh_token = AuthService.create_refresh_token(data={"sub": admin.id})
 
     return AdminLoginResponse(
         success=True,
-        token=token,
+        token=access_token,
+        refresh_token=refresh_token,
+        expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         admin_id=admin.id,
         username=admin.username,
-        role=admin.role
+        role=admin.role,
     )
 
 
@@ -4361,16 +4415,16 @@ async def impersonate_staff(
     if staff.status != 'active':
         raise HTTPException(status_code=400, detail="员工账户未激活")
     
-    # 生成临时JWT token
-    access_token_expires = timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    # 模拟登录 token：固定 2 小时（不签发 refresh token，到期需重新模拟）
+    # 故意短于普通 access token+refresh，避免被冒名身份长期持有
     token = AuthService.create_access_token(
         data={
-            "sub": staff.id, 
-            "role": staff.role, 
+            "sub": staff.id,
+            "role": staff.role,
             "username": staff.username,
-            "impersonated_by": admin.id  # 标记是被模拟的
+            "impersonated_by": admin.id,
         },
-        expires_delta=access_token_expires
+        expires_delta=timedelta(hours=2),
     )
     
     logger.info(f"管理员 {admin.username} 以 {staff.username} ({staff.role}) 身份登录")
