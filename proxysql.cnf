@@ -1,6 +1,6 @@
 admin_variables=
 {
-    admin_credentials="admin:admin;radmin:radmin"
+    admin_credentials="admin:dUOpBDJtTri1zh85ZTku43lr;radmin:nIHbAPh162YXW9a7hWfWJB2Q"
     mysql_ifaces="0.0.0.0:6032"
     refresh_interval=2000
 }
@@ -19,7 +19,7 @@ mysql_variables=
     server_version="8.0.32"
     connect_timeout_server=3000
     monitor_username="monitor"
-    monitor_password="monitorpassword"
+    monitor_password="pOmkMLLSFw8TRdzbsd1KQu9J"
     monitor_history=600000
     monitor_connect_interval=200000
     monitor_ping_interval=10000
@@ -44,7 +44,7 @@ mysql_users =
 (
     {
         username="smsuser"
-        password="smspass123"
+        password="hbmVBgPTx1RVpovuhvTjZKvcWOoaVl"
         default_hostgroup=0
         max_connections=1000
         default_schema="sms_system"

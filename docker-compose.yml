@@ -44,9 +44,11 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    environment:
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     # 全量 restart 后 MySQL 容器 IP 会变；须确认经 ProxySQL 能真正连上后端，再让 API 起，避免 502
     healthcheck:
-      test: ["CMD", "mysql", "-h127.0.0.1", "-P6033", "-usmsuser", "-psmspass123", "-e", "SELECT 1"]
+      test: ["CMD", "sh", "-c", "mysql -h127.0.0.1 -P6033 -usmsuser -p$$MYSQL_PASSWORD -e 'SELECT 1'"]
       interval: 5s
       timeout: 5s
       retries: 18
@@ -56,17 +58,19 @@ services:
     networks:
       - smsc-network
 
-  # Redis缓存
+  # Redis缓存（启用密码鉴权）
   redis:
     image: redis:7.0-alpine
     container_name: smsc-redis
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
     ports:
-      - "127.0.0.1:6379:6379"   # Redis：仅本机（无密码！）
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "sh", "-c", "redis-cli -a $$REDIS_PASSWORD ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -132,6 +136,7 @@ services:
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
@@ -200,6 +205,7 @@ services:
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
@@ -248,6 +254,7 @@ services:
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
@@ -288,6 +295,7 @@ services:
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
@@ -329,6 +337,7 @@ services:
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
@@ -376,6 +385,7 @@ services:
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
@@ -415,6 +425,7 @@ services:
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-kaolachbot}
       TELEGRAM_ADMIN_GROUP_ID: ${TELEGRAM_ADMIN_GROUP_ID:-}
@@ -496,6 +507,7 @@ services:
       DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
