@@ -4,13 +4,72 @@
 import asyncio
 import os
 import random
+import threading
 import time
 from typing import Optional, Dict
 from datetime import datetime
 
 from celery.exceptions import SoftTimeLimitExceeded
+from celery.signals import worker_process_shutdown, worker_process_init
 from app.workers.celery_app import celery_app
 from app.utils.logger import get_logger
+
+
+# ---------- Playwright browser pool（进程级单例）----------
+# 业务模式：每个 web_automation worker 子进程跑多个注水任务，每任务一个 BrowserContext。
+# 旧实现每任务 launch 一次 Chromium（~150-200 MB），新实现共享一个 Browser 实例：
+#   1. _get_browser() 懒加载，首个任务进来时 launch
+#   2. 任务完成 context.close() 释放 page；Browser 保留供下个任务复用
+#   3. 代理通过 new_context(proxy=...) 按任务设置（不是 browser 级）
+#   4. worker_process_shutdown 时 close 干净
+#
+# 异常恢复：如果 browser 进程崩了（detached），下次 _get_browser() 重新 launch
+_PW = None
+_BROWSER = None
+_BROWSER_LOCK = threading.Lock()
+
+
+def _get_browser():
+    """获取（或懒加载）进程内 Chromium 单例。代理通过 context 级别设置。"""
+    global _PW, _BROWSER
+    with _BROWSER_LOCK:
+        # 健康检查：如果 browser 已 detached，需要重新 launch
+        if _BROWSER is not None:
+            try:
+                # is_connected 能反映 browser 进程是否还活着
+                if not _BROWSER.is_connected():
+                    _BROWSER = None
+            except Exception:
+                _BROWSER = None
+
+        if _BROWSER is None:
+            from playwright.sync_api import sync_playwright
+            if _PW is None:
+                _PW = sync_playwright().start()
+            _BROWSER = _PW.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+            )
+            logger.info(f"web_worker: Chromium launched, pid={getattr(_BROWSER, 'pid', '?')}")
+        return _BROWSER
+
+
+def _close_browser():
+    """worker_process_shutdown 时调用，清理浏览器进程"""
+    global _PW, _BROWSER
+    with _BROWSER_LOCK:
+        if _BROWSER is not None:
+            try:
+                _BROWSER.close()
+            except Exception:
+                pass
+            _BROWSER = None
+        if _PW is not None:
+            try:
+                _PW.stop()
+            except Exception:
+                pass
+            _PW = None
 
 logger = get_logger(__name__)
 
@@ -243,6 +302,17 @@ async def _increment_script_counter(factory, script_id: int, success: bool):
         await db.commit()
 
 
+# ========== Celery 生命周期 hook：浏览器池清理 ==========
+
+@worker_process_shutdown.connect
+def _cleanup_browser_on_shutdown(**kwargs):
+    """worker 子进程回收前关闭浏览器，避免 Chromium 进程泄露"""
+    try:
+        _close_browser()
+    except Exception as e:
+        logger.warning(f"web_worker: shutdown 关闭浏览器异常: {e}")
+
+
 # ========== Celery 任务 ==========
 
 @celery_app.task(name="web_click_task", bind=True, max_retries=1,
@@ -325,65 +395,60 @@ def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, coun
         )
         _db_sync(eng.dispose())
 
-        # 阶段2：Playwright 浏览器操作（纯同步，不做任何 asyncio 操作）
-        from playwright.sync_api import sync_playwright
+        # 阶段2：Playwright 浏览器操作（共享 Chromium 实例，每任务独立 context）
+        browser = _get_browser()
+        ua = _pick_user_agent(ua_type)
+        viewport = {"width": 375, "height": 812} if "mobile" in ua_type or "Mobile" in ua else {"width": 1440, "height": 900}
+        locale, tz = _get_locale_timezone(country_code)
 
-        with sync_playwright() as p:
-            launch_args = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]}
-            if proxy_config:
-                launch_args["proxy"] = proxy_config
+        ctx_kwargs = {"user_agent": ua, "viewport": viewport, "locale": locale, "timezone_id": tz}
+        if proxy_config:
+            ctx_kwargs["proxy"] = proxy_config
 
-            browser = p.chromium.launch(**launch_args)
+        context = browser.new_context(**ctx_kwargs)
+        try:
+            page = context.new_page()
+            _apply_stealth(page)
+
+            # 先探测出口 IP（轻量 API，不影响主流程）
             try:
-                ua = _pick_user_agent(ua_type)
-                viewport = {"width": 375, "height": 812} if "mobile" in ua_type or "Mobile" in ua else {"width": 1440, "height": 900}
-                locale, tz = _get_locale_timezone(country_code)
+                ip_page = context.new_page()
+                _apply_stealth(ip_page)
+                ip_page.goto("https://api.ipify.org?format=text", timeout=8000)
+                detected_ip = (ip_page.content() or "").strip()
+                import re
+                m = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', detected_ip)
+                detected_ip = m.group(1) if m else None
+                ip_page.close()
+            except Exception:
+                detected_ip = None
 
-                context = browser.new_context(
-                    user_agent=ua, viewport=viewport, locale=locale, timezone_id=tz,
-                )
-                page = context.new_page()
-                _apply_stealth(page)
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            _wait_through_cf(page)
+            page.wait_for_timeout(random.randint(2000, 5000))
 
-                # 先探测出口 IP（轻量 API，不影响主流程）
-                try:
-                    ip_page = context.new_page()
-                    _apply_stealth(ip_page)
-                    ip_page.goto("https://api.ipify.org?format=text", timeout=8000)
-                    detected_ip = (ip_page.content() or "").strip()
-                    # 提取纯 IP（去除 HTML 标签）
-                    import re
-                    m = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', detected_ip)
-                    detected_ip = m.group(1) if m else None
-                    ip_page.close()
-                except Exception:
-                    detected_ip = None
+            for _ in range(random.randint(2, 5)):
+                page.evaluate(f"window.scrollBy(0, {random.randint(100, 500)})")
+                page.wait_for_timeout(random.randint(800, 2000))
 
-                page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                _wait_through_cf(page)  # 等待 Cloudflare 挑战自动通过
-                page.wait_for_timeout(random.randint(2000, 5000))
+            for _ in range(random.randint(1, 3)):
+                x = random.randint(50, viewport["width"] - 50)
+                y = random.randint(50, viewport["height"] - 50)
+                page.mouse.move(x, y)
+                page.wait_for_timeout(random.randint(300, 800))
 
-                for _ in range(random.randint(2, 5)):
-                    page.evaluate(f"window.scrollBy(0, {random.randint(100, 500)})")
-                    page.wait_for_timeout(random.randint(800, 2000))
+            page.wait_for_timeout(random.randint(3000, 8000))
+            pw_success = True
 
-                for _ in range(random.randint(1, 3)):
-                    x = random.randint(50, viewport["width"] - 50)
-                    y = random.randint(50, viewport["height"] - 50)
-                    page.mouse.move(x, y)
-                    page.wait_for_timeout(random.randint(300, 800))
-
-                page.wait_for_timeout(random.randint(3000, 8000))
-                pw_success = True
-
-                if register_enabled:
-                    rate = random.uniform(register_rate_min, register_rate_max)
-                    if random.random() * 100 < rate:
-                        trigger_register = True
-
+            if register_enabled:
+                rate = random.uniform(register_rate_min, register_rate_max)
+                if random.random() * 100 < rate:
+                    trigger_register = True
+        finally:
+            try:
                 context.close()
-            finally:
-                browser.close()
+            except Exception:
+                pass
 
         # 阶段3：数据库更新（Playwright 结束后）
         duration = int((time.time() - start_time) * 1000)
@@ -447,50 +512,45 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
         )
         _db_sync(eng.dispose())
 
-        # 阶段2：Playwright 浏览器
-        from playwright.sync_api import sync_playwright
+        # 阶段2：Playwright 浏览器（共享 Chromium 单例）
+        browser = _get_browser()
+        ua = _pick_user_agent(ua_type)
+        viewport = {"width": 375, "height": 812} if "mobile" in ua_type or "Mobile" in ua else {"width": 1440, "height": 900}
+        locale, tz = _get_locale_timezone(country_code)
 
-        with sync_playwright() as p:
-            launch_args = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]}
-            if proxy_config:
-                launch_args["proxy"] = proxy_config
+        ctx_kwargs = {"user_agent": ua, "viewport": viewport, "locale": locale, "timezone_id": tz}
+        if proxy_config:
+            ctx_kwargs["proxy"] = proxy_config
 
-            browser = p.chromium.launch(**launch_args)
+        context = browser.new_context(**ctx_kwargs)
+        try:
+            page = context.new_page()
+            _apply_stealth(page)
+
             try:
-                ua = _pick_user_agent(ua_type)
-                viewport = {"width": 375, "height": 812} if "mobile" in ua_type or "Mobile" in ua else {"width": 1440, "height": 900}
-                locale, tz = _get_locale_timezone(country_code)
+                ip_page = context.new_page()
+                _apply_stealth(ip_page)
+                ip_page.goto("https://api.ipify.org?format=text", timeout=8000)
+                import re
+                m = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', ip_page.content() or "")
+                detected_ip = m.group(1) if m else None
+                ip_page.close()
+            except Exception:
+                detected_ip = None
 
-                context = browser.new_context(
-                    user_agent=ua, viewport=viewport, locale=locale, timezone_id=tz,
-                )
-                page = context.new_page()
-                _apply_stealth(page)
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            _wait_through_cf(page)
+            page.wait_for_timeout(random.randint(2000, 4000))
 
-                # 探测出口 IP
-                try:
-                    ip_page = context.new_page()
-                    _apply_stealth(ip_page)
-                    ip_page.goto("https://api.ipify.org?format=text", timeout=8000)
-                    import re
-                    m = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', ip_page.content() or "")
-                    detected_ip = m.group(1) if m else None
-                    ip_page.close()
-                except Exception:
-                    detected_ip = None
-
-                page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                _wait_through_cf(page)  # 等待 Cloudflare 挑战自动通过
-                page.wait_for_timeout(random.randint(2000, 4000))
-
-                if script_data and script_data.get("steps"):
-                    reg_success = _execute_script_steps(page, script_data["steps"])
-                else:
-                    reg_success = _heuristic_register(page)
-
+            if script_data and script_data.get("steps"):
+                reg_success = _execute_script_steps(page, script_data["steps"])
+            else:
+                reg_success = _heuristic_register(page)
+        finally:
+            try:
                 context.close()
-            finally:
-                browser.close()
+            except Exception:
+                pass
 
         # 阶段3：数据库更新（Playwright 之后）
         duration = int((time.time() - start_time) * 1000)
