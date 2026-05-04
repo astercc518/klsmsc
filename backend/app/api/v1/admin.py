@@ -16,6 +16,12 @@ from app.modules.common.admin_user import AdminUser
 from app.modules.common.account import Account
 from app.services.okcc_sync import OKCC_SERVERS, fetch_okcc_customers, sync_okcc_to_accounts
 from app.core.auth import AuthService
+from app.core.auth_scope import (
+    apply_account_scope,
+    assert_account_in_scope,
+    is_sales_scoped,
+    sales_id_filter,
+)
 from app.config import settings
 from app.utils.logger import get_logger
 from app.utils.errors import InsufficientBalanceError
@@ -622,7 +628,7 @@ async def list_accounts_admin(
     safe_offset = max(0, offset)
 
     # 销售角色只能看到自己名下的客户
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         sales_id = admin.id
 
     where_clauses = [Account.is_deleted == False]
@@ -752,7 +758,7 @@ async def create_account_admin(
     import json
     import uuid
 
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         raise HTTPException(status_code=403, detail="销售人员无权新建客户账户")
 
     if len(request.password) < 6:
@@ -903,7 +909,7 @@ async def get_account_admin(
     if not a:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    if admin.role == "sales" and a.sales_id != admin.id:
+    if is_sales_scoped(admin) and a.sales_id != admin.id:
         raise HTTPException(status_code=403, detail="只能查看自己名下的客户")
 
     try:
@@ -994,7 +1000,7 @@ async def update_account_admin(
         raise HTTPException(status_code=404, detail="Account not found")
 
     # 销售人员：仅可修改名下客户的在用/已暂停状态（停用/启用），不可改其他信息
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         if a.sales_id != admin.id:
             raise HTTPException(status_code=403, detail="只能操作自己名下的客户")
         payload = request.model_dump(exclude_unset=True)
@@ -1114,7 +1120,7 @@ async def generate_account_password(
     if not a:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         raise HTTPException(status_code=403, detail="销售人员无权生成接口密码")
 
     a.api_secret = _gen_api_secret()  # 8 位无歧义接口密码
@@ -1141,7 +1147,7 @@ async def reset_account_api_key(
     if not a:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         raise HTTPException(status_code=403, detail="销售人员无权重置 API Key")
 
     a.api_key = f"ak_{secrets.token_hex(30)}"
@@ -1239,7 +1245,7 @@ async def impersonate_account(
         raise HTTPException(status_code=400, detail="Account is not active")
 
     # 销售仅能模拟自己名下的客户
-    if admin.role == "sales" and a.sales_id != admin.id:
+    if is_sales_scoped(admin) and a.sales_id != admin.id:
         raise HTTPException(status_code=403, detail="只能模拟登录自己名下的客户")
 
     base = (settings.PUBLIC_WEB_BASE_URL or "https://www.kaolach.com").rstrip("/")
@@ -1278,7 +1284,7 @@ async def reset_account_password(
     if not a:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    if admin.role == "sales" and a.sales_id != admin.id:
+    if is_sales_scoped(admin) and a.sales_id != admin.id:
         raise HTTPException(status_code=403, detail="只能为自己名下的客户重置密码")
 
     a.password_hash = AuthService.hash_password(request.password)
@@ -1316,7 +1322,7 @@ async def adjust_account_balance(
     elif change_type in {"deposit", "refund_recharge"} and amount < 0:
         amount = -amount
 
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         raise HTTPException(status_code=403, detail="销售人员无权为客户充值或调账")
 
     result = await db.execute(select(Account).where(Account.id == account_id, Account.is_deleted == False))
@@ -3014,7 +3020,7 @@ async def get_admin_dashboard(
     
     # 根据角色决定数据范围
     is_global_admin = admin.role in ['super_admin', 'admin']
-    is_sales = admin.role == 'sales'
+    is_sales = is_sales_scoped(admin)
     
     # 获取销售负责的客户ID列表
     my_account_ids = []
@@ -3421,7 +3427,7 @@ async def get_admin_statistics(
     
     time_filter = and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt)
     # 销售：仅本人名下客户
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         query = select(
             func.count(SMSLog.id).label("total_sent"),
             func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
@@ -3494,7 +3500,7 @@ async def get_send_statistics(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format")
 
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         sales_id = admin.id
 
     agg_cols = [
@@ -3673,7 +3679,7 @@ async def get_admin_success_rate(
         func.count(SMSLog.id).label("total"),
         func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
     ).join(SMSLog, Channel.id == SMSLog.channel_id)
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         ch_query = ch_query.join(Account, SMSLog.account_id == Account.id).where(
             and_(base_filter, Account.sales_id == admin.id, Account.is_deleted == False)
         )
@@ -3695,7 +3701,7 @@ async def get_admin_success_rate(
         func.count(SMSLog.id).label("total"),
         func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
     )
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         country_query = country_query.select_from(SMSLog).join(
             Account, SMSLog.account_id == Account.id
         ).where(
@@ -3724,7 +3730,7 @@ async def get_admin_success_rate(
         func.count(SMSLog.id).label("total"),
         func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
     )
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         total_query = total_query.select_from(SMSLog).join(
             Account, SMSLog.account_id == Account.id
         ).where(and_(base_filter, Account.sales_id == admin.id, Account.is_deleted == False))
@@ -3762,7 +3768,7 @@ async def get_admin_daily_stats(
         end_dt = datetime.now().date() + timedelta(days=1)
         start_dt = end_dt - timedelta(days=max(1, min(90, days)))
 
-    if admin.role == "sales":
+    if is_sales_scoped(admin):
         sales_id = admin.id
 
     base = (
@@ -4508,7 +4514,7 @@ async def list_business_accounts(
         ))
 
     # 销售只能看自己的客户
-    if admin.role == 'sales':
+    if is_sales_scoped(admin):
         query = query.where(Account.sales_id == admin.id)
 
     count_q = select(func.count()).select_from(query.subquery())
@@ -4571,7 +4577,7 @@ async def get_business_account(
     account = await db.get(Account, account_id)
     if not account or account.is_deleted:
         raise HTTPException(status_code=404, detail="账户不存在")
-    if admin.role == 'sales' and account.sales_id != admin.id:
+    if is_sales_scoped(admin) and account.sales_id != admin.id:
         raise HTTPException(status_code=403, detail="无权查看")
 
     sales_name = None
