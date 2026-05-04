@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 from sqlalchemy import select, and_, or_, update
 from sqlalchemy.exc import OperationalError
 from celery.exceptions import Retry
-from celery.signals import worker_process_shutdown
+from celery.signals import worker_process_shutdown, worker_process_init
 
 from app.workers.celery_app import celery_app
 from app.config import settings
@@ -1759,9 +1759,84 @@ async def _do_repair_virtual_batch_dlr(batch_id: int):
 
 
 # ---------- Go 网关 SubmitSM 结果异步回写（合并 UPDATE，减轻 MySQL 压力）----------
+# 缓冲设计：
+#   - 进程内 _SMS_RESULT_BUFFER：合并 200 条或 1s 触发批量 UPDATE
+#   - Redis Stream `sms_result_pending`：write-ahead log，
+#     防止进程被 kill -9 时（worker_process_shutdown 信号不会触发）数据丢失
+#   - 落库成功后 XDEL；启动时 replay 仍在 stream 中的项（说明上次 worker 崩溃了）
 _SMS_RESULT_BUFFER: List[dict] = []
 _SMS_RESULT_LOCK = threading.Lock()
 _SMS_RESULT_TIMER: Optional[threading.Timer] = None
+_SMS_RESULT_STREAM = "sms_result_pending"
+_SMS_RESULT_STREAM_MAXLEN = 10000  # 稳态压力下 200 条/批 × 50 批 ≈ 10k 上限够用
+
+
+def _redis_sync_client():
+    """同步 redis 客户端（celery 任务内使用，避免 asyncio 跨线程开销）"""
+    import redis as _redis
+    host = os.getenv("REDIS_HOST", "redis")
+    port = int(os.getenv("REDIS_PORT", "6379") or 6379)
+    pwd = os.getenv("REDIS_PASSWORD") or None
+    return _redis.Redis(host=host, port=port, password=pwd, db=0,
+                         socket_connect_timeout=2, socket_timeout=2)
+
+
+def _wal_xadd_result(item: dict) -> Optional[str]:
+    """把 result 写入 Redis Stream（write-ahead log）。失败静默：进程崩才用得上，
+    Redis 抖动期间内存 buffer 仍能正常工作。"""
+    try:
+        client = _redis_sync_client()
+        # XADD 的 fields 必须 str；payload 整体 JSON 化为单字段
+        msg_id = client.xadd(
+            _SMS_RESULT_STREAM,
+            {"data": json.dumps(item, ensure_ascii=False, default=str)},
+            maxlen=_SMS_RESULT_STREAM_MAXLEN,
+            approximate=True,
+        )
+        if isinstance(msg_id, bytes):
+            msg_id = msg_id.decode()
+        return msg_id
+    except Exception:
+        return None
+
+
+def _wal_xdel_results(msg_ids: List[str]) -> None:
+    """落库成功后从 Stream 删除。失败静默（最坏情况下次启动 replay 多写一次幂等无害）。"""
+    if not msg_ids:
+        return
+    try:
+        client = _redis_sync_client()
+        client.xdel(_SMS_RESULT_STREAM, *msg_ids)
+    except Exception:
+        pass
+
+
+def _wal_replay_on_startup() -> int:
+    """worker 启动时 replay Redis Stream 中残留的 result（上次崩溃遗留）。
+    返回 replay 的条数；调用时机由 worker_process_init 信号触发。"""
+    try:
+        client = _redis_sync_client()
+        entries = client.xrange(_SMS_RESULT_STREAM, count=2000)
+        if not entries:
+            return 0
+        replayed = 0
+        for msg_id, fields in entries:
+            try:
+                raw = fields.get(b"data") or fields.get("data")
+                if isinstance(raw, bytes):
+                    raw = raw.decode()
+                item = json.loads(raw)
+                # 标记 _wal_id 让 _enqueue_sms_result_buffer 知道这是 replay 项，避免重新 XADD
+                item["_wal_id"] = msg_id.decode() if isinstance(msg_id, bytes) else msg_id
+                _enqueue_sms_result_buffer(item)
+                replayed += 1
+            except Exception as e:
+                logger.warning(f"WAL replay item 失败 msg_id={msg_id}: {e}")
+        logger.warning(f"sms_result WAL replay {replayed} 条")
+        return replayed
+    except Exception as e:
+        logger.error(f"sms_result WAL replay 异常: {e}")
+        return 0
 
 
 def _sms_result_is_deadlock(exc: BaseException) -> bool:
@@ -1891,6 +1966,7 @@ def _timer_flush_sms_results():
     ok_rows = _flush_sms_results_sync(snap)
     if ok_rows:
         _sms_result_remove_flushed_from_buffer(ok_rows)
+        _wal_xdel_results([r["_wal_id"] for r in ok_rows if r.get("_wal_id")])
     if len(ok_rows) < len(snap):
         logger.error(
             f"sms_result 定时刷盘：snap={len(snap)} ok={len(ok_rows)} 失败={len(snap)-len(ok_rows)}，未成功的保留在缓冲待重试"
@@ -1898,7 +1974,16 @@ def _timer_flush_sms_results():
 
 
 def _enqueue_sms_result_buffer(item: dict):
+    """单条 result 入 buffer。
+    新条目同时 XADD 到 Redis Stream 做 write-ahead log（崩溃恢复用）。
+    replay 进来的条目通过 _wal_id 字段识别，不再重复 XADD。"""
     global _SMS_RESULT_TIMER
+    # WAL：先写 Redis Stream 拿 msg_id，落库成功后再 XDEL
+    if "_wal_id" not in item:
+        wal_id = _wal_xadd_result(item)
+        if wal_id:
+            item["_wal_id"] = wal_id
+
     snap: Optional[List[dict]] = None
     with _SMS_RESULT_LOCK:
         _SMS_RESULT_BUFFER.append(item)
@@ -1918,10 +2003,23 @@ def _enqueue_sms_result_buffer(item: dict):
         ok_rows = _flush_sms_results_sync(snap)
         if ok_rows:
             _sms_result_remove_flushed_from_buffer(ok_rows)
+            _wal_xdel_results([r["_wal_id"] for r in ok_rows if r.get("_wal_id")])
         if len(ok_rows) < len(snap):
             logger.error(
                 f"sms_result 满200刷盘：snap={len(snap)} ok={len(ok_rows)} 失败={len(snap)-len(ok_rows)}，未成功的保留在缓冲待重试"
             )
+
+
+@worker_process_init.connect
+def _replay_wal_on_startup(**kwargs):
+    """worker 子进程启动后 replay WAL；上次 kill -9 残留的 result 在这里恢复。
+    只对 sms_result 队列的 worker 有意义；其它 worker 的 replay 是 no-op（stream 通常空）。"""
+    try:
+        n = _wal_replay_on_startup()
+        if n > 0:
+            logger.warning(f"worker_process_init: WAL replayed {n} sms_result items from previous crash")
+    except Exception as e:
+        logger.error(f"worker_process_init WAL replay 异常: {e}")
 
 
 @worker_process_shutdown.connect
@@ -1937,13 +2035,18 @@ def _flush_result_buffer_on_shutdown(**kwargs):
     for attempt in range(3):
         ok_rows = _flush_sms_results_sync(remaining)
         ok_ids = {int(x.get("log_id") or 0) for x in ok_rows}
+        ok_wal_ids = [r.get("_wal_id") for r in ok_rows if r.get("_wal_id")]
+        if ok_wal_ids:
+            _wal_xdel_results(ok_wal_ids)
         remaining = [r for r in remaining if int(r.get("log_id") or 0) not in ok_ids]
         if not remaining:
             return
         logger.warning(f"shutdown 刷盘第{attempt+1}次仍有 {len(remaining)} 条失败，重试中")
     if remaining:
+        # WAL 中仍保留这些条目；下次 worker 启动时 _wal_replay_on_startup 会再尝试
         logger.critical(
-            f"shutdown 刷盘最终失败 {len(remaining)} 条 sms_result，log_ids={[r.get('log_id') for r in remaining[:20]]}"
+            f"shutdown 刷盘最终失败 {len(remaining)} 条 sms_result（WAL 保留待 replay），"
+            f"log_ids={[r.get('log_id') for r in remaining[:20]]}"
         )
 
 
