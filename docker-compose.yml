@@ -104,16 +104,46 @@ services:
     networks:
       - smsc-network
 
-  # Docker Socket 代理（仅开放容器重启权限，避免 API 容器直挂宿主机 Docker socket）
+  # Docker Socket 代理：仅给 API/Bot 暴露最小所需的 Docker API
+  # 实际使用：GET /containers/json + GET /containers/{name}/stats + POST /containers/{name}/restart
+  # POST=1 + CONTAINERS=1 是 tecnativa 现有最小组合（没有更细的"仅 restart"开关）
   docker-proxy:
     image: tecnativa/docker-socket-proxy:latest
     container_name: smsc-docker-proxy
     environment:
-      CONTAINERS: 1
-      POST: 1
-      # 其余权限默认关闭（IMAGES/NETWORKS/VOLUMES/EXEC 等均为 0）
+      # ========== 允许（业务必需）==========
+      CONTAINERS: 1   # 列容器/查 stats/restart 都属于 /containers/* 路径
+      POST: 1         # 允许 POST（重启需要）
+      # ========== 显式禁止（防御纵深，即便上面打开 POST 也限定到 containers）==========
+      AUTH: 0
+      BUILD: 0
+      COMMIT: 0
+      CONFIGS: 0
+      DISTRIBUTION: 0
+      EVENTS: 0
+      EXEC: 0         # 严禁 exec/attach（容器逃逸跳板）
+      GRPC: 0
+      IMAGES: 0       # 不允许 pull/build/tag 镜像
+      INFO: 0
+      NETWORKS: 0     # 不允许改网络
+      NODES: 0
+      PING: 1         # 健康探测可用
+      PLUGINS: 0
+      SECRETS: 0
+      SERVICES: 0
+      SESSION: 0
+      SWARM: 0
+      SYSTEM: 0
+      TASKS: 0
+      VERSION: 0
+      VOLUMES: 0      # 不允许操作卷
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # socket 只读挂载
+    read_only: true   # 容器自身根文件系统只读
+    tmpfs:
+      - /tmp          # haproxy/socat 临时空间
+      - /run          # haproxy 需要写 /run/haproxy.pid 等
+      - /var/lib/haproxy
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -160,6 +190,8 @@ services:
       TICKET_UPLOAD_DIR: /app/data/tickets
       # 批次 CSV 上传：复用 import_uploads 命名卷
       BATCH_UPLOAD_DIR: /tmp/smsc_imports
+      # OKCC 调用 SSL verify：默认 true（安全），改 false 仅当上游证书自签
+      VOS_HTTP_VERIFY_SSL: ${VOS_HTTP_VERIFY_SSL:-true}
     ports:
       - "127.0.0.1:8000:8000"   # API：仅本机；前端 nginx 经 docker network 内部访问
     volumes:
@@ -439,6 +471,8 @@ services:
       TELEGRAM_STAFF_API_SECRET: ${TELEGRAM_STAFF_API_SECRET:-}
       # 游客户服按钮：API 失败或未配置轮询员工时的 t.me 链接（须 https）
       TELEGRAM_CS_FALLBACK_URL: ${TELEGRAM_CS_FALLBACK_URL:-https://t.me/kaolachbot}
+      # bot_data.pickle 加密 key（Fernet）
+      BOT_PERSISTENCE_KEY: ${BOT_PERSISTENCE_KEY:-}
     volumes:
       - ./telegram_bot:/app
       - ./backend:/backend # 挂载 backend 代码以供复用

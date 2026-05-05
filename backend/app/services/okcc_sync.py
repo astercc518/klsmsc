@@ -1,6 +1,7 @@
 """
 OKCC 客户余额与资费同步（管理端 API 与 Celery 定时任务共用）
 """
+import os
 import re
 from datetime import datetime as dt
 
@@ -12,6 +13,12 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.modules.common.account import Account
 from app.modules.common.admin_user import AdminUser
 from app.utils.logger import get_logger
+
+# OKCC HTTPS verify 开关
+# 默认 True（安全），仅在 .env 显式 VOS_HTTP_VERIFY_SSL=false 时关闭。
+# 当前 VOS_HTTP_BASE 是 HTTP 协议（自签证书或纯 HTTP），临时关闭可接受；
+# 若未来切到 HTTPS 必须打开（设 true 或删除 env），否则中间人可篡改余额响应。
+_VERIFY_SSL = (os.getenv("VOS_HTTP_VERIFY_SSL", "true").strip().lower() != "false")
 
 logger = get_logger(__name__)
 
@@ -38,7 +45,7 @@ async def fetch_okcc_customers(server_id: str) -> list:
     if not cfg:
         return []
     try:
-        async with httpx.AsyncClient(verify=False, timeout=15) as client:
+        async with httpx.AsyncClient(verify=_VERIFY_SSL,timeout=15) as client:
             resp = await client.get(cfg["url"], params={"key": cfg["key"], "action": "customers"})
             data = resp.json()
             if data.get("ok"):
@@ -54,7 +61,7 @@ async def fetch_okcc_customer_detail(server_id: str, name: str) -> dict:
     if not cfg:
         return {}
     try:
-        async with httpx.AsyncClient(verify=False, timeout=10) as client:
+        async with httpx.AsyncClient(verify=_VERIFY_SSL,timeout=10) as client:
             resp = await client.get(
                 cfg["url"],
                 params={"key": cfg["key"], "action": "customer_detail", "name": name},

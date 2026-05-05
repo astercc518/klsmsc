@@ -23,6 +23,7 @@ except ImportError:
 import asyncio
 from bot.services.api_client import APIClient
 from telegram.ext import ApplicationBuilder, PicklePersistence, CommandHandler, MessageHandler, TypeHandler, filters, ContextTypes
+from bot.encrypted_persistence import EncryptedPicklePersistence
 from telegram import Update
 from bot.utils import logger
 from bot.services.message_service import MessageService
@@ -105,7 +106,15 @@ def main():
         logger.error("未找到有效的 Bot Token，退出")
         sys.exit(1)
 
-    persistence = PicklePersistence(filepath="bot_data.pickle")
+    # 加密持久化：BOT_PERSISTENCE_KEY 必须配置；旧的明文 pickle 启动时自动迁移
+    bot_pkey = os.getenv("BOT_PERSISTENCE_KEY", "").encode()
+    if bot_pkey:
+        persistence = EncryptedPicklePersistence(filepath="bot_data.pickle", fernet_key=bot_pkey)
+        logger.info("Bot persistence: 加密模式 (Fernet AES-128 + HMAC)")
+    else:
+        # 未设 key 时回退到明文（仅开发环境；生产部署 .env 必填）
+        persistence = PicklePersistence(filepath="bot_data.pickle")
+        logger.warning("BOT_PERSISTENCE_KEY 未配置，bot_data.pickle 明文存储（生产请配置）")
     
     app = (
         ApplicationBuilder()

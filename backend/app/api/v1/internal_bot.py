@@ -2143,7 +2143,7 @@ async def sync_okcc_balance_internal(account_id: int, db: AsyncSession = Depends
         found_server = None
         for srv in servers:
             try:
-                async with httpx.AsyncClient(verify=False, timeout=10) as client:
+                async with httpx.AsyncClient(verify=(_os.getenv("VOS_HTTP_VERIFY_SSL", "true").strip().lower() != "false"), timeout=10) as client:
                     resp = await client.get(
                         _OKCC_APIS[srv],
                         params={"key": _OKCC_API_KEY, "action": "customer_detail", "name": acct_name},

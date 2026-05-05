@@ -6,10 +6,13 @@ from celery.schedules import crontab
 from app.config import settings
 
 # 创建Celery应用
+_redis_auth = f":{settings.REDIS_PASSWORD}@" if settings.REDIS_PASSWORD else ""
+_celery_result_backend = f"redis://{_redis_auth}{settings.REDIS_HOST}:{settings.REDIS_PORT}/1"
+
 celery_app = Celery(
     'sms_gateway',
     broker=settings.RABBITMQ_URL,
-    backend=f'redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/1',
+    backend=_celery_result_backend,
     include=[
         'app.workers.sms_worker',
         'app.workers.data_worker',
