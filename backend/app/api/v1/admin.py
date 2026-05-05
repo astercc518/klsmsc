@@ -1254,6 +1254,22 @@ class TelegramSalesImpersonateBody(BaseModel):
     account_id: int
 
 
+async def _create_impersonate_token(account) -> str:
+    """生成一次性模拟登录 token（Redis TTL 90s）"""
+    import json as _json
+    import secrets as _secrets
+    from app.utils.cache import get_redis_client
+    token = _secrets.token_urlsafe(32)
+    redis = await get_redis_client()
+    payload = _json.dumps({
+        "api_key": account.api_key,
+        "account_id": account.id,
+        "account_name": account.account_name,
+    })
+    await redis.set(f"impersonate:{token}", payload, ex=90)
+    return token
+
+
 @router.post("/telegram/sales-impersonate", response_model=dict)
 async def telegram_sales_impersonate(
     body: TelegramSalesImpersonateBody,
@@ -1267,7 +1283,8 @@ async def telegram_sales_impersonate(
     from app.modules.common.account import Account
 
     secret = (settings.TELEGRAM_STAFF_API_SECRET or "").strip()
-    if not secret or not x_telegram_staff_secret or x_telegram_staff_secret != secret:
+    import hmac as _hmac_mod
+    if not secret or not x_telegram_staff_secret or not _hmac_mod.compare_digest(x_telegram_staff_secret, secret):
         raise HTTPException(status_code=403, detail="Invalid or missing staff secret")
 
     result = await db.execute(
@@ -1295,12 +1312,8 @@ async def telegram_sales_impersonate(
         raise HTTPException(status_code=403, detail="只能登录您名下的客户")
 
     base = (settings.PUBLIC_WEB_BASE_URL or "https://www.kaolach.com").rstrip("/")
-    login_url = (
-        f"{base}/login?impersonate=1"
-        f"&api_key={quote(a.api_key or '', safe='')}"
-        f"&account_id={a.id}"
-        f"&account_name={quote(a.account_name or '', safe='')}"
-    )
+    imp_token = await _create_impersonate_token(a)
+    login_url = f"{base}/login?impersonate=1&token={imp_token}"
 
     return {
         "success": True,
@@ -1334,12 +1347,8 @@ async def impersonate_account(
         raise HTTPException(status_code=403, detail="只能模拟登录自己名下的客户")
 
     base = (settings.PUBLIC_WEB_BASE_URL or "https://www.kaolach.com").rstrip("/")
-    login_url = (
-        f"{base}/login?impersonate=1"
-        f"&api_key={quote(a.api_key or '', safe='')}"
-        f"&account_id={a.id}"
-        f"&account_name={quote(a.account_name or '', safe='')}"
-    )
+    imp_token = await _create_impersonate_token(a)
+    login_url = f"{base}/login?impersonate=1&token={imp_token}"
 
     return {
         "success": True,
@@ -1349,6 +1358,20 @@ async def impersonate_account(
         "login_url": login_url,
         "message": f"Impersonating account: {a.account_name}",
     }
+
+
+@router.get("/auth/impersonate-exchange/{token}", response_model=dict)
+async def impersonate_exchange(token: str):
+    """凭一次性 token 换取模拟登录凭证（TTL 90s，使用后立即删除）"""
+    from app.utils.cache import get_redis_client
+    import json as _json
+    redis = await get_redis_client()
+    key = f"impersonate:{token}"
+    raw = await redis.getdel(key)
+    if not raw:
+        raise HTTPException(status_code=404, detail="token 无效或已过期")
+    data = _json.loads(raw)
+    return {"success": True, **data}
 
 
 @router.post("/accounts/{account_id}/reset-password", response_model=dict)

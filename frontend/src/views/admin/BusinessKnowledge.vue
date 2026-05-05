@@ -222,6 +222,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Plus, Search, View, Paperclip, Document, Top } from '@element-plus/icons-vue'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import {
   listKnowledge,
   getKnowledgeArticle,
@@ -294,7 +295,7 @@ const contentHtml = computed(() => {
   const c = currentArticle.value?.content
   if (!c) return ''
   try {
-    return marked.parse(c, { gfm: true, breaks: true }) as string
+    return DOMPurify.sanitize(marked.parse(c, { gfm: true, breaks: true }) as string)
   } catch {
     return c.replace(/\n/g, '<br>')
   }
@@ -361,7 +362,7 @@ const loadInlinePreview = async (attachments?: any[]) => {
       inlinePreviewType.value = 'text'
       const text = await blob.text()
       inlinePreviewTextHtml.value = ext === 'md'
-        ? marked.parse(text, { gfm: true, breaks: true }) as string
+        ? DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true }) as string)
         : text.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
     } else if (att.file_type === 'image' || att.file_type === 'video' || ext === 'pdf') {
       inlinePreviewType.value = ext === 'pdf' ? 'pdf' : att.file_type === 'image' ? 'image' : 'video'
@@ -440,7 +441,7 @@ const previewAttachment = async (att: { id: number; file_name: string; file_type
       previewType.value = 'text'
       const text = await blob.text()
       previewTextHtml.value = ext === 'md'
-        ? marked.parse(text, { gfm: true, breaks: true }) as string
+        ? DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true }) as string)
         : text.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
       previewLoading.value = false
       return

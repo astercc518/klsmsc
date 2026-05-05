@@ -1464,11 +1464,8 @@ const impersonateAccount = async (row: AdminAccount) => {
     )
     
     const res = await request.post(`/admin/accounts/${row.id}/impersonate`)
-    if (res.success && res.api_key) {
-      const loginUrl =
-        res.login_url ||
-        `${window.location.origin}/login?impersonate=1&api_key=${encodeURIComponent(res.api_key)}&account_id=${res.account_id}&account_name=${encodeURIComponent(res.account_name)}`
-      window.open(loginUrl, '_blank')
+    if (res.success && res.login_url) {
+      window.open(res.login_url, '_blank')
       ElMessage.success(t('customers.clientOpened', { name: row.account_name }))
     } else {
       ElMessage.error(t('customers.getCredentialsFailed'))

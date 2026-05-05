@@ -85,7 +85,18 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30        # access token 30 分钟
     JWT_REFRESH_TOKEN_EXPIRE_HOURS: int = 24         # refresh token 24 小时
-    
+
+    _ALLOWED_JWT_ALGORITHMS = {"HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}
+
+    @field_validator("JWT_ALGORITHM", mode="before")
+    @classmethod
+    def _validate_jwt_algorithm(cls, v: str) -> str:
+        if v not in cls._ALLOWED_JWT_ALGORITHMS:
+            raise ValueError(
+                f"不支持的 JWT 算法 '{v}'，允许值：{sorted(cls._ALLOWED_JWT_ALGORITHMS)}"
+            )
+        return v
+
     @field_validator("JWT_SECRET_KEY", mode="before")
     @classmethod
     def _ensure_jwt_secret(cls, v: str, info) -> str:
@@ -144,6 +155,16 @@ class Settings(BaseSettings):
     # 内部端点共享密钥：Go SMPP 入站网关回调 /api/v1/_internal/smpp_submit 时携带 X-Internal-Token
     # 生产环境必须改为 openssl rand -hex 32 生成的强随机值
     INTERNAL_TOKEN: str = "change-me-internal-token"
+
+    @field_validator("INTERNAL_TOKEN", mode="before")
+    @classmethod
+    def _validate_internal_token(cls, v: str, info) -> str:
+        env = (info.data or {}).get("APP_ENV", "development")
+        if env == "production" and v in {"change-me-internal-token", "", "changeme"}:
+            raise ValueError(
+                "生产环境必须显式配置 INTERNAL_TOKEN（建议：openssl rand -hex 32）"
+            )
+        return v
 
     # 通道管理「真实 SMPP bind」：由 go-smpp-gateway 内网 HTTP 执行（须与网关 SMPP_PROBE_TOKEN 一致）
     SMPP_GATEWAY_PROBE_URL: Optional[str] = None  # 例 http://smpp-gateway:8090

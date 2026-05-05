@@ -385,16 +385,22 @@ onMounted(async () => {
   if (savedLang) { currentLang.value = savedLang; locale.value = savedLang }
 
   const impersonate = route.query.impersonate
-  const apiKey = route.query.api_key as string
-  const accountId = route.query.account_id as string
-  const accountName = route.query.account_name as string
-  if (impersonate === '1' && apiKey) {
-    sessionStorage.setItem('impersonate_mode', '1')
-    localStorage.setItem('api_key', apiKey)
-    if (accountId) localStorage.setItem('account_id', accountId)
-    if (accountName) localStorage.setItem('account_name', accountName)
-    ElMessage.success(t('staff.switchedTo') + ': ' + (accountName || t('roles.customer')))
-    router.replace('/sms/send')
+  const impToken = route.query.token as string
+  if (impersonate === '1' && impToken) {
+    try {
+      const base = import.meta.env.VITE_API_BASE_URL ? `${import.meta.env.VITE_API_BASE_URL}/api/v1` : '/api/v1'
+      const res = await fetch(`${base}/admin/auth/impersonate-exchange/${encodeURIComponent(impToken)}`)
+      if (!res.ok) throw new Error('token 无效或已过期')
+      const data = await res.json()
+      sessionStorage.setItem('impersonate_mode', '1')
+      localStorage.setItem('api_key', data.api_key)
+      if (data.account_id) localStorage.setItem('account_id', String(data.account_id))
+      if (data.account_name) localStorage.setItem('account_name', data.account_name)
+      ElMessage.success(t('staff.switchedTo') + ': ' + (data.account_name || t('roles.customer')))
+      router.replace('/sms/send')
+    } catch (e: any) {
+      ElMessage.error(e?.message || '模拟登录 token 无效')
+    }
   }
 
   await nextTick()

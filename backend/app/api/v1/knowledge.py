@@ -412,7 +412,9 @@ async def download_attachment(
     if not att:
         raise HTTPException(status_code=404, detail="附件不存在")
 
-    file_path = KNOWLEDGE_DIR / att.file_path
+    file_path = (KNOWLEDGE_DIR / att.file_path).resolve()
+    if not file_path.is_relative_to(KNOWLEDGE_DIR.resolve()):
+        raise HTTPException(status_code=403, detail="非法路径")
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
 

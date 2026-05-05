@@ -475,9 +475,10 @@ async def customer_list_products(
 
     # 2. 其他筛选项
     if tag:
-        # 适应 JSON 数组格式: ["tag1", "tag2"]
+        import json as _json
+        from sqlalchemy import bindparam
         query = query.where(
-            func.json_contains(DataProduct.filter_criteria, sa_text(f'"{tag}"'), "$.tags")
+            func.json_contains(DataProduct.filter_criteria, bindparam("tag_val", _json.dumps(tag)), "$.tags")
         )
 
     if product_type:

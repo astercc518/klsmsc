@@ -55,7 +55,7 @@ async def verify_internal_secret(
 
     require_hmac = (_os.getenv("BOT_REQUIRE_HMAC", "false").lower() == "true")
 
-    # 路径 B：HMAC + timestamp
+    # 路径 B：HMAC + timestamp + nonce 去重
     hmac_ok = False
     hmac_reason = ""
     if x_bot_ts and x_bot_sig:
@@ -69,7 +69,14 @@ async def verify_internal_secret(
                 payload = f"{x_bot_ts}\n{request.method.upper()}\n{request.url.path}\n".encode() + body
                 expected = _hmac.new(secret.encode(), payload, _hashlib.sha256).hexdigest()
                 if _hmac.compare_digest(expected, x_bot_sig):
-                    hmac_ok = True
+                    # nonce 去重：TTL 120s 覆盖 ±60s 时间窗
+                    from app.utils.cache import get_redis_client
+                    _redis = await get_redis_client()
+                    nonce_key = f"hmac_nonce:{x_bot_sig}"
+                    if await _redis.set(nonce_key, "1", nx=True, ex=120):
+                        hmac_ok = True
+                    else:
+                        hmac_reason = "replayed signature"
                 else:
                     hmac_reason = "signature mismatch"
         except (ValueError, TypeError) as e:
@@ -3100,7 +3107,7 @@ async def update_sms_approval_action_internal(approval_id: int, data: dict, db: 
         logger.error(f"更新审批动作失败: {e}")
         return {"success": False, "msg": str(e)}
 
-@router.get("/knowledge")
+@router.get("/knowledge", dependencies=[Depends(verify_internal_secret)])
 async def list_knowledge(category: Optional[str] = None, db: AsyncSession = Depends(get_db)):
     """获取知识库文章列表"""
     from app.modules.common.knowledge import KnowledgeArticle
@@ -3110,13 +3117,13 @@ async def list_knowledge(category: Optional[str] = None, db: AsyncSession = Depe
     result = await db.execute(query.order_by(KnowledgeArticle.order.asc(), KnowledgeArticle.created_at.desc()))
     articles = result.scalars().all()
     return {
-        "success": True, 
+        "success": True,
         "articles": [
             {"id": a.id, "title": a.title, "category": a.category} for a in articles
         ]
     }
 
-@router.get("/knowledge/{article_id}")
+@router.get("/knowledge/{article_id}", dependencies=[Depends(verify_internal_secret)])
 async def get_knowledge_detail(article_id: int, db: AsyncSession = Depends(get_db)):
     """获取知识库文章详情"""
     from app.modules.common.knowledge import KnowledgeArticle, KnowledgeAttachment

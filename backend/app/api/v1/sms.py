@@ -1721,6 +1721,7 @@ from app.core.dlr_handler import (
 )
 from app.modules.sms.batch_utils import update_batch_progress
 from app.config import settings
+from app.utils.client_ip import get_client_ip
 import ipaddress as _ipaddress
 
 
@@ -1735,11 +1736,7 @@ def _verify_dlr_caller(request: Request) -> bool:
 
     token_ok: Optional[bool] = None
     ip_ok: Optional[bool] = None
-    client_ip = (
-        request.headers.get("X-Real-IP")
-        or (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-        or (request.client.host if request.client else "unknown")
-    )
+    client_ip = get_client_ip(request)
 
     # Token 校验
     if settings.DLR_CALLBACK_TOKEN:
@@ -1747,7 +1744,8 @@ def _verify_dlr_caller(request: Request) -> bool:
             request.headers.get("X-DLR-Token")
             or request.query_params.get("dlr_token")
         )
-        token_ok = (req_token == settings.DLR_CALLBACK_TOKEN)
+        import hmac as _hmac_mod
+        token_ok = bool(req_token) and _hmac_mod.compare_digest(req_token, settings.DLR_CALLBACK_TOKEN)
 
     # IP 白名单校验
     allowed_ips = settings.dlr_callback_ip_list
