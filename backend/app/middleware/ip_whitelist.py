@@ -79,30 +79,9 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
     
     def _get_client_ip(self, request: Request) -> str:
-        """
-        获取客户端真实IP地址
-        
-        优先从X-Forwarded-For或X-Real-IP获取（代理场景）
-        """
-        # P2-FIX: 仅在信任代理环境下取 X-Forwarded-For
-        # Nginx 已在最外层，取最后一个由 Nginx 追加的 IP（倒数第一个）
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            parts = [p.strip() for p in forwarded_for.split(",")]
-            client_ip = parts[0] if len(parts) == 1 else parts[-1]
-            if self._is_valid_ip(client_ip):
-                return client_ip
-        
-        # 检查X-Real-IP头
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip and self._is_valid_ip(real_ip):
-            return real_ip
-        
-        # 使用直接连接的IP
-        if request.client:
-            return request.client.host
-        
-        return "unknown"
+        """获取客户端真实IP（统一走 utils/client_ip.get_client_ip，仅信任已知代理）"""
+        from app.utils.client_ip import get_client_ip
+        return get_client_ip(request)
     
     def _is_valid_ip(self, ip: str) -> bool:
         """验证IP地址格式"""

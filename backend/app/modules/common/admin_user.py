@@ -1,7 +1,7 @@
 """
 管理员用户数据模型
 """
-from sqlalchemy import Column, Integer, String, Enum, Boolean, TIMESTAMP, BigInteger, DECIMAL
+from sqlalchemy import Column, Integer, String, Enum, Boolean, TIMESTAMP, DateTime, BigInteger, DECIMAL
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -34,6 +34,7 @@ class AdminUser(Base):
     )
     last_login_at = Column(TIMESTAMP, comment="最后登录时间")
     login_failed_count = Column(Integer, nullable=False, default=0, comment="登录失败次数")
+    locked_until = Column(DateTime, nullable=True, comment="临时锁定到期时间；NULL=未锁；5次错密自动设为 NOW+15min")
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), comment="创建时间")
     updated_at = Column(
         TIMESTAMP,

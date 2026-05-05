@@ -54,10 +54,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not api_key:
             if request.url.path not in ip_rate_paths:
                 return await call_next(request)
-            api_key = f"ip:{request.client.host if request.client else 'unknown'}"
-        
-        # 获取客户端IP
-        client_ip = request.client.host if request.client else "unknown"
+            from app.utils.client_ip import get_client_ip as _get_ip
+            api_key = f"ip:{_get_ip(request)}"
+
+        # 获取客户端IP（仅信任代理）
+        from app.utils.client_ip import get_client_ip as _get_ip2
+        client_ip = _get_ip2(request)
         
         rate_headers = {}
         is_limited = False

@@ -17,6 +17,12 @@ from app.modules.common.account import Account
 from app.services.okcc_sync import OKCC_SERVERS, fetch_okcc_customers, sync_okcc_to_accounts
 from app.core.auth import AuthService
 from app.utils.errors import AuthenticationError
+from app.utils.client_ip import get_client_ip as _get_client_ip
+
+
+def _safe_client_ip(req):
+    """request 可能是 None 的小封装；保留旧 None 行为兼容上游 log_operation。"""
+    return _get_client_ip(req) if req is not None else None
 from app.core.auth_scope import (
     apply_account_scope,
     assert_account_in_scope,
@@ -272,7 +278,7 @@ async def admin_login(
     """管理员登录"""
     from app.services.operation_log import log_operation
     username = request.username
-    client_ip = http_request.client.host if http_request.client else None
+    client_ip = _safe_client_ip(http_request)
     logger.info(f"管理员登录: {username}")
 
     # 查询管理员
@@ -299,7 +305,7 @@ async def admin_login(
         await log_operation(
             db, admin_id=admin.id, admin_name=admin.username,
             module="login", action="login",
-            title=f"管理员 {admin.username} 登录失败：账号已锁定",
+            title=f"管理员 {admin.username} 登录失败：账号已永久锁定",
             ip_address=client_ip, status="failed",
             error_message="账号已锁定",
         )
@@ -307,6 +313,28 @@ async def admin_login(
             success=False,
             error="account_locked"
         )
+
+    # 临时锁定（5 次错密自动 15 分钟）：到期自动放行
+    now = datetime.now()
+    if admin.locked_until is not None:
+        if admin.locked_until > now:
+            remaining_min = max(1, int((admin.locked_until - now).total_seconds() / 60) + 1)
+            await log_operation(
+                db, admin_id=admin.id, admin_name=admin.username,
+                module="login", action="login",
+                title=f"管理员 {admin.username} 登录被临时锁定，剩余 {remaining_min} 分钟",
+                ip_address=client_ip, status="failed",
+                error_message=f"账号临时锁定中（{remaining_min}分钟后自动解除）",
+            )
+            await db.commit()
+            return AdminLoginResponse(
+                success=False,
+                error=f"temporarily_locked:{remaining_min}",
+            )
+        # 锁过期：清掉
+        admin.locked_until = None
+        admin.login_failed_count = 0
+
     if admin.status != "active":
         await log_operation(
             db, admin_id=admin.id, admin_name=admin.username,
@@ -325,18 +353,20 @@ async def admin_login(
         admin.login_failed_count += 1
         remaining = 5 - admin.login_failed_count
         if admin.login_failed_count >= 5:
-            admin.status = "locked"
+            # 改为时限锁 15 分钟（之前是 status='locked' 永久锁，要 super_admin 手动解）
+            admin.locked_until = datetime.now() + timedelta(minutes=15)
+            admin.login_failed_count = 0
             await log_operation(
                 db, admin_id=admin.id, admin_name=admin.username,
                 module="login", action="login",
-                title=f"管理员 {admin.username} 登录失败：密码错误次数过多，账号已锁定",
+                title=f"管理员 {admin.username} 登录失败：5 次错密 → 临时锁 15 分钟",
                 ip_address=client_ip, status="failed",
-                error_message="密码错误次数过多，账号已锁定",
+                error_message="临时锁定 15 分钟",
             )
             await db.commit()
             return AdminLoginResponse(
                 success=False,
-                error="account_locked"
+                error="temporarily_locked:15",
             )
         await log_operation(
             db, admin_id=admin.id, admin_name=admin.username,
@@ -354,6 +384,7 @@ async def admin_login(
     # 更新登录信息
     admin.last_login_at = datetime.now()
     admin.login_failed_count = 0
+    admin.locked_until = None  # 成功登录清除遗留临时锁
 
     await log_operation(
         db, admin_id=admin.id, admin_name=admin.username,
@@ -4858,7 +4889,7 @@ async def execute_sms_refund(
     from app.services.operation_log import log_operation
 
     result = await execute_refund(db, sms_log_id, admin.username, note=request.note)
-    client_ip = http_request.client.host if http_request.client else None
+    client_ip = _safe_client_ip(http_request)
 
     if result.get("success"):
         await log_operation(
@@ -4906,7 +4937,7 @@ async def execute_sms_refund_batch(
         return {"success": False, "error": "单次最多 200 条"}
 
     result = await execute_refund_batch(db, ids, admin.username, note=request.note)
-    client_ip = http_request.client.host if http_request.client else None
+    client_ip = _safe_client_ip(http_request)
     await log_operation(
         db, admin_id=admin.id, admin_name=admin.username,
         module="finance", action="refund_batch",
@@ -5138,7 +5169,7 @@ async def admin_pause_batch(
     from app.services.batch_admin import pause_batch
     from app.services.operation_log import log_operation
     result = await pause_batch(db, batch_id, admin.username)
-    client_ip = http_request.client.host if http_request.client else None
+    client_ip = _safe_client_ip(http_request)
     await log_operation(
         db, admin_id=admin.id, admin_name=admin.username,
         module="sms", action="batch_pause",
@@ -5171,7 +5202,7 @@ async def admin_resume_batch(
             await db.rollback()
         except Exception:
             pass
-    client_ip = http_request.client.host if http_request.client else None
+    client_ip = _safe_client_ip(http_request)
     await log_operation(
         db, admin_id=admin.id, admin_name=admin.username,
         module="sms", action="batch_resume",
@@ -5197,7 +5228,7 @@ async def admin_clear_batch_queue(
     from app.services.batch_admin import clear_batch_queue
     from app.services.operation_log import log_operation
     result = await clear_batch_queue(db, batch_id, admin.username)
-    client_ip = http_request.client.host if http_request.client else None
+    client_ip = _safe_client_ip(http_request)
     await log_operation(
         db, admin_id=admin.id, admin_name=admin.username,
         module="sms", action="batch_clear_queue",
