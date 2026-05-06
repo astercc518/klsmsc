@@ -86,14 +86,13 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30        # access token 30 分钟
     JWT_REFRESH_TOKEN_EXPIRE_HOURS: int = 24         # refresh token 24 小时
 
-    _ALLOWED_JWT_ALGORITHMS = {"HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}
-
     @field_validator("JWT_ALGORITHM", mode="before")
     @classmethod
     def _validate_jwt_algorithm(cls, v: str) -> str:
-        if v not in cls._ALLOWED_JWT_ALGORITHMS:
+        allowed = {"HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}
+        if v not in allowed:
             raise ValueError(
-                f"不支持的 JWT 算法 '{v}'，允许值：{sorted(cls._ALLOWED_JWT_ALGORITHMS)}"
+                f"不支持的 JWT 算法 '{v}'，允许值：{sorted(allowed)}"
             )
         return v
 

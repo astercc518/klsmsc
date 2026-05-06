@@ -79,9 +79,9 @@ request.interceptors.request.use(
 
     if (isImpersonateMode) {
       const impersonateApiKey = sessionStorage.getItem('impersonate_api_key')
-      if (impersonateApiKey) {
-        config.headers['X-API-Key'] = impersonateApiKey
-      }
+      const fallbackApiKey = localStorage.getItem('api_key')
+      const apiKeyToUse = impersonateApiKey || fallbackApiKey
+      if (apiKeyToUse) config.headers['X-API-Key'] = apiKeyToUse
     } else {
       const adminToken = localStorage.getItem('admin_token')
       const apiKey = localStorage.getItem('api_key')

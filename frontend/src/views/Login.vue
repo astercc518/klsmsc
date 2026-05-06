@@ -393,6 +393,11 @@ onMounted(async () => {
       if (!res.ok) throw new Error('token 无效或已过期')
       const data = await res.json()
       sessionStorage.setItem('impersonate_mode', '1')
+      // 代客登录模式下，请求拦截器优先读取 sessionStorage 的 api_key
+      // 若不写入该字段，会导致后续请求不带鉴权头并触发 401
+      sessionStorage.setItem('impersonate_api_key', data.api_key)
+      if (data.account_id) sessionStorage.setItem('impersonate_account_id', String(data.account_id))
+      if (data.account_name) sessionStorage.setItem('impersonate_account_name', data.account_name)
       localStorage.setItem('api_key', data.api_key)
       if (data.account_id) localStorage.setItem('account_id', String(data.account_id))
       if (data.account_name) localStorage.setItem('account_name', data.account_name)

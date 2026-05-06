@@ -30,6 +30,30 @@ async function ensureAdminRoleVerified(): Promise<string | null> {
 }
 
 router.beforeEach(async (to, from, next) => {
+  // 代客登录（新链路）：使用一次性 token 直换 api_key，避免先渲染登录页再跳转
+  if (to.path === '/login' && to.query.impersonate === '1' && to.query.token) {
+    try {
+      const impToken = String(to.query.token)
+      const base = import.meta.env.VITE_API_BASE_URL ? `${import.meta.env.VITE_API_BASE_URL}/api/v1` : '/api/v1'
+      const res = await fetch(`${base}/admin/auth/impersonate-exchange/${encodeURIComponent(impToken)}`)
+      if (!res.ok) throw new Error('token 无效或已过期')
+      const data = await res.json()
+      sessionStorage.setItem('impersonate_mode', '1')
+      sessionStorage.setItem('impersonate_api_key', data.api_key)
+      if (data.account_id) sessionStorage.setItem('impersonate_account_id', String(data.account_id))
+      if (data.account_name) sessionStorage.setItem('impersonate_account_name', data.account_name)
+      localStorage.setItem('api_key', data.api_key)
+      if (data.account_id) localStorage.setItem('account_id', String(data.account_id))
+      if (data.account_name) localStorage.setItem('account_name', data.account_name)
+      next('/sms/send')
+      return
+    } catch (e) {
+      // token 失效时回到普通登录页
+      next('/login')
+      return
+    }
+  }
+
   // 代客登录模式
   if (to.path === '/login' && to.query.impersonate === '1' && to.query.api_key) {
     sessionStorage.setItem('impersonate_mode', '1')

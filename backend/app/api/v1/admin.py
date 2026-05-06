@@ -200,6 +200,11 @@ class PricingCreateRequest(BaseModel):
     effective_date: Optional[str] = None
 
 
+class PricingUpdateRequest(BaseModel):
+    price_per_sms: Optional[float] = None
+    currency: Optional[str] = None
+
+
 # --- Account Management ---
 
 class AdminAccountCreateRequest(BaseModel):
@@ -2991,27 +2996,26 @@ async def create_pricing(
 @router.put("/pricing/{pricing_id}", response_model=dict)
 async def update_pricing(
     pricing_id: int,
-    price_per_sms: Optional[float] = None,
-    currency: Optional[str] = None,
+    request: PricingUpdateRequest,
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
     """更新费率规则"""
     from app.modules.sms.country_pricing import CountryPricing
     from decimal import Decimal
-    
+
     result = await db.execute(
         select(CountryPricing).where(CountryPricing.id == pricing_id)
     )
     pricing = result.scalar_one_or_none()
-    
+
     if not pricing:
         raise HTTPException(status_code=404, detail="Pricing rule not found")
-    
-    if price_per_sms is not None:
-        pricing.price_per_sms = Decimal(str(price_per_sms))
-    if currency is not None:
-        pricing.currency = currency
+
+    if request.price_per_sms is not None:
+        pricing.price_per_sms = Decimal(str(request.price_per_sms))
+    if request.currency is not None:
+        pricing.currency = request.currency
     
     await db.commit()
     

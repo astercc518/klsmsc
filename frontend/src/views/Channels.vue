@@ -784,7 +784,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Plus, Refresh, Search, Connection, CircleCheck, Promotion, Link, CircleClose, Loading, Clock, Position, User, Edit, Money, Monitor, More, View, Guide, Delete, ChatDotSquare, ArrowDown, InfoFilled } from '@element-plus/icons-vue'
 import CountrySelect from '@/components/CountrySelect.vue'
-import { findCountryByDial, findCountryByIso } from '@/constants/countries'
+import { COUNTRY_LIST, findCountryByDial, findCountryByIso } from '@/constants/countries'
 import { getChannels } from '@/api/channel'
 import { 
   createChannel, 
@@ -940,87 +940,17 @@ const pricingForm = reactive({
   operator_name: ''
 })
 
-// 国家列表（国家名称 -> 国家代码）
-const countryList = [
-  { name: '阿富汗', code: '93' },
-  { name: '阿尔巴尼亚', code: '355' },
-  { name: '阿尔及利亚', code: '213' },
-  { name: '阿根廷', code: '54' },
-  { name: '澳大利亚', code: '61' },
-  { name: '奥地利', code: '43' },
-  { name: '孟加拉国', code: '880' },
-  { name: '比利时', code: '32' },
-  { name: '巴西', code: '55' },
-  { name: '柬埔寨', code: '855' },
-  { name: '加拿大', code: '1' },
-  { name: '智利', code: '56' },
-  { name: '中国', code: '86' },
-  { name: '哥伦比亚', code: '57' },
-  { name: '捷克', code: '420' },
-  { name: '丹麦', code: '45' },
-  { name: '埃及', code: '20' },
-  { name: '芬兰', code: '358' },
-  { name: '法国', code: '33' },
-  { name: '德国', code: '49' },
-  { name: '加纳', code: '233' },
-  { name: '希腊', code: '30' },
-  { name: '香港', code: '852' },
-  { name: '匈牙利', code: '36' },
-  { name: '印度', code: '91' },
-  { name: '印度尼西亚', code: '62' },
-  { name: '伊朗', code: '98' },
-  { name: '伊拉克', code: '964' },
-  { name: '爱尔兰', code: '353' },
-  { name: '以色列', code: '972' },
-  { name: '意大利', code: '39' },
-  { name: '日本', code: '81' },
-  { name: '约旦', code: '962' },
-  { name: '肯尼亚', code: '254' },
-  { name: '韩国', code: '82' },
-  { name: '科威特', code: '965' },
-  { name: '老挝', code: '856' },
-  { name: '黎巴嫩', code: '961' },
-  { name: '澳门', code: '853' },
-  { name: '马来西亚', code: '60' },
-  { name: '墨西哥', code: '52' },
-  { name: '摩洛哥', code: '212' },
-  { name: '缅甸', code: '95' },
-  { name: '尼泊尔', code: '977' },
-  { name: '荷兰', code: '31' },
-  { name: '新西兰', code: '64' },
-  { name: '尼日利亚', code: '234' },
-  { name: '挪威', code: '47' },
-  { name: '巴基斯坦', code: '92' },
-  { name: '秘鲁', code: '51' },
-  { name: '菲律宾', code: '63' },
-  { name: '波兰', code: '48' },
-  { name: '葡萄牙', code: '351' },
-  { name: '卡塔尔', code: '974' },
-  { name: '罗马尼亚', code: '40' },
-  { name: '俄罗斯', code: '7' },
-  { name: '沙特阿拉伯', code: '966' },
-  { name: '新加坡', code: '65' },
-  { name: '南非', code: '27' },
-  { name: '西班牙', code: '34' },
-  { name: '斯里兰卡', code: '94' },
-  { name: '瑞典', code: '46' },
-  { name: '瑞士', code: '41' },
-  { name: '台湾', code: '886' },
-  { name: '泰国', code: '66' },
-  { name: '土耳其', code: '90' },
-  { name: '阿联酋', code: '971' },
-  { name: '英国', code: '44' },
-  { name: '乌克兰', code: '380' },
-  { name: '美国', code: '1' },
-  { name: '越南', code: '84' },
-]
+// 国家列表，直接从全局常量派生，避免遗漏国家
+const countryList = COUNTRY_LIST.map(c => ({ name: c.name, en: c.en, code: c.dial }))
 
 // 国家搜索建议
 const countryQuerySearch = (queryString: string, cb: (results: any[]) => void) => {
-  const results = queryString
-    ? countryList.filter(c => 
-        c.name.toLowerCase().includes(queryString.toLowerCase()) ||
-        c.code.includes(queryString)
+  const q = queryString.toLowerCase().trim()
+  const results = q
+    ? countryList.filter(c =>
+        c.name.includes(q) ||
+        c.en.toLowerCase().includes(q) ||
+        c.code.includes(q)
       )
     : countryList
   cb(results.map(c => ({ value: c.name, code: c.code })))
