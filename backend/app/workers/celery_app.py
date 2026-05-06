@@ -182,6 +182,11 @@ celery_app.conf.beat_schedule = {
         'task': 'refresh_staff_commission_cache_task',
         'schedule': 1500.0,
     },
+    # 每小时预热业务报表缓存（last_month/this_month × 5维度，避免首次打开等 ~17s）
+    'refresh-business-report-cache-1h': {
+        'task': 'refresh_business_report_cache_task',
+        'schedule': 3600.0,
+    },
     # 每天 00:30 清理过期 SMPP 待发 DLR
     'smpp-pending-dlr-cleanup-daily': {
         'task': 'smpp_pending_dlr_cleanup',

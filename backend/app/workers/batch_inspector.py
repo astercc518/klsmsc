@@ -392,3 +392,35 @@ async def _do_refresh_staff_commission_cache():
         return {"refreshed": len(comm_map), "month": ym}
     finally:
         await eng.dispose()
+
+
+@celery_app.task(name='refresh_business_report_cache_task')
+def refresh_business_report_cache_task():
+    """预热业务报表缓存，避免管理员首次打开报表页等待 ~17s 扫 sms_logs。"""
+    return _run_async(_do_refresh_business_report_cache())
+
+
+async def _do_refresh_business_report_cache():
+    from app.services.reports_service import ReportsService
+
+    eng, Session = _make_session()
+    try:
+        warmed = 0
+        # 覆盖前端会展示的常用组合（last_month 数据已冻结，缓存值有意义）
+        targets = [
+            (dim, biz, tr)
+            for dim in ("customer", "employee", "channel", "supplier", "country")
+            for biz in ("sms", "all")
+            for tr in ("last_month", "this_month")
+        ]
+        for dim, biz, tr in targets:
+            try:
+                async with Session() as db:
+                    await ReportsService.get_business_report(db, dim, biz, tr)
+                warmed += 1
+            except Exception as e:
+                logger.warning(f"业务报表预热失败 {dim}/{biz}/{tr}: {e}")
+        logger.info(f"业务报表缓存预热完成: {warmed}/{len(targets)} 项")
+        return {"warmed": warmed, "total": len(targets)}
+    finally:
+        await eng.dispose()
