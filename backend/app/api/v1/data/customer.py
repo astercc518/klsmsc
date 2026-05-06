@@ -1027,11 +1027,14 @@ async def buy_and_send(
     await db.flush()
 
     batch_tag = f"BATCH-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+    _scheduled_at = getattr(data, "scheduled_at", None)
+    if _scheduled_at and _scheduled_at <= datetime.now():
+        _scheduled_at = None
     sms_batch = SmsBatch(
         account_id=account.id,
         batch_name=f"DataSend-{product.product_name if product else 'Custom'}-{batch_tag}",
         total_count=data.quantity,
-        status=BatchStatus.PROCESSING,
+        status=BatchStatus.PENDING if _scheduled_at else BatchStatus.PROCESSING,
     )
     db.add(sms_batch)
     await db.flush()
@@ -1070,7 +1073,10 @@ async def buy_and_send(
     _kw.pop("number_ids", None)
 
     def _publish_buy_send() -> None:
-        _celery.send_task("data_buy_send_async", kwargs=_kw)
+        _send_kw: dict = {"kwargs": _kw}
+        if _scheduled_at:
+            _send_kw["eta"] = _scheduled_at
+        _celery.send_task("data_buy_send_async", **_send_kw)
 
     await asyncio.to_thread(_publish_buy_send)
 

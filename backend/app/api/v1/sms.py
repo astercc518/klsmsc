@@ -825,13 +825,14 @@ async def send_batch_sms(
             )
 
     batch_label = (request.batch_name or "").strip() or f"发送页-{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    _scheduled_at = request.scheduled_at if request.scheduled_at and request.scheduled_at > datetime.now() else None
     sms_batch = SmsBatch(
         account_id=account.id,
         batch_name=batch_label[:200],
         total_count=total_numbers,
         success_count=0,
         failed_count=0,
-        status=BatchStatus.PROCESSING,
+        status=BatchStatus.PENDING if _scheduled_at else BatchStatus.PROCESSING,
         sender_id=request.sender_id,
     )
     db.add(sms_batch)
@@ -848,6 +849,7 @@ async def send_batch_sms(
     if total_numbers > ASYNC_THRESHOLD:
         # ========== 大批量：异步分片处理 ==========
         from app.workers.batch_worker import process_batch_chunk
+        from datetime import timedelta
 
         phones = request.phone_numbers
         rot = rot_messages if use_rotate else []
@@ -857,7 +859,7 @@ async def send_batch_sms(
             n = 0
             for offset in range(0, total_numbers, CHUNK_SIZE):
                 chunk = phones[offset : offset + CHUNK_SIZE]
-                process_batch_chunk.apply_async(
+                _kw: dict = dict(
                     args=(
                         batch_pk,
                         account.id,
@@ -868,8 +870,12 @@ async def send_batch_sms(
                         request.channel_id,
                         request.sender_id,
                     ),
-                    countdown=(n * CHUNK_DISPATCH_INTERVAL_MS) // 1000,
                 )
+                if _scheduled_at:
+                    _kw["eta"] = _scheduled_at + timedelta(milliseconds=n * CHUNK_DISPATCH_INTERVAL_MS)
+                else:
+                    _kw["countdown"] = (n * CHUNK_DISPATCH_INTERVAL_MS) // 1000
+                process_batch_chunk.apply_async(**_kw)
                 n += 1
             return n
 

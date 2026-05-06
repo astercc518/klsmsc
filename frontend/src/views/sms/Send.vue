@@ -424,11 +424,11 @@
                 {{ $t('smsSend.resetNumbersOnly') }}
               </el-checkbox>
               
-              <el-checkbox v-if="numberSource === 'manual'" v-model="form.isScheduled">
+              <el-checkbox v-model="form.isScheduled">
                 {{ $t('smsSend.scheduleSend') }}
               </el-checkbox>
-              
-              <div v-if="form.isScheduled && numberSource === 'manual'" class="schedule-picker">
+
+              <div v-if="form.isScheduled" class="schedule-picker">
                 <el-date-picker
                   v-model="form.scheduledTime"
                   type="datetime"
@@ -1960,7 +1960,8 @@ async function handlePrivateSend() {
       messages: multiMessages.value.length > 1 ? multiMessages.value : undefined,
       sender_id: form.value.sender_id || undefined,
       channel_id: form.value.channel_id,
-      batch_name: `私有库 - ${g.country_code} - ${g.sourceLabel || g.source}`
+      batch_name: `私有库 - ${g.country_code} - ${g.sourceLabel || g.source}`,
+      scheduled_at: form.value.isScheduled && form.value.scheduledTime ? form.value.scheduledTime : undefined,
     })
 
     if (res.async_processing && res.batch_id) {
@@ -2317,6 +2318,7 @@ const handleSend = async () => {
     if (msgs.length > 1) payload.messages = msgs
     if (form.value.sender_id) payload.sender_id = form.value.sender_id
     if (form.value.channel_id) payload.channel_id = form.value.channel_id
+    if (form.value.isScheduled && form.value.scheduledTime) payload.scheduled_at = form.value.scheduledTime
 
     const res = await sendBatchSMS(payload)
     const successCount = res?.succeeded ?? 0
@@ -2463,6 +2465,7 @@ const handleStoreSend = async () => {
     if (multiMessages.value.length > 1) {
       payload.messages = multiMessages.value.map(m => stripEmoji(replaceCustomVars(m)))
     }
+    if (form.value.isScheduled && form.value.scheduledTime) payload.scheduled_at = form.value.scheduledTime
     const res = await buyAndSend(payload)
     if (res.success) {
       const asyncHint = res.async ? '（后台处理中，请稍后查看发送统计）' : ''

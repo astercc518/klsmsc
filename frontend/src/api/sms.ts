@@ -37,6 +37,7 @@ export const sendBatchSMS = (data: {
   channel_id?: number | null
   callback_url?: string
   batch_name?: string
+  scheduled_at?: string
 }) => {
   return request.post('/sms/batch', data)
 }

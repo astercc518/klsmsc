@@ -96,6 +96,7 @@ class DataBuyAndSend(BaseModel):
     messages: Optional[List[str]] = None
     carrier: Optional[str] = None
     channel_id: Optional[int] = None
+    scheduled_at: Optional[datetime] = None
 
 
 class ComboBuyRequest(BaseModel):

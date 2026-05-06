@@ -1,6 +1,7 @@
 """
 短信相关的数据模式
 """
+from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, Field, validator
 
@@ -83,7 +84,8 @@ class BatchSMSRequest(BaseModel):
         None,
         description="私有库过滤条件：country_code, source, purpose, batch_id（强烈建议传，与同卡片一致）, carrier, limit, unused_only",
     )
-    
+    scheduled_at: Optional[datetime] = Field(None, description="定时发送时间（不传或为 null 则立即发送）")
+
     class Config:
         json_schema_extra = {
             "example": {
