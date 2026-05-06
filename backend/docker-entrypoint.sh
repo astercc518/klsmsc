@@ -1,6 +1,7 @@
 #!/bin/sh
 # 启动 API 前执行迁移，避免 ORM 字段与表结构不一致导致 500（如 private_library_numbers.is_deleted）
 # 全量 restart 时 ProxySQL/MySQL 可能尚未就绪，单次失败会导致容器退出、网关 502，故带重试。
+mkdir -p /tmp/smsc_imports /tmp/smsc_pl_uploads
 echo "[docker-entrypoint] 执行 alembic upgrade head（最多 40 次，间隔 3s）..."
 _migrate_ok=0
 _i=1
