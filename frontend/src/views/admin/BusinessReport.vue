@@ -424,7 +424,7 @@ const updateCharts = () => {
 const getCountryName = (code: string) => {
   if (!code || code === 'Unknown') return 'Unknown'
   const c = findCountryByIso(code)
-  return c ? `${c.flag} ${c.name}` : code
+  return c ? `${c.name} (${c.iso})` : code
 }
 
 const getRateClass = (rate: number) => {
