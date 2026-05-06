@@ -799,8 +799,8 @@
               </div>
               <div class="voice-info-row">
                 <span class="voice-label">密码:</span>
-                <code class="voice-value">{{ voiceDetailRow.supplier_credentials?.password || '-' }}</code>
-                <el-button v-if="voiceDetailRow.supplier_credentials?.password" link size="small" @click="copyText(voiceDetailRow.supplier_credentials.password)">复制</el-button>
+                <code class="voice-value">{{ enterprisePassword || '-' }}</code>
+                <el-button v-if="enterprisePassword" link size="small" @click="copyText(enterprisePassword)">复制</el-button>
               </div>
               <div class="voice-info-row">
                 <span class="voice-label">登录地址:</span>
@@ -892,6 +892,7 @@
         </div>
       </template>
       <template #footer>
+        <el-button type="primary" @click="copyAllVoiceDetail">一键复制全部</el-button>
         <el-button @click="voiceDetailVisible = false">关闭</el-button>
       </template>
     </el-dialog>
@@ -1683,6 +1684,69 @@ const voiceDetailRow = ref<any>(null)
 function showVoiceDetail(row: any) {
   voiceDetailRow.value = row
   voiceDetailVisible.value = true
+}
+
+// 企业客户登录密码：先取扁平字段，再回落到 sections.enterprise_login.密码，
+// 最后回落到 OKCC 系统的固定默认密码
+const ENTERPRISE_DEFAULT_PASSWORD = 'aa112233'
+const enterprisePassword = computed(() => {
+  const c = voiceDetailRow.value?.supplier_credentials
+  if (!c) return ENTERPRISE_DEFAULT_PASSWORD
+  return c.password || c.sections?.enterprise_login?.['密码'] || ENTERPRISE_DEFAULT_PASSWORD
+})
+
+async function copyAllVoiceDetail() {
+  const row = voiceDetailRow.value
+  if (!row) return
+  const c = row.supplier_credentials || {}
+  const clientName = c.client_name || row.account_name || '-'
+  const sipRange = c.sip_range || c.agent_range || '-'
+  const sipPwd = c.sip_password || '-'
+  const sipDomain = c.sip_domain || c.domain || '-'
+  const sipCount = c.sip_count != null ? `${c.sip_count} 个` : '-'
+  const loginUrl = row.supplier_url || '-'
+  const entUser = c.username || 'admin'
+  const entPwd = enterprisePassword.value || '-'
+  const billingPkg = c.billing_package || '-'
+  const unitPrice = `¥${(row.unit_price ?? 0).toFixed(4)}/分钟`
+  const balance = `¥${(row.balance ?? 0).toFixed(2)}`
+  const okccBal = c.okcc_balance !== undefined ? `¥${Number(c.okcc_balance ?? 0).toFixed(2)}` : '-'
+  const country = formatAccountCountry(row.country_code) || '-'
+  const sales = row.sales?.real_name || row.sales?.username || '-'
+
+  const text = [
+    '【企业客户登录】',
+    `客户名: ${clientName}`,
+    `用户名: ${entUser}`,
+    `密码: ${entPwd}`,
+    `登录地址: ${loginUrl}`,
+    '',
+    '【坐席注册】',
+    `坐席号: ${sipRange}`,
+    `口令: ${sipPwd}`,
+    `域名: ${sipDomain}`,
+    `坐席数: ${sipCount}`,
+    '',
+    '【坐席登录】',
+    `客户名: ${clientName}`,
+    `用户名: ${sipRange}`,
+    `密码: ${sipRange}`,
+    '',
+    '【计费信息】',
+    `资费套餐: ${billingPkg}`,
+    `单价: ${unitPrice}`,
+    `平台余额: ${balance}`,
+    `OKCC余额: ${okccBal}`,
+    `国家: ${country}`,
+    `员工: ${sales}`,
+  ].join('\n')
+
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制全部信息到剪贴板')
+  } catch {
+    ElMessage.warning(t('customers.copyFailed'))
+  }
 }
 
 const okccSyncing = ref(false)
