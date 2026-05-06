@@ -839,8 +839,11 @@ async def send_batch_sms(
     batch_pk = sms_batch.id
 
     ASYNC_THRESHOLD = 10
-    # 与 batch_worker 写库分片对齐，减少 Celery 任务数、缩短 HTTP 内同步调度时间
-    CHUNK_SIZE = 5000
+    # 单 chunk 体积：5000→2000，降低单事务 binlog/undo 压力，并让扣费 UPDATE 更快释放 accounts 行锁
+    CHUNK_SIZE = 2000
+    # 大批量 fan-out 时按 chunk 顺序错开入队，避免 N 个 chunk 同时抢 accounts 行锁
+    # （已有 5 次重试退避兜底，但平滑入队可显著降低 1205 lock_wait_timeout 的尾延迟）
+    CHUNK_DISPATCH_INTERVAL_MS = 100
 
     if total_numbers > ASYNC_THRESHOLD:
         # ========== 大批量：异步分片处理 ==========
@@ -850,19 +853,22 @@ async def send_batch_sms(
         rot = rot_messages if use_rotate else []
 
         def _enqueue_all_batch_chunks() -> int:
-            """在线程中执行大量 .delay()，避免阻塞事件循环。"""
+            """在线程中执行大量 .apply_async()，避免阻塞事件循环。"""
             n = 0
             for offset in range(0, total_numbers, CHUNK_SIZE):
                 chunk = phones[offset : offset + CHUNK_SIZE]
-                process_batch_chunk.delay(
-                    batch_pk,
-                    account.id,
-                    chunk,
-                    request.message,
-                    rot,
-                    offset,
-                    request.channel_id,
-                    request.sender_id,
+                process_batch_chunk.apply_async(
+                    args=(
+                        batch_pk,
+                        account.id,
+                        chunk,
+                        request.message,
+                        rot,
+                        offset,
+                        request.channel_id,
+                        request.sender_id,
+                    ),
+                    countdown=(n * CHUNK_DISPATCH_INTERVAL_MS) // 1000,
                 )
                 n += 1
             return n
