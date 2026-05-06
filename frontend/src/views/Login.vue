@@ -392,15 +392,11 @@ onMounted(async () => {
       const res = await fetch(`${base}/admin/auth/impersonate-exchange/${encodeURIComponent(impToken)}`)
       if (!res.ok) throw new Error('token 无效或已过期')
       const data = await res.json()
+      // 代客登录仅写 sessionStorage（标签页隔离），避免污染同浏览器管理员主标签页的 account_name
       sessionStorage.setItem('impersonate_mode', '1')
-      // 代客登录模式下，请求拦截器优先读取 sessionStorage 的 api_key
-      // 若不写入该字段，会导致后续请求不带鉴权头并触发 401
       sessionStorage.setItem('impersonate_api_key', data.api_key)
       if (data.account_id) sessionStorage.setItem('impersonate_account_id', String(data.account_id))
       if (data.account_name) sessionStorage.setItem('impersonate_account_name', data.account_name)
-      localStorage.setItem('api_key', data.api_key)
-      if (data.account_id) localStorage.setItem('account_id', String(data.account_id))
-      if (data.account_name) localStorage.setItem('account_name', data.account_name)
       ElMessage.success(t('staff.switchedTo') + ': ' + (data.account_name || t('roles.customer')))
       router.replace('/sms/send')
     } catch (e: any) {
@@ -433,6 +429,9 @@ const doAdminSuccess = (adminResp: { token?: string; refresh_token?: string; adm
   if (adminResp.refresh_token) localStorage.setItem('admin_refresh_token', adminResp.refresh_token)
   localStorage.setItem('admin_id', String(adminResp.admin_id || ''))
   localStorage.setItem('admin_role', adminResp.role || '')
+  // admin_username 与 account_name 分离：account_name 客户/代客复用，admin_username 仅管理员
+  // 避免他标签页代客登录覆盖 account_name 时，本标签页底栏出现「客户名 / 超级管理员」
+  localStorage.setItem('admin_username', adminResp.username || form.username)
   localStorage.setItem('account_name', adminResp.username || form.username)
   const roleNames: Record<string, string> = { super_admin: t('roles.superAdmin'), admin: t('roles.admin'), sales: t('roles.sales'), finance: t('roles.finance'), tech: t('roles.tech') }
   const roleName = roleNames[adminResp.role || ''] || t('roles.staff')
@@ -442,6 +441,7 @@ const doAdminSuccess = (adminResp: { token?: string; refresh_token?: string; adm
 // 客户登录成功后的处理
 const doCustomerSuccess = async (accountResp: { token?: string; account_id?: number }) => {
   localStorage.removeItem('admin_token'); localStorage.removeItem('admin_id'); localStorage.removeItem('admin_role')
+  localStorage.removeItem('admin_username'); localStorage.removeItem('admin_refresh_token')
   sessionStorage.removeItem('impersonate_mode')
   localStorage.setItem('api_key', accountResp.token!)
   localStorage.setItem('account_id', String(accountResp.account_id || ''))

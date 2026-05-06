@@ -758,6 +758,9 @@ const refreshUserInfo = () => {
   
   if (isImpersonateMode.value) {
     accountName.value = sessionStorage.getItem('impersonate_account_name') || t('roles.customer')
+  } else if (adminToken.value) {
+    // 员工/管理员：优先读 admin_username（不会被代客 / 客户登录覆盖）
+    accountName.value = localStorage.getItem('admin_username') || localStorage.getItem('account_name') || 'Admin'
   } else {
     accountName.value = localStorage.getItem('account_name') || 'Admin'
   }
@@ -872,6 +875,10 @@ const handleLogout = () => {
   localStorage.removeItem('account_name')
   localStorage.removeItem('admin_token')
   localStorage.removeItem('admin_id')
+  localStorage.removeItem('admin_role')
+  localStorage.removeItem('admin_username')
+  localStorage.removeItem('admin_refresh_token')
+  localStorage.removeItem('account_id')
   ElMessage.success(t('header.loggedOut'))
   router.push('/login')
 }

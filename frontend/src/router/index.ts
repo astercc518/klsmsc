@@ -38,13 +38,11 @@ router.beforeEach(async (to, from, next) => {
       const res = await fetch(`${base}/admin/auth/impersonate-exchange/${encodeURIComponent(impToken)}`)
       if (!res.ok) throw new Error('token 无效或已过期')
       const data = await res.json()
+      // 代客登录仅写 sessionStorage（标签页隔离），避免污染同浏览器管理员主标签页的 account_name
       sessionStorage.setItem('impersonate_mode', '1')
       sessionStorage.setItem('impersonate_api_key', data.api_key)
       if (data.account_id) sessionStorage.setItem('impersonate_account_id', String(data.account_id))
       if (data.account_name) sessionStorage.setItem('impersonate_account_name', data.account_name)
-      localStorage.setItem('api_key', data.api_key)
-      if (data.account_id) localStorage.setItem('account_id', String(data.account_id))
-      if (data.account_name) localStorage.setItem('account_name', data.account_name)
       next('/sms/send')
       return
     } catch (e) {
