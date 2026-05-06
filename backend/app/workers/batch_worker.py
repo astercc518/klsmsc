@@ -705,6 +705,10 @@ async def _do_process_chunk(
                 route_cache = {}   # country_code -> channel
                 price_cache = {}   # (channel_id, country_code) -> (sell_pp, currency, cost_pp)
                 valid_items = []   # [(phone_info, cc, final_msg, msg_count, batch_index, channel), ...]
+                # 预检阶段失败：(raw_phone, country_code_or_None, error_msg)
+                # 必须写入 sms_logs(failed)，否则 log_total < total_count，批次永久卡 processing
+                # （与余额耗尽场景同类 bug，参见 batch 352、418 事故）
+                prefailed_items = []
 
                 for i, phone_number in enumerate(phone_numbers):
                     if phone_number in already_done:
@@ -716,11 +720,13 @@ async def _do_process_chunk(
                         is_valid, err_msg, phone_info = Validator.validate_phone_number(phone_number)
                         if not is_valid:
                             logger.warning(f"分片预检失败 (格式错误): batch={batch_id}, phone={phone_number}, error={err_msg}")
+                            prefailed_items.append((phone_number, None, err_msg))
                             failed += 1
                             continue
 
                         if phone_number in blacklisted_phones or phone_info.get('e164_format') in blacklisted_phones:
                             logger.info(f"分片预检失败 (黑名单): batch={batch_id}, phone={phone_number}")
+                            prefailed_items.append((phone_info.get('e164_format', phone_number), phone_info.get('country_code'), 'Blacklisted'))
                             failed += 1
                             continue
 
@@ -730,6 +736,7 @@ async def _do_process_chunk(
                                 assert_sms_destination_allowed(batch_account, country_code)
                             except AccountCountryNotAllowedError as e:
                                 logger.warning(f"分片预检失败 (国家限制): batch={batch_id}, phone={phone_number}, country={country_code}, error={e.message}")
+                                prefailed_items.append((phone_info.get('e164_format', phone_number), country_code, f'Country not allowed: {country_code}'))
                                 failed += 1
                                 continue
 
@@ -758,6 +765,7 @@ async def _do_process_chunk(
                         channel = route_cache[country_code]
                         if not channel:
                             logger.warning(f"分片预检失败 (无可用通道): batch={batch_id}, phone={phone_number}, country={country_code}")
+                            prefailed_items.append((phone_info.get('e164_format', phone_number), country_code, f'No available channel for {country_code}'))
                             failed += 1
                             continue
 
@@ -776,12 +784,40 @@ async def _do_process_chunk(
                         valid_items.append((phone_info, country_code, final_message, msg_count, batch_index, channel))
                     except Exception as e:
                         logger.warning(f"分片预检失败: batch={batch_id}, phone={phone_number}, {e}")
+                        prefailed_items.append((str(phone_number), None, str(e)))
                         failed += 1
                         continue
 
                 _t1 = time.time()
                 logger.info(f"批量预检完成: batch={batch_id}, offset={start_offset}, "
                             f"valid={len(valid_items)}, failed={failed}, 耗时={_t1 - _t0:.2f}s")
+
+                # 预检失败的号码写入 sms_logs(failed)，保证 log_total == total_count，
+                # 让 update_batch_progress 能正确将批次推进到 completed。
+                if prefailed_items:
+                    _now_pf = datetime.now()
+                    _pf_logs: List[SMSLog] = [
+                        SMSLog(
+                            message_id=f"msg_{uuid.uuid4().hex}",
+                            account_id=account_id,
+                            channel_id=None,
+                            phone_number=raw_ph[:20],
+                            country_code=pf_cc,
+                            message=message,
+                            message_count=1,
+                            status='failed',
+                            cost_price=0, selling_price=0, currency='USD',
+                            submit_time=_now_pf, batch_id=batch_id,
+                            error_message=pf_err,
+                        )
+                        for raw_ph, pf_cc, pf_err in prefailed_items
+                    ]
+                    _pf_chunk = 5000
+                    for _pf0 in range(0, len(_pf_logs), _pf_chunk):
+                        db.add_all(_pf_logs[_pf0:_pf0 + _pf_chunk])
+                        await db.flush()
+                        await db.commit()
+                    logger.info(f"预检失败 {len(_pf_logs)} 条已写入 sms_logs(failed): batch={batch_id}")
 
                 if valid_items:
                     # 阶段2: 一次性批量扣费

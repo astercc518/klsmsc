@@ -174,6 +174,27 @@ async def _do_inspect_batches():
                             batch.completed_at = datetime.now()
                         logger.info(f"批次 {batch.id} 所有短信已完成，强制切换状态为 COMPLETED")
 
+                    # 派发阶段丢失：sms_logs 实际记录数 < total_count，且无任何 pending/queued 积压。
+                    # 说明部分消息在 batch_worker 写库/入队前就被丢弃，永远不会出现在 sms_logs。
+                    # batch_utils 的完成判断依赖 log_total >= total，此时永远无法满足 → 批次永久卡住。
+                    # 修复：将 total_count 对齐实际记录数，让 update_batch_progress 下一轮完成校准。
+                    if batch.status == BatchStatus.PROCESSING and pend_q == 0 and total > 0:
+                        log_total_cnt = (
+                            await db.execute(
+                                select(func.count(SMSLog.id)).where(SMSLog.batch_id == batch.id)
+                            )
+                        ).scalar() or 0
+                        if 0 < log_total_cnt < total:
+                            lost = total - log_total_cnt
+                            batch.total_count = log_total_cnt
+                            logger.warning(
+                                f"inspect: 批次 {batch.id} 派发丢失 {lost} 条（total_count {total}→{log_total_cnt}）"
+                                f"，对齐 total_count 后重新校准"
+                            )
+                            await db.commit()
+                            await update_batch_progress(db, batch.id)
+                            await db.refresh(batch)
+
                     await db.commit()
                     reconciled += 1
                 except Exception as e:
