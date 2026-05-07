@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>SIP Trunk for Business: Setup Guide, Costs & Providers 2025 | Kaolach Blog</title>
+<meta name="description" content="Complete guide to SIP trunking for businesses. What it is, how it compares to PRI and hosted VoIP, setup guide, cost breakdown, and how to choose the right SIP trunk provider.">
+<link rel="canonical" href="https://kaolach.com/blog/sip-trunk-business-guide">
+<meta property="og:title" content="SIP Trunk for Business: Setup Guide, Costs & Providers 2025">
+<meta property="og:url" content="https://kaolach.com/blog/sip-trunk-business-guide">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/blog/blog.css">
+</head>
+<body>
+<nav class="site-nav">
+  <a href="/" class="nav-brand"><img src="/kaolach-mark.png" alt="Kaolach">Kaolach</a>
+  <div class="nav-links"><a href="/blog/">Blog</a><a href="/voice-termination">VoIP</a><a href="/login" class="btn-cta">Get Started</a></div>
+</nav>
+<div class="post-hero">
+  <div class="post-hero-inner">
+    <span class="post-category">VoIP & SIP</span>
+    <h1>SIP Trunk for Business: Complete Setup Guide, Costs & Provider Selection 2025</h1>
+    <div class="post-meta"><span>📅 May 2025</span><span>⏱ 12 min read</span><span>🏷 SIP Trunk · VoIP · PBX · Business Calls</span></div>
+    <p class="post-excerpt">SIP trunking lets businesses replace expensive PSTN lines with internet-based voice, cutting calling costs by 40–70% while gaining flexibility that traditional phone lines can't match. Here's everything you need to know.</p>
+  </div>
+</div>
+<div class="post-layout">
+<article class="post-content">
+
+<h2>What Is SIP Trunking?</h2>
+<p>SIP (Session Initiation Protocol) trunking replaces traditional PSTN telephone lines with a virtual connection to the public telephone network via your internet connection. Instead of copper lines running into your building, a <strong>SIP trunk</strong> is a logical channel over IP that carries voice calls to and from the PSTN.</p>
+<p>Think of it as a "virtual phone line" — you can have dozens or hundreds of simultaneous calls on a single internet connection, pay only for what you use, and manage everything from software rather than physical hardware.</p>
+
+<h2>SIP Trunk vs PRI vs Hosted VoIP</h2>
+<table>
+  <tr><th>Feature</th><th>PRI (ISDN)</th><th>SIP Trunk</th><th>Hosted VoIP (UCaaS)</th></tr>
+  <tr><td>Infrastructure</td><td>Physical copper lines</td><td>Internet + on-premise PBX</td><td>Cloud-based, no PBX</td></tr>
+  <tr><td>Cost per channel</td><td>$25–$60/month</td><td>$5–$20/month</td><td>$20–$50/user/month</td></tr>
+  <tr><td>International calls</td><td>Expensive</td><td>Inexpensive</td><td>Varies by plan</td></tr>
+  <tr><td>Scalability</td><td>Slow (physical install)</td><td>Instant (software)</td><td>Instant</td></tr>
+  <tr><td>Control</td><td>Limited</td><td>Full control</td><td>Provider-managed</td></tr>
+  <tr><td>Best for</td><td>Legacy systems</td><td>Established businesses with PBX</td><td>Small businesses, remote teams</td></tr>
+</table>
+
+<div class="info-box">
+<strong>Cost Example:</strong> A business with 20 simultaneous call channels on PRI pays $600–$1,200/month in line rental alone, before usage. The same capacity on SIP trunks costs $100–$400/month in channel fees, with per-minute rates typically 60–80% lower.
+</div>
+
+<h2>How SIP Trunking Works</h2>
+<ol>
+  <li>Your IP PBX (Asterisk, FreePBX, 3CX, Cisco CUCM) connects to your SIP trunk provider over the internet</li>
+  <li>Outbound calls: PBX sends the call over the SIP trunk to the provider → provider routes to PSTN → reaches the destination</li>
+  <li>Inbound calls: Caller dials your number → hits PSTN → routes to your SIP trunk provider → delivers to your PBX over SIP</li>
+  <li>Your PBX handles all internal routing — extensions, IVR, call queues, voicemail</li>
+</ol>
+
+<h2>Setting Up a SIP Trunk: Step-by-Step</h2>
+<h3>Prerequisites</h3>
+<ul>
+  <li>An IP PBX system (Asterisk/FreePBX, 3CX, Cisco, Avaya, etc.)</li>
+  <li>A stable internet connection with sufficient bandwidth (1 simultaneous call ≈ 85 kbps with G.711 codec)</li>
+  <li>A SIP trunk provider account with credentials</li>
+  <li>Inbound DID numbers for your locations</li>
+</ul>
+
+<h3>Bandwidth Planning</h3>
+<table>
+  <tr><th>Simultaneous Calls</th><th>Bandwidth Required (G.711)</th><th>Bandwidth Required (G.729)</th></tr>
+  <tr><td>5</td><td>425 kbps</td><td>80 kbps</td></tr>
+  <tr><td>10</td><td>850 kbps</td><td>160 kbps</td></tr>
+  <tr><td>25</td><td>2.1 Mbps</td><td>400 kbps</td></tr>
+  <tr><td>50</td><td>4.25 Mbps</td><td>800 kbps</td></tr>
+  <tr><td>100</td><td>8.5 Mbps</td><td>1.6 Mbps</td></tr>
+</table>
+
+<h3>FreePBX Configuration Example</h3>
+<pre><code># In FreePBX Admin → Connectivity → Trunks → Add SIP Trunk
+
+Trunk Name: kaolach-sip
+Outbound CallerID: +15551234567
+Maximum Channels: 10
+
+PEER Details:
+host=sip.kaolach.com
+username=your_account_id
+secret=your_sip_password
+type=peer
+insecure=port,invite
+qualify=yes
+nat=yes
+dtmfmode=rfc2833
+disallow=all
+allow=ulaw
+allow=alaw
+allow=g729
+
+Register String:
+your_account_id:your_sip_password@sip.kaolach.com/your_account_id</code></pre>
+
+<h3>Inbound Route Configuration</h3>
+<pre><code># FreePBX → Connectivity → Inbound Routes
+
+DID Number: 15551234567    (your purchased DID)
+CID Number: (blank = match all)
+Set Destination: Extensions → 101 (or ring group, IVR, etc.)</code></pre>
+
+<h2>SIP Trunk Pricing Models</h2>
+<h3>Pay-Per-Minute (Metered)</h3>
+<p>Best for businesses with variable call volumes. You pay only for minutes used, with per-minute rates typically $0.005–$0.030 depending on destination. No channel fees — scale to as many simultaneous calls as needed (within your agreed limits).</p>
+
+<h3>Channel-Based (Flat Rate)</h3>
+<p>Pay a monthly fee per concurrent call channel regardless of usage. Best for high-volume businesses. Typically $5–$20/channel/month with included minutes or low per-minute rates.</p>
+
+<h3>Bundled Minutes</h3>
+<p>Monthly fee includes a pool of minutes (e.g., 1,000 outbound minutes to US/Canada). Overage charged at standard rates. Predictable billing but may not suit international calling patterns.</p>
+
+<h2>Quality of Service (QoS) for SIP</h2>
+<p>Voice quality problems — jitter, latency, packet loss — are the most common SIP trunk issues. Prevent them:</p>
+<ul>
+  <li><strong>Separate VoIP VLAN:</strong> Isolate voice traffic from data traffic on your network</li>
+  <li><strong>QoS marking:</strong> Mark SIP and RTP packets with DSCP EF (Expedited Forwarding) priority</li>
+  <li><strong>Firewall rules:</strong> Open UDP 5060 (SIP signaling) and UDP 10000-20000 (RTP media) to your provider's IP range</li>
+  <li><strong>NAT traversal:</strong> Configure STUN or ensure your router handles SIP ALG correctly (often best to disable SIP ALG)</li>
+</ul>
+
+<h2>International SIP Trunking for Global Businesses</h2>
+<p>International businesses particularly benefit from SIP trunking because:</p>
+<ul>
+  <li><strong>Originate calls from any country:</strong> A company in China can use a US SIP trunk to make calls appear from a +1 number</li>
+  <li><strong>Wholesale international rates:</strong> Direct carrier connections provide wholesale per-minute rates, typically 70–80% cheaper than consumer VoIP services</li>
+  <li><strong>Multi-country presence:</strong> Combine SIP trunk with DID numbers in multiple countries — one PBX, multiple local numbers globally</li>
+</ul>
+
+<div class="cta-box">
+  <h3>Get a SIP Trunk for Your Business</h3>
+  <p>Kaolach SIP trunking: competitive per-minute rates worldwide, instant provisioning, DID numbers in 80+ countries, and crypto-friendly billing.</p>
+  <a href="/login" class="btn-primary">Get SIP Credentials</a>
+  <a href="/voice-termination" class="btn-secondary">View Rates</a>
+</div>
+
+</article>
+<aside class="post-sidebar">
+  <div class="toc">
+    <h4>Contents</h4>
+    <ol>
+      <li><a href="#what-is-sip-trunking">What Is SIP Trunking?</a></li>
+      <li><a href="#sip-trunk-vs-pri-vs-hosted-voip">SIP vs PRI vs Hosted</a></li>
+      <li><a href="#how-sip-trunking-works">How It Works</a></li>
+      <li><a href="#setting-up-a-sip-trunk-step-by-step">Setup Guide</a></li>
+      <li><a href="#sip-trunk-pricing-models">Pricing Models</a></li>
+      <li><a href="#quality-of-service-qos-for-sip">QoS Tips</a></li>
+    </ol>
+  </div>
+</aside>
+</div>
+<footer class="site-footer">
+  <div class="footer-links"><a href="/">Home</a><a href="/blog/">Blog</a><a href="/voice-termination">VoIP</a><a href="/phone-numbers">DID Numbers</a><a href="/login">Sign Up</a></div>
+  <p>© 2025 Kaolach · International SMS &amp; VoIP Gateway · <a href="https://t.me/kaolachbot">Telegram Support</a></p>
+</footer>
+</body>
+</html>

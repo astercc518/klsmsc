@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>SMPP Protocol Explained: Complete Enterprise SMS Integration Guide 2025 | Kaolach Blog</title>
+<meta name="description" content="Deep dive into the SMPP protocol for enterprise SMS integration. Covers SMPP v3.4, bind types, PDU structure, throughput tuning, error codes, and when to choose SMPP over REST API.">
+<link rel="canonical" href="https://kaolach.com/blog/smpp-protocol-guide">
+<meta property="og:title" content="SMPP Protocol Explained: Complete Enterprise SMS Integration Guide 2025">
+<meta property="og:url" content="https://kaolach.com/blog/smpp-protocol-guide">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/blog/blog.css">
+</head>
+<body>
+<nav class="site-nav">
+  <a href="/" class="nav-brand"><img src="/kaolach-mark.png" alt="Kaolach">Kaolach</a>
+  <div class="nav-links"><a href="/blog/">Blog</a><a href="/sms-messaging">SMS</a><a href="/login" class="btn-cta">Get Started</a></div>
+</nav>
+<div class="post-hero">
+  <div class="post-hero-inner">
+    <span class="post-category">Enterprise SMS</span>
+    <h1>SMPP Protocol Explained: Complete Enterprise SMS Integration Guide</h1>
+    <div class="post-meta"><span>📅 May 2025</span><span>⏱ 15 min read</span><span>🏷 SMPP · Enterprise · SMS Integration</span></div>
+    <p class="post-excerpt">SMPP is the backbone of enterprise bulk SMS — used by carriers, aggregators, and large enterprises worldwide. This guide explains SMPP v3.4 from PDU structure to throughput optimization, without the jargon.</p>
+  </div>
+</div>
+<div class="post-layout">
+<article class="post-content">
+
+<h2>What Is SMPP and When Do You Need It?</h2>
+<p>SMPP (Short Message Peer-to-Peer) is a protocol that creates a persistent TCP connection between your messaging system and an SMS gateway. Unlike HTTP/REST APIs that create a new connection for each request, SMPP maintains an always-on session, enabling throughputs of thousands of messages per second.</p>
+
+<table>
+  <tr><th>Use SMPP When</th><th>Use REST API When</th></tr>
+  <tr><td>Sending &gt;100,000 messages/day</td><td>Sending &lt;50,000 messages/day</td></tr>
+  <tr><td>Need &lt;50ms per-message latency</td><td>Standard 100–300ms latency acceptable</td></tr>
+  <tr><td>Running a telco or aggregator</td><td>Building a business application</td></tr>
+  <tr><td>Need asynchronous DLR delivery</td><td>Webhook-based DLR acceptable</td></tr>
+  <tr><td>Have experienced telecom engineers</td><td>Standard web development team</td></tr>
+</table>
+
+<h2>SMPP Architecture</h2>
+<p>An SMPP connection involves two roles:</p>
+<ul>
+  <li><strong>ESME (External Short Message Entity):</strong> Your application — the client that connects to the SMSC</li>
+  <li><strong>SMSC (Short Message Service Centre):</strong> The gateway server — Kaolach's infrastructure in this case</li>
+</ul>
+<p>The connection is established via TCP (typically port 2775 or 2776 for TLS). Once connected and authenticated (<code>bind</code>), messages are exchanged as PDUs (Protocol Data Units) in both directions simultaneously.</p>
+
+<h2>SMPP Bind Types</h2>
+<table>
+  <tr><th>Bind Type</th><th>Direction</th><th>Use Case</th></tr>
+  <tr><td><code>bind_transmitter</code></td><td>Send only</td><td>High-volume outbound bulk campaigns</td></tr>
+  <tr><td><code>bind_receiver</code></td><td>Receive only</td><td>DLR reception, inbound SMS handling</td></tr>
+  <tr><td><code>bind_transceiver</code></td><td>Both directions</td><td>Standard two-way messaging</td></tr>
+</table>
+<p>For most enterprise integrations, use <code>bind_transceiver</code> — it allows you to send messages and receive DLRs on the same connection.</p>
+
+<h2>PDU Structure</h2>
+<p>Every SMPP operation is a PDU with a 16-byte header:</p>
+<pre><code>Bytes 0-3:   Command Length   (total PDU length including header)
+Bytes 4-7:   Command ID       (e.g., 0x00000004 = submit_sm)
+Bytes 8-11:  Command Status   (0x00000000 = ESME_ROK = success)
+Bytes 12-15: Sequence Number  (increments per request; used to match responses)
+Bytes 16+:   Body             (command-specific parameters)</code></pre>
+
+<h3>Key PDU Types</h3>
+<table>
+  <tr><th>PDU</th><th>Command ID</th><th>Direction</th><th>Purpose</th></tr>
+  <tr><td>bind_transceiver</td><td>0x00000009</td><td>ESME→SMSC</td><td>Authenticate and establish session</td></tr>
+  <tr><td>submit_sm</td><td>0x00000004</td><td>ESME→SMSC</td><td>Submit a message for delivery</td></tr>
+  <tr><td>submit_sm_resp</td><td>0x80000004</td><td>SMSC→ESME</td><td>Acknowledge submit, return message_id</td></tr>
+  <tr><td>deliver_sm</td><td>0x00000005</td><td>SMSC→ESME</td><td>Deliver DLR or inbound MO message</td></tr>
+  <tr><td>enquire_link</td><td>0x00000015</td><td>Both</td><td>Keepalive ping</td></tr>
+  <tr><td>unbind</td><td>0x00000006</td><td>Both</td><td>Graceful session termination</td></tr>
+</table>
+
+<h2>Sending a Message: The submit_sm PDU</h2>
+<pre><code>Field                  Value                      Notes
+------------------     -------------------------  -----------------------
+service_type           ""                         Leave empty
+source_addr_ton        5                          5=alphanumeric sender
+source_addr_npi        0                          0=unknown NPI
+source_addr            "Kaolach"                  Your sender ID
+dest_addr_ton          1                          1=international format
+dest_addr_npi          1                          1=ISDN/E.164
+destination_addr       "+8613812345678"           E.164 format
+esm_class              0x00                       Default message mode
+protocol_id            0x00
+priority_flag          0x00                       Normal priority
+schedule_delivery_time ""                         Send immediately
+validity_period        ""                         Default validity
+registered_delivery    0x01                       Request DLR receipt
+replace_if_present     0x00
+data_coding            0x00                       GSM-7 (Latin) encoding
+                       0x08                       UCS-2 (Unicode/Chinese)
+sm_default_msg_id      0x00
+sm_length              [length of message]
+short_message          "Your verification code..."</code></pre>
+
+<h3>Encoding for Chinese Characters</h3>
+<p>Chinese (and other Unicode) characters require <code>data_coding = 0x08</code> (UCS-2). This halves the characters per segment from 160 to 70. Ensure your SMPP library handles UCS-2 encoding correctly — common source of garbled Chinese SMS.</p>
+<pre><code># Python example using smpplib
+import smpplib.client
+import smpplib.consts
+
+client = smpplib.client.Client('sip.kaolach.com', 2775)
+client.connect()
+client.bind_transceiver(
+    system_id='your_system_id',
+    password='your_password',
+    system_type='',
+)
+
+# Send Chinese message
+message = '您的验证码是 847291，有效期10分钟'
+client.send_message(
+    source_addr_ton=smpplib.consts.SMPP_TON_ALNUM,
+    source_addr='Kaolach',
+    dest_addr_ton=smpplib.consts.SMPP_TON_INTL,
+    dest_addr_npi=smpplib.consts.SMPP_NPI_ISDN,
+    destination_addr='+8613812345678',
+    short_message=message.encode('utf-16-be'),  # UCS-2 encoding
+    data_coding=0x08,  # Unicode
+    registered_delivery=True,
+)</code></pre>
+
+<h2>Throughput Optimization</h2>
+<h3>Windowing</h3>
+<p>SMPP supports "windowing" — sending multiple submit_sm PDUs without waiting for each submit_sm_resp before sending the next. Window size determines max in-flight messages:</p>
+<ul>
+  <li>Window size 1: Synchronous (safe but slow: ~5–10 msg/sec)</li>
+  <li>Window size 10: ~50–100 msg/sec</li>
+  <li>Window size 100: ~500–1,000 msg/sec (standard enterprise)</li>
+  <li>Window size 1000: 5,000–10,000 msg/sec (high-volume aggregator)</li>
+</ul>
+<p>Your actual throughput limit is set by your account's configured TPS (Transactions Per Second). Contact your gateway to increase TPS for high-volume campaigns.</p>
+
+<h3>Multiple Connections</h3>
+<p>For throughput beyond what a single connection provides, establish multiple bind_transceiver connections (connection pool). Each connection has its own TPS limit; pool them to multiply throughput:</p>
+<pre><code># Example: 10 connections × 100 TPS each = 1,000 TPS
+connections = []
+for i in range(10):
+    c = create_smpp_connection(host, port, system_id, password)
+    connections.append(c)
+
+# Round-robin message distribution
+def send(message, phone):
+    connection = connections[hash(phone) % len(connections)]
+    connection.submit_sm(destination_addr=phone, short_message=message)</code></pre>
+
+<h2>Handling DLRs via deliver_sm</h2>
+<p>DLRs arrive as <code>deliver_sm</code> PDUs on the same connection. Parse the <code>short_message</code> body to extract status:</p>
+<pre><code># DLR message body format (SMSC-dependent, common format):
+# id:XXXXXX sub:001 dlvrd:001 submit date:2505011023 done date:2505011023
+#   stat:DELIVRD err:000 text:Your ve...
+
+import re
+
+def parse_dlr(short_message: bytes) -> dict:
+    text = short_message.decode('latin-1')
+    patterns = {
+        'message_id': r'id:(\S+)',
+        'status': r'stat:(\w+)',
+        'error': r'err:(\d+)',
+    }
+    return {k: re.search(v, text).group(1) for k, v in patterns.items()}</code></pre>
+
+<h2>Common SMPP Error Codes</h2>
+<table>
+  <tr><th>Error Code</th><th>Name</th><th>Meaning</th></tr>
+  <tr><td>0x00000000</td><td>ESME_ROK</td><td>Success</td></tr>
+  <tr><td>0x00000001</td><td>ESME_RINVMSGLEN</td><td>Message too long</td></tr>
+  <tr><td>0x0000000A</td><td>ESME_RINVSRCADR</td><td>Invalid source address</td></tr>
+  <tr><td>0x0000000B</td><td>ESME_RINVDSTADR</td><td>Invalid destination address</td></tr>
+  <tr><td>0x00000045</td><td>ESME_RTHROTTLED</td><td>Throttling error (exceeded TPS)</td></tr>
+  <tr><td>0x0000000D</td><td>ESME_RINVBNDSTS</td><td>Not bound / invalid bind status</td></tr>
+  <tr><td>0x0000000E</td><td>ESME_RALYBND</td><td>Already bound on this session</td></tr>
+</table>
+
+<div class="cta-box">
+  <h3>SMPP Access for Enterprise SMS</h3>
+  <p>Kaolach provides SMPP v3.4 access with configurable TPS, multiple connection support, and global routing to 200+ countries.</p>
+  <a href="/login" class="btn-primary">Request SMPP Access</a>
+  <a href="https://t.me/kaolachbot" class="btn-secondary">Contact Enterprise Sales</a>
+</div>
+
+</article>
+<aside class="post-sidebar">
+  <div class="toc">
+    <h4>Contents</h4>
+    <ol>
+      <li><a href="#what-is-smpp-and-when-do-you-need-it">What Is SMPP?</a></li>
+      <li><a href="#smpp-architecture">Architecture</a></li>
+      <li><a href="#smpp-bind-types">Bind Types</a></li>
+      <li><a href="#pdu-structure">PDU Structure</a></li>
+      <li><a href="#throughput-optimization">Throughput</a></li>
+      <li><a href="#handling-dlrs-via-deliver_sm">DLR Handling</a></li>
+      <li><a href="#common-smpp-error-codes">Error Codes</a></li>
+    </ol>
+  </div>
+</aside>
+</div>
+<footer class="site-footer">
+  <div class="footer-links"><a href="/">Home</a><a href="/blog/">Blog</a><a href="/sms-messaging">SMS</a><a href="/voice-termination">VoIP</a><a href="/login">Sign Up</a></div>
+  <p>© 2025 Kaolach · International SMS &amp; VoIP Gateway · <a href="https://t.me/kaolachbot">Telegram Support</a></p>
+</footer>
+</body>
+</html>

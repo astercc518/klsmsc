@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>OTP SMS Verification for China: A Practical Guide for App Developers | Kaolach Blog</title>
+<meta name="description" content="Learn how to reliably deliver OTP SMS to Chinese phone numbers (+86). Covers carrier filtering, message format, retry logic, delivery rate optimization, and choosing the right gateway.">
+<link rel="canonical" href="https://kaolach.com/blog/otp-sms-verification-china">
+<meta property="og:title" content="OTP SMS Verification for China: A Practical Guide for App Developers">
+<meta property="og:url" content="https://kaolach.com/blog/otp-sms-verification-china">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/blog/blog.css">
+</head>
+<body>
+<nav class="site-nav">
+  <a href="/" class="nav-brand"><img src="/kaolach-mark.png" alt="Kaolach">Kaolach</a>
+  <div class="nav-links"><a href="/blog/">Blog</a><a href="/sms-messaging">SMS</a><a href="/login" class="btn-cta">Get Started</a></div>
+</nav>
+
+<div class="post-hero">
+  <div class="post-hero-inner">
+    <span class="post-category">OTP · China</span>
+    <h1>OTP SMS Verification for China: A Practical Guide for App Developers</h1>
+    <div class="post-meta"><span>📅 May 2025</span><span>⏱ 11 min read</span><span>🏷 OTP · China · Verification · SMS</span></div>
+    <p class="post-excerpt">Chinese mobile number verification is one of the most technically demanding SMS use cases globally. This guide walks through exactly what it takes to achieve 95%+ delivery rates on +86 numbers.</p>
+  </div>
+</div>
+
+<div class="post-layout">
+<article class="post-content">
+
+<h2>Why OTP Delivery to China Is Uniquely Challenging</h2>
+<p>China's mobile infrastructure filters a significant portion of international SMS before it ever reaches the end user. Unlike domestic SMS (sent within China), international SMS to +86 numbers passes through carrier-controlled ingress gateways that apply multiple layers of filtering:</p>
+<ol>
+  <li><strong>Source filtering:</strong> Is the sending gateway whitelisted with this carrier?</li>
+  <li><strong>Volume filtering:</strong> Is this source sending at unusual rates?</li>
+  <li><strong>Content filtering:</strong> Does the message content match spam/phishing patterns?</li>
+  <li><strong>Sender ID filtering:</strong> Is the sender ID on the allowed list?</li>
+</ol>
+<p>Messages failing any check are silently dropped — no error is returned to the sending gateway in many cases, so you may think messages are delivering when they aren't.</p>
+
+<h2>The Perfect OTP Message Format for China</h2>
+<p>Message format significantly affects delivery rate to Chinese numbers. Follow this template:</p>
+<pre><code>【YourApp】Your verification code is 847291.
+Valid for 10 minutes. Do not share this code with anyone.</code></pre>
+
+<h3>Format Rules</h3>
+<table>
+  <tr><th>Element</th><th>Requirement</th><th>Reason</th></tr>
+  <tr><td>【Brand】prefix</td><td>Required, use full-width brackets</td><td>Standard Chinese SMS format; increases trust score</td></tr>
+  <tr><td>Code format</td><td>6-digit numeric preferred</td><td>Matches user expectations, easier to type</td></tr>
+  <tr><td>Expiry</td><td>Mention validity window</td><td>Reduces re-send requests</td></tr>
+  <tr><td>Language</td><td>English or Chinese OK</td><td>Carriers filter on content keywords, not language</td></tr>
+  <tr><td>URLs</td><td>Avoid</td><td>URL-containing OTPs have higher filter rates</td></tr>
+  <tr><td>Special chars</td><td>Minimize</td><td>Non-standard characters can trigger content filters</td></tr>
+</table>
+
+<h3>Characters to Avoid in China OTP Messages</h3>
+<ul>
+  <li>URLs of any kind (http://, https://, shortened URLs)</li>
+  <li>Emoji or special Unicode characters</li>
+  <li>Financial keywords: 贷款 (loan), 投资 (investment), 理财 (wealth management)</li>
+  <li>Phrases resembling prize/lottery notifications</li>
+  <li>Contact information (phone numbers, email addresses) other than the OTP code itself</li>
+</ul>
+
+<h2>Choosing Between Gateway Routes for OTP</h2>
+<p>Not all routes are equal. For OTP specifically, you should use <strong>premium direct-carrier routes</strong>. Here's the decision matrix:</p>
+
+<table>
+  <tr><th>Route Type</th><th>Delivery Rate</th><th>Time to Deliver</th><th>Cost</th><th>Use for OTP?</th></tr>
+  <tr><td>Direct carrier (premium)</td><td>94–97%</td><td>3–8 seconds</td><td>$0.045–$0.065</td><td>✅ Yes</td></tr>
+  <tr><td>Tier-1 aggregator</td><td>85–92%</td><td>8–30 seconds</td><td>$0.025–$0.040</td><td>⚠️ Acceptable</td></tr>
+  <tr><td>Economy/grey routes</td><td>30–70%</td><td>Variable</td><td>$0.008–$0.020</td><td>❌ No</td></tr>
+</table>
+
+<div class="info-box">
+<strong>Cost Reality Check:</strong> The difference between a $0.020 grey route and a $0.050 premium route is $0.030 per message. For a 10,000-user signup campaign, that's $300 extra. But if the grey route fails to deliver 40% of OTPs, you've lost those users entirely — worth far more than $300.
+</div>
+
+<h2>Implementing Robust OTP Delivery</h2>
+<h3>Architecture Overview</h3>
+<pre><code>User enters phone → Backend validates format → Send OTP via primary route
+                                                    ↓
+                                         Wait for DLR (max 30s)
+                                                    ↓
+                                    DLR = delivered? → ✅ Show "code sent"
+                                                    ↓
+                                    DLR = failed/timeout → Retry via backup route
+                                                    ↓
+                                    Still failed? → Offer voice OTP fallback</code></pre>
+
+<h3>Code Example: OTP Send with DLR Polling</h3>
+<pre><code># Python example
+import asyncio
+import httpx
+
+async def send_otp_china(phone: str, code: str) -> bool:
+    """Send OTP to Chinese number with DLR polling."""
+    payload = {
+        "to": phone,
+        "text": f"【MyApp】Your code is {code}. Valid 10 min.",
+        "type": "otp",
+        "callback_url": "https://api.myapp.com/sms/dlr"
+    }
+
+    async with httpx.AsyncClient() as client:
+        # Primary route
+        resp = await client.post(
+            "https://api.kaolach.com/v1/messages",
+            json=payload,
+            headers={"Authorization": f"Bearer {API_KEY}"}
+        )
+        msg = resp.json()
+
+        # Poll for DLR up to 30 seconds
+        for _ in range(6):
+            await asyncio.sleep(5)
+            status = await get_message_status(client, msg["message_id"])
+            if status == "delivered":
+                return True
+            if status in ["failed", "rejected"]:
+                break
+
+        # Fallback to secondary route
+        return await send_via_backup_route(phone, code)</code></pre>
+
+<h3>Rate Limiting to Prevent SMS Pumping</h3>
+<p>SMS pumping fraud — where bots trigger massive OTP requests to premium-rate numbers — can drain thousands of dollars in minutes. Implement these defenses:</p>
+<pre><code># Rate limiting rules (implement in Redis or similar)
+MAX_OTP_PER_PHONE = 3        # Per phone number per hour
+MAX_OTP_PER_IP = 10          # Per IP address per hour
+MAX_OTP_PER_USER = 5         # Per authenticated user per day
+SUSPICIOUS_THRESHOLD = 50    # Alert if >50 unique phones in 10 min</code></pre>
+
+<h2>Handling Edge Cases</h2>
+<h3>Hong Kong vs Mainland China</h3>
+<p>Don't confuse Hong Kong (+852) with Mainland China (+86). They are different carrier networks:</p>
+<ul>
+  <li><strong>+86</strong> — Mainland China: China Mobile, China Unicom, China Telecom</li>
+  <li><strong>+852</strong> — Hong Kong: HKT, HKBN, SmarTone, CSL (standard international routing applies, much simpler)</li>
+  <li><strong>+853</strong> — Macau: CTM, 3 Macau</li>
+</ul>
+
+<h3>Number Portability in China</h3>
+<p>China implemented number portability in 2019. This means a +86 number starting with 134 (historically China Mobile) may now be on China Unicom or China Telecom. If your gateway hard-routes by number prefix, you may be routing to the wrong carrier after portability. Use a gateway that performs real-time HLR lookups for China numbers.</p>
+
+<h3>Virtual Numbers (VoIP Lines)</h3>
+<p>Some Chinese users register with virtual/VoIP phone numbers from services like Google Voice China alternatives. SMS delivery to these numbers is unreliable — filter them out using number validation before sending.</p>
+
+<h2>Measuring OTP Performance</h2>
+<p>Track these metrics weekly to maintain delivery quality:</p>
+<table>
+  <tr><th>Metric</th><th>Target</th><th>Action if Below Target</th></tr>
+  <tr><td>DLR delivery rate (China)</td><td>&gt;92%</td><td>Switch to premium route</td></tr>
+  <tr><td>Median delivery time</td><td>&lt;15 seconds</td><td>Check route congestion</td></tr>
+  <tr><td>OTP re-send rate</td><td>&lt;8%</td><td>Review message format, route quality</td></tr>
+  <tr><td>Conversion rate (OTP → verified)</td><td>&gt;85%</td><td>Review UX, OTP expiry time</td></tr>
+</table>
+
+<div class="cta-box">
+  <h3>Reliable OTP Delivery to China</h3>
+  <p>Kaolach provides premium direct-carrier routes to China Mobile, Unicom, and Telecom with real DLR tracking and 95%+ delivery rates for OTP messages.</p>
+  <a href="/login" class="btn-primary">Start for Free</a>
+  <a href="/sms-messaging" class="btn-secondary">View Pricing</a>
+</div>
+
+</article>
+<aside class="post-sidebar">
+  <div class="toc">
+    <h4>Contents</h4>
+    <ol>
+      <li><a href="#why-otp-delivery-to-china-is-uniquely-challenging">Why It's Challenging</a></li>
+      <li><a href="#the-perfect-otp-message-format-for-china">Message Format</a></li>
+      <li><a href="#choosing-between-gateway-routes-for-otp">Route Selection</a></li>
+      <li><a href="#implementing-robust-otp-delivery">Implementation</a></li>
+      <li><a href="#handling-edge-cases">Edge Cases</a></li>
+      <li><a href="#measuring-otp-performance">Measuring Performance</a></li>
+    </ol>
+  </div>
+</aside>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-links"><a href="/">Home</a><a href="/blog/">Blog</a><a href="/sms-messaging">SMS</a><a href="/voice-termination">VoIP</a><a href="/login">Sign Up</a></div>
+  <p>© 2025 Kaolach · International SMS &amp; VoIP Gateway · <a href="https://t.me/kaolachbot">Telegram Support</a></p>
+</footer>
+</body>
+</html>

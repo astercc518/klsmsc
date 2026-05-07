@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>International SMS Gateway API: Developer's Complete Integration Guide 2025 | Kaolach Blog</title>
+<meta name="description" content="Step-by-step guide to integrating an international SMS gateway API. Covers REST API setup, SMPP, webhook delivery receipts, error handling, and multi-country routing best practices.">
+<link rel="canonical" href="https://kaolach.com/blog/international-sms-gateway-api">
+<meta property="og:title" content="International SMS Gateway API: Developer's Complete Integration Guide 2025">
+<meta property="og:url" content="https://kaolach.com/blog/international-sms-gateway-api">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/blog/blog.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"Article","headline":"International SMS Gateway API: Developer's Complete Integration Guide 2025","datePublished":"2025-05-01","author":{"@type":"Organization","name":"Kaolach"},"publisher":{"@type":"Organization","name":"Kaolach","logo":{"@type":"ImageObject","url":"https://kaolach.com/kaolach-mark.png"}}}</script>
+</head>
+<body>
+<nav class="site-nav">
+  <a href="/" class="nav-brand"><img src="/kaolach-mark.png" alt="Kaolach">Kaolach</a>
+  <div class="nav-links"><a href="/blog/">Blog</a><a href="/sms-messaging">SMS Service</a><a href="/login" class="btn-cta">Get Started</a></div>
+</nav>
+
+<div class="post-hero">
+  <div class="post-hero-inner">
+    <span class="post-category">Developer Guide</span>
+    <h1>International SMS Gateway API: Developer's Complete Integration Guide 2025</h1>
+    <div class="post-meta"><span>📅 May 2025</span><span>⏱ 14 min read</span><span>🏷 API · SMS · Integration</span></div>
+    <p class="post-excerpt">Whether you're building OTP verification, order notifications, or marketing campaigns, integrating an international SMS gateway requires understanding REST vs SMPP, delivery receipts, error handling, and global routing nuances. This guide covers it all.</p>
+  </div>
+</div>
+
+<div class="post-layout">
+<article class="post-content">
+
+<h2>REST API vs SMPP: Choosing Your Integration Method</h2>
+<p>International SMS gateways typically offer two integration protocols. Choosing the right one depends on your volume and latency requirements:</p>
+
+<table>
+  <tr><th>Feature</th><th>REST API (HTTP)</th><th>SMPP</th></tr>
+  <tr><td>Setup complexity</td><td>Low — any HTTP client</td><td>High — requires SMPP library</td></tr>
+  <tr><td>Latency</td><td>50–200ms per request</td><td>5–30ms per message</td></tr>
+  <tr><td>Throughput</td><td>50–500 msg/sec</td><td>500–10,000+ msg/sec</td></tr>
+  <tr><td>Best for</td><td>OTP, notifications, &lt;1M msg/day</td><td>Bulk campaigns, &gt;1M msg/day</td></tr>
+  <tr><td>Connection</td><td>Stateless HTTP requests</td><td>Persistent TCP session</td></tr>
+</table>
+
+<p>For most applications — including OTP verification, transactional alerts, and moderate-volume campaigns — the <strong>REST API</strong> is the right choice. SMPP is reserved for high-throughput enterprise bulk sending.</p>
+
+<h2>REST API Integration: Step by Step</h2>
+<h3>Authentication</h3>
+<p>Most modern SMS gateways use API key authentication via HTTP headers:</p>
+<pre><code>POST /v1/messages HTTP/1.1
+Host: api.kaolach.com
+Authorization: Bearer ak_your_api_key_here
+Content-Type: application/json</code></pre>
+
+<h3>Sending a Single SMS</h3>
+<pre><code>{
+  "to": "+8613812345678",
+  "from": "Kaolach",
+  "text": "【Kaolach】Your OTP is 482931. Valid 10 min.",
+  "type": "transactional"
+}</code></pre>
+
+<p>A successful response returns the message ID and initial status:</p>
+<pre><code>{
+  "message_id": "msg_8f3a92bc1d4e",
+  "status": "queued",
+  "to": "+8613812345678",
+  "segments": 1,
+  "cost": 0.042,
+  "currency": "USD"
+}</code></pre>
+
+<h3>Sending Bulk SMS</h3>
+<p>For sending to multiple recipients efficiently, use the batch endpoint rather than looping single-message calls:</p>
+<pre><code>{
+  "messages": [
+    {"to": "+8613812345678", "text": "Your order #1001 has shipped."},
+    {"to": "+447911123456",  "text": "Your order #1002 has shipped."},
+    {"to": "+19175551234",   "text": "Your order #1003 has shipped."}
+  ],
+  "from": "MyShop",
+  "type": "transactional"
+}</code></pre>
+
+<h2>Handling Delivery Receipts (DLR)</h2>
+<p>Delivery receipts tell you whether a message was actually delivered to the handset — not just accepted by the carrier. This is critical for OTP use cases where you need to confirm delivery before timing out.</p>
+
+<h3>Webhook Setup</h3>
+<p>Configure a public HTTPS endpoint on your server to receive DLR callbacks:</p>
+<pre><code>POST https://yourapp.com/webhooks/sms-dlr
+Content-Type: application/json
+
+{
+  "message_id": "msg_8f3a92bc1d4e",
+  "status": "delivered",
+  "delivered_at": "2025-05-01T10:23:45Z",
+  "error_code": null,
+  "network": "China Mobile"
+}</code></pre>
+
+<h3>DLR Status Values and Handling</h3>
+<table>
+  <tr><th>Status</th><th>Meaning</th><th>Recommended Action</th></tr>
+  <tr><td><code>delivered</code></td><td>Handset confirmed receipt</td><td>Mark OTP as sent successfully</td></tr>
+  <tr><td><code>failed</code></td><td>Carrier rejected or undeliverable</td><td>Retry on alternate route</td></tr>
+  <tr><td><code>undelivered</code></td><td>Number unreachable (off/no signal)</td><td>Retry after 60s, then fallback</td></tr>
+  <tr><td><code>expired</code></td><td>Delivery window exceeded</td><td>Send new OTP, old one invalid</td></tr>
+  <tr><td><code>queued</code></td><td>Still in delivery queue</td><td>Wait (timeout after 90s)</td></tr>
+</table>
+
+<h3>Idempotency</h3>
+<p>Your webhook may receive the same DLR multiple times (retries on network errors). Always process DLRs idempotently using the <code>message_id</code> as the deduplication key:</p>
+<pre><code># Python example
+def handle_dlr(webhook_data):
+    msg_id = webhook_data['message_id']
+    if sms_log.get(msg_id) == 'delivered':
+        return  # Already processed, skip
+    sms_log[msg_id] = webhook_data['status']
+    # ... business logic</code></pre>
+
+<h2>International Routing: Multi-Country Best Practices</h2>
+<h3>E.164 Number Formatting</h3>
+<p>Always submit phone numbers in E.164 format. This is the international standard and prevents routing ambiguity:</p>
+<pre><code># Correct — E.164 format
++8613812345678   # China
++447911123456    # United Kingdom
++12125551234     # United States
+
+# Wrong — will cause routing errors
+008613812345678  # Using 00 prefix instead of +
+8613812345678    # Missing + prefix
+013812345678     # Local format with leading 0</code></pre>
+
+<h3>Number Validation Before Sending</h3>
+<p>Use a Number Lookup (HLR query) API before sending OTPs to validate that a number is active and identify the carrier. This prevents wasting money on dead numbers and lets you route intelligently:</p>
+<pre><code>GET /v1/lookup/+8613812345678
+
+{
+  "number": "+8613812345678",
+  "valid": true,
+  "country": "CN",
+  "carrier": "China Mobile",
+  "line_type": "mobile",
+  "ported": false
+}</code></pre>
+
+<h3>Country-Specific Routing Rules</h3>
+<p>Different countries have radically different requirements. Your gateway should handle these automatically, but it's worth understanding the key constraints:</p>
+
+<table>
+  <tr><th>Country</th><th>Sender ID Type</th><th>Key Restriction</th></tr>
+  <tr><td>China (CN)</td><td>Numeric only</td><td>Carrier DLR required; alphanumeric blocked</td></tr>
+  <tr><td>India (IN)</td><td>6-char alpha (TRAI registered)</td><td>DLT registration mandatory since 2021</td></tr>
+  <tr><td>USA (US)</td><td>10DLC or Toll-Free</td><td>A2P registration required (10DLC)</td></tr>
+  <tr><td>UK (GB)</td><td>Alphanumeric or numeric</td><td>ICO registration for marketing</td></tr>
+  <tr><td>Indonesia (ID)</td><td>Numeric (6-char)</td><td>Kominfo registered senders only</td></tr>
+</table>
+
+<h2>Error Handling and Retry Logic</h2>
+<h3>HTTP Error Codes</h3>
+<pre><code>200 OK           — Message accepted
+400 Bad Request  — Invalid parameters (check number format, missing fields)
+401 Unauthorized — Invalid API key
+402 Payment Req. — Insufficient balance
+422 Unprocessable — Number invalid or carrier rejected
+429 Too Many Req — Rate limit exceeded (implement exponential backoff)
+500 Server Error  — Gateway error (retry with backoff)</code></pre>
+
+<h3>Exponential Backoff for Retries</h3>
+<pre><code># Python retry with exponential backoff
+import time, random
+
+def send_sms_with_retry(to, text, max_retries=3):
+    for attempt in range(max_retries):
+        response = gateway.send(to=to, text=text)
+        if response.status_code == 200:
+            return response
+        if response.status_code in [400, 401, 402]:
+            raise Exception(f"Non-retryable error: {response.status_code}")
+        # Retryable error (429, 500): exponential backoff
+        wait = (2 ** attempt) + random.uniform(0, 1)
+        time.sleep(wait)
+    raise Exception("Max retries exceeded")</code></pre>
+
+<h2>Rate Limits and Throughput Planning</h2>
+<p>Most REST SMS APIs enforce rate limits to prevent abuse. Plan your integration around these limits:</p>
+<ul>
+  <li><strong>Standard accounts:</strong> 50–100 messages per second</li>
+  <li><strong>High-volume accounts:</strong> 500–1,000 messages per second</li>
+  <li><strong>Batch endpoint:</strong> Up to 1,000 recipients per request</li>
+</ul>
+<p>If you're sending large campaigns (millions of messages), consider splitting them into waves over several hours rather than attempting to send everything immediately. This also improves deliverability as carriers rate-limit inbound traffic from single sources.</p>
+
+<h2>Security Best Practices</h2>
+<ol>
+  <li><strong>Never expose API keys in client-side code</strong> — all SMS API calls must come from your backend server.</li>
+  <li><strong>Validate webhook signatures</strong> — DLR webhooks should include an HMAC signature you verify server-side to prevent spoofed callbacks.</li>
+  <li><strong>Rate-limit OTP requests per user</strong> — prevent SMS pumping attacks that can exhaust your balance. Implement: max 3 OTP requests per phone number per hour.</li>
+  <li><strong>Log all SMS transactions</strong> — store message IDs, timestamps, and DLR statuses for audit and debugging.</li>
+  <li><strong>Monitor spending anomalies</strong> — set billing alerts; SMS pumping fraud can spike costs within minutes.</li>
+</ol>
+
+<div class="cta-box">
+  <h3>Ready to Integrate Kaolach SMS API?</h3>
+  <p>Get your API key in minutes. 200+ countries covered, real DLR tracking, and competitive pricing with no monthly minimums.</p>
+  <a href="/login" class="btn-primary">Get Free API Key</a>
+  <a href="/sms-messaging" class="btn-secondary">View API Docs</a>
+</div>
+
+<h2>Quick Integration Checklist</h2>
+<ul>
+  <li>☑ API key stored in environment variables (not hardcoded)</li>
+  <li>☑ Numbers formatted in E.164 before submission</li>
+  <li>☑ Webhook endpoint configured and HTTPS-enabled</li>
+  <li>☑ DLR processing is idempotent (dedup by message_id)</li>
+  <li>☑ Retry logic with exponential backoff implemented</li>
+  <li>☑ Rate limiting on OTP requests per phone number</li>
+  <li>☑ Balance monitoring and low-balance alerts configured</li>
+  <li>☑ Sender ID registered for target countries (India, USA, etc.)</li>
+</ul>
+
+</article>
+<aside class="post-sidebar">
+  <div class="toc">
+    <h4>Contents</h4>
+    <ol>
+      <li><a href="#rest-api-vs-smpp-choosing-your-integration-method">REST vs SMPP</a></li>
+      <li><a href="#rest-api-integration-step-by-step">REST API Setup</a></li>
+      <li><a href="#handling-delivery-receipts-dlr">Delivery Receipts</a></li>
+      <li><a href="#international-routing-multi-country-best-practices">International Routing</a></li>
+      <li><a href="#error-handling-and-retry-logic">Error Handling</a></li>
+      <li><a href="#security-best-practices">Security</a></li>
+    </ol>
+  </div>
+</aside>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-links"><a href="/">Home</a><a href="/blog/">Blog</a><a href="/sms-messaging">SMS</a><a href="/voice-termination">VoIP</a><a href="/login">Sign Up</a></div>
+  <p>© 2025 Kaolach · International SMS &amp; VoIP Gateway · <a href="https://t.me/kaolachbot">Telegram Support</a></p>
+</footer>
+</body>
+</html>

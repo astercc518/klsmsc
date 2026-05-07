@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Global SMS Compliance Guide 2025: GDPR, TCPA, PIPL & Beyond | Kaolach Blog</title>
+<meta name="description" content="Navigate SMS compliance across 10 major markets in 2025. Covers GDPR (EU), TCPA (USA), PIPL (China), India DLT, and more. Includes opt-in templates and compliance checklists.">
+<link rel="canonical" href="https://kaolach.com/blog/global-sms-compliance-guide">
+<meta property="og:title" content="Global SMS Compliance Guide 2025: GDPR, TCPA, PIPL & Beyond">
+<meta property="og:url" content="https://kaolach.com/blog/global-sms-compliance-guide">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/blog/blog.css">
+</head>
+<body>
+<nav class="site-nav">
+  <a href="/" class="nav-brand"><img src="/kaolach-mark.png" alt="Kaolach">Kaolach</a>
+  <div class="nav-links"><a href="/blog/">Blog</a><a href="/sms-messaging">SMS</a><a href="/login" class="btn-cta">Get Started</a></div>
+</nav>
+<div class="post-hero">
+  <div class="post-hero-inner">
+    <span class="post-category">Compliance</span>
+    <h1>Global SMS Compliance Guide 2025: GDPR, TCPA, PIPL & Beyond</h1>
+    <div class="post-meta"><span>📅 May 2025</span><span>⏱ 14 min read</span><span>🏷 Compliance · GDPR · TCPA · PIPL</span></div>
+    <p class="post-excerpt">Sending SMS globally means navigating a patchwork of regulations across every target market. One missed compliance requirement can mean fines of $500–$1,500 per message in the USA, or €20 million under GDPR. This guide keeps you on the right side of the law.</p>
+  </div>
+</div>
+<div class="post-layout">
+<article class="post-content">
+
+<h2>The Global SMS Compliance Landscape</h2>
+<p>Unlike email, where CAN-SPAM sets a relatively permissive baseline, SMS regulations around the world range from moderately strict (Australia) to very strict (EU, USA) to technically complex (India, China). The common thread across all markets: <strong>you need some form of consent before sending marketing SMS, and you must make opting out easy.</strong></p>
+
+<table>
+  <tr><th>Region</th><th>Key Law</th><th>Consent Type</th><th>Max Penalty</th></tr>
+  <tr><td>USA</td><td>TCPA</td><td>Express written consent</td><td>$1,500/message (willful)</td></tr>
+  <tr><td>European Union</td><td>GDPR + ePrivacy</td><td>Opt-in (prior consent)</td><td>€20M or 4% global revenue</td></tr>
+  <tr><td>UK</td><td>UK GDPR + PECR</td><td>Opt-in</td><td>£17.5M or 4% revenue</td></tr>
+  <tr><td>China</td><td>PIPL + MIIT rules</td><td>Explicit opt-in</td><td>¥50M or 5% annual revenue</td></tr>
+  <tr><td>Canada</td><td>CASL</td><td>Express or implied consent</td><td>CAD $10M/violation</td></tr>
+  <tr><td>Australia</td><td>Spam Act 2003</td><td>Express or inferred consent</td><td>AUD $2.5M/day</td></tr>
+  <tr><td>India</td><td>TRAI + PDPB</td><td>Explicit consent via DLT</td><td>₹50 lakh + service suspension</td></tr>
+</table>
+
+<h2>USA: TCPA Compliance</h2>
+<p>The Telephone Consumer Protection Act (TCPA) is the most litigated consumer protection statute in the USA. Class action lawsuits under TCPA are common, with settlements regularly exceeding $10 million.</p>
+
+<h3>What TCPA Requires</h3>
+<ul>
+  <li><strong>Express written consent</strong> before sending any marketing SMS. "Written" includes electronic — a checkbox on a web form works, but must be clearly labeled.</li>
+  <li><strong>Clear disclosure</strong> at the point of consent: what they're signing up for, that message/data rates may apply, and how to opt out.</li>
+  <li><strong>Honor opt-outs immediately</strong> — if someone replies STOP, they must receive no further marketing SMS.</li>
+  <li><strong>Time restrictions:</strong> No SMS before 8am or after 9pm local time of the recipient.</li>
+  <li><strong>10DLC registration</strong> (since 2023): All A2P SMS sent to US numbers must use 10DLC registered numbers.</li>
+</ul>
+
+<h3>TCPA-Compliant Opt-In Language (Web Form)</h3>
+<pre><code>☐ I agree to receive marketing text messages from [Brand] at the number
+  provided. Consent is not a condition of purchase. Message frequency
+  varies. Message and data rates may apply. Reply STOP to unsubscribe,
+  HELP for help. View our Privacy Policy: [link]</code></pre>
+
+<h3>Required STOP Keywords</h3>
+<p>Your system must recognize and honor: STOP, STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT. Replies should auto-respond with a confirmation.</p>
+
+<h2>European Union: GDPR + ePrivacy</h2>
+<p>GDPR doesn't explicitly address SMS, but the ePrivacy Directive (implemented as national law across EU member states) requires <strong>prior opt-in consent</strong> for electronic direct marketing, including SMS.</p>
+
+<h3>Key Requirements</h3>
+<ul>
+  <li>Consent must be <strong>freely given, specific, informed, and unambiguous</strong></li>
+  <li>Keep records of consent (who consented, when, what they consented to, which form/channel)</li>
+  <li>Honor right to erasure — if a user requests deletion, remove their phone number from all marketing lists</li>
+  <li>Data minimization — don't store more personal data than needed for the stated purpose</li>
+  <li>Cross-border data transfers require appropriate safeguards (Standard Contractual Clauses, adequacy decisions)</li>
+</ul>
+
+<h3>Consent Record Keeping</h3>
+<pre><code># Example consent record (store in your database)
+{
+  "phone": "+44791112345",
+  "consent_type": "marketing_sms",
+  "consent_given": true,
+  "consent_timestamp": "2025-03-15T14:23:11Z",
+  "consent_source": "checkout_form_v3",
+  "consent_ip": "82.x.x.x",
+  "opt_out_timestamp": null,
+  "gdpr_data_basis": "consent",
+  "retention_period": "3_years_after_last_interaction"
+}</code></pre>
+
+<h2>China: PIPL + MIIT Regulations</h2>
+<p>China's Personal Information Protection Law (PIPL), effective November 2021, is one of the world's strictest privacy laws. Combined with MIIT telecommunications regulations, it creates specific requirements for SMS:</p>
+
+<h3>Core Requirements</h3>
+<ul>
+  <li><strong>Explicit, separate consent</strong> — cannot bundle SMS consent with general terms of service</li>
+  <li><strong>Purpose limitation</strong> — data collected for one purpose cannot be used for SMS without new consent</li>
+  <li><strong>Opt-out in every promotional message</strong> — include "退订请回复TD" (Reply TD to unsubscribe)</li>
+  <li><strong>Sending hours</strong> — prohibited between 22:00–08:00 China Standard Time</li>
+  <li><strong>Sender identification</strong> — promotional SMS must use carrier-registered numeric sender IDs</li>
+</ul>
+
+<h3>PIPL Data Localization</h3>
+<p>If you collect and process personal data of Chinese users at scale (critical information infrastructure operators or those handling personal data of &gt;1 million individuals), data may need to be stored in China or pass a security assessment for cross-border transfer. For most international SMS use cases, this threshold is not reached — verify with legal counsel.</p>
+
+<h2>India: TRAI DLT Registration</h2>
+<p>India's Telecom Regulatory Authority (TRAI) implemented the Distributed Ledger Technology (DLT) platform in 2021, requiring all commercial SMS to be pre-registered. This has significantly reduced spam but adds onboarding complexity for international senders.</p>
+
+<h3>DLT Registration Requirements</h3>
+<ol>
+  <li><strong>Entity registration</strong> — register your company on the DLT platform (via operators like Vodafone Idea, Jio, Airtel)</li>
+  <li><strong>Header (Sender ID) registration</strong> — each sender ID must be pre-approved</li>
+  <li><strong>Template registration</strong> — every message template must be registered and approved before use; variable data can only appear in pre-defined positions</li>
+  <li><strong>Content scrubbing</strong> — carriers check every message against registered templates; mismatches are blocked</li>
+</ol>
+
+<div class="info-box">
+<strong>India Practical Note:</strong> DLT registration can take 2–4 weeks for entity approval and 1–2 weeks per template. Plan your India SMS launch timeline accordingly. International businesses must register through an Indian entity or work with a licensed Indian aggregator.
+</div>
+
+<h2>Building a Compliance Framework</h2>
+<h3>Universal Compliance Checklist</h3>
+<ul>
+  <li>☑ Obtain and record opt-in consent before first SMS</li>
+  <li>☑ Honor opt-out requests within 24 hours (immediately for TCPA)</li>
+  <li>☑ Store consent records with timestamp, source, and consent language</li>
+  <li>☑ Respect local sending time restrictions</li>
+  <li>☑ Include required opt-out instructions in promotional messages</li>
+  <li>☑ Register sender IDs for countries that require it (India, USA 10DLC, some EU markets)</li>
+  <li>☑ Register message templates for India DLT</li>
+  <li>☑ Conduct privacy impact assessment for new SMS programs</li>
+  <li>☑ Maintain suppression list of opted-out numbers globally</li>
+</ul>
+
+<h3>Suppression List Management</h3>
+<p>A global suppression list prevents re-sending to opted-out users across all campaigns and channels:</p>
+<pre><code>class SuppressionList:
+    def add(self, phone: str, reason: str, timestamp: datetime):
+        """Add a number to the global suppression list."""
+        db.execute("""
+            INSERT INTO suppression_list (phone_e164, reason, opted_out_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(phone_e164) DO UPDATE SET
+                reason = excluded.reason,
+                opted_out_at = excluded.opted_out_at
+        """, (phone, reason, timestamp))
+
+    def is_suppressed(self, phone: str) -> bool:
+        return db.fetchone(
+            "SELECT 1 FROM suppression_list WHERE phone_e164 = ?", (phone,)
+        ) is not None</code></pre>
+
+<div class="cta-box">
+  <h3>Compliant SMS Delivery Worldwide</h3>
+  <p>Kaolach's platform supports sender ID registration, DLT template management for India, and provides compliance documentation for major markets.</p>
+  <a href="/login" class="btn-primary">Start Compliant SMS</a>
+  <a href="https://t.me/kaolachbot" class="btn-secondary">Ask Compliance Questions</a>
+</div>
+
+</article>
+<aside class="post-sidebar">
+  <div class="toc">
+    <h4>Contents</h4>
+    <ol>
+      <li><a href="#the-global-sms-compliance-landscape">Overview</a></li>
+      <li><a href="#usa-tcpa-compliance">USA: TCPA</a></li>
+      <li><a href="#european-union-gdpr--eprivacy">EU: GDPR</a></li>
+      <li><a href="#china-pipl--miit-regulations">China: PIPL</a></li>
+      <li><a href="#india-trai-dlt-registration">India: DLT</a></li>
+      <li><a href="#building-a-compliance-framework">Framework</a></li>
+    </ol>
+  </div>
+</aside>
+</div>
+<footer class="site-footer">
+  <div class="footer-links"><a href="/">Home</a><a href="/blog/">Blog</a><a href="/sms-messaging">SMS</a><a href="/voice-termination">VoIP</a><a href="/login">Sign Up</a></div>
+  <p>© 2025 Kaolach · International SMS &amp; VoIP Gateway · <a href="https://t.me/kaolachbot">Telegram Support</a></p>
+</footer>
+</body>
+</html>

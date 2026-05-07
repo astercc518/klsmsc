@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Virtual DID Phone Numbers: How to Get a Local Number in 100+ Countries | Kaolach Blog</title>
+<meta name="description" content="Everything you need to know about DID (Direct Inward Dialing) virtual phone numbers. Use cases, pricing, setup, and how local numbers boost answer rates and customer trust globally.">
+<link rel="canonical" href="https://kaolach.com/blog/did-virtual-phone-numbers">
+<meta property="og:title" content="Virtual DID Phone Numbers: How to Get a Local Number in 100+ Countries">
+<meta property="og:url" content="https://kaolach.com/blog/did-virtual-phone-numbers">
+<meta property="og:type" content="article">
+<link rel="stylesheet" href="/blog/blog.css">
+</head>
+<body>
+<nav class="site-nav">
+  <a href="/" class="nav-brand"><img src="/kaolach-mark.png" alt="Kaolach">Kaolach</a>
+  <div class="nav-links"><a href="/blog/">Blog</a><a href="/phone-numbers">DID Numbers</a><a href="/login" class="btn-cta">Get Started</a></div>
+</nav>
+
+<div class="post-hero">
+  <div class="post-hero-inner">
+    <span class="post-category">DID Numbers</span>
+    <h1>Virtual DID Phone Numbers: How to Get a Local Number in 100+ Countries</h1>
+    <div class="post-meta"><span>📅 May 2025</span><span>⏱ 10 min read</span><span>🏷 DID · Virtual Numbers · VoIP</span></div>
+    <p class="post-excerpt">A local phone number in your customer's country dramatically increases answer rates, builds trust, and lets you operate globally without physical offices. Here's everything about DID numbers.</p>
+  </div>
+</div>
+
+<div class="post-layout">
+<article class="post-content">
+
+<h2>What Is a DID Phone Number?</h2>
+<p>DID stands for <strong>Direct Inward Dialing</strong>. A DID number is a virtual phone number that routes incoming calls to your existing phone system, VoIP softphone, or SIP trunk — regardless of your physical location.</p>
+<p>When a customer in the UK dials your +44 20 XXXX XXXX London number, the call is routed over the internet to wherever your team actually is — whether that's Beijing, Buenos Aires, or your home office. The caller pays local rates; you receive the call on your existing infrastructure.</p>
+
+<div class="info-box">
+<strong>Key Insight:</strong> Studies show that calls from local numbers have answer rates 4–6× higher than calls from international or unknown numbers. For outbound sales teams, this alone justifies the cost of DID numbers in target markets.
+</div>
+
+<h2>Types of DID Numbers</h2>
+<table>
+  <tr><th>Type</th><th>Format</th><th>Best For</th><th>Typical Cost/Month</th></tr>
+  <tr><td>Local geographic</td><td>+44 20 (London)</td><td>Building local presence</td><td>$3–$15</td></tr>
+  <tr><td>National (non-geographic)</td><td>+44 3XX (UK 03)</td><td>National businesses</td><td>$5–$20</td></tr>
+  <tr><td>Toll-free</td><td>+1 800 (US), +44 800 (UK)</td><td>Customer service</td><td>$5–$25 + per-minute</td></tr>
+  <tr><td>Mobile DID</td><td>+49 15X (Germany)</td><td>SMS reception + calls</td><td>$8–$30</td></tr>
+  <tr><td>Shared cost</td><td>+44 084X (UK)</td><td>Premium services</td><td>Revenue share</td></tr>
+</table>
+
+<h2>Top Use Cases for DID Numbers</h2>
+<h3>1. International Sales Teams</h3>
+<p>A software company based in Singapore selling to US enterprises can use a +1 212 (New York) or +1 415 (San Francisco) number for their sales team. US prospects see a local number, are more likely to answer, and perceive the company as having a US presence.</p>
+
+<h3>2. Multi-Country Customer Support</h3>
+<p>Instead of a single international support line that customers pay long-distance rates to call, provide local numbers in each major market. Route all calls to the same support team, but give each country's customers a familiar local number.</p>
+
+<h3>3. SMS-Capable DIDs for Two-Way Messaging</h3>
+<p>Mobile DID numbers support both inbound calls and <strong>two-way SMS</strong>. Customers can text your number, and you can reply — creating a conversational channel without requiring WhatsApp or WeChat. Particularly useful in markets where SMS is still the dominant business messaging channel.</p>
+
+<h3>4. A/B Testing Local vs. International Numbers</h3>
+<p>Marketers can track which ads use which DID numbers, measuring answer rates and conversion rates by country-specific number — useful for allocating ad spend across international markets.</p>
+
+<h3>5. Call Center Load Distribution</h3>
+<p>Use DIDs to distribute incoming calls across multiple call center locations. Calls to the Singapore DID route to the Asia team; calls to the UK DID route to the European team — while all appearing as local numbers to callers.</p>
+
+<h2>How DID Numbers Work Technically</h2>
+<p>When a caller dials your DID number, the call travels through the public switched telephone network (PSTN) to your DID provider's network. The provider then forwards the call over an IP connection (SIP protocol) to your registered SIP endpoint — which could be:</p>
+<ul>
+  <li>A SIP softphone app (Zoiper, Linphone) on your computer or phone</li>
+  <li>A desk VoIP phone (Grandstream, Yealink, Cisco)</li>
+  <li>A cloud PBX system (FreePBX, Asterisk, 3CX)</li>
+  <li>A SIP trunk connected to your on-premise PBX</li>
+</ul>
+
+<h3>SIP URI Configuration</h3>
+<p>To receive calls on your DID, configure your SIP client or PBX with:</p>
+<pre><code>SIP Server: sip.kaolach.com
+Username:   your_did_account_id
+Password:   your_sip_password
+DID Number: +441234567890
+
+# For PBX trunk configuration (FreePBX example):
+[kaolach-trunk]
+type=friend
+host=sip.kaolach.com
+username=your_account_id
+secret=your_password
+fromuser=your_account_id
+fromdomain=sip.kaolach.com
+insecure=port,invite
+context=from-trunk</code></pre>
+
+<h2>DID Numbers in Specific Countries</h2>
+<h3>United States (+1)</h3>
+<p>US DID numbers require A2P 10DLC registration for SMS. Voice-only DIDs are available without registration. Geographic numbers (NYC 212, LA 310, Chicago 312) and toll-free (800, 888) are both available. Cost: $2–$5/month for geographic, $5–$15/month for toll-free.</p>
+
+<h3>United Kingdom (+44)</h3>
+<p>London (020), Manchester (0161), Birmingham (0121) geographic numbers available, plus national 03XX numbers. UK DIDs are popular with Asian businesses targeting UK customers. Cost: £3–£8/month.</p>
+
+<h3>Germany (+49)</h3>
+<p>Germany requires local address registration for geographic numbers. National 032X numbers don't require local address. Mobile DIDs (+49 15X) support SMS. Cost: €5–€15/month.</p>
+
+<h3>Australia (+61)</h3>
+<p>Sydney (02), Melbourne (03), Brisbane (07) local numbers available. No regulatory registration required for international businesses. Cost: A$5–$12/month.</p>
+
+<h2>Pricing: What You Actually Pay</h2>
+<p>DID number pricing has two components:</p>
+<ol>
+  <li><strong>Monthly rental fee</strong> — typically $3–$30/month depending on country and number type</li>
+  <li><strong>Per-minute inbound rate</strong> — what you pay when calls come in, typically $0.005–$0.030/minute depending on country</li>
+</ol>
+<p>Outbound calling from a DID is priced separately per-minute based on destination country.</p>
+
+<div class="cta-box">
+  <h3>Get DID Numbers in 100+ Countries</h3>
+  <p>Kaolach provides instant DID provisioning with no minimum contracts. Local geographic, national, toll-free, and SMS-capable mobile numbers available.</p>
+  <a href="/login" class="btn-primary">Browse Available Numbers</a>
+  <a href="/phone-numbers" class="btn-secondary">View Coverage &amp; Pricing</a>
+</div>
+
+<h2>Frequently Asked Questions</h2>
+<h3>Can I keep my existing phone number and just add a DID?</h3>
+<p>Yes. You can port an existing number to a DID provider, or simply add a new DID that forwards to your existing line. Number porting availability varies by country.</p>
+<h3>Will callers know I'm not physically in their country?</h3>
+<p>No — from the caller's perspective, they're dialing a local number and the call connects normally. Call quality is typically identical to standard PSTN calls.</p>
+<h3>Can I use a DID number to send SMS?</h3>
+<p>Only mobile DID numbers support two-way SMS. Geographic and toll-free numbers are typically voice-only, though some providers offer SMS capability on certain number ranges.</p>
+</article>
+<aside class="post-sidebar">
+  <div class="toc">
+    <h4>Contents</h4>
+    <ol>
+      <li><a href="#what-is-a-did-phone-number">What Is a DID?</a></li>
+      <li><a href="#types-of-did-numbers">Number Types</a></li>
+      <li><a href="#top-use-cases-for-did-numbers">Use Cases</a></li>
+      <li><a href="#how-did-numbers-work-technically">Technical Setup</a></li>
+      <li><a href="#did-numbers-in-specific-countries">By Country</a></li>
+      <li><a href="#pricing-what-you-actually-pay">Pricing</a></li>
+    </ol>
+  </div>
+</aside>
+</div>
+<footer class="site-footer">
+  <div class="footer-links"><a href="/">Home</a><a href="/blog/">Blog</a><a href="/phone-numbers">DID Numbers</a><a href="/voice-termination">VoIP</a><a href="/login">Sign Up</a></div>
+  <p>© 2025 Kaolach · International SMS &amp; VoIP Gateway · <a href="https://t.me/kaolachbot">Telegram Support</a></p>
+</footer>
+</body>
+</html>
