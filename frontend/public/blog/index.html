@@ -12,11 +12,18 @@
 </head>
 <body>
 <nav class="site-nav">
-  <a href="/" class="nav-brand"><img src="/kaolach-wordmark.svg" alt="Kaolach" height="36"></a>
-  <div class="nav-links"><a href="/blog/" class="active">Blog</a><a href="/sms-messaging">SMS</a><a href="/voice-termination">VoIP</a><a href="/login" class="btn-cta">Get Started</a></div>
+  <a href="/" class="nav-brand"><img src="/kaolach-wordmark.svg" alt="Kaolach" height="38"></a>
+  <div class="nav-links">
+    <a href="/blog/" class="active">Blog</a>
+    <a href="/sms-messaging">SMS</a>
+    <a href="/voice-termination">VoIP</a>
+    <a href="/phone-numbers">DID Numbers</a>
+    <a href="/login" class="btn-cta">Get Started</a>
+  </div>
 </nav>
 
 <div class="blog-hero">
+  <div class="blog-hero-label">RESOURCES</div>
   <h1>Kaolach Blog</h1>
   <p>Practical guides on SMS delivery, VoIP, compliance, and global business communications.</p>
 </div>
@@ -27,43 +34,55 @@
   <div class="blog-grid">
 
     <a href="/blog/bulk-sms-china-2025" class="blog-card">
+      <div class="blog-card-icon">
+        <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+      </div>
       <div class="blog-card-meta">
         <span class="blog-card-category">China SMS</span>
         <span class="blog-card-read">12 min read</span>
       </div>
-      <h2 class="blog-card-title">Bulk SMS to China: Carrier Filtering, OTP Format & Best Routes (2025)</h2>
+      <div class="blog-card-title">Bulk SMS to China: Carrier Filtering, OTP Format &amp; Best Routes (2025)</div>
       <p class="blog-card-excerpt">China's three major carriers filter A2P SMS aggressively. Learn the exact message format, route types, and DLR codes required for high deliverability to Chinese mobile numbers.</p>
-      <span class="blog-card-tags">China · OTP · Carriers · Deliverability</span>
+      <span class="blog-card-link">Read article</span>
     </a>
 
     <a href="/blog/international-sms-gateway-api" class="blog-card">
+      <div class="blog-card-icon">
+        <svg viewBox="0 0 24 24"><path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></svg>
+      </div>
       <div class="blog-card-meta">
         <span class="blog-card-category">API Integration</span>
         <span class="blog-card-read">13 min read</span>
       </div>
-      <h2 class="blog-card-title">International SMS Gateway API: Complete Integration Guide 2025</h2>
+      <div class="blog-card-title">International SMS Gateway API: Complete Integration Guide 2025</div>
       <p class="blog-card-excerpt">End-to-end guide to integrating an SMS gateway REST API. Covers authentication, single and bulk send, DLR webhooks, error handling, and security best practices.</p>
-      <span class="blog-card-tags">REST API · Webhooks · DLR · Security</span>
+      <span class="blog-card-link">Read article</span>
     </a>
 
     <a href="/blog/otp-sms-verification-china" class="blog-card">
+      <div class="blog-card-icon">
+        <svg viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+      </div>
       <div class="blog-card-meta">
         <span class="blog-card-category">OTP</span>
         <span class="blog-card-read">11 min read</span>
       </div>
-      <h2 class="blog-card-title">OTP SMS Verification for China: Technical Implementation Guide</h2>
+      <div class="blog-card-title">OTP SMS Verification for China: Technical Implementation Guide</div>
       <p class="blog-card-excerpt">Build a reliable OTP system for Chinese phone numbers. Covers carrier filtering layers, correct message format, route selection, retry logic, and SMS pumping protection.</p>
-      <span class="blog-card-tags">OTP · China · Verification · Anti-Fraud</span>
+      <span class="blog-card-link">Read article</span>
     </a>
 
     <a href="/blog/smpp-protocol-guide" class="blog-card">
+      <div class="blog-card-icon">
+        <svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-5 11H4v-2h11v2zm3-4H4V9h14v2z"/></svg>
+      </div>
       <div class="blog-card-meta">
         <span class="blog-card-category">Enterprise SMS</span>
         <span class="blog-card-read">15 min read</span>
       </div>
-      <h2 class="blog-card-title">SMPP Protocol Explained: Complete Enterprise SMS Integration Guide</h2>
+      <div class="blog-card-title">SMPP Protocol Explained: Complete Enterprise SMS Integration Guide</div>
       <p class="blog-card-excerpt">Deep dive into SMPP v3.4 — PDU structure, bind types, windowing for high throughput, DLR handling, and Python code examples. Everything enterprise teams need.</p>
-      <span class="blog-card-tags">SMPP · Enterprise · Throughput · PDU</span>
+      <span class="blog-card-link">Read article</span>
     </a>
 
   </div>
@@ -72,33 +91,42 @@
   <div class="blog-grid">
 
     <a href="/blog/sms-marketing-roi-guide" class="blog-card">
+      <div class="blog-card-icon">
+        <svg viewBox="0 0 24 24"><path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z"/></svg>
+      </div>
       <div class="blog-card-meta">
         <span class="blog-card-category">SMS Marketing</span>
         <span class="blog-card-read">11 min read</span>
       </div>
-      <h2 class="blog-card-title">SMS Marketing ROI: Complete Guide for Global Businesses in 2025</h2>
+      <div class="blog-card-title">SMS Marketing ROI: Complete Guide for Global Businesses in 2025</div>
       <p class="blog-card-excerpt">Is SMS marketing worth it? We break down open rates, conversion rates, cost per acquisition, and ROI benchmarks across e-commerce, healthcare, and real estate.</p>
-      <span class="blog-card-tags">ROI · Marketing · Email vs SMS · Campaigns</span>
+      <span class="blog-card-link">Read article</span>
     </a>
 
     <a href="/blog/wholesale-sms-reseller" class="blog-card">
+      <div class="blog-card-icon">
+        <svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+      </div>
       <div class="blog-card-meta">
         <span class="blog-card-category">Reseller</span>
         <span class="blog-card-read">13 min read</span>
       </div>
-      <h2 class="blog-card-title">Wholesale SMS Reseller: Building a Profitable SMS Business in 2025</h2>
+      <div class="blog-card-title">Wholesale SMS Reseller: Building a Profitable SMS Business in 2025</div>
       <p class="blog-card-excerpt">How to launch an SMS reseller business. Reseller tiers, pricing strategy, vertical niches (healthcare, fintech, logistics), financial projections, and partner selection criteria.</p>
-      <span class="blog-card-tags">Reseller · White Label · Wholesale · Margins</span>
+      <span class="blog-card-link">Read article</span>
     </a>
 
     <a href="/blog/global-sms-compliance-guide" class="blog-card">
+      <div class="blog-card-icon">
+        <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+      </div>
       <div class="blog-card-meta">
         <span class="blog-card-category">Compliance</span>
         <span class="blog-card-read">14 min read</span>
       </div>
-      <h2 class="blog-card-title">Global SMS Compliance Guide 2025: GDPR, TCPA, PIPL &amp; Beyond</h2>
+      <div class="blog-card-title">Global SMS Compliance Guide 2025: GDPR, TCPA, PIPL &amp; Beyond</div>
       <p class="blog-card-excerpt">Navigate SMS regulations across 10 major markets. Covers GDPR, TCPA ($1,500/message penalties), PIPL (China), and India's DLT registration process with opt-in templates.</p>
-      <span class="blog-card-tags">GDPR · TCPA · PIPL · India DLT</span>
+      <span class="blog-card-link">Read article</span>
     </a>
 
   </div>
@@ -107,33 +135,42 @@
   <div class="blog-grid">
 
     <a href="/blog/sip-trunk-business-guide" class="blog-card">
+      <div class="blog-card-icon">
+        <svg viewBox="0 0 24 24"><path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
+      </div>
       <div class="blog-card-meta">
         <span class="blog-card-category">VoIP &amp; SIP</span>
         <span class="blog-card-read">12 min read</span>
       </div>
-      <h2 class="blog-card-title">SIP Trunk for Business: Complete Setup Guide, Costs &amp; Provider Selection 2025</h2>
+      <div class="blog-card-title">SIP Trunk for Business: Complete Setup Guide, Costs &amp; Provider Selection 2025</div>
       <p class="blog-card-excerpt">SIP trunking cuts calling costs by 40–70% vs PRI. Setup guide, bandwidth planning, FreePBX configuration, pricing models (pay-per-minute vs channel-based), and QoS tips.</p>
-      <span class="blog-card-tags">SIP Trunk · PBX · FreePBX · VoIP</span>
+      <span class="blog-card-link">Read article</span>
     </a>
 
     <a href="/blog/did-virtual-phone-numbers" class="blog-card">
+      <div class="blog-card-icon">
+        <svg viewBox="0 0 24 24"><path d="M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V1h-2zm3 18H5V8h14v11z"/></svg>
+      </div>
       <div class="blog-card-meta">
         <span class="blog-card-category">DID Numbers</span>
         <span class="blog-card-read">10 min read</span>
       </div>
-      <h2 class="blog-card-title">Virtual DID Phone Numbers: How to Get a Local Number in 100+ Countries</h2>
+      <div class="blog-card-title">Virtual DID Phone Numbers: How to Get a Local Number in 100+ Countries</div>
       <p class="blog-card-excerpt">Local numbers get 4–6× higher answer rates. Covers DID types (local, toll-free, mobile), use cases, SIP configuration, country-specific requirements, and pricing.</p>
-      <span class="blog-card-tags">DID · Virtual Numbers · Local Presence · SIP</span>
+      <span class="blog-card-link">Read article</span>
     </a>
 
     <a href="/blog/voip-bitcoin-crypto-payment" class="blog-card">
+      <div class="blog-card-icon">
+        <svg viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg>
+      </div>
       <div class="blog-card-meta">
         <span class="blog-card-category">Crypto Payments</span>
         <span class="blog-card-read">10 min read</span>
       </div>
-      <h2 class="blog-card-title">VoIP &amp; SMS with Bitcoin: Why Crypto Business Communication Makes Sense</h2>
+      <div class="blog-card-title">VoIP &amp; SMS with Bitcoin: Why Crypto Business Communication Makes Sense</div>
       <p class="blog-card-excerpt">Pay for international VoIP and SMS with Bitcoin or USDT. No chargebacks, no currency conversion, no frozen accounts. Practical guide for businesses in high-risk or international markets.</p>
-      <span class="blog-card-tags">Bitcoin · USDT · Crypto · Payments</span>
+      <span class="blog-card-link">Read article</span>
     </a>
 
   </div>
@@ -150,7 +187,10 @@
 </div>
 
 <footer class="site-footer">
-  <div class="footer-links"><a href="/">Home</a><a href="/blog/">Blog</a><a href="/sms-messaging">SMS</a><a href="/voice-termination">VoIP</a><a href="/phone-numbers">DID Numbers</a><a href="/login">Sign Up</a></div>
+  <div class="footer-links">
+    <a href="/">Home</a><a href="/blog/">Blog</a><a href="/sms-messaging">SMS</a>
+    <a href="/voice-termination">VoIP</a><a href="/phone-numbers">DID Numbers</a><a href="/login">Sign Up</a>
+  </div>
   <p>© 2025 Kaolach · International SMS &amp; VoIP Gateway · <a href="https://t.me/kaolachbot">Telegram Support</a></p>
 </footer>
 </body>
