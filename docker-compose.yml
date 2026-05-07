@@ -507,6 +507,7 @@ services:
       PREVIEW_BRAND_NAME: kaolach
       LIVE_ORIGIN: "https://illyvoip.com"
       PREVIEW_PROXY_MISS: "1"
+      PREVIEW_COOKIEYES_PROXY: "0"
     restart: unless-stopped
     logging: *default-logging
     networks:
