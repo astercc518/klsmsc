@@ -531,6 +531,29 @@ async def _do_buy_send_async_once(db, order_id, batch_id, account_id, number_ids
             break
         last_log_id = maps[-1]["id"]
 
+        # 短链占位符替换：data 业务（购数自动发送）也直推 Go 网关，必须替换；
+        # 与 batch_worker / api/v1/sms 极小批量路径一致。
+        try:
+            from app.utils.short_link import replace_track_urls_bulk
+            from app.config import settings as _cfg_sl
+            _sl_base = getattr(_cfg_sl, "SHORT_LINK_BASE_URL", "") or ""
+            _sl_target = getattr(_cfg_sl, "SHORT_LINK_DEFAULT_TARGET_URL", "") or ""
+            _replaced = await replace_track_urls_bulk(
+                db,
+                [(int(rm["id"]), rm["message"] or "") for rm in maps],
+                _sl_base, _sl_target,
+            )
+            if _replaced:
+                await db.commit()
+                # 把替换后的 message 应用到本批 maps（mutable copy）
+                maps = [
+                    {**dict(rm), "message": _replaced.get(int(rm["id"]), rm["message"])}
+                    for rm in maps
+                ]
+                logger.info(f"[buy-send-async] data 路径短链替换: {len(_replaced)} 条")
+        except Exception as _sl_err:
+            logger.warning(f"[buy-send-async] data 路径短链替换异常（已忽略）: {_sl_err}")
+
         smpp_payloads = []
         other_mids = []
         for rm in maps:

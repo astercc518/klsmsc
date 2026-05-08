@@ -609,10 +609,26 @@ const canSubmit = computed(() => {
     && orderForm.value.smsContent.trim()
 })
 
-const smsContentLen = computed(() => smsCodePointLength(orderForm.value.smsContent))
-const smsContentIsGsm7 = computed(() => isGsm7Message(orderForm.value.smsContent))
+// 短链占位符替换：让字符 / 段数 / 编码判定按「实际发送形态」计算，
+// 与 Send.vue / 后端 count_sms_parts 一致，避免占位符长度被算进计费。
+const TRACK_URL_RE = /\{\{TRACK_URL(?:=([^}]*))?\}\}/g
+function replaceTrackPlaceholdersForPreview(msg: string): string {
+  return msg.replace(TRACK_URL_RE, (_full, inner) => {
+    let base = 'klsms.com'
+    if (inner) {
+      const parts = String(inner).split('|')
+      if (parts.length >= 2 && parts[1].trim()) base = parts[1].trim()
+    }
+    return `${base.replace(/\/+$/, '')}/Ab3Xz7q`
+  })
+}
+const smsEffectiveContent = computed(() =>
+  replaceTrackPlaceholdersForPreview(orderForm.value.smsContent || '')
+)
+const smsContentLen = computed(() => smsCodePointLength(smsEffectiveContent.value))
+const smsContentIsGsm7 = computed(() => isGsm7Message(smsEffectiveContent.value))
 const smsSingleSegmentLimit = computed(() => smsContentIsGsm7.value ? 160 : 70)
-const smsContentParts = computed(() => countSmsParts(orderForm.value.smsContent))
+const smsContentParts = computed(() => countSmsParts(smsEffectiveContent.value))
 
 const hasVariables = computed(() => {
   const msg = orderForm.value.smsContent
@@ -835,7 +851,7 @@ const previewCustomFilter = async () => {
 }
 
 const submitOrder = async () => {
-  const parts = countSmsParts(orderForm.value.smsContent)
+  const parts = countSmsParts(replaceTrackPlaceholdersForPreview(orderForm.value.smsContent))
   if (parts > 1) {
     try {
       await ElMessageBox.confirm(

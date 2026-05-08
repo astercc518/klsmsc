@@ -16,6 +16,9 @@
       <el-tab-pane :label="$t('system.tabs.security')" name="security">
         <SystemSecurity />
       </el-tab-pane>
+      <el-tab-pane label="短链域名" name="short_link_domains">
+        <ShortLinkDomains />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -26,6 +29,7 @@ import SystemConfig from './Config.vue'
 import SystemLogs from './Logs.vue'
 import SystemServices from './Services.vue'
 import SystemSecurity from './Security.vue'
+import ShortLinkDomains from './ShortLinkDomains.vue'
 
 const activeTab = ref('config')
 </script>

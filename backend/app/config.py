@@ -147,6 +147,12 @@ class Settings(BaseSettings):
     # 生成客户模拟登录链接用的前端基址（无尾斜杠）
     PUBLIC_WEB_BASE_URL: str = "https://www.kaolach.com"
 
+    # 短链追踪配置
+    # SHORT_LINK_BASE_URL：短链对外访问前缀，如 https://www.kaolach.com/s 或 https://go.kaolach.com/s
+    SHORT_LINK_BASE_URL: str = "https://www.kaolach.com/s"
+    # 占位符 {{TRACK_URL}}（不含内嵌 URL）时使用的兜底目标
+    SHORT_LINK_DEFAULT_TARGET_URL: str = ""
+
     # 对外 SMPP 服务配置（客户连接用）
     SMPP_SERVER_HOST: str = "smpp.kaolach.com"
     SMPP_SERVER_PORT: int = 2775

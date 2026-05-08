@@ -205,6 +205,11 @@ services:
       - import_uploads:/tmp/smsc_imports
       # 私库异步上传：API 写临时文件与 Worker 读文件必须同卷，否则跨容器路径不可见
       - private_library_uploads:/tmp/smsc_pl_uploads
+      # 短链 SSL 证书：admin 通过 UI 上传 PEM/KEY 写入此目录，与 frontend nginx 同卷共享
+      # 子目录 domains/ 存放「一域名一证书」模型下每个域名的独立证书
+      - ./certs:/etc/nginx/certs
+      # 短链「一域名一证书」对应的 nginx server 块片段（每域名一个 .conf）
+      - ./nginx_snippets:/etc/nginx/short_link_snippets
     depends_on:
       mysql:
         condition: service_healthy
@@ -524,6 +529,7 @@ services:
       - "443:443"
     volumes:
       - ./certs:/etc/nginx/certs:ro
+      - ./nginx_snippets:/etc/nginx/short_link_snippets:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -557,6 +563,7 @@ services:
       RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs

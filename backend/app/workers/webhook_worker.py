@@ -225,3 +225,53 @@ def notify_status_change(message_id: str, status: str, **kwargs):
         )
     finally:
         loop.close()
+
+
+# ---------------------------------------------------------------------------
+# 短链点击计数任务
+# ---------------------------------------------------------------------------
+
+@celery_app.task(name="record_link_click_task", ignore_result=True)
+def record_link_click_task(token: str, client_ip: str, user_agent: str):
+    """
+    原子累加短链点击次数并记录 IP/UA。
+
+    使用 UPDATE ... SET click_count = click_count + 1 而非 SELECT + UPDATE，
+    避免高并发时行锁竞争导致死锁。单条 UPDATE 持锁时间极短（μs 级）。
+    """
+    import asyncio as _asyncio
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from sqlalchemy.pool import NullPool
+    from sqlalchemy import update as _upd
+    from datetime import datetime as _dt
+    from app.modules.sms.short_link_log import ShortLinkLog
+    from app.config import settings as _s
+
+    async def _do():
+        eng = create_async_engine(
+            _s.SQLALCHEMY_DATABASE_URL,
+            echo=False,
+            poolclass=NullPool,
+        )
+        try:
+            factory = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+            async with factory() as db:
+                await db.execute(
+                    _upd(ShortLinkLog)
+                    .where(ShortLinkLog.token == token)
+                    .values(
+                        click_count=ShortLinkLog.click_count + 1,
+                        last_click_at=_dt.now(),
+                    )
+                )
+                await db.commit()
+        finally:
+            await eng.dispose()
+
+    loop = _asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_do())
+    except Exception as exc:
+        logger.warning(f"record_link_click_task failed for token={token}: {exc}")
+    finally:
+        loop.close()

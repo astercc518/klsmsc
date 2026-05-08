@@ -31,20 +31,51 @@ export function normalizeForSmsSegmentCount(message: string): string {
   return out
 }
 
-/** 与 Python len(str) 一致：按 Unicode 码点计数 */
+/** 与 Python len(str) 一致：按 Unicode 码点计数；自动识别 {{TRACK_URL=...}} 占位符 */
 export function smsCodePointLength(message: string): number {
-  return [...message].length
+  const effective = (message && message.indexOf('{{TRACK_URL') !== -1)
+    ? substituteTrackUrlForCount(message)
+    : message
+  return [...(effective || '')].length
 }
 
 export function isGsm7Message(message: string): boolean {
   if (!message) return true
-  const norm = normalizeForSmsSegmentCount(message)
+  const effective = (message.indexOf('{{TRACK_URL') !== -1)
+    ? substituteTrackUrlForCount(message)
+    : message
+  const norm = normalizeForSmsSegmentCount(effective)
   return [...norm].every((ch) => GSM7_SET.has(ch))
 }
 
-/** 与 app.utils.sms_segment.count_sms_parts 一致 */
+// 短链占位符识别：{{TRACK_URL}} / {{TRACK_URL=target}} / {{TRACK_URL=target|base}}
+const TRACK_URL_RE = /\{\{TRACK_URL(?:=([^}]*))?\}\}/g
+
+/**
+ * 把 {{TRACK_URL=target|base}} 替换为「实际发送形态」字符串，仅用于字符数/分段计数。
+ * - 有 base：替换为 `${base}/Ab3Xz7q`（base 取占位符内的真实值）
+ * - 无 base：用兜底 'klsms.com' 估算
+ *
+ * 与 backend app.utils.sms_segment.substitute_track_url_for_count 行为一致。
+ */
+export function substituteTrackUrlForCount(message: string): string {
+  if (!message || message.indexOf('{{TRACK_URL') === -1) return message
+  return message.replace(TRACK_URL_RE, (_full, inner) => {
+    let base = 'klsms.com'
+    if (inner) {
+      const parts = String(inner).split('|')
+      if (parts.length >= 2 && parts[1].trim()) base = parts[1].trim()
+    }
+    return `${base.replace(/\/+$/, '')}/Ab3Xz7q`
+  })
+}
+
+/** 与 app.utils.sms_segment.count_sms_parts 一致；自动识别 {{TRACK_URL=...}} 占位符 */
 export function countSmsParts(message: string): number {
-  const norm = normalizeForSmsSegmentCount(message)
+  const effective = (message && message.indexOf('{{TRACK_URL') !== -1)
+    ? substituteTrackUrlForCount(message)
+    : message
+  const norm = normalizeForSmsSegmentCount(effective)
   const len = [...norm].length
   if (len === 0) return 0
   if ([...norm].every((ch) => GSM7_SET.has(ch))) {

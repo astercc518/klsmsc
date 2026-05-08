@@ -1008,6 +1008,33 @@ async def send_batch_sms(
             _log_rows = (
                 await db.execute(select(SMSLog).where(SMSLog.message_id.in_(mids_only)))
             ).scalars().all()
+
+            # 短链占位符替换：API 极小批量路径同样直推 Go 网关，必须在组装 payload 前替换。
+            # 不抛出异常以免阻断发送；任一条目失败仅 warn 保留原文。
+            try:
+                from app.utils.short_link import (
+                    has_track_url_placeholder,
+                    replace_track_url_in_message,
+                )
+                from app.config import settings as _cfg_sl
+                _sl_base = getattr(_cfg_sl, "SHORT_LINK_BASE_URL", "") or ""
+                _sl_target = getattr(_cfg_sl, "SHORT_LINK_DEFAULT_TARGET_URL", "") or ""
+                _need = [r for r in _log_rows if has_track_url_placeholder(r.message or "")]
+                _did = 0
+                for _r in _need:
+                    try:
+                        _r.message = await replace_track_url_in_message(
+                            db, _r.id, _r.message, _sl_base, _sl_target,
+                        )
+                        _did += 1
+                    except Exception as _e:
+                        logger.warning(f"API 极小批量短链替换失败 sms_log_id={_r.id}: {_e}")
+                if _did:
+                    await db.commit()
+                    logger.info(f"API 极小批量短链替换: replaced={_did}/{len(_need)}")
+            except Exception as _outer:
+                logger.warning(f"API 极小批量短链替换异常（已忽略）: {_outer}")
+
             _bs_snap = ""
             if batch_pk:
                 _bstat = await db.execute(select(SmsBatch.status).where(SmsBatch.id == batch_pk))

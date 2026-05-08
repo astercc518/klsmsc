@@ -89,6 +89,46 @@ def _run_async(coro, *, timeout: Optional[float] = None):
             pass
         loop.close()
 
+async def _replace_track_urls_for_logs(db, sms_logs) -> int:
+    """
+    批量短链替换：对含 {{TRACK_URL=...}} 的 SMSLog 行原地替换 message 字段。
+    必须在 sms_log.id 已落库（flush 后）调用，因为 short_link_logs 依赖 sms_log_id。
+
+    返回成功替换的条数；任何条目失败仅 warn，不抛出，避免阻断整批发送。
+    """
+    if not sms_logs:
+        return 0
+    try:
+        from app.utils.short_link import (
+            has_track_url_placeholder,
+            replace_track_url_in_message,
+        )
+    except Exception as e:
+        logger.warning(f"短链工具加载失败: {e}")
+        return 0
+
+    base_default = getattr(settings, "SHORT_LINK_BASE_URL", "") or ""
+    target_default = getattr(settings, "SHORT_LINK_DEFAULT_TARGET_URL", "") or ""
+
+    need = [sl for sl in sms_logs if has_track_url_placeholder(sl.message or "")]
+    if not need:
+        return 0
+
+    ok = 0
+    for sl in need:
+        try:
+            sl.message = await replace_track_url_in_message(
+                db, sl.id, sl.message, base_default, target_default,
+            )
+            ok += 1
+        except Exception as e:
+            logger.warning(f"批量短链替换失败 sms_log_id={sl.id}, 保留原文: {e}")
+    if ok:
+        await db.flush()  # 持久化 sms_log.message 到事务内
+        logger.info(f"批量短链替换: total={len(need)} replaced={ok}")
+    return ok
+
+
 @celery_app.task(name='process_batch', bind=True)
 def process_batch(self, batch_id: int):
     """
@@ -446,6 +486,9 @@ async def _queue_commit_batch(
         from app.utils.smpp_payload import smpp_payload_public_dict
 
         rows = (await db.execute(select(SMSLog).where(SMSLog.message_id.in_(smpp_mids)))).scalars().all()
+        # 短链占位符替换（与主路径一致）：必须在 SMPP payload 组装前
+        if await _replace_track_urls_for_logs(db, rows):
+            await db.commit()
         mid_to_row = {r.message_id: r for r in rows}
         smpp_payloads = []
         for mid in smpp_mids:
@@ -937,6 +980,10 @@ async def _do_process_chunk(
                                 db.add_all(chunk_logs)
                                 await db.flush()
 
+                            # batch_worker 直接组装 SMPP 负载丢给 Go 网关、绕过 sms_worker._send_sms_async，
+                            # 所以短链占位符必须在这里替换。否则 SMS 发出去仍是 {{TRACK_URL=...}}（线上事故）。
+                            await _replace_track_urls_for_logs(db, chunk_logs)
+
                             smpp_payloads = [
                                 smpp_payload_public_dict(sl, _batch_status_str)
                                 for sl in smpp_logs_batch
@@ -1011,6 +1058,9 @@ async def _do_process_chunk(
                                         _rows = (
                                             await db.execute(select(SMSLog).where(SMSLog.message_id.in_(_mids)))
                                         ).scalars().all()
+                                        # 短链替换（与 batch 主路径一致）：必须在 SMPP payload 组装前
+                                        if await _replace_track_urls_for_logs(db, _rows):
+                                            await db.commit()
                                         _by = {r.message_id: r for r in _rows}
                                         _pl = [
                                             smpp_payload_public_dict(_by[m], _batch_status_str)
@@ -1055,6 +1105,8 @@ async def _do_process_chunk(
                                 _rows = (
                                     await db.execute(select(SMSLog).where(SMSLog.message_id.in_(_mids)))
                                 ).scalars().all()
+                                if await _replace_track_urls_for_logs(db, _rows):
+                                    await db.commit()
                                 _by = {r.message_id: r for r in _rows}
                                 _pl = [
                                     smpp_payload_public_dict(_by[m], _batch_status_str)

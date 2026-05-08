@@ -5,6 +5,9 @@
 *.pem
 certs/
 
+# 短链：admin 上传证书后由后端自动生成的 nginx server 块片段（运行时数据）
+nginx_snippets/
+
 # Python
 __pycache__/
 *.py[cod]

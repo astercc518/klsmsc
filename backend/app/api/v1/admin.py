@@ -2157,6 +2157,19 @@ async def channel_test_send(
 
     try:
         if channel.protocol == "SMPP":
+            # 短链占位符替换（admin 测试也直推 Go 网关；为防误用，同样替换）
+            try:
+                from app.utils.short_link import has_track_url_placeholder, replace_track_url_in_message
+                from app.config import settings as _cfg_sl
+                if has_track_url_placeholder(sms_log.message or ""):
+                    sms_log.message = await replace_track_url_in_message(
+                        db, sms_log.id, sms_log.message,
+                        getattr(_cfg_sl, "SHORT_LINK_BASE_URL", "") or "",
+                        getattr(_cfg_sl, "SHORT_LINK_DEFAULT_TARGET_URL", "") or "",
+                    )
+            except Exception as _sl_err:
+                logger.warning(f"admin 测试短链替换异常（已忽略）: {_sl_err}")
+
             # 直投 sms_send_smpp，与 Worker 重投格式一致，由 Go gateway 消费；不依赖 worker-sms 抢 sms_send
             await db.commit()
 

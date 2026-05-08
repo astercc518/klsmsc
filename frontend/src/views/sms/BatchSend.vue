@@ -185,11 +185,19 @@
               >
                 {{ $t('batchSend.resendUnsent') }}
               </el-button>
-              <el-button 
-                v-if="row.status === 'pending' || row.status === 'processing'" 
-                link 
-                type="danger" 
-                size="small" 
+              <el-button
+                link
+                type="success"
+                size="small"
+                @click="openClickStats(row)"
+              >
+                短链点击
+              </el-button>
+              <el-button
+                v-if="row.status === 'pending' || row.status === 'processing'"
+                link
+                type="danger"
+                size="small"
                 @click="cancelBatch(row)"
               >
                 {{ $t('common.cancel') }}
@@ -355,6 +363,76 @@ phone,name,code<br>
         <el-button type="primary" @click="submitUpload" :loading="uploading">{{ $t('batchSend.startSend') }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- ========== 短链点击统计对话框 ========== -->
+    <el-dialog
+      v-model="clickStatsVisible"
+      :title="`短链点击 — 批次 #${clickStatsBatch?.id ?? ''}`"
+      width="820px"
+      destroy-on-close
+    >
+      <div v-loading="clickStatsLoading">
+        <div class="click-stats-summary">
+          <div class="cs-card">
+            <div class="cs-num">{{ clickStats.total_links }}</div>
+            <div class="cs-label">短链总数</div>
+          </div>
+          <div class="cs-card">
+            <div class="cs-num cs-num-primary">{{ clickStats.clicked_links }}</div>
+            <div class="cs-label">被点击</div>
+          </div>
+          <div class="cs-card">
+            <div class="cs-num cs-num-success">{{ clickStats.total_clicks }}</div>
+            <div class="cs-label">总点击次数</div>
+          </div>
+          <div class="cs-card">
+            <div class="cs-num">{{ clickRatePercent }}</div>
+            <div class="cs-label">点击率</div>
+          </div>
+        </div>
+
+        <div class="click-actions">
+          <el-button
+            type="primary"
+            size="small"
+            :disabled="!clickStats.clicked_links"
+            @click="downloadClickedCsv"
+          >
+            下载 CSV（{{ clickStats.clicked_links }} 个号码）
+          </el-button>
+          <el-button size="small" @click="loadClickedPhones(1)">刷新列表</el-button>
+        </div>
+
+        <el-table :data="clickedPhones" stripe size="small" style="margin-top: 12px">
+          <el-table-column prop="phone_number" label="手机号码" width="160" />
+          <el-table-column prop="click_count" label="点击次数" width="100" align="right" />
+          <el-table-column prop="last_click_at" label="最近点击时间" width="190">
+            <template #default="{ row }">
+              {{ row.last_click_at ? formatBatchDate(row.last_click_at) : '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="original_url" label="跳转链接" show-overflow-tooltip />
+          <el-table-column prop="token" label="Token" width="100" />
+        </el-table>
+
+        <div class="pagination" v-if="clickedTotal > 0">
+          <el-pagination
+            v-model:current-page="clickedPage"
+            :page-size="clickedPageSize"
+            :total="clickedTotal"
+            layout="total, prev, pager, next, jumper"
+            @current-change="loadClickedPhones"
+            background
+            size="small"
+          />
+        </div>
+
+        <el-empty
+          v-if="!clickStatsLoading && !clickedPhones.length"
+          description="暂无被点击的号码"
+        />
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -376,6 +454,13 @@ import {
 } from '@/api/batch'
 import { getSMSRecords } from '@/api/sms'
 import { getTemplates } from '@/api/template'
+import {
+  getBatchClickStats,
+  listBatchClickedPhones,
+  downloadBatchClickedPhonesCsvUrl,
+  type ClickStats,
+  type ClickedPhoneRow,
+} from '@/api/short-link'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -422,6 +507,76 @@ const uploadForm = reactive({
 const templates = ref<any[]>([])
 /** 正在导出 CSV 的任务 id，用于按钮 loading */
 const exportingBatchId = ref<number | null>(null)
+
+// ========== 短链点击统计 ==========
+const clickStatsVisible = ref(false)
+const clickStatsLoading = ref(false)
+const clickStatsBatch = ref<SmsBatch | null>(null)
+const clickStats = reactive<ClickStats>({
+  batch_id: 0,
+  total_links: 0,
+  clicked_links: 0,
+  total_clicks: 0,
+})
+const clickedPhones = ref<ClickedPhoneRow[]>([])
+const clickedPage = ref(1)
+const clickedPageSize = ref(20)
+const clickedTotal = ref(0)
+
+const clickRatePercent = computed(() => {
+  if (!clickStats.total_links) return '—'
+  const r = (clickStats.clicked_links / clickStats.total_links) * 100
+  return `${r.toFixed(1)}%`
+})
+
+async function openClickStats(row: SmsBatch) {
+  clickStatsBatch.value = row
+  clickStatsVisible.value = true
+  clickStatsLoading.value = true
+  Object.assign(clickStats, { batch_id: row.id, total_links: 0, clicked_links: 0, total_clicks: 0 })
+  clickedPhones.value = []
+  clickedTotal.value = 0
+  clickedPage.value = 1
+  try {
+    const [statsResp, phonesResp]: any = await Promise.all([
+      getBatchClickStats(row.id),
+      listBatchClickedPhones(row.id, 1, clickedPageSize.value),
+    ])
+    Object.assign(clickStats, statsResp?.data?.data || statsResp?.data || {})
+    const ph = phonesResp?.data?.data || phonesResp?.data || {}
+    clickedPhones.value = ph.items || []
+    clickedTotal.value = ph.total || 0
+  } catch (e: any) {
+    ElMessage.error(`加载点击数据失败：${e?.message || e}`)
+  } finally {
+    clickStatsLoading.value = false
+  }
+}
+
+async function loadClickedPhones(page = 1) {
+  if (!clickStatsBatch.value) return
+  clickStatsLoading.value = true
+  try {
+    const resp: any = await listBatchClickedPhones(
+      clickStatsBatch.value.id, page, clickedPageSize.value,
+    )
+    const ph = resp?.data?.data || resp?.data || {}
+    clickedPhones.value = ph.items || []
+    clickedTotal.value = ph.total || 0
+    clickedPage.value = page
+  } catch (e: any) {
+    ElMessage.error(`加载失败：${e?.message || e}`)
+  } finally {
+    clickStatsLoading.value = false
+  }
+}
+
+function downloadClickedCsv() {
+  if (!clickStatsBatch.value) return
+  // 直接打开 URL 由浏览器流式下载；带 Cookie / 代理认证由 nginx 透传
+  const url = downloadBatchClickedPhonesCsvUrl(clickStatsBatch.value.id)
+  window.open(url, '_blank')
+}
 
 /** 回执已送达条数（缺省兼容旧后端） */
 function batchDeliveredCount(row: SmsBatch & Record<string, unknown>): number {
@@ -840,6 +995,39 @@ onUnmounted(() => {
 <style scoped>
 .batch-send-page {
   width: 100%;
+}
+
+/* 短链点击对话框 */
+.click-stats-summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.cs-card {
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 14px 12px;
+  text-align: center;
+}
+.cs-num {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--el-text-color-primary);
+}
+.cs-num-primary { color: var(--el-color-primary); }
+.cs-num-success { color: var(--el-color-success); }
+.cs-label {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.click-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 /* 列表上方：通道接受 vs 终态回执 vs 手机送达 说明 */

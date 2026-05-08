@@ -116,6 +116,7 @@ celery_app.conf.task_routes.update({
     'inspect_batches_task': {'queue': 'celery'},
     'sync_processing_batch_progress_task': {'queue': 'celery'},
     'send_webhook': {'queue': 'webhook_tasks'},
+    'record_link_click_task': {'queue': 'webhook_tasks'},
     'okcc_sync_balances_task': {'queue': 'integrations'},
     # 与 send_sms_task 同队列：仅起 worker-sms 时也能消费模拟回执，避免 DataSend 万级任务积压在无人消费的 celery 队列
     'virtual_dlr_generate': {'queue': 'sms_send'},

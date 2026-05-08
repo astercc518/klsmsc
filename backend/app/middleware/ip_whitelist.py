@@ -31,7 +31,8 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
     
     async def dispatch(self, request: Request, call_next):
         # 跳过不需要IP验证的路径
-        if request.url.path in self.skip_paths:
+        path = request.url.path
+        if path in self.skip_paths or path.startswith("/s/"):
             return await call_next(request)
         
         # 获取API Key

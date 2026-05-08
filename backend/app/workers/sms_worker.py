@@ -109,8 +109,36 @@ def _make_session():
     return eng, factory
 
 
+async def _replace_track_urls_for_orm_logs(db, sms_logs):
+    """与 batch_worker._replace_track_urls_for_logs 同语义：在加载器里也兜底替换占位符。
+
+    放在加载器里的好处：任何调用方（包括以 message_id 字符串方式入队的旧路径）都受保护，
+    避免再出现「某个新增路径忘了在组装 payload 前替换」导致占位符发到客户手机。
+    """
+    if not sms_logs:
+        return
+    try:
+        from app.utils.short_link import has_track_url_placeholder, replace_track_url_in_message
+        sl_base = getattr(settings, "SHORT_LINK_BASE_URL", "") or ""
+        sl_target = getattr(settings, "SHORT_LINK_DEFAULT_TARGET_URL", "") or ""
+        need = [sl for sl in sms_logs if has_track_url_placeholder(sl.message or "")]
+        if not need:
+            return
+        for sl in need:
+            try:
+                sl.message = await replace_track_url_in_message(
+                    db, sl.id, sl.message, sl_base, sl_target,
+                )
+            except Exception as e:
+                logger.warning(f"加载器短链替换失败 sms_log_id={sl.id}: {e}")
+        await db.commit()
+        logger.info(f"加载器短链兜底替换: {len(need)} 条")
+    except Exception as e:
+        logger.warning(f"加载器短链替换异常（已忽略）: {e}")
+
+
 async def _load_smpp_payload_by_message_id(message_id: str) -> Optional[Dict[str, Any]]:
-    """按 message_id 查库组装 Go 网关所需全量负载（仅用于兼容旧入队路径）。"""
+    """按 message_id 查库组装 Go 网关所需全量负载（兼容旧入队路径，附带短链兜底替换）。"""
     eng, Session = _make_session()
     try:
         async with Session() as db:
@@ -118,6 +146,7 @@ async def _load_smpp_payload_by_message_id(message_id: str) -> Optional[Dict[str
             sms_log = result.scalar_one_or_none()
             if not sms_log:
                 return None
+            await _replace_track_urls_for_orm_logs(db, [sms_log])
             bs = ""
             if sms_log.batch_id:
                 _bs = (
@@ -132,7 +161,7 @@ async def _load_smpp_payload_by_message_id(message_id: str) -> Optional[Dict[str
 
 
 async def _load_smpp_payloads_by_message_ids(message_ids: List[str]) -> List[Dict[str, Any]]:
-    """批量按 message_id 组装 SMPP 负载列表（顺序与输入一致，缺失则跳过）。"""
+    """批量按 message_id 组装 SMPP 负载列表（含短链兜底替换；顺序与输入一致，缺失则跳过）。"""
     if not message_ids:
         return []
     eng, Session = _make_session()
@@ -140,6 +169,7 @@ async def _load_smpp_payloads_by_message_ids(message_ids: List[str]) -> List[Dic
         async with Session() as db:
             result = await db.execute(select(SMSLog).where(SMSLog.message_id.in_(message_ids)))
             logs = list(result.scalars().all())
+            await _replace_track_urls_for_orm_logs(db, logs)
             by_mid = {r.message_id: r for r in logs}
             from app.utils.smpp_payload import smpp_payload_public_dict
 
@@ -370,6 +400,28 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
                 return {"success": False, "error": "No available channel"}
         
             logger.info(f"使用通道: {channel.channel_code} ({channel.protocol})")
+
+            # ── 短链替换 ──────────────────────────────────────────────────────
+            # 在发送前将消息里的 {{TRACK_URL=https://...}} 替换为唯一短链 URL。
+            # 使用 INSERT IGNORE SQL 写 short_link_logs，不会影响当前会话的其他脏字段；
+            # 随后调用方正常 commit 时会一并提交此次写入，保证幂等且不阻塞主流程。
+            from app.utils.short_link import has_track_url_placeholder, replace_track_url_in_message
+            if has_track_url_placeholder(sms_log.message):
+                try:
+                    sms_log.message = await replace_track_url_in_message(
+                        db,
+                        sms_log.id,
+                        sms_log.message,
+                        settings.SHORT_LINK_BASE_URL,
+                        settings.SHORT_LINK_DEFAULT_TARGET_URL,
+                    )
+                    # 立即落库：SMPP 负载在此之后才组装；重试时也读到已替换内容
+                    await db.commit()
+                except Exception as _sl_err:
+                    logger.warning(
+                        f"短链替换失败，消息原文发送: {message_id}, {_sl_err}"
+                    )
+            # ─────────────────────────────────────────────────────────────────
 
             # SMPP：由 Go smpp-gateway 消费 sms_send_smpp；在 sms_send 上执行时重投该队列
             if channel.protocol == 'SMPP' and _current_queue != 'sms_send_smpp':

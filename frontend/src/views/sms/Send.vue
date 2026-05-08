@@ -89,6 +89,9 @@
                   <el-button size="small" type="info" plain @click="openCustomVarDialog">+ 自定义</el-button>
                 </div>
                 <div class="var-toolbar-right">
+                  <el-button size="small" type="warning" plain @click="showShortLinkDialog = true">
+                    <el-icon><Link /></el-icon> 短链转换
+                  </el-button>
                   <el-button size="small" type="success" @click="showTemplateEngine = true">
                     <el-icon><MagicStick /></el-icon> 智能生成
                   </el-button>
@@ -840,6 +843,13 @@
       </template>
     </el-dialog>
 
+    <!-- ========== 短链转换对话框 ========== -->
+    <ShortLinkConvertDialog
+      v-model="showShortLinkDialog"
+      :message="form.message"
+      @apply="applyShortLinkResult"
+    />
+
     <!-- ========== AI 生成对话框 ========== -->
     <el-dialog v-model="showAiDialog" title="AI 智能生成短信文案" width="680px" destroy-on-close>
       <el-form label-position="top">
@@ -946,7 +956,8 @@ import { useRoute } from 'vue-router'
 import type { FormInstance } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick } from '@element-plus/icons-vue'
+import { MagicStick, Link } from '@element-plus/icons-vue'
+import ShortLinkConvertDialog from '../../components/ShortLinkConvertDialog.vue'
 import { sendBatchSMS, submitSmsApproval } from '@/api/sms'
 import { getChannels } from '@/api/channel'
 import { getChannelBannedWords } from '@/api/sms'
@@ -1521,6 +1532,10 @@ const tplResults = ref<string[]>([])
 const tplSelectedSet = ref<Set<number>>(new Set())
 const tplSelectAll = ref(false)
 const showAiDialog = ref(false)
+const showShortLinkDialog = ref(false)
+function applyShortLinkResult(newMessage: string) {
+  form.value.message = newMessage
+}
 const aiAutoDetectOnOpen = ref(true)
 const aiLangHint = ref('')
 const aiGenCountryIso = ref('')
@@ -1600,16 +1615,40 @@ const senderInitial = computed(() => {
   return /[a-zA-Z\u4e00-\u9fa5]/.test(first) ? first.toUpperCase() : '#'
 })
 
+/**
+ * 把 {{TRACK_URL=target|base}} 占位符替换为「实际发送时的短链」估算长度，
+ * 避免字符计数 / 计费 / 预览把超长占位符当文案算（实际发送时占位符会被
+ * worker 替换为 `${base}/{7位token}`）。
+ */
+const TRACK_URL_RE = /\{\{TRACK_URL(?:=([^}]*))?\}\}/g
+function replaceTrackPlaceholdersForPreview(msg: string): string {
+  return msg.replace(TRACK_URL_RE, (_full, inner) => {
+    let base = 'klsms.com'  // 兜底：占位符未配置时的合理估算
+    if (inner) {
+      // {{TRACK_URL=target}} → base 缺失，用估算值
+      // {{TRACK_URL=target|base}} → 用真实 base 计算
+      const parts = String(inner).split('|')
+      if (parts.length >= 2 && parts[1].trim()) base = parts[1].trim()
+    }
+    return `${base.replace(/\/+$/, '')}/Ab3Xz7q`
+  })
+}
+const messageEffectiveForCount = computed(() =>
+  replaceTrackPlaceholdersForPreview(form.value.message),
+)
+
 /** 正文码点数与超限阈值（GSM-7 单条 160，否则单条 70） */
-const messageSmsLen = computed(() => smsCodePointLength(form.value.message))
-const messageIsGsm7 = computed(() => isGsm7Message(form.value.message))
+const messageSmsLen = computed(() => smsCodePointLength(messageEffectiveForCount.value))
+const messageIsGsm7 = computed(() => isGsm7Message(messageEffectiveForCount.value))
 const singleSegmentCharLimit = computed(() => (messageIsGsm7.value ? 160 : 70))
 
-const estimatedParts = computed(() => countSmsParts(form.value.message))
+const estimatedParts = computed(() => countSmsParts(messageEffectiveForCount.value))
 
 // 多文案时按第一条算段数（与 buy-and-send 后端计费一致）
 const storeSmsParts = computed(() =>
-  multiMessages.value.length > 1 ? countSmsParts(multiMessages.value[0]) : estimatedParts.value
+  multiMessages.value.length > 1
+    ? countSmsParts(replaceTrackPlaceholdersForPreview(multiMessages.value[0]))
+    : estimatedParts.value
 )
 
 const numberCount = computed(() => parseNumbers().length)
@@ -1656,6 +1695,7 @@ const hasVariables = computed(() => {
   const msg = form.value.message
   if (/\{(序号|国家|日期|时间|随机码|号码|随机字母|index|country|date|time|code|phone|letters)\}/.test(msg)) return true
   if (/\{(随机码|code|随机字母|letters)\d{1,2}\}/.test(msg)) return true
+  if (msg.includes('{{TRACK_URL')) return true   // 让右侧手机 mockup 渲染替换后的短链
   return customVars.value.some(cv => msg.includes(`{${cv.name}}`))
 })
 
@@ -1678,7 +1718,8 @@ function _previewRandLetters(n: number): string {
 }
 
 const previewSms = computed(() => {
-  let msg = form.value.message
+  // 先把 {{TRACK_URL=...}} 替换为实际发送形态（base/token），让预览贴近收件方真实看到的内容
+  let msg = replaceTrackPlaceholdersForPreview(form.value.message)
   const now = new Date()
   const today = now.toISOString().slice(0, 10)
   const time = now.toTimeString().slice(0, 5)
@@ -1926,7 +1967,7 @@ async function handlePrivateSend() {
   if (!selectedPrivateGroup.value) return ElMessage.warning('请选择要发送的号码组')
   if (!form.value.message) return ElMessage.warning('请输入短信内容')
   
-  const currentParts = countSmsParts(form.value.message)
+  const currentParts = countSmsParts(replaceTrackPlaceholdersForPreview(form.value.message))
   if (currentParts > 1) {
     try {
       await ElMessageBox.confirm(
@@ -2192,7 +2233,7 @@ const handleSubmitApproval = async () => {
     ElMessage.warning(t('smsSend.pleaseEnterContent'))
     return
   }
-  const currentParts = countSmsParts(form.value.message)
+  const currentParts = countSmsParts(replaceTrackPlaceholdersForPreview(form.value.message))
   if (currentParts > 1) {
     try {
       await ElMessageBox.confirm(
@@ -2244,7 +2285,7 @@ const handleSend = async () => {
   if (isPrivate && !selectedPrivateGroup.value) { ElMessage.warning('请选择私有库分组'); return }
   if (!form.value.message) { ElMessage.warning(t('smsSend.pleaseEnterContent')); return }
 
-  const currentParts = countSmsParts(form.value.message)
+  const currentParts = countSmsParts(replaceTrackPlaceholdersForPreview(form.value.message))
   if (currentParts > 1) {
     try {
       await ElMessageBox.confirm(
@@ -2433,7 +2474,7 @@ const selectProduct = (product: DataProduct) => {
 }
 
 const handleStoreSend = async () => {
-  const currentParts = countSmsParts(form.value.message)
+  const currentParts = countSmsParts(replaceTrackPlaceholdersForPreview(form.value.message))
   if (currentParts > 1) {
     try {
       await ElMessageBox.confirm(
