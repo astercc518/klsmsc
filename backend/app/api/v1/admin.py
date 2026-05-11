@@ -5293,3 +5293,70 @@ async def admin_preview_switch_channel(
         return {"success": False, "error": "permission_denied"}
     from app.services.batch_admin import preview_switch_channel
     return await preview_switch_channel(db, batch_id, request.new_channel_id)
+
+
+# 号码导出分类 → sms_logs.status 过滤
+_BATCH_PHONE_CATEGORY_FILTERS = {
+    "total": None,
+    "success": ("sent", "delivered"),     # 通道已受理
+    "delivered": ("delivered",),           # 已收到送达回执
+    "awaiting": ("sent",),                 # 已发出、等待回执
+    "failed": ("failed", "expired"),       # 失败 + 过期
+}
+
+
+@router.get("/batches/{batch_id}/phones.txt")
+async def admin_export_batch_phones(
+    batch_id: int,
+    http_request: Request,
+    category: str = Query("total", description="total|success|delivered|awaiting|failed"),
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """按分类下载批次内号码（TXT，一行一个）。管理员专用。"""
+    from fastapi.responses import Response
+    from app.modules.sms.sms_log import SMSLog
+    from app.modules.sms.sms_batch import SmsBatch
+    from app.services.operation_log import log_operation
+
+    if admin.role not in ("admin", "super_admin"):
+        raise HTTPException(status_code=403, detail="permission_denied")
+
+    if category not in _BATCH_PHONE_CATEGORY_FILTERS:
+        raise HTTPException(status_code=400, detail=f"invalid category: {category}")
+
+    batch = (await db.execute(select(SmsBatch).where(SmsBatch.id == batch_id))).scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="batch_not_found")
+
+    where = [SMSLog.batch_id == batch_id]
+    statuses = _BATCH_PHONE_CATEGORY_FILTERS[category]
+    if statuses:
+        where.append(SMSLog.status.in_(statuses))
+
+    rows = (await db.execute(
+        select(SMSLog.phone_number).where(*where).order_by(SMSLog.id.asc())
+    )).all()
+    phones = [r[0] for r in rows if r[0]]
+
+    body = ("\n".join(phones) + "\n") if phones else ""
+
+    client_ip = _safe_client_ip(http_request)
+    try:
+        await log_operation(
+            db, admin_id=admin.id, admin_name=admin.username,
+            module="sms", action="batch_export_phones",
+            target_type="sms_batch", target_id=str(batch_id),
+            title=f"下载批次 #{batch_id} 号码（{category}）",
+            detail={"batch_id": batch_id, "category": category, "count": len(phones)},
+            ip_address=client_ip,
+        )
+    except Exception as e:
+        logger.warning(f"批次号码下载审计日志写入失败: {e}")
+
+    filename = f"batch_{batch_id}_{category}.txt"
+    return Response(
+        content=body.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

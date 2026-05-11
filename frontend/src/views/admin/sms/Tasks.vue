@@ -182,7 +182,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="260" fixed="right">
+          <el-table-column label="操作" width="320" fixed="right">
             <template #default="{ row }">
               <div class="task-actions">
                 <el-button v-if="row.status === 'processing' || row.status === 'pending'" link type="warning" size="small" @click="onPause(row)">暂停</el-button>
@@ -190,6 +190,20 @@
                 <el-button v-if="row.status === 'paused'" link type="primary" size="small" @click="openSwitch(row)">切换通道</el-button>
                 <el-button v-if="row.status === 'paused'" link type="danger" size="small" @click="onClearQueue(row)">清空队列</el-button>
                 <el-button v-if="['completed','failed'].includes(row.status)" link type="success" size="small" @click="goRefund(row)">系统退款</el-button>
+                <el-dropdown trigger="click" @command="(cat: BatchPhoneCategory) => onDownloadPhones(row, cat)">
+                  <el-button link type="primary" size="small">
+                    下载号码<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                  </el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="total">总数 ({{ row.total_count || 0 }})</el-dropdown-item>
+                      <el-dropdown-item command="success">成功 ({{ row.success_count || 0 }})</el-dropdown-item>
+                      <el-dropdown-item command="delivered">送达 ({{ row.delivered_count || 0 }})</el-dropdown-item>
+                      <el-dropdown-item command="awaiting">等待回执 ({{ sentAwaiting(row) }})</el-dropdown-item>
+                      <el-dropdown-item command="failed">失败 ({{ row.failed_count || 0 }})</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
                 <el-button link size="small" @click="openDetail(row)">详情</el-button>
               </div>
             </template>
@@ -313,11 +327,12 @@
 import { ref, reactive, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, WarningFilled } from '@element-plus/icons-vue'
+import { Refresh, WarningFilled, ArrowDown } from '@element-plus/icons-vue'
 import {
   listAdminBatches, getAdminBatch, pauseBatch, resumeBatch,
-  clearBatchQueue, previewSwitchChannel,
+  clearBatchQueue, previewSwitchChannel, exportBatchPhones,
   type AdminBatchItem, type AdminBatchDetail, type PreviewSwitchResult,
+  type BatchPhoneCategory,
 } from '@/api/admin-batches'
 import { getChannelsAdmin } from '@/api/admin'
 
@@ -475,6 +490,25 @@ async function submitSwitch() {
 
 function goRefund(row: AdminBatchItem) {
   router.push({ path: '/admin/sms/refund-audit', query: { batch_id: String(row.id) } })
+}
+
+async function onDownloadPhones(row: AdminBatchItem, category: BatchPhoneCategory) {
+  try {
+    const blob = await exportBatchPhones(row.id, category)
+    if (!blob || (blob as Blob).size === 0) {
+      ElMessage.warning('该分类下无号码')
+      return
+    }
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob as Blob)
+    link.download = `batch_${row.id}_${category}.txt`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(link.href)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '下载失败')
+  }
 }
 
 // 等待回执 = success_count - delivered_count

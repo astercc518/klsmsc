@@ -79,3 +79,12 @@ export async function clearBatchQueue(id: number): Promise<{ success: boolean; r
 export async function previewSwitchChannel(id: number, new_channel_id: number): Promise<PreviewSwitchResult> {
   return request.post(`/admin/batches/${id}/preview-switch-channel`, { new_channel_id })
 }
+
+export type BatchPhoneCategory = 'total' | 'success' | 'delivered' | 'awaiting' | 'failed'
+
+export async function exportBatchPhones(id: number, category: BatchPhoneCategory): Promise<Blob> {
+  return request.get(`/admin/batches/${id}/phones.txt`, {
+    params: { category },
+    responseType: 'blob',
+  }) as unknown as Promise<Blob>
+}
