@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.sms.sms_log import SMSLog
 from app.modules.common.account import Account
 from app.modules.common.balance_log import BalanceLog
-from app.utils.cache import get_cache_manager
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -214,13 +213,6 @@ async def _do_refund(
 
     if auto_commit:
         await db.commit()
-
-    # 4. 失效余额缓存
-    try:
-        cm = await get_cache_manager()
-        await cm.set(f"account:{row.account_id}:balance", bal_f, ttl=60)
-    except Exception as e:
-        logger.warning(f"refund 余额缓存刷新失败 account={row.account_id}: {e}")
 
     logger.info(
         f"SMS退款成功 sms_log_id={row.id} message_id={row.message_id} "

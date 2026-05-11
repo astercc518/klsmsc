@@ -17,7 +17,6 @@ from app.schemas.account import (
     AccountLoginResponse
 )
 from app.utils.logger import get_logger
-from app.utils.cache import get_cache_manager
 import secrets
 
 logger = get_logger(__name__)
@@ -37,32 +36,17 @@ async def get_balance(
     account: Account = Depends(get_current_account)
 ):
     """
-    查询账户余额（带缓存）
+    查询账户余额。
+
+    直接返回 get_current_account 已加载的最新行；
+    曾经在此处加过 60s Redis + 进程内 L1 缓存，但 CacheManager._local_cache 没有 TTL，
+    Worker 扣费后 API 进程的 L1 永不失效，导致 /balance 与 /info 显示不一致（详见 cache.py 顶部注释）。
     """
-    logger.info(f"查询账户余额: 账户={account.id}")
-    
-    cache_manager = await get_cache_manager()
-    balance_cache_key = f"account:{account.id}:balance"
-    
-    # 尝试从缓存获取余额
-    cached_balance = await cache_manager.get(balance_cache_key)
-    
-    if cached_balance is not None:
-        # 使用缓存余额（1分钟TTL，可能不是最新，但查询速度快）
-        balance = float(cached_balance)
-        logger.debug(f"余额缓存命中: 账户={account.id}, 余额={balance}")
-    else:
-        # 缓存未命中，使用数据库中的余额
-        balance = float(account.balance)
-        # 存入缓存
-        await cache_manager.set(balance_cache_key, balance, ttl=60)
-        logger.debug(f"余额已缓存: 账户={account.id}, 余额={balance}")
-    
     return AccountBalanceResponse(
         account_id=account.id,
-        balance=balance,
+        balance=float(account.balance),
         currency=account.currency,
-        low_balance_threshold=float(account.low_balance_threshold) if account.low_balance_threshold else None
+        low_balance_threshold=float(account.low_balance_threshold) if account.low_balance_threshold else None,
     )
 
 

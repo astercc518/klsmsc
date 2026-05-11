@@ -226,11 +226,6 @@ class PricingEngine:
 
             await self.db.flush()
 
-            # 更新余额缓存
-            cache_manager = await get_cache_manager()
-            balance_cache_key = f"account:{account_id}:balance"
-            await cache_manager.set(balance_cache_key, float(balance_after), ttl=60)
-
             return {
                 'success': True,
                 'total_cost': float(total_sell_price),

@@ -24,7 +24,6 @@ from app.utils.queue import QueueManager
 from app.utils.validator import Validator
 from app.utils.logger import get_logger
 from app.utils.errors import InsufficientBalanceError, PricingNotFoundError
-from app.utils.cache import get_cache_manager
 
 logger = get_logger(__name__)
 
@@ -433,11 +432,10 @@ async def _refund_single(db, account_id: int, amount: float, message_id: str):
 
 async def _flush_commit_chunk(db, batch, channel, commit_batch: list, chunk_deducted: float):
     """
-    flush + commit 当前 chunk，并写入一条汇总 BalanceLog + 更新 Redis 余额缓存。
-    取代原来每条短信单独 SELECT/INSERT/flush/Redis，500 条短信只做 1 次。
+    flush + commit 当前 chunk，并写入一条汇总 BalanceLog。
+    取代原来每条短信单独 SELECT/INSERT/flush，500 条短信只做 1 次。
     """
     from app.modules.common.balance_log import BalanceLog
-    from app.utils.cache import get_cache_manager
 
     await db.flush()
     await db.commit()
@@ -454,13 +452,6 @@ async def _flush_commit_chunk(db, batch, channel, commit_batch: list, chunk_dedu
                 description=f"Batch {batch.id} charge: {len(commit_batch)} SMS",
             ))
             await db.commit()
-
-            cache_manager = await get_cache_manager()
-            await cache_manager.set(
-                f"account:{batch.account_id}:balance",
-                float(balance_after) if balance_after is not None else 0.0,
-                ttl=60,
-            )
         except Exception as e:
             logger.warning(f"批次 BalanceLog 写入失败(非致命): batch={batch.id}, {e}")
 
@@ -708,8 +699,6 @@ async def _do_process_chunk(
                                 amount=-total_sell, balance_after=bal_after,
                                 description=f"Virtual batch: {len(valid_items)} msgs, batch#{batch_id}"
                             ))
-                            cache_manager = await get_cache_manager()
-                            await cache_manager.set(f"account:{account_id}:balance", float(bal_after), ttl=60)
 
                     # 4. 分片批量创建 SMSLog（避免单次包体过大 / 长事务）
                     if deduct_ok:
@@ -921,8 +910,6 @@ async def _do_process_chunk(
                             # 长时间持锁（40+ 秒），阻塞其他 chunk 的扣费 UPDATE 触发 1205 lock_wait_timeout。
                             await db.commit()
                             _charged_amount = total_sell  # 供异常时退款使用
-                            cache_manager = await get_cache_manager()
-                            await cache_manager.set(f"account:{account_id}:balance", float(bal_after), ttl=60)
 
                     _t2 = time.time()
                     logger.info(f"批量扣费完成: batch={batch_id}, total_sell={total_sell}, "

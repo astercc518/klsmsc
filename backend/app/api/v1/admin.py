@@ -1103,12 +1103,6 @@ async def update_account_admin(
             raise HTTPException(status_code=400, detail="销售仅可在「在用」与「已暂停」之间切换")
         a.status = st
         await db.commit()
-        try:
-            from app.utils.cache import get_cache_manager
-            cache_manager = await get_cache_manager()
-            await cache_manager.invalidate_balance_cache(account_id=account_id)
-        except Exception:
-            pass
         return {"success": True, "message": "Account updated successfully"}
 
     if request.account_name is not None:
@@ -1181,16 +1175,14 @@ async def update_account_admin(
         detail=str(list(updated_fields.keys())),
     )
 
-    # 失效余额缓存（阈值/状态更新也可能影响展示）
-    try:
-        from app.utils.cache import get_cache_manager
-        cache_manager = await get_cache_manager()
-        await cache_manager.invalidate_balance_cache(account_id=account_id)
-        # 统一单价或通道变化时清除该账户售价缓存，否则买即发/发送仍可能按旧价计费
-        if request.unit_price is not None or request.channel_ids is not None:
+    # 统一单价或通道变化时清除该账户售价缓存，否则买即发/发送仍可能按旧价计费
+    if request.unit_price is not None or request.channel_ids is not None:
+        try:
+            from app.utils.cache import get_cache_manager
+            cache_manager = await get_cache_manager()
             await cache_manager.invalidate_price_cache_for_account(account_id)
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     return {"success": True, "message": "Account updated successfully"}
 
@@ -1476,14 +1468,6 @@ async def adjust_account_balance(
         title=f"余额调整 账户#{account_id} {sign}{float(amount)} {a.currency}（{change_type}）",
         detail=f'{{"change_type": "{change_type}", "amount": {float(amount)}, "balance_before": {float(balance_before)}, "balance_after": {float(balance_after)}}}',
     )
-
-    # 失效余额缓存
-    try:
-        from app.utils.cache import get_cache_manager
-        cache_manager = await get_cache_manager()
-        await cache_manager.invalidate_balance_cache(account_id=account_id)
-    except Exception:
-        pass
 
     return {
         "success": True,

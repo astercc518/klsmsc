@@ -274,13 +274,6 @@ class CacheManager:
         """
         await self.delete_pattern(f"price:{account_id}:*")
     
-    async def invalidate_balance_cache(self, account_id: Optional[int] = None):
-        """失效余额缓存"""
-        if account_id:
-            await self.delete(f"account:{account_id}:balance")
-        else:
-            await self.delete_pattern("account:*:balance")
-    
     async def warm_up(self):
         """缓存预热（可选）"""
         logger.info("开始缓存预热...")

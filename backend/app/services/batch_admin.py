@@ -25,7 +25,6 @@ from app.modules.sms.channel import Channel
 from app.modules.common.account import Account
 from app.modules.common.balance_log import BalanceLog
 from app.modules.sms.batch_utils import update_batch_progress
-from app.utils.cache import get_cache_manager
 from app.utils.errors import InsufficientBalanceError
 from app.utils.logger import get_logger
 
@@ -280,13 +279,6 @@ async def switch_channel_for_unsent(
         ))
 
     await db.commit()
-
-    # 失效余额缓存
-    try:
-        cm = await get_cache_manager()
-        await cm.set(f"account:{account_id}:balance", float(bal_after), ttl=60)
-    except Exception as e:
-        logger.warning(f"切换通道后余额缓存刷新失败 account={account_id}: {e}")
 
     logger.info(
         f"批次切换通道: batch={batch_id} new_channel={new_channel.channel_code} "
