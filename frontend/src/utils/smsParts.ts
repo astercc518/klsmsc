@@ -12,20 +12,21 @@ const GSM7_SET = new Set(GSM7_CHARSET)
 
 /**
  * 与 backend app.utils.sms_segment.normalize_for_sms_segment_count 一致：
- * 分段前去掉零宽、NBSP→空格、弯引号→ASCII，避免误判 UCS-2。
+ * 仅做白名单字符替换（NBSP/零宽/弯引号/长破折/省略号），不做整段 NFKC ——
+ * NFKC 会把 Thai SARA AM (ำ U+0E33→U+0E4D+U+0E32) 等单 UCS-2 码点拆开，
+ * 造成 70 char 误判 71 多算 1 条；实际 SMS UCS-2 传输各占 1 个 16-bit 单元。
  */
 export function normalizeForSmsSegmentCount(message: string): string {
   if (!message) return message
-  const t = message.normalize('NFKC')
   let out = ''
-  for (const c of t) {
-    if (c === '\u00a0') out += ' '
-    else if ('\u200b\u200c\u200d\ufeff'.includes(c)) continue
-    else if (c === '\u2018' || c === '\u2019') out += "'"
-    else if (c === '\u201c' || c === '\u201d') out += '"'
-    else if (c === '\u2013') out += '-'
-    else if (c === '\u2014') out += '-'
-    else if (c === '\u2026') out += '...'
+  for (const c of message) {
+    if (c === ' ') out += ' '
+    else if ('​‌‍﻿'.includes(c)) continue
+    else if (c === '‘' || c === '’') out += "'"
+    else if (c === '“' || c === '”') out += '"'
+    else if (c === '–') out += '-'
+    else if (c === '—') out += '-'
+    else if (c === '…') out += '...'
     else out += c
   }
   return out

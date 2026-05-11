@@ -8,7 +8,6 @@
 避免「占位符 94 字符算 2 条 / 实发 70 字符 1 条」的多扣费问题。
 """
 import re
-import unicodedata
 from typing import Final
 
 _GSM7_CHARS: Final = frozenset(
@@ -18,25 +17,31 @@ _GSM7_CHARS: Final = frozenset(
 
 
 def normalize_for_sms_segment_count(text: str) -> str:
-    """分段计费前的规范化（不改变用户存储的正文，仅用于条数与编码判断）。"""
+    """分段计费前的规范化（不改变用户存储的正文，仅用于条数与编码判断）。
+
+    不做整段 NFKC：NFKC 的兼容性分解会把 Thai SARA AM (ำ U+0E33→U+0E4D+U+0E32)、
+    ㍿/Ⓐ/① 等单 UCS-2 码点拆成多码点或改变 GSM-7 命中，造成条数虚高
+    （70 char 误判 71 → 多扣 1 条）。实际 SMS UCS-2 传输时这些都是 1 个 16-bit
+    单元，无需任何规范化。仅做白名单字符替换：NBSP、零宽、弯引号、长破折、省略号 ——
+    这些才是真正会让「肉眼英文」被误判 UCS-2 的元凶。
+    """
     if not text:
         return text
-    t = unicodedata.normalize("NFKC", text)
     out: list[str] = []
-    for c in t:
-        if c == "\u00a0":
+    for c in text:
+        if c == " ":
             out.append(" ")
-        elif c in "\u200b\u200c\u200d\ufeff":
+        elif c in "​‌‍﻿":
             continue
-        elif c in "\u2018\u2019":
+        elif c in "‘’":
             out.append("'")
-        elif c in "\u201c\u201d":
+        elif c in "“”":
             out.append('"')
-        elif c == "\u2013":
+        elif c == "–":
             out.append("-")
-        elif c == "\u2014":
+        elif c == "—":
             out.append("-")
-        elif c == "\u2026":
+        elif c == "…":
             out.append("...")
         else:
             out.append(c)
