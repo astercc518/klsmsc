@@ -2761,7 +2761,7 @@ export default {
     telegram: 'Telegram',
     telegramUsername: 'Telegram username',
     telegramUsernameHint:
-      'The bot identifies staff by numeric Telegram user ID. If you change this username to a different value, the old binding is cleared and the employee must bind again in the bot with login + password. If only the @ handle changed on the same account, it syncs after /start.',
+      "The bot identifies staff by numeric Telegram user ID. If you change this username to a different value, the old binding is cleared and the employee must bind again in the bot with login + password. If only the {'@'} handle changed on the same account, it syncs after /start.",
     unbindTg: 'Unbind Telegram',
     unbindTgConfirm:
       'Unbind Telegram for "{name}"? They will need to bind again in the business bot.',

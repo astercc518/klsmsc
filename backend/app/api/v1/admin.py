@@ -4105,7 +4105,7 @@ async def create_staff(
         # 若为已禁用/锁定状态，复用该账户并重新激活
         existing_staff.password_hash = AuthService.hash_password(request.password)
         existing_staff.real_name = request.real_name
-        existing_staff.tg_username = request.tg_username
+        existing_staff.tg_username = _normalize_staff_tg_username(request.tg_username)
         existing_staff.commission_rate = request.commission_rate or 0
         existing_staff.role = request.role
         existing_staff.status = 'active'
@@ -4134,7 +4134,7 @@ async def create_staff(
         username=request.username,
         password_hash=AuthService.hash_password(request.password),
         real_name=request.real_name,
-        tg_username=request.tg_username,
+        tg_username=_normalize_staff_tg_username(request.tg_username),
         commission_rate=request.commission_rate or 0,
         role=request.role,
         status='active'

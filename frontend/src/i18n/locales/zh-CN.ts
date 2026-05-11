@@ -2768,7 +2768,7 @@ export default {
     telegram: 'Telegram',
     telegramUsername: 'Telegram 用户名',
     telegramUsernameHint:
-      '业务助手按 Telegram 数字 ID 识别员工。若更换 Telegram 账号或修改此处用户名与原先不一致，将自动解除原绑定，需新员工在 Bot 内用登录名+密码重新绑定。同号仅改 @ 用户名时，发 /start 后会自动同步显示。',
+      "业务助手按 Telegram 数字 ID 识别员工。若更换 Telegram 账号或修改此处用户名与原先不一致，将自动解除原绑定，需新员工在 Bot 内用登录名+密码重新绑定。同号仅改 {'@'} 用户名时，发 /start 后会自动同步显示。",
     unbindTg: '解除 Telegram 绑定',
     unbindTgConfirm: '确定解除「{name}」在业务助手的 Telegram 绑定吗？解除后需在该 Bot 内重新验证绑定。',
     tgConfigured: '已配置TG',

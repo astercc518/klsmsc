@@ -352,6 +352,10 @@ async def verify_bot_user(
         True,
         description="为 false 时跳过本月业绩大表统计，仅返回身份与提成比例，供 Bot 首屏秒开",
     ),
+    tg_username: Optional[str] = Query(
+        None,
+        description="Bot 透传的当前 @ 用户名，用于自动回填员工的 tg_username（仅当为空或不一致时更新）",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """校验 TG 用户身份并返回其关联的账户信息"""
@@ -360,8 +364,15 @@ async def verify_bot_user(
         admin = (await db.execute(
             select(AdminUser).where(AdminUser.tg_id == tg_id, AdminUser.status == 'active')
         )).scalar_one_or_none()
-        
+
         if admin:
+            if tg_username and (admin.tg_username or "") != tg_username:
+                admin.tg_username = tg_username
+                try:
+                    await db.commit()
+                except Exception as sync_e:
+                    logger.warning(f"自动同步员工 tg_username 失败 admin_id={admin.id}: {sync_e}")
+                    await db.rollback()
             res_data = {
                 "role": admin.role,
                 "user_id": admin.id,
@@ -835,21 +846,21 @@ async def bind_admin_internal(data: dict, db: AsyncSession = Depends(get_db)):
         username = data.get("username")
         password = data.get("password")
         tg_id = data.get("tg_id")
+        tg_username = data.get("tg_username")
 
         result = await db.execute(select(AdminUser).where(AdminUser.username == username, AdminUser.status == 'active'))
         admin = result.scalar_one_or_none()
 
         if not admin:
             return {"success": False, "msg": "用户不存在或已禁用"}
-        
-        # 简单校验密码 (实际项目中应使用 hash 校验)
-        # 这里为了演示和兼容现有逻辑，假设如果是明文/已存在的逻辑
-        # 严格说应该 import pwd_context
-        from app.core.security import verify_password
-        if not verify_password(password, admin.password_hash):
-             return {"success": False, "msg": "密码错误"}
-        
+
+        from app.core.auth import AuthService
+        if not AuthService.verify_password(password, admin.password_hash):
+            return {"success": False, "msg": "密码错误"}
+
         admin.tg_id = tg_id
+        if tg_username:
+            admin.tg_username = tg_username
         await db.commit()
         return {"success": True, "admin": {"id": admin.id, "username": admin.username, "role": admin.role}}
     except Exception as e:
@@ -2559,22 +2570,25 @@ async def bind_sales_internal(data: dict, db: AsyncSession = Depends(get_db)):
         username = data.get("username")
         password = data.get("password")
         tg_id = data.get("tg_id")
+        tg_username = data.get("tg_username")
 
         result = await db.execute(
             select(AdminUser).where(AdminUser.username == username, AdminUser.status == 'active')
         )
         admin = result.scalar_one_or_none()
-        
+
         if not admin:
             return {"success": False, "msg": "用户名不存在或账号已禁用"}
-            
+
         if not AuthService.verify_password(password, admin.password_hash):
             return {"success": False, "msg": "密码错误"}
-            
+
         if admin.role not in ['sales', 'super_admin', 'admin']:
             return {"success": False, "msg": "权限不足（非销售角色）"}
-            
+
         admin.tg_id = tg_id
+        if tg_username:
+            admin.tg_username = tg_username
         await db.commit()
         return {"success": True, "real_name": admin.real_name, "sales_id": admin.id}
     except Exception as e:

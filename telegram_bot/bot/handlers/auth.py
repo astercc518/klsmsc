@@ -100,7 +100,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
         # 2. 验证用户身份：先跳过本月大表聚合，销售欢迎语再异步补数，缩短首包延迟
-        user_info = await api.verify_user(tg_id, include_monthly_performance=False)
+        #    透传当前 @ 用户名给后端，便于自动回填员工的 tg_username（同号改 @ 用户名场景）
+        user_info = await api.verify_user(
+            tg_id,
+            include_monthly_performance=False,
+            tg_username=user.username,
+        )
         
         if user_info.get("is_admin"):
             admin = user_info["admin"]

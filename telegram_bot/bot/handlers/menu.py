@@ -2774,7 +2774,8 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         username, password = parts
         
-        result = await api.bind_admin(username, password, tg_id)
+        tg_username = update.effective_user.username
+        result = await api.bind_admin(username, password, tg_id, tg_username=tg_username)
         
         if result.get("success"):
             admin = result.get("admin", {})

@@ -268,15 +268,18 @@ class APIClient:
         b = await self.get_next_guest_cs_staff_bundle()
         return (b.get("url") or "").strip() or "https://t.me/kaolachbot"
 
-    async def verify_user(self, tg_id: int, include_monthly_performance: bool = True) -> Dict:
+    async def verify_user(self, tg_id: int, include_monthly_performance: bool = True, tg_username: Optional[str] = None) -> Dict:
         """校验用户身份；将 internal_bot 扁平 JSON 转为各 handler 使用的 admin / account 嵌套结构。
 
         include_monthly_performance 为 False 时跳过服务端本月 sms_logs 聚合，首屏更快。
+        tg_username 用于自动回填员工的 tg_username（"同号仅改 @ 用户名"场景）。
         """
         url = f"{self.base_url}/api/v1/internal/bot/verify-user/{tg_id}"
         params = {}
         if not include_monthly_performance:
             params["include_monthly_performance"] = "false"
+        if tg_username:
+            params["tg_username"] = tg_username
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_internal_headers(), params=params)
@@ -306,9 +309,9 @@ class APIClient:
         )
         return result
 
-    async def verify_bot_user(self, tg_id: int, include_monthly_performance: bool = True) -> Dict:
+    async def verify_bot_user(self, tg_id: int, include_monthly_performance: bool = True, tg_username: Optional[str] = None) -> Dict:
         """与 verify_user 相同，兼容菜单等旧命名。"""
-        return await self.verify_user(tg_id, include_monthly_performance=include_monthly_performance)
+        return await self.verify_user(tg_id, include_monthly_performance=include_monthly_performance, tg_username=tg_username)
 
     async def get_templates_internal(self, biz_type: str, country_code: Optional[str] = None) -> list:
         """获取模板列表"""
@@ -440,9 +443,11 @@ class APIClient:
             logger.error(f"操作工单失败: {e}")
             return {"success": False, "message": str(e)}
 
-    async def bind_admin(self, username, password, tg_id):
+    async def bind_admin(self, username, password, tg_id, tg_username: Optional[str] = None):
         """绑定管理员/员工"""
         payload = {"username": username, "password": password, "tg_id": tg_id}
+        if tg_username:
+            payload["tg_username"] = tg_username
         return await self._post("/admins/bind", json=payload)
 
     async def get_sms_history_internal(self, account_id: int, limit: int = 10) -> Dict:
