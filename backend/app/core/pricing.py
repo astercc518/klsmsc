@@ -100,13 +100,20 @@ class PricingEngine:
             await cache_manager.set(cache_key, str(result), ttl=3600)
             return result
 
-        logger.warning(
-            "成本单价为 0: channel_id=%s, country=%s — 请在后台配置 country_pricing 或通道 cost_rate",
+        # VIRTUAL 通道允许 cost=0（演示/测试场景）；其余协议必须显式拦截，
+        # 避免「通道开通但 country_pricing 未配置」时静默落 0 导致毛利错算。
+        proto = getattr(channel, "protocol", None) if channel else None
+        proto_val = proto.value if hasattr(proto, "value") else proto
+        if proto_val == "VIRTUAL":
+            await cache_manager.set(cache_key, "0", ttl=3600)
+            return Decimal("0")
+
+        logger.error(
+            "成本单价未配置: channel_id=%s, country=%s — 已拦截发送，请先在后台配置 country_pricing 或通道 cost_rate",
             channel_id,
             country_code,
         )
-        await cache_manager.set(cache_key, "0", ttl=300)
-        return Decimal('0')
+        raise PricingNotFoundError(country_code, channel_id)
     
     async def calculate_and_charge(
         self,
