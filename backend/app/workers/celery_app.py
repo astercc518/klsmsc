@@ -126,6 +126,7 @@ celery_app.conf.task_routes.update({
     'data_buy_send_async': {'queue': 'data_tasks'},
     'web_click_task': {'queue': 'web_automation'},
     'web_register_task': {'queue': 'web_automation'},
+    'cleanup_stuck_water_logs_task': {'queue': 'web_automation'},
     # SMPP 入站待发 DLR 清理（与其他 sms_dlr 任务同队列；任务体本身只跑短 SQL）
     'smpp_pending_dlr_cleanup': {'queue': 'sms_dlr'},
 })
@@ -192,6 +193,11 @@ celery_app.conf.beat_schedule = {
     'smpp-pending-dlr-cleanup-daily': {
         'task': 'smpp_pending_dlr_cleanup',
         'schedule': crontab(hour=0, minute=30),
+    },
+    # 每 5 分钟巡检卡死的注水任务（Playwright/硬超时 SIGTERM 后行永停 processing）
+    'cleanup-stuck-water-logs-5min': {
+        'task': 'cleanup_stuck_water_logs_task',
+        'schedule': 300.0,
     },
 }
 

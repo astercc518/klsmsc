@@ -315,9 +315,35 @@ def _cleanup_browser_on_shutdown(**kwargs):
 
 # ========== Celery 任务 ==========
 
+def _mark_processing_log_failed(sms_log_id: int, action: str, reason: str):
+    """超时分支兜底：把对应 WaterInjectionLog 从 processing→failed，
+    避免 Playwright 卡在 C 层时 Python 异常被吞掉、行永远停留 processing。"""
+    try:
+        from sqlalchemy import update as sa_update
+        from app.modules.water.models import WaterInjectionLog
+        eng, factory = _make_session()
+
+        async def _do():
+            async with factory() as db:
+                await db.execute(
+                    sa_update(WaterInjectionLog)
+                    .where(
+                        WaterInjectionLog.sms_log_id == sms_log_id,
+                        WaterInjectionLog.action == action,
+                        WaterInjectionLog.status == 'processing',
+                    )
+                    .values(status='failed', error_message=reason[:500])
+                )
+                await db.commit()
+        _db_sync(_do())
+        _db_sync(eng.dispose())
+    except Exception as e:
+        logger.warning(f"标记 WaterInjectionLog 失败状态异常: sms_log={sms_log_id} action={action} {e}")
+
+
 @celery_app.task(name="web_click_task", bind=True, max_retries=1,
                  autoretry_for=(OSError, ConnectionError), retry_backoff=15,
-                 soft_time_limit=90, time_limit=120)
+                 soft_time_limit=180, time_limit=240)
 def web_click_task(self, sms_log_id: int, url: str, channel_id: int,
                    task_config_id: int = None, account_id: int = None,
                    country_code: str = "",
@@ -337,12 +363,13 @@ def web_click_task(self, sms_log_id: int, url: str, channel_id: int,
         )
     except SoftTimeLimitExceeded:
         logger.warning(f"注水点击软超时: sms_log={sms_log_id}")
+        _mark_processing_log_failed(sms_log_id, 'click', 'soft_time_limit')
         return {"success": False, "error": "soft_time_limit"}
 
 
 @celery_app.task(name="web_register_task", bind=True, max_retries=1,
                  autoretry_for=(OSError, ConnectionError), retry_backoff=15,
-                 soft_time_limit=100, time_limit=130)
+                 soft_time_limit=200, time_limit=260)
 def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
                       task_config_id: int = None, account_id: int = None,
                       country_code: str = "",
@@ -360,7 +387,43 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
         )
     except SoftTimeLimitExceeded:
         logger.warning(f"注水注册软超时: sms_log={sms_log_id}")
+        _mark_processing_log_failed(sms_log_id, 'register', 'soft_time_limit')
         return {"success": False, "error": "soft_time_limit"}
+
+
+@celery_app.task(name="cleanup_stuck_water_logs_task", queue="web_automation")
+def cleanup_stuck_water_logs_task():
+    """巡检卡死的 water_injection_logs：把 processing 超过 5 分钟仍未终态的行写 failed。
+    覆盖场景：worker 被 hard time_limit SIGTERM 杀掉、Playwright 卡 C 层导致 Python 异常未捕获。
+    阈值 5min 比 click 240s/register 260s 硬超时还宽 60s+，正常完成不会被误杀。"""
+    try:
+        from sqlalchemy import update as sa_update, and_
+        from app.modules.water.models import WaterInjectionLog
+        from datetime import datetime, timedelta
+        eng, factory = _make_session()
+
+        async def _do() -> int:
+            cutoff = datetime.now() - timedelta(minutes=5)
+            async with factory() as db:
+                res = await db.execute(
+                    sa_update(WaterInjectionLog)
+                    .where(and_(
+                        WaterInjectionLog.status == 'processing',
+                        WaterInjectionLog.created_at < cutoff,
+                    ))
+                    .values(status='failed', error_message='stuck_processing_timeout')
+                )
+                await db.commit()
+                return res.rowcount or 0
+
+        marked = _db_sync(_do())
+        _db_sync(eng.dispose())
+        if marked:
+            logger.info(f"巡检：标记 {marked} 条卡死 water_injection_logs 为 failed")
+        return {"marked_failed": marked}
+    except Exception as e:
+        logger.error(f"巡检卡死 water_injection_logs 失败: {e}", exc_info=True)
+        return {"marked_failed": 0, "error": str(e)}
 
 
 # ========== 同步实现（Playwright sync API） ==========
