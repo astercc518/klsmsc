@@ -438,9 +438,10 @@ async def send_sms_ruanwei_compat(
         return _resp("3")
 
     # 验证签名: md5(api_secret + extno + content + mobile)
-    # FastAPI已自动URL解码content参数，与PHP端原始内容一致
+    # FastAPI已自动URL解码content参数，与PHP端原始内容一致。
+    # OKCC 等软维兼容设备默认发大写 MD5，hashlib.hexdigest() 永远小写，需大小写不敏感对比。
     expected = hashlib.md5(f"{acc.api_secret}{extno}{content}{mobile}".encode()).hexdigest()
-    if expected != password:
+    if expected.lower() != (password or "").lower():
         logger.warning(f"软维协议签名校验失败: account={account}")
         return _resp("3")
 
