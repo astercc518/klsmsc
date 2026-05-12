@@ -25,6 +25,7 @@ from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
 from app.core.pricing import PricingEngine
 from app.utils.queue import QueueManager
+from app.utils.cache import get_cache_manager
 from app.utils.errors import InsufficientBalanceError, PricingNotFoundError
 from app.core.auth import get_current_account
 from app.modules.common.account import Account
@@ -671,153 +672,179 @@ async def retry_batch_failed(
 
     - 普通群发：按当前费率重新扣费（账户按提交计费，发送失败不退款，重发须再次扣费）。
     - 数据仓库购数并发送（批次名 DataSend- 开头）：购数时已含短信费用，重发不再扣费，沿用原记录计费字段。
+    - 余额仅够重发前 N 条时返回 200 + partial=true，已扣的不退；其余条目保持 failed
+      并把 error_message 改为「余额不足，未能重发」。
+    - 同一批次并发重发会被 Redis 互斥锁拦截（防止前端连点导致并发竞态扣费）。
     """
     from app.api.v1.sms import _refund_line_charge
     from app.modules.sms.batch_utils import update_batch_progress
+    from app.modules.common.balance_log import BalanceLog
 
-    q_batch = select(SmsBatch).where(
-        SmsBatch.id == batch_id,
-        SmsBatch.account_id == current_account.id,
-        SmsBatch.is_deleted == False,
-    )
-    result = await db.execute(q_batch)
-    batch = result.scalar_one_or_none()
-    if not batch:
-        raise HTTPException(status_code=404, detail="批次不存在")
+    # 同批次互斥：防止前端连点 / 多端同时触发引发并发扣费
+    cm = await get_cache_manager()
+    redis_client = await cm.redis
+    lock_key = f"batch_op_lock:{batch_id}"
+    if not await redis_client.set(lock_key, b"1", ex=120, nx=True):
+        raise HTTPException(status_code=409, detail="该批次正在重发处理中，请稍候重试")
 
-    if batch.status == BatchStatus.CANCELLED:
-        raise HTTPException(status_code=400, detail="已取消的批次无法重发")
-    if batch.status == BatchStatus.PENDING:
-        raise HTTPException(status_code=400, detail="批次尚未开始处理，请稍后再试")
-
-    q_logs = (
-        select(SMSLog)
-        .where(
-            SMSLog.batch_id == batch_id,
-            SMSLog.account_id == current_account.id,
-            or_(SMSLog.status == "failed", SMSLog.status == "expired"),
+    try:
+        q_batch = select(SmsBatch).where(
+            SmsBatch.id == batch_id,
+            SmsBatch.account_id == current_account.id,
+            SmsBatch.is_deleted == False,
         )
-        .order_by(SMSLog.id)
-    )
-    logs_result = await db.execute(q_logs)
-    failed_logs: List[SMSLog] = list(logs_result.scalars().all())
-    if not failed_logs:
-        raise HTTPException(status_code=400, detail="没有可重发的失败记录")
+        result = await db.execute(q_batch)
+        batch = result.scalar_one_or_none()
+        if not batch:
+            raise HTTPException(status_code=404, detail="批次不存在")
 
-    skip_sms_charge = _is_data_warehouse_send_batch(batch)
-    pricing_engine = PricingEngine(db)
-    retried = 0
-    skipped = 0
-    err_lines: List[str] = []
-    max_err_show = 12
+        if batch.status == BatchStatus.CANCELLED:
+            raise HTTPException(status_code=400, detail="已取消的批次无法重发")
+        if batch.status == BatchStatus.PENDING:
+            raise HTTPException(status_code=400, detail="批次尚未开始处理，请稍后再试")
 
-    for sms_log in failed_logs:
-        if not sms_log.channel_id or not sms_log.country_code or not (sms_log.message or "").strip():
-            skipped += 1
-            if len(err_lines) < max_err_show:
-                err_lines.append(
-                    f"{sms_log.message_id}: 缺少通道、国家或正文，无法重发"
-                )
-            continue
+        q_logs = (
+            select(SMSLog)
+            .where(
+                SMSLog.batch_id == batch_id,
+                SMSLog.account_id == current_account.id,
+                or_(SMSLog.status == "failed", SMSLog.status == "expired"),
+            )
+            .order_by(SMSLog.id)
+        )
+        logs_result = await db.execute(q_logs)
+        failed_logs: List[SMSLog] = list(logs_result.scalars().all())
+        if not failed_logs:
+            # 并发场景下另一个请求可能已处理完，返回 200 而非 400 让前端 UX 更平滑
+            return BatchRetryFailedResponse(
+                retried=0, skipped=0, pending_skipped=0, partial=False,
+                errors=[], message="没有可重发的失败记录（可能已被其它操作处理）",
+            )
 
-        if skip_sms_charge:
-            # 数据仓库购数并发送：不重复扣费，保留原 message_count / 价格字段
+        skip_sms_charge = _is_data_warehouse_send_batch(batch)
+        pricing_engine = PricingEngine(db)
+        retried_logs: List[tuple] = []          # (sms_log, charge_amount) — 已扣费、待入队
+        pending_skipped = 0                     # 余额不足停下后剩余条数
+        skipped = 0                             # 缺数据 / 计费失败等
+        err_lines: List[str] = []
+        max_err_show = 12
+        out_of_balance = False
+
+        for sms_log in failed_logs:
+            if out_of_balance:
+                # 已触发余额不足：剩余记录维持 failed，仅写明原因
+                sms_log.error_message = "余额不足，未能重发"
+                pending_skipped += 1
+                continue
+
+            if not sms_log.channel_id or not sms_log.country_code or not (sms_log.message or "").strip():
+                skipped += 1
+                if len(err_lines) < max_err_show:
+                    err_lines.append(f"{sms_log.message_id}: 缺少通道、国家或正文，无法重发")
+                continue
+
+            charge_amount = 0.0
+            if not skip_sms_charge:
+                try:
+                    charge_result = await pricing_engine.calculate_and_charge(
+                        account_id=current_account.id,
+                        channel_id=int(sms_log.channel_id),
+                        country_code=str(sms_log.country_code),
+                        message=str(sms_log.message),
+                        mnc=None,
+                        skip_balance_log=True,  # 累积到末尾写一条汇总 BalanceLog
+                    )
+                except InsufficientBalanceError:
+                    out_of_balance = True
+                    sms_log.error_message = "余额不足，未能重发"
+                    pending_skipped += 1
+                    continue
+                except PricingNotFoundError as e:
+                    skipped += 1
+                    if len(err_lines) < max_err_show:
+                        err_lines.append(f"{sms_log.message_id}: 计费失败（{e.message}）")
+                    continue
+
+                sms_log.message_count = int(charge_result.get("message_count") or 1)
+                sms_log.cost_price = charge_result["total_base_cost"]
+                sms_log.selling_price = charge_result["total_cost"]
+                sms_log.currency = charge_result.get("currency") or "USD"
+                charge_amount = float(charge_result["total_cost"])
+
             sms_log.status = "queued"
             sms_log.error_message = None
             sms_log.sent_time = None
             sms_log.delivery_time = None
             sms_log.upstream_message_id = None
-            await db.commit()
+            retried_logs.append((sms_log, charge_amount))
 
-            if not QueueManager.queue_sms(sms_log.message_id):
+        # 汇总扣费写一条 BalanceLog（仅普通群发；数据仓库批次 skip_sms_charge 走原计费字段）
+        total_charged = sum(amount for _, amount in retried_logs) if not skip_sms_charge else 0.0
+        if total_charged > 0:
+            bal_after = (await db.execute(
+                select(Account.balance).where(Account.id == current_account.id)
+            )).scalar() or 0
+            db.add(BalanceLog(
+                account_id=current_account.id,
+                change_type='charge',
+                amount=-total_charged,
+                balance_after=bal_after,
+                description=f"失败重发 batch#{batch_id}: {len(retried_logs)} 条"[:500],
+            ))
+
+        await db.commit()
+
+        # 扣费 + 状态翻转已落库；现在统一入队，失败的逐条退款 + 回滚 status
+        retried = 0
+        queue_failed: List[tuple] = []  # (message_id, charge_amount)
+        for sms_log, amount in retried_logs:
+            if QueueManager.queue_sms(sms_log.message_id):
+                retried += 1
+            else:
+                queue_failed.append((sms_log.message_id, amount))
+
+        if queue_failed:
+            for mid, amount in queue_failed:
+                if amount > 0:
+                    # 现在传对参数：(db, message_id, source, note)
+                    await _refund_line_charge(
+                        db, mid, "retry_queue_failed",
+                        note=f"失败重发入队失败退款 {mid}",
+                    )
                 await db.execute(
-                    update(SMSLog)
-                    .where(SMSLog.message_id == sms_log.message_id)
-                    .values(
+                    update(SMSLog).where(SMSLog.message_id == mid).values(
                         status="failed",
                         error_message=(
                             "加入发送队列失败，请检查 RabbitMQ 与 Celery worker-sms 是否运行"
                         ),
                     )
                 )
-                await db.commit()
                 skipped += 1
                 if len(err_lines) < max_err_show:
-                    err_lines.append(f"{sms_log.message_id}: 加入发送队列失败")
-                continue
-
-            retried += 1
-            continue
-
-        try:
-            charge_result = await pricing_engine.calculate_and_charge(
-                account_id=current_account.id,
-                channel_id=int(sms_log.channel_id),
-                country_code=str(sms_log.country_code),
-                message=str(sms_log.message),
-                mnc=None,
-            )
-        except InsufficientBalanceError as e:
-            req = (e.details or {}).get("required", "")
-            avail = (e.details or {}).get("available", "")
-            raise HTTPException(
-                status_code=402,
-                detail=f"余额不足，已成功重发 {retried} 条。需要 {req}，当前可用 {avail}",
-            )
-        except PricingNotFoundError as e:
-            skipped += 1
-            if len(err_lines) < max_err_show:
-                err_lines.append(f"{sms_log.message_id}: 计费失败（{e.message}）")
-            continue
-
-        sms_log.status = "queued"
-        sms_log.error_message = None
-        sms_log.sent_time = None
-        sms_log.delivery_time = None
-        sms_log.upstream_message_id = None
-        sms_log.message_count = int(charge_result.get("message_count") or 1)
-        sms_log.cost_price = charge_result["total_base_cost"]
-        sms_log.selling_price = charge_result["total_cost"]
-        sms_log.currency = charge_result.get("currency") or "USD"
-
-        await db.commit()
-
-        if not QueueManager.queue_sms(sms_log.message_id):
-            await _refund_line_charge(
-                db,
-                current_account.id,
-                float(charge_result["total_cost"]),
-                f"失败重发入队失败退款 {sms_log.message_id}",
-            )
-            await db.execute(
-                update(SMSLog)
-                .where(SMSLog.message_id == sms_log.message_id)
-                .values(
-                    status="failed",
-                    error_message=(
-                        "加入发送队列失败，请检查 RabbitMQ 与 Celery worker-sms 是否运行"
-                    ),
-                )
-            )
+                    err_lines.append(f"{mid}: 加入发送队列失败")
             await db.commit()
-            skipped += 1
-            if len(err_lines) < max_err_show:
-                err_lines.append(f"{sms_log.message_id}: 加入发送队列失败")
-            continue
 
-        retried += 1
+        await update_batch_progress(db, batch_id)
 
-    await update_batch_progress(db, batch_id)
+        msg = f"已重发 {retried} 条"
+        if pending_skipped:
+            msg += f"，{pending_skipped} 条因余额不足未重发"
+        if skipped:
+            msg += f"，{skipped} 条因其它原因未重发"
 
-    msg = f"已重发 {retried} 条"
-    if skipped:
-        msg += f"，{skipped} 条未重发"
-    return BatchRetryFailedResponse(
-        retried=retried,
-        skipped=skipped,
-        errors=err_lines,
-        message=msg,
-    )
+        return BatchRetryFailedResponse(
+            retried=retried,
+            skipped=skipped,
+            pending_skipped=pending_skipped,
+            partial=bool(pending_skipped),
+            errors=err_lines,
+            message=msg,
+        )
+    finally:
+        try:
+            await redis_client.delete(lock_key)
+        except Exception:
+            pass
 
 
 @router.post(
@@ -901,61 +928,78 @@ async def requeue_batch_queued(
 
     用于 Worker 曾无法连接数据库等异常：任务已从 RabbitMQ 消费但库未更新，
     修复部署后可通过本接口补投递。
+
+    与 retry-failed 共用 batch_op_lock，避免两个接口对同一批次的状态机产生竞态。
     """
     from app.modules.sms.batch_utils import update_batch_progress
 
-    q_batch = select(SmsBatch).where(
-        SmsBatch.id == batch_id,
-        SmsBatch.account_id == current_account.id,
-        SmsBatch.is_deleted == False,
-    )
-    result = await db.execute(q_batch)
-    batch = result.scalar_one_or_none()
-    if not batch:
-        raise HTTPException(status_code=404, detail="批次不存在")
-    if batch.status == BatchStatus.CANCELLED:
-        raise HTTPException(status_code=400, detail="已取消的批次无法操作")
+    cm = await get_cache_manager()
+    redis_client = await cm.redis
+    lock_key = f"batch_op_lock:{batch_id}"
+    if not await redis_client.set(lock_key, b"1", ex=120, nx=True):
+        raise HTTPException(status_code=409, detail="该批次正在处理中，请稍候重试")
 
-    q_logs = (
-        select(SMSLog)
-        .where(
-            SMSLog.batch_id == batch_id,
-            SMSLog.account_id == current_account.id,
-            or_(SMSLog.status == "queued", SMSLog.status == "pending"),
+    try:
+        q_batch = select(SmsBatch).where(
+            SmsBatch.id == batch_id,
+            SmsBatch.account_id == current_account.id,
+            SmsBatch.is_deleted == False,
         )
-        .order_by(SMSLog.id)
-    )
-    logs_result = await db.execute(q_logs)
-    stuck_logs: List[SMSLog] = list(logs_result.scalars().all())
-    if not stuck_logs:
-        raise HTTPException(status_code=400, detail="没有处于排队中的记录")
+        result = await db.execute(q_batch)
+        batch = result.scalar_one_or_none()
+        if not batch:
+            raise HTTPException(status_code=404, detail="批次不存在")
+        if batch.status == BatchStatus.CANCELLED:
+            raise HTTPException(status_code=400, detail="已取消的批次无法操作")
 
-    retried = 0
-    skipped = 0
-    err_lines: List[str] = []
-    max_err_show = 12
+        q_logs = (
+            select(SMSLog)
+            .where(
+                SMSLog.batch_id == batch_id,
+                SMSLog.account_id == current_account.id,
+                or_(SMSLog.status == "queued", SMSLog.status == "pending"),
+            )
+            .order_by(SMSLog.id)
+        )
+        logs_result = await db.execute(q_logs)
+        stuck_logs: List[SMSLog] = list(logs_result.scalars().all())
+        if not stuck_logs:
+            return BatchRetryFailedResponse(
+                retried=0, skipped=0, pending_skipped=0, partial=False,
+                errors=[], message="没有处于排队中的记录",
+            )
 
-    for sms_log in stuck_logs:
-        if not sms_log.message_id:
-            skipped += 1
-            if len(err_lines) < max_err_show:
-                err_lines.append("存在无 message_id 的记录，已跳过")
-            continue
-        if QueueManager.queue_sms(sms_log.message_id):
-            retried += 1
-        else:
-            skipped += 1
-            if len(err_lines) < max_err_show:
-                err_lines.append(f"{sms_log.message_id}: 加入发送队列失败")
+        retried = 0
+        skipped = 0
+        err_lines: List[str] = []
+        max_err_show = 12
 
-    await update_batch_progress(db, batch_id)
+        for sms_log in stuck_logs:
+            if not sms_log.message_id:
+                skipped += 1
+                if len(err_lines) < max_err_show:
+                    err_lines.append("存在无 message_id 的记录，已跳过")
+                continue
+            if QueueManager.queue_sms(sms_log.message_id):
+                retried += 1
+            else:
+                skipped += 1
+                if len(err_lines) < max_err_show:
+                    err_lines.append(f"{sms_log.message_id}: 加入发送队列失败")
 
-    msg = f"已重新入队 {retried} 条"
-    if skipped:
-        msg += f"，{skipped} 条未入队"
-    return BatchRetryFailedResponse(
-        retried=retried,
-        skipped=skipped,
-        errors=err_lines,
-        message=msg,
-    )
+        await update_batch_progress(db, batch_id)
+
+        msg = f"已重新入队 {retried} 条"
+        if skipped:
+            msg += f"，{skipped} 条未入队"
+        return BatchRetryFailedResponse(
+            retried=retried,
+            skipped=skipped,
+            errors=err_lines,
+            message=msg,
+        )
+    finally:
+        try:
+            await redis_client.delete(lock_key)
+        except Exception:
+            pass

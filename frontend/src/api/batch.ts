@@ -52,11 +52,21 @@ export const cancelBatch = (id: number) => {
   return request.delete(`/batches/${id}`)
 }
 
-/** 失败记录重新计费并入队 */
+/**
+ * 失败记录重新计费并入队。
+ *
+ * partial=true 表示余额仅够重发前 N 条，已扣的不退；其余条目仍为 failed，
+ * 行级 error_message 已写明「余额不足，未能重发」。前端应以 warning 提示。
+ */
 export const retryBatchFailed = (id: number) => {
-  return request.post<{ retried: number; skipped: number; errors: string[]; message: string }>(
-    `/batches/${id}/retry-failed`
-  )
+  return request.post<{
+    retried: number
+    skipped: number
+    pending_skipped: number
+    partial: boolean
+    errors: string[]
+    message: string
+  }>(`/batches/${id}/retry-failed`)
 }
 
 /** 补发未发送：处理 CSV 中尚未写入 sms_logs 的剩余号码（仅 CSV 上传批次可用） */
@@ -64,6 +74,19 @@ export const resendUnsentBatch = (id: number) => {
   return request.post<{ triggered: boolean; unsent_count: number; message: string }>(
     `/batches/${id}/resend-unsent`
   )
+}
+
+/**
+ * 重新投递「排队中」记录到 Celery（不重复扣费）。
+ * 适用于 Worker 异常导致 RabbitMQ 消息丢失、sms_log 卡 queued 的恢复。
+ */
+export const requeueBatchQueued = (id: number) => {
+  return request.post<{
+    retried: number
+    skipped: number
+    errors: string[]
+    message: string
+  }>(`/batches/${id}/requeue-queued`)
 }
 
 /** 导出批次明细 CSV（后端手机号脱敏） */

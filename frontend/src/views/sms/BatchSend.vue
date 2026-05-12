@@ -186,6 +186,15 @@
                 {{ $t('batchSend.resendUnsent') }}
               </el-button>
               <el-button
+                v-if="canRequeueQueuedBatch(row)"
+                link
+                type="warning"
+                size="small"
+                @click="requeueQueuedBatch(row)"
+              >
+                {{ $t('batchSend.requeueQueued') }}
+              </el-button>
+              <el-button
                 link
                 type="success"
                 size="small"
@@ -449,6 +458,7 @@ import {
   cancelBatch as cancelBatchApi,
   retryBatchFailed as retryBatchFailedApi,
   resendUnsentBatch as resendUnsentBatchApi,
+  requeueBatchQueued as requeueBatchQueuedApi,
   exportBatchRecordsCsv,
   type SmsBatch,
 } from '@/api/batch'
@@ -643,6 +653,24 @@ function batchUnsentCount(row: SmsBatch & Record<string, unknown>): number {
 function canResendUnsentBatch(row: SmsBatch & Record<string, unknown>): boolean {
   if (!row.file_path) return false
   if (batchUnsentCount(row) <= 0) return false
+  const st = String(row.status ?? '').toLowerCase()
+  if (st === 'pending' || st === 'cancelled') return false
+  return true
+}
+
+/** 排队中条数 = processing_count（worker 已收但尚未给出终态/上游接收的部分） */
+function batchQueuedCount(row: SmsBatch & Record<string, unknown>): number {
+  const v = row.processing_count
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+/**
+ * 是否显示「排队中重投」：批次状态非 pending/cancelled，且仍有 processing_count > 0。
+ * Worker/RabbitMQ 异常导致消息卡 queued 时，运营无需查后端就能从 UI 触发恢复。
+ */
+function canRequeueQueuedBatch(row: SmsBatch & Record<string, unknown>): boolean {
+  if (batchQueuedCount(row) <= 0) return false
   const st = String(row.status ?? '').toLowerCase()
   if (st === 'pending' || st === 'cancelled') return false
   return true
@@ -928,13 +956,41 @@ const retryFailedBatch = (row: SmsBatch & Record<string, unknown>) => {
       const res = await retryBatchFailedApi(row.id)
       const msg =
         res.message ||
-        t('batchSend.retrySuccess', { count: res.retried, skipped: res.skipped })
-      ElMessage.success(msg)
+        (res.partial
+          ? t('batchSend.retryPartial', { count: res.retried, pending: res.pending_skipped })
+          : t('batchSend.retrySuccess', { count: res.retried }))
+      // 余额仅够前 N 条：后端已扣已发，剩余仍 failed —— 用 warning 提示用户去充值
+      if (res.partial) {
+        ElMessage.warning({ message: msg, duration: 6000 })
+      } else {
+        ElMessage.success(msg)
+      }
       loadBatches()
       loadStats()
     } catch (error: any) {
       const d = error.response?.data?.detail
       ElMessage.error(typeof d === 'string' ? d : t('batchSend.retryFailedMsg'))
+    }
+  }).catch(() => {})
+}
+
+const requeueQueuedBatch = (row: SmsBatch & Record<string, unknown>) => {
+  if (batchQueuedCount(row) <= 0) return
+  ElMessageBox.confirm(t('batchSend.confirmRequeueQueued'), t('common.info'), {
+    confirmButtonText: t('common.confirm'),
+    cancelButtonText: t('common.cancel'),
+    type: 'warning',
+  }).then(async () => {
+    try {
+      const res = await requeueBatchQueuedApi(row.id)
+      ElMessage.success(
+        res.message || t('batchSend.requeueQueuedSuccess', { count: res.retried }),
+      )
+      loadBatches()
+      loadStats()
+    } catch (error: any) {
+      const d = error.response?.data?.detail
+      ElMessage.error(typeof d === 'string' ? d : t('batchSend.requeueQueuedFailed'))
     }
   }).catch(() => {})
 }

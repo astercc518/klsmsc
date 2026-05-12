@@ -131,6 +131,8 @@ class BatchRetryFailedResponse(BaseModel):
     """失败重发响应"""
     retried: int = Field(..., description="成功重新入队条数")
     skipped: int = Field(0, description="未重发条数（缺数据、计费或入队失败等）")
+    pending_skipped: int = Field(0, description="因余额不足未重发的条数（已扣前 N 条仍然成功）")
+    partial: bool = Field(False, description="是否部分成功（典型：余额仅够重发部分）")
     errors: List[str] = Field(default_factory=list, description="失败原因摘要（最多若干条）")
     message: str = Field(default="", description="说明")
 
