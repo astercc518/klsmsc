@@ -441,16 +441,23 @@ def _db_sync(coro):
 def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, country_code,
                    proxy_id, ua_type, register_enabled, register_rate_min, register_rate_max,
                    batch_id=None):
-    """使用 Playwright 同步 API 执行点击模拟"""
+    """使用 httpx 执行点击：发起带真实 UA 的 GET 经代理访问目标 URL，跟随重定向。
+
+    上游 URL shortener (cutt.ly 等) 与营销落地页基本通过「服务端访问日志」计数，
+    httpx 走完整 redirect 链 → 等价于浏览器点击。相比 Playwright 没有浏览器开销，
+    也不会卡在 context.close()，单次 <10s 几乎不会卡死。
+    JS-only 像素打点的场景仍可能少计，但本系统注水主流场景由短链/落地服务端记录。
+    """
+    import httpx
+    from urllib.parse import quote as _q
     eng, factory = _make_session()
     start_time = time.time()
     log_id = None
-    pw_success = False
     trigger_register = False
     detected_ip = None
+    final_url = url
 
     try:
-        # 阶段1：数据库操作（Playwright 之前）
         log_id, proxy_config = _db_sync(
             _create_click_log(factory, sms_log_id, account_id, channel_id,
                               task_config_id, url, proxy_id, country_code,
@@ -458,67 +465,70 @@ def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, coun
         )
         _db_sync(eng.dispose())
 
-        # 阶段2：Playwright 浏览器操作（共享 Chromium 实例，每任务独立 context）
-        browser = _get_browser()
+        # 构造 httpx 代理 URL（拼回 user:pass@host:port 格式）
+        proxy_url = None
+        if proxy_config and proxy_config.get("server"):
+            scheme, host_port = proxy_config["server"].split("://", 1)
+            user = proxy_config.get("username", "")
+            pwd = proxy_config.get("password", "")
+            auth = f"{_q(user, safe='')}:{_q(pwd, safe='')}@" if user else ""
+            proxy_url = f"{scheme}://{auth}{host_port}"
+
         ua = _pick_user_agent(ua_type)
-        viewport = {"width": 375, "height": 812} if "mobile" in ua_type or "Mobile" in ua else {"width": 1440, "height": 900}
-        locale, tz = _get_locale_timezone(country_code)
+        is_mobile = "mobile" in ua_type or "Mobile" in ua
+        headers = {
+            "User-Agent": ua,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Sec-Ch-Ua-Mobile": "?1" if is_mobile else "?0",
+        }
 
-        ctx_kwargs = {"user_agent": ua, "viewport": viewport, "locale": locale, "timezone_id": tz}
-        if proxy_config:
-            ctx_kwargs["proxy"] = proxy_config
+        client_kwargs = {
+            "headers": headers,
+            "timeout": httpx.Timeout(30.0, connect=15.0),
+            "follow_redirects": True,
+            "max_redirects": 10,
+            "verify": True,
+        }
+        if proxy_url:
+            # httpx 0.25.x 仍使用 proxies= 参数（0.27 起改名为 proxy=）
+            client_kwargs["proxies"] = proxy_url
 
-        context = browser.new_context(**ctx_kwargs)
-        try:
-            page = context.new_page()
-            _apply_stealth(page)
-
-            # 先探测出口 IP（轻量 API，不影响主流程）
+        with httpx.Client(**client_kwargs) as client:
+            # 出口 IP 探测（best-effort，不影响主流程）
             try:
-                ip_page = context.new_page()
-                _apply_stealth(ip_page)
-                ip_page.goto("https://api.ipify.org?format=text", timeout=8000)
-                detected_ip = (ip_page.content() or "").strip()
+                ip_resp = client.get("https://api.ipify.org?format=text", timeout=8.0)
                 import re
-                m = re.search(r'(\d{1,3}(?:\.\d{1,3}){3})', detected_ip)
+                m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", ip_resp.text or "")
                 detected_ip = m.group(1) if m else None
-                ip_page.close()
             except Exception:
                 detected_ip = None
 
-            page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            _wait_through_cf(page)
-            page.wait_for_timeout(random.randint(2000, 5000))
+            resp = client.get(url)
+            final_url = str(resp.url)
+            if resp.status_code >= 400:
+                raise RuntimeError(f"HTTP {resp.status_code} at final URL {final_url[:120]}")
 
-            for _ in range(random.randint(2, 5)):
-                page.evaluate(f"window.scrollBy(0, {random.randint(100, 500)})")
-                page.wait_for_timeout(random.randint(800, 2000))
-
-            for _ in range(random.randint(1, 3)):
-                x = random.randint(50, viewport["width"] - 50)
-                y = random.randint(50, viewport["height"] - 50)
-                page.mouse.move(x, y)
-                page.wait_for_timeout(random.randint(300, 800))
-
-            page.wait_for_timeout(random.randint(3000, 8000))
-            pw_success = True
+            # 模拟阅读停留 1-4s（避免落地服务端把同源高频请求标为机器）
+            time.sleep(random.uniform(1.0, 4.0))
 
             if register_enabled:
                 rate = random.uniform(register_rate_min, register_rate_max)
                 if random.random() * 100 < rate:
                     trigger_register = True
-        finally:
-            try:
-                context.close()
-            except Exception:
-                pass
 
-        # 阶段3：数据库更新（Playwright 结束后）
         duration = int((time.time() - start_time) * 1000)
         eng2, factory2 = _make_session()
         _db_sync(_update_log_status(factory2, log_id, 'success', duration, proxy_ip=detected_ip))
         _db_sync(eng2.dispose())
-        logger.info(f"注水点击成功: log={log_id}, duration={duration}ms, ip={detected_ip}")
+        logger.info(f"注水点击成功: log={log_id}, duration={duration}ms, ip={detected_ip}, final={final_url[:80]}")
 
         if trigger_register:
             logger.info(f"注水注册概率命中: sms_log={sms_log_id}")
