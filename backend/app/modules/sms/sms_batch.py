@@ -64,6 +64,9 @@ class SmsBatch(Base):
     created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False, comment="创建时间")
     updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
     is_deleted = Column(Boolean, default=False, nullable=False, comment="软删除标记")
+
+    # 「失败重发」生成的批次回指原批次：用于列表/详情溯源，仅元信息不强引用
+    source_batch_id = Column(Integer, index=True, comment="重发来源批次ID（失败重发生成的新批次回指原批次）")
     
     def __repr__(self):
         return f"<SmsBatch(id={self.id}, name='{self.batch_name}', status='{self.status}', progress={self.progress}%)>"

@@ -292,6 +292,8 @@ export default {
     retryFailed: '失败重发',
     retryFailedMsg: '失败重发失败',
     retrySuccess: '已重发 {count} 条',
+    retryInProgress: '重发处理中…',
+    retryStarting: '重发起动中（{count} 条，约 {sec}s）…请勿关闭页面',
     confirmRetryFailed: '将对该批次内所有失败/超时的短信重新计费并入队。普通群发会按当前费率再次扣款；数据仓库批次（购数并发送）不重复扣费。是否继续？',
     retryPartial: '已重发 {count} 条；{pending} 条因余额不足未重发',
     resendUnsent: '补发未发送',

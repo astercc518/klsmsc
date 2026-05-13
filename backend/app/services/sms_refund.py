@@ -323,3 +323,72 @@ async def execute_refund_batch(
         "total_amount": float(total_amount),
         "failures": failures[:50],
     }
+
+
+# ============ 管理员强制退款（绕过 eligible 校验）============
+# 场景：上游返回 SubmitSMResp 非零状态（如节点通信 SMPP Error 110）但实际因
+# 上游账户余额不足、风控等原因「收下却未投递」。eligible 规则保守地把所有
+# SMPP Error 视作已提交不可退，会让大面积失败完全无法退款。
+# 管理员通过任务管理「系统退款」入口走此路径：放弃 eligible 自动判定，由人工
+# 选择条目并对扣费负责；金额仍按 selling_price 累加，不重复计成本。
+
+async def execute_admin_force_refund(
+    db: AsyncSession,
+    sms_log_id: int,
+    admin_username: str,
+    note: Optional[str] = None,
+) -> dict:
+    """管理员强制退款：仅要求 failed + 未退款 + selling_price>0，不查 eligible。"""
+    row = (await db.execute(
+        select(SMSLog).where(SMSLog.id == int(sms_log_id)).with_for_update()
+    )).scalar_one_or_none()
+    if not row:
+        return {"success": False, "reason": "not_found"}
+    if row.status != "failed":
+        return {"success": False, "reason": f"状态非 failed（{row.status}）", "message_id": row.message_id}
+    if row.refunded_at is not None:
+        return {"success": False, "reason": "已退款", "message_id": row.message_id}
+    if row.selling_price is None or float(row.selling_price) <= 0:
+        return {"success": False, "reason": "无销售价/已是零费用", "message_id": row.message_id}
+
+    amount = Decimal(str(row.selling_price))
+    return await _do_refund(
+        db, row, amount,
+        refunded_by=admin_username,
+        category="admin_force",
+        note=note,
+        auto_commit=True,
+    )
+
+
+async def execute_admin_force_refund_batch(
+    db: AsyncSession,
+    sms_log_ids: List[int],
+    admin_username: str,
+    note: Optional[str] = None,
+) -> dict:
+    """管理员强制批量退款（每条独立事务保证幂等）。"""
+    ok, fail, total_amount = 0, 0, Decimal("0")
+    failures: List[dict] = []
+    for lid in sms_log_ids:
+        try:
+            r = await execute_admin_force_refund(db, lid, admin_username, note)
+            if r.get("success"):
+                ok += 1
+                total_amount += Decimal(str(r.get("amount") or 0))
+            else:
+                fail += 1
+                failures.append({"sms_log_id": lid, "reason": r.get("reason")})
+        except Exception as e:
+            fail += 1
+            failures.append({"sms_log_id": lid, "reason": f"exception: {e}"})
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+    return {
+        "ok": ok,
+        "failed": fail,
+        "total_amount": float(total_amount),
+        "failures": failures[:50],
+    }

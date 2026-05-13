@@ -43,6 +43,63 @@ from app.modules.common.account_template import AccountTemplate
 logger = get_logger(__name__)
 
 
+async def _mark_private_library_used(db, account_id: int, phone_numbers: list) -> None:
+    """私库号码标记为已使用 (use_count+=1 + last_used_at=now)。
+
+    调用时机：batch 创建并成功入队/发送之后、commit 之前。
+    不在前置 SELECT 之后立刻标记，是为了避免 INSUFFICIENT_BALANCE 等失败路径下
+    `get_db()` 自动 commit 把脏数据写入（参见 5/13 客户 TG19880V01 事故）。
+    """
+    if not phone_numbers:
+        return
+    from datetime import datetime as _dt
+    from app.modules.data.models import DataNumber, PrivateLibraryNumber
+
+    now = _dt.now()
+    BATCH_SZ = 2000
+    for ci in range(0, len(phone_numbers), BATCH_SZ):
+        chunk = phone_numbers[ci:ci + BATCH_SZ]
+        await db.execute(
+            update(PrivateLibraryNumber)
+            .where(
+                PrivateLibraryNumber.account_id == account_id,
+                PrivateLibraryNumber.phone_number.in_(chunk),
+                PrivateLibraryNumber.is_deleted == False,  # noqa: E712
+            )
+            .values(
+                use_count=PrivateLibraryNumber.use_count + 1,
+                last_used_at=now,
+            )
+        )
+        await db.execute(
+            update(DataNumber)
+            .where(
+                DataNumber.account_id == account_id,
+                DataNumber.phone_number.in_(chunk),
+            )
+            .values(
+                use_count=DataNumber.use_count + 1,
+                last_used_at=now,
+            )
+        )
+
+    try:
+        from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache
+        await invalidate_my_numbers_summary_cache(account_id)
+    except Exception as e:
+        logger.warning(f"私库 use_count 标记后缓存失效失败 acc={account_id}: {e}")
+
+    try:
+        from app.workers.celery_app import celery_app as _celery_pls
+        _celery_pls.send_task(
+            "private_library_sync_used",
+            args=[account_id, list(phone_numbers)],
+            queue="data_tasks",
+        )
+    except Exception as e:
+        logger.warning(f"私库 use_count 同步 celery 任务投递失败 acc={account_id}: {e}")
+
+
 async def _refund_line_charge(
     db: AsyncSession,
     message_id: str,
@@ -693,50 +750,17 @@ async def send_batch_sms(
             u2 = _build_union(include_batch=False)
             res2 = await db.execute(select(u2.c.phone_number).distinct().limit(limit))
             db_nums = [r[0] for r in res2.all()]
-        if db_nums:
-            now = datetime.now()
-            BATCH_SZ = 2000
-
-            for ci in range(0, len(db_nums), BATCH_SZ):
-                chunk = db_nums[ci:ci + BATCH_SZ]
-                await db.execute(
-                    update(PrivateLibraryNumber)
-                    .where(
-                        PrivateLibraryNumber.account_id == account.id,
-                        PrivateLibraryNumber.phone_number.in_(chunk),
-                        PrivateLibraryNumber.is_deleted == False,  # noqa: E712
-                    )
-                    .values(
-                        use_count=PrivateLibraryNumber.use_count + 1,
-                        last_used_at=now,
-                    )
-                )
-                await db.execute(
-                    update(DataNumber)
-                    .where(
-                        DataNumber.account_id == account.id,
-                        DataNumber.phone_number.in_(chunk),
-                    )
-                    .values(
-                        use_count=DataNumber.use_count + 1,
-                        last_used_at=now,
-                    )
-                )
-            await db.flush()
-
-            from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache
-            await invalidate_my_numbers_summary_cache(account.id)
-
-            from app.workers.celery_app import celery_app as _celery_pls
-            _celery_pls.send_task(
-                "private_library_sync_used",
-                args=[account.id, db_nums],
-                queue="data_tasks",
-            )
-
+        # 仅把私库号码并入 request.phone_numbers，**不立即**写 use_count。
+        # 必须等余额预检通过、batch 创建成功后再标已用——否则 INSUFFICIENT_BALANCE
+        # return 时 get_db() 仍会自动 commit，造成「数据被消耗但任务未生成」的脏数据
+        # （客户 TG19880V01 5/13 17:13 的事故）。
+        _private_library_db_nums: List[str] = list(db_nums) if db_nums else []
+        if _private_library_db_nums:
             if not request.phone_numbers:
                 request.phone_numbers = []
-            request.phone_numbers.extend(db_nums)
+            request.phone_numbers.extend(_private_library_db_nums)
+    else:
+        _private_library_db_nums = []
 
     if not request.phone_numbers or len(request.phone_numbers) == 0:
         _empty_err = None
@@ -883,6 +907,10 @@ async def send_batch_sms(
         chunk_count = await asyncio.to_thread(_enqueue_all_batch_chunks)
 
         sms_batch.send_config = {"chunks": chunk_count, "chunk_size": CHUNK_SIZE, "async": True}
+
+        # 私库取号成功 → 标记 use_count（与 batch 入同一事务，失败一起回滚）
+        await _mark_private_library_used(db, account.id, _private_library_db_nums)
+
         await db.commit()
 
         logger.info(f"批量发送已进入后台加速处理: batch_id={batch_pk}, total={total_numbers}, chunks={chunk_count}")
@@ -1088,6 +1116,9 @@ async def send_batch_sms(
         if sms_batch.status not in (BatchStatus.COMPLETED, BatchStatus.FAILED, BatchStatus.CANCELLED):
             sms_batch.status = BatchStatus.PROCESSING
             sms_batch.completed_at = None
+
+    # 私库取号成功 → 标记 use_count（与 batch 入同一事务，失败一起回滚）
+    await _mark_private_library_used(db, account.id, _private_library_db_nums)
 
     await db.commit()
 

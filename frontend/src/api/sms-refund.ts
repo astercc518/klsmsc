@@ -52,10 +52,11 @@ export async function previewRefund(smsLogId: number): Promise<RefundPreview> {
   return request.get(`/admin/sms/${smsLogId}/refund/preview`)
 }
 
-export async function executeRefund(smsLogId: number, note?: string): Promise<{ success: boolean; reason?: string; amount?: number; balance_after?: number; message_id?: string; account_id?: number; category?: string }> {
-  return request.post(`/admin/sms/${smsLogId}/refund`, { note })
+export async function executeRefund(smsLogId: number, note?: string, force = false): Promise<{ success: boolean; reason?: string; amount?: number; balance_after?: number; message_id?: string; account_id?: number; category?: string }> {
+  return request.post(`/admin/sms/${smsLogId}/refund`, { note, force })
 }
 
-export async function executeRefundBatch(sms_log_ids: number[], note?: string): Promise<{ success: boolean; error?: string; ok?: number; failed?: number; total_amount?: number; failures?: { sms_log_id: number; reason: string }[] }> {
-  return request.post('/admin/sms/refund-batch', { sms_log_ids, note })
+export async function executeRefundBatch(sms_log_ids: number[], note?: string, force = false): Promise<{ success: boolean; error?: string; ok?: number; failed?: number; total_amount?: number; failures?: { sms_log_id: number; reason: string }[] }> {
+  return request.post('/admin/sms/refund-batch', { sms_log_ids, note, force })
 }
+

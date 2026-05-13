@@ -58,15 +58,20 @@ export const cancelBatch = (id: number) => {
  * partial=true 表示余额仅够重发前 N 条，已扣的不退；其余条目仍为 failed，
  * 行级 error_message 已写明「余额不足，未能重发」。前端应以 warning 提示。
  */
-export const retryBatchFailed = (id: number) => {
+export const retryBatchFailed = (id: number, opts: { timeout?: number } = {}) => {
+  // 新流程：生成新批次重发，正常计费正常路由，source_batch_id 溯源链
   return request.post<{
+    success: boolean
+    source_batch_id: number
+    new_batch_id: number
     retried: number
+    enqueued: number
     skipped: number
-    pending_skipped: number
-    partial: boolean
+    out_of_balance: boolean
+    charged_amount: number
     errors: string[]
     message: string
-  }>(`/batches/${id}/retry-failed`)
+  }>(`/batches/${id}/retry-as-new-batch`, undefined, opts.timeout ? { timeout: opts.timeout } : undefined)
 }
 
 /** 补发未发送：处理 CSV 中尚未写入 sms_logs 的剩余号码（仅 CSV 上传批次可用） */

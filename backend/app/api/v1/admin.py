@@ -4813,11 +4813,13 @@ async def okcc_customer_list(
 
 class SmsRefundExecuteRequest(BaseModel):
     note: Optional[str] = None  # 可选备注，记入 BalanceLog
+    force: bool = False         # True 时走管理员强制退款，绕过 eligible 校验
 
 
 class SmsRefundBatchRequest(BaseModel):
     sms_log_ids: List[int]
     note: Optional[str] = None
+    force: bool = False         # True 时走管理员强制退款，绕过 eligible 校验
 
 
 @router.get("/sms/refundable", response_model=dict)
@@ -4908,18 +4910,23 @@ async def execute_sms_refund(
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """对单条短信执行退款（管理员手动审核确认）。"""
-    from app.services.sms_refund import execute_refund
+    """对单条短信执行退款（管理员手动审核确认）。force=True 时绕过 eligible 校验。"""
+    from app.services.sms_refund import execute_refund, execute_admin_force_refund
     from app.services.operation_log import log_operation
 
-    result = await execute_refund(db, sms_log_id, admin.username, note=request.note)
+    if request.force:
+        result = await execute_admin_force_refund(db, sms_log_id, admin.username, note=request.note)
+        op_action = "refund_force"
+    else:
+        result = await execute_refund(db, sms_log_id, admin.username, note=request.note)
+        op_action = "refund"
     client_ip = _safe_client_ip(http_request)
 
     if result.get("success"):
         await log_operation(
             db, admin_id=admin.id, admin_name=admin.username,
-            module="finance", action="refund",
-            title=f"短信退款 message_id={result.get('message_id')} amount={result.get('amount')}",
+            module="finance", action=op_action,
+            title=f"短信退款 message_id={result.get('message_id')} amount={result.get('amount')}{' [force]' if request.force else ''}",
             detail={
                 "sms_log_id": sms_log_id,
                 "message_id": result.get("message_id"),
@@ -4934,9 +4941,9 @@ async def execute_sms_refund(
     else:
         await log_operation(
             db, admin_id=admin.id, admin_name=admin.username,
-            module="finance", action="refund",
+            module="finance", action=op_action,
             title=f"短信退款失败 sms_log_id={sms_log_id} reason={result.get('reason')}",
-            detail={"sms_log_id": sms_log_id, "reason": result.get("reason")},
+            detail={"sms_log_id": sms_log_id, "reason": result.get("reason"), "force": request.force},
             ip_address=client_ip, status="failed",
             error_message=str(result.get("reason"))[:500],
         )
@@ -4950,8 +4957,8 @@ async def execute_sms_refund_batch(
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """批量退款（每条独立事务）。一次最多 200 条。"""
-    from app.services.sms_refund import execute_refund_batch
+    """批量退款（每条独立事务）。一次最多 200 条。force=True 时绕过 eligible。"""
+    from app.services.sms_refund import execute_refund_batch, execute_admin_force_refund_batch
     from app.services.operation_log import log_operation
 
     ids = list(request.sms_log_ids or [])
@@ -4960,12 +4967,17 @@ async def execute_sms_refund_batch(
     if len(ids) > 200:
         return {"success": False, "error": "单次最多 200 条"}
 
-    result = await execute_refund_batch(db, ids, admin.username, note=request.note)
+    if request.force:
+        result = await execute_admin_force_refund_batch(db, ids, admin.username, note=request.note)
+        op_action = "refund_batch_force"
+    else:
+        result = await execute_refund_batch(db, ids, admin.username, note=request.note)
+        op_action = "refund_batch"
     client_ip = _safe_client_ip(http_request)
     await log_operation(
         db, admin_id=admin.id, admin_name=admin.username,
-        module="finance", action="refund_batch",
-        title=f"批量退款：成功 {result['ok']} 条 / 失败 {result['failed']} 条 / 总额 {result['total_amount']}",
+        module="finance", action=op_action,
+        title=f"批量退款{'[force] ' if request.force else ''}：成功 {result['ok']} 条 / 失败 {result['failed']} 条 / 总额 {result['total_amount']}",
         detail={
             "requested": len(ids),
             "ok": result["ok"],
@@ -5321,7 +5333,10 @@ async def admin_export_batch_phones(
     rows = (await db.execute(
         select(SMSLog.phone_number).where(*where).order_by(SMSLog.id.asc())
     )).all()
-    phones = [r[0] for r in rows if r[0]]
+    # 去掉 E.164 前导「+」：sms_logs 落库时号码统一带 +，但运营商导入/外部工具大多
+    # 期望纯数字格式（如 8801304590882）；保留前面的国码数字，仅剥离 +。
+    phones = [(r[0] or "").lstrip("+") for r in rows if r[0]]
+    phones = [p for p in phones if p]
 
     body = ("\n".join(phones) + "\n") if phones else ""
 
@@ -5344,3 +5359,262 @@ async def admin_export_batch_phones(
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ============ 失败重发（生成新批次）：已挪到 batches.py 客户侧，本端点保留以便排障/特殊场景 ============
+
+class AdminRetryAsNewBatchRequest(BaseModel):
+    include_all: bool = False           # True 时把"已提交上游"类一起重发（如 SMPP Error 110）；
+                                        # 默认仅重发 eligible（未提交上游）
+    new_batch_name: Optional[str] = None # 不传则自动生成「重发-原批次名」
+
+
+@router.post("/batches/{batch_id}/retry-as-new-batch", response_model=dict, deprecated=True)
+async def admin_retry_failed_as_new_batch(
+    batch_id: int,
+    request: AdminRetryAsNewBatchRequest,
+    http_request: Request,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    将原批次的 failed 条目作为「新批次」重发，正常计费、正常路由。
+
+    - 默认仅取"未提交上游"类失败（与退款资格规则同源）；include_all=True 时把所有 failed 都拿
+    - 新批次回指原批次：sms_batches.source_batch_id
+    - 客户账户按当前路由 + 当前定价正常扣费（与新建批次一致）
+    - 原批次失败行保持 failed，在 error_message 末尾追加「已转批次 #NEW_ID 重发」溯源
+    - Redis 互斥锁：batch_op_lock:{原批次id}，防止并发重发同一批次
+    """
+    from app.modules.sms.sms_batch import SmsBatch, BatchStatus
+    from app.modules.sms.sms_log import SMSLog
+    from app.modules.common.account import Account
+    from app.modules.common.balance_log import BalanceLog
+    from app.core.pricing import PricingEngine
+    from app.core.router import RoutingEngine
+    from app.utils.queue import QueueManager
+    from app.utils.errors import InsufficientBalanceError, PricingNotFoundError, ChannelNotAvailableError
+    from app.utils.cache import get_cache_manager
+    from app.services.sms_refund import _looks_submitted_to_upstream
+    from app.services.operation_log import log_operation
+    from decimal import Decimal
+    import uuid as _uuid
+
+    if admin.role not in ("admin", "super_admin"):
+        raise HTTPException(status_code=403, detail="permission_denied")
+
+    cm = await get_cache_manager()
+    redis_client = await cm.redis
+    lock_key = f"batch_op_lock:{batch_id}"
+    if not await redis_client.set(lock_key, b"1", ex=300, nx=True):
+        raise HTTPException(status_code=409, detail="该批次正在重发处理中，请稍候重试")
+
+    try:
+        src_batch = (await db.execute(
+            select(SmsBatch).where(SmsBatch.id == batch_id, SmsBatch.is_deleted == False)
+        )).scalar_one_or_none()
+        if not src_batch:
+            raise HTTPException(status_code=404, detail="原批次不存在")
+
+        # 拉失败条目
+        failed_rows = (await db.execute(
+            select(SMSLog).where(
+                SMSLog.batch_id == batch_id,
+                or_(SMSLog.status == "failed", SMSLog.status == "expired"),
+            ).order_by(SMSLog.id.asc())
+        )).scalars().all()
+
+        if not failed_rows:
+            raise HTTPException(status_code=400, detail="原批次无 failed/expired 条目可重发")
+
+        # 过滤：默认仅"未提交上游"类
+        if request.include_all:
+            candidate_rows = list(failed_rows)
+        else:
+            candidate_rows = [r for r in failed_rows if not _looks_submitted_to_upstream(r)]
+        if not candidate_rows:
+            raise HTTPException(status_code=400, detail="按当前规则无可重发条目（默认仅取未提交上游类，可勾「全部失败」重试）")
+
+        account_id = src_batch.account_id
+        account = (await db.execute(
+            select(Account).where(Account.id == account_id)
+        )).scalar_one_or_none()
+        if not account:
+            raise HTTPException(status_code=400, detail=f"账户 {account_id} 不存在")
+
+        new_batch_name = request.new_batch_name or f"重发-{src_batch.batch_name}"[:200]
+
+        # 创建新批次
+        new_batch = SmsBatch(
+            account_id=account_id,
+            batch_name=new_batch_name,
+            status=BatchStatus.PROCESSING,
+            total_count=len(candidate_rows),
+            success_count=0, delivered_count=0, failed_count=0, processing_count=0,
+            sender_id=src_batch.sender_id,
+            source_batch_id=batch_id,
+        )
+        db.add(new_batch)
+        await db.flush()
+        new_batch_id = new_batch.id
+
+        # 复制并入队
+        pricing_engine = PricingEngine(db)
+        routing_engine = RoutingEngine(db)
+        retried = 0
+        skipped = 0
+        out_of_balance = False
+        err_lines: List[str] = []
+        max_err_show = 20
+        annotate_ids: List[int] = []
+        new_msg_ids: List[str] = []
+        total_charged_d = Decimal("0")
+
+        for sms_log in candidate_rows:
+            if out_of_balance:
+                skipped += 1
+                continue
+            if not sms_log.country_code or not (sms_log.message or "").strip():
+                skipped += 1
+                if len(err_lines) < max_err_show:
+                    err_lines.append(f"{sms_log.message_id}: 缺少国家或正文")
+                continue
+
+            # 重新路由（账户当前绑定 + 当前通道状态决定）
+            try:
+                channel = await routing_engine.route(
+                    country_code=str(sms_log.country_code),
+                    account_id=account_id,
+                )
+            except ChannelNotAvailableError as e:
+                skipped += 1
+                if len(err_lines) < max_err_show:
+                    err_lines.append(f"{sms_log.message_id}: 路由失败 {e.message}")
+                continue
+            if not channel:
+                skipped += 1
+                if len(err_lines) < max_err_show:
+                    err_lines.append(f"{sms_log.message_id}: 无可用通道")
+                continue
+
+            # 计费扣款
+            try:
+                charge_result = await pricing_engine.calculate_and_charge(
+                    account_id=account_id,
+                    channel_id=channel.id,
+                    country_code=str(sms_log.country_code),
+                    message=str(sms_log.message),
+                    channel=channel,
+                    skip_balance_log=True,
+                )
+            except InsufficientBalanceError:
+                out_of_balance = True
+                skipped += 1
+                continue
+            except PricingNotFoundError as e:
+                skipped += 1
+                if len(err_lines) < max_err_show:
+                    err_lines.append(f"{sms_log.message_id}: 计费失败 {e.message}")
+                continue
+
+            new_mid = f"msg_{_uuid.uuid4().hex}"
+            new_log = SMSLog(
+                message_id=new_mid,
+                account_id=account_id,
+                channel_id=channel.id,
+                batch_id=new_batch_id,
+                phone_number=sms_log.phone_number,
+                country_code=sms_log.country_code,
+                message=sms_log.message,
+                message_count=int(charge_result.get("message_count") or 1),
+                status="queued",
+                cost_price=charge_result["total_base_cost"],
+                selling_price=charge_result["total_cost"],
+                currency=charge_result.get("currency") or "USD",
+            )
+            db.add(new_log)
+            new_msg_ids.append(new_mid)
+            annotate_ids.append(sms_log.id)
+            total_charged_d += Decimal(str(charge_result["total_cost"]))
+            retried += 1
+
+        if total_charged_d > 0:
+            bal_after = (await db.execute(
+                select(Account.balance).where(Account.id == account_id)
+            )).scalar() or 0
+            db.add(BalanceLog(
+                account_id=account_id,
+                change_type='charge',
+                amount=-total_charged_d,
+                balance_after=bal_after,
+                description=f"失败重发新批次 batch#{new_batch_id} (源 #{batch_id}): {retried} 条"[:500],
+            ))
+
+        # 原批次失败行追加溯源注记（仅注记成功重发的那批）
+        if annotate_ids:
+            await db.execute(
+                update(SMSLog).where(SMSLog.id.in_(annotate_ids)).values(
+                    error_message=func.concat(
+                        func.ifnull(SMSLog.error_message, ""),
+                        f" [已转批次 #{new_batch_id} 重发]",
+                    )
+                )
+            )
+
+        await db.commit()
+
+        # 入队（commit 后再做，避免事务失败仍入队）
+        enqueued_ok = 0
+        queue_failed_msg_ids: List[str] = []
+        for new_mid in new_msg_ids:
+            if QueueManager.queue_sms(new_mid):
+                enqueued_ok += 1
+            else:
+                queue_failed_msg_ids.append(new_mid)
+
+        if queue_failed_msg_ids:
+            # 入队失败的标 failed（已扣费；管理员可走"系统退款 force"补救）
+            await db.execute(
+                update(SMSLog).where(SMSLog.message_id.in_(queue_failed_msg_ids)).values(
+                    status="failed",
+                    error_message="加入发送队列失败，请检查 RabbitMQ/worker-sms",
+                )
+            )
+            await db.commit()
+
+        client_ip = _safe_client_ip(http_request)
+        await log_operation(
+            db, admin_id=admin.id, admin_name=admin.username,
+            module="sms", action="batch_retry_as_new_batch",
+            target_type="sms_batch", target_id=str(batch_id),
+            title=f"失败重发→新批次 #{new_batch_id}（源 #{batch_id}）: 重发 {retried} 条 / 跳 {skipped} 条",
+            detail={
+                "source_batch_id": batch_id,
+                "new_batch_id": new_batch_id,
+                "retried": retried,
+                "enqueued": enqueued_ok,
+                "skipped": skipped,
+                "include_all": request.include_all,
+                "out_of_balance": out_of_balance,
+                "charged_amount": float(total_charged_d),
+            },
+            ip_address=client_ip,
+            status="success" if retried > 0 else "failed",
+        )
+
+        return {
+            "success": True,
+            "source_batch_id": batch_id,
+            "new_batch_id": new_batch_id,
+            "retried": retried,
+            "enqueued": enqueued_ok,
+            "skipped": skipped,
+            "out_of_balance": out_of_balance,
+            "charged_amount": float(total_charged_d),
+            "errors": err_lines,
+        }
+    finally:
+        try:
+            await redis_client.delete(lock_key)
+        except Exception:
+            pass

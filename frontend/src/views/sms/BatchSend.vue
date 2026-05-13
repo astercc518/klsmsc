@@ -172,9 +172,11 @@
                 link
                 type="warning"
                 size="small"
+                :loading="isRetrying(row)"
+                :disabled="isRetrying(row)"
                 @click="retryFailedBatch(row)"
               >
-                {{ $t('batchSend.retryFailed') }}
+                {{ isRetrying(row) ? $t('batchSend.retryInProgress') : $t('batchSend.retryFailed') }}
               </el-button>
               <el-button
                 v-if="canResendUnsentBatch(row)"
@@ -945,22 +947,36 @@ const cancelBatch = (row: SmsBatch) => {
   }).catch(() => {})
 }
 
+// 失败重发：按 batch_id 加锁，按钮 spinner，loading 期间禁止重复点击；
+// 同时为 axios 调用单独提高 timeout，避免 10000+ 条同步处理时浏览器 30s 超时关闭。
+const retryingBatchIds = ref<Set<number>>(new Set())
+const isRetrying = (row: SmsBatch & Record<string, unknown>) => retryingBatchIds.value.has(Number(row.id))
+
 const retryFailedBatch = (row: SmsBatch & Record<string, unknown>) => {
-  if (batchFailedCount(row) <= 0) return
+  const failedCount = batchFailedCount(row)
+  if (failedCount <= 0) return
+  if (isRetrying(row)) return  // 防重复点击
+
   ElMessageBox.confirm(t('batchSend.confirmRetryFailed'), t('common.info'), {
     confirmButtonText: t('common.confirm'),
     cancelButtonText: t('common.cancel'),
     type: 'warning'
   }).then(async () => {
+    retryingBatchIds.value.add(Number(row.id))
+    // 大批次预估时长提示：每千条估约 3-5 秒
+    const estSec = Math.max(5, Math.ceil(failedCount / 250))
+    const startMsg = ElMessage({
+      message: t('batchSend.retryStarting', { count: failedCount, sec: estSec }) || `重发起动中（${failedCount} 条，约 ${estSec}s）…请勿关闭页面`,
+      type: 'info',
+      duration: 0,
+      showClose: true,
+    })
     try {
-      const res = await retryBatchFailedApi(row.id)
-      const msg =
-        res.message ||
-        (res.partial
-          ? t('batchSend.retryPartial', { count: res.retried, pending: res.pending_skipped })
-          : t('batchSend.retrySuccess', { count: res.retried }))
-      // 余额仅够前 N 条：后端已扣已发，剩余仍 failed —— 用 warning 提示用户去充值
-      if (res.partial) {
+      // 自定义 timeout：按预估 × 4 给余量，10000 条 ≥ 160s；最少 90s
+      const res = await retryBatchFailedApi(row.id, { timeout: Math.max(90_000, estSec * 4_000) })
+      // 新流程：返回的 message 已经包含人类可读总结；out_of_balance 用 warning
+      const msg = res.message || t('batchSend.retrySuccess', { count: res.retried })
+      if (res.out_of_balance) {
         ElMessage.warning({ message: msg, duration: 6000 })
       } else {
         ElMessage.success(msg)
@@ -970,6 +986,9 @@ const retryFailedBatch = (row: SmsBatch & Record<string, unknown>) => {
     } catch (error: any) {
       const d = error.response?.data?.detail
       ElMessage.error(typeof d === 'string' ? d : t('batchSend.retryFailedMsg'))
+    } finally {
+      try { startMsg.close() } catch { /* ignore */ }
+      retryingBatchIds.value.delete(Number(row.id))
     }
   }).catch(() => {})
 }

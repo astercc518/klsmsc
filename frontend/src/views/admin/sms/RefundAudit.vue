@@ -195,10 +195,20 @@
     </el-drawer>
 
     <!-- 批量退款确认对话框 -->
-    <el-dialog v-model="batchVisible" title="批量退款确认" width="500px" :close-on-click-modal="false">
+    <el-dialog v-model="batchVisible" title="批量退款确认" width="520px" :close-on-click-modal="false">
       <div class="batch-confirm">
         <el-alert type="warning" :closable="false" style="margin-bottom: 16px">
-          <template #title>即将对 {{ selectedEligible.length }} 条记录执行退款，此操作不可撤销</template>
+          <template #title>
+            即将对 <b>{{ selectedEligible.length }}</b> 条记录执行退款，总额
+            <b>{{ fmtMoney(selectedRefundTotal) }}</b>，此操作不可撤销
+          </template>
+        </el-alert>
+        <el-alert v-if="showAllFailed && selectedHasIneligible" type="error" :closable="false" style="margin-bottom: 12px">
+          <template #title>强制退款警告</template>
+          <template #default>
+            选中条目含「不可退款」类（已收到上游 SubmitSMResp/DLR），将通过 <b>force</b> 路径强制退款。
+            仅在确认上游实际未投递（如供应商账户余额不足、风控等）时使用。
+          </template>
         </el-alert>
         <p class="batch-ids">
           涉及 SMS ID：
@@ -207,13 +217,17 @@
         </p>
         <el-form label-width="80px" style="margin-top: 12px">
           <el-form-item label="备注">
-            <el-input v-model="batchNote" type="textarea" :rows="2" placeholder="可选" maxlength="200" />
+            <el-input v-model="batchNote" type="textarea" :rows="2" placeholder="可选（强烈建议填写退款原因，便于审计）" maxlength="200" />
           </el-form-item>
         </el-form>
       </div>
       <template #footer>
         <el-button @click="batchVisible = false">取消</el-button>
-        <el-button type="primary" :loading="batchSubmitting" @click="submitBatch">确认批量退款</el-button>
+        <el-button
+          :type="(showAllFailed && selectedHasIneligible) ? 'danger' : 'primary'"
+          :loading="batchSubmitting"
+          @click="submitBatch"
+        >{{ (showAllFailed && selectedHasIneligible) ? '强制退款' : '确认批量退款' }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -238,10 +252,27 @@ const filters = reactive<{ keyword?: string; account_id?: number; batch_id?: num
 // 批次模式下：是否显示全部失败（含不可退款的）
 const showAllFailed = ref(false)
 
-// 选中行（过滤出可退款的 ID）
+// 选中行
 const selectedRows = ref<RefundCandidate[]>([])
-const selectedEligible = computed(() =>
-  selectedRows.value.filter(r => r.eligible !== false).map(r => r.sms_log_id)
+// 当「全部失败」开关开启时，允许选中所有 failed 行（走 force 路径）
+const selectedEligible = computed(() => {
+  if (showAllFailed.value) {
+    return selectedRows.value
+      .filter(r => !r.refunded_at && Number(r.selling_price || 0) > 0)
+      .map(r => r.sms_log_id)
+  }
+  return selectedRows.value.filter(r => r.eligible !== false).map(r => r.sms_log_id)
+})
+// 当前批选中的总退款金额（按 selling_price 汇总）
+const selectedRefundTotal = computed(() => {
+  const rows = showAllFailed.value
+    ? selectedRows.value.filter(r => !r.refunded_at && Number(r.selling_price || 0) > 0)
+    : selectedRows.value.filter(r => r.eligible !== false)
+  return rows.reduce((s, r) => s + Number(r.selling_price || 0), 0)
+})
+// 选中条目中是否含 ineligible（即"已到上游"类）—— 提示用户走 force 路径
+const selectedHasIneligible = computed(() =>
+  selectedRows.value.some(r => r.eligible === false)
 )
 
 // 当前页中可退款的数量（用于摘要统计）
@@ -258,6 +289,11 @@ const batchNote = ref('')
 const batchSubmitting = ref(false)
 
 function isSelectable(row: RefundCandidate): boolean {
+  // 「全部失败」开关开启时：所有 failed + 未退款 + selling_price>0 都允许勾选，
+  // 走强制退款（force=true）路径，由管理员人工决定。否则仅 eligible 可勾。
+  if (showAllFailed.value) {
+    return !row.refunded_at && Number(row.selling_price || 0) > 0
+  }
   return row.eligible !== false
 }
 
@@ -331,9 +367,11 @@ function openBatchRefund() {
 
 async function submitBatch() {
   if (selectedEligible.value.length === 0) return
+  // 「全部失败」开关 + 含 ineligible → 走 force 路径
+  const useForce = showAllFailed.value && selectedHasIneligible.value
   batchSubmitting.value = true
   try {
-    const res = await executeRefundBatch(selectedEligible.value, batchNote.value || undefined)
+    const res = await executeRefundBatch(selectedEligible.value, batchNote.value || undefined, useForce)
     if (res.success) {
       ElMessage.success(`批量退款完成：成功 ${res.ok ?? 0} 条，失败 ${res.failed ?? 0} 条，总计退还 ${fmtMoney(res.total_amount)}`)
       if (res.failures && res.failures.length > 0) {
