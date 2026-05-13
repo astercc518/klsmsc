@@ -42,9 +42,11 @@ async def _do_sync_processing_progress():
         async with Session() as db:
             # 覆盖两类批次：
             # 1) processing 批次（近 48h 创建）— 正常进度推进
-            # 2) completed 批次（近 2h 完成）— 覆盖 DLR 延迟到达：批次虽被标 completed，
+            # 2) completed 批次（近 24h 完成）— 覆盖 DLR 延迟到达：批次虽被标 completed，
             #    后续仍会陆续收到 DLR 更新 sms_logs.status=delivered，sms_batches.delivered_count
             #    必须随之刷新，否则前端"送达率"停留在错误快照。
+            #    24h 窗口配合 channels.dlr_sent_timeout_hours（默认 72h）：上游推迟达 1 天的 DLR
+            #    仍会反映到批次汇总；再晚的属于异常，由人工 SQL 回填或调低通道 DLR 超时阈值处理。
             now = datetime.now()
             proc_ids = (
                 await db.execute(
@@ -63,9 +65,9 @@ async def _do_sync_processing_progress():
                         and_(
                             SmsBatch.status == BatchStatus.COMPLETED,
                             SmsBatch.is_deleted == False,
-                            SmsBatch.completed_at >= now - timedelta(hours=2),
+                            SmsBatch.completed_at >= now - timedelta(hours=24),
                         )
-                    ).order_by(SmsBatch.id.desc()).limit(100)
+                    ).order_by(SmsBatch.id.desc()).limit(200)
                 )
             ).scalars().all()
             all_ids = list(proc_ids) + [bid for bid in recent_done_ids if bid not in set(proc_ids)]
