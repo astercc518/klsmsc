@@ -919,7 +919,7 @@ import {
   type AdminAccount,
 } from '@/api/admin'
 import request from '@/api/index'
-import { findCountryByIso, findCountryByDial, searchCountries } from '@/constants/countries'
+import { COUNTRY_LIST, findCountryByIso, findCountryByDial, searchCountries } from '@/constants/countries'
 
 const { t, locale } = useI18n()
 
@@ -1095,15 +1095,14 @@ const whitelistText = ref('')
 
 const createdCreds = reactive<{ api_key: string; api_secret: string }>({ api_key: '', api_secret: '' })
 
-// 国家列表（按语言显示名称）
-const COUNTRY_CODES = ['PH', 'ID', 'MY', 'TH', 'VN', 'SG', 'IN', 'PK', 'BD', 'CN', 'HK', 'TW', 'JP', 'KR', 'US', 'GB', 'AU', 'DE', 'FR', 'BR', 'MX', 'CL', 'NG', 'ZA', 'AE', 'SA']
+// 国家列表：直接走全量 COUNTRY_LIST（135 国），按当前语言显示名称排序。
+// 之前是固定 26 国白名单，开新市场（如智利、哥伦比亚等）就要改代码；现已解耦。
+// el-select :filterable 已支持搜索（中文/英文/ISO 都能匹配 label）。
 const countryList = computed(() => {
   const isZh = locale.value.startsWith('zh')
-  return COUNTRY_CODES.map(code => {
-    const c = findCountryByIso(code)
-    const name = c ? (isZh ? c.name : c.en) : code
-    return { code, name }
-  })
+  const items = COUNTRY_LIST.map(c => ({ code: c.iso, name: isZh ? c.name : c.en }))
+  items.sort((a, b) => a.name.localeCompare(b.name, isZh ? 'zh-CN' : 'en'))
+  return items
 })
 
 /** 列表中国家列：支持 ISO 代码和电话区号，按当前语言显示国家名称 */
