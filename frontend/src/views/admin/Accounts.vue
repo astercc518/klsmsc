@@ -1096,7 +1096,7 @@ const whitelistText = ref('')
 const createdCreds = reactive<{ api_key: string; api_secret: string }>({ api_key: '', api_secret: '' })
 
 // 国家列表（按语言显示名称）
-const COUNTRY_CODES = ['PH', 'ID', 'MY', 'TH', 'VN', 'SG', 'IN', 'PK', 'BD', 'CN', 'HK', 'TW', 'JP', 'KR', 'US', 'GB', 'AU', 'DE', 'FR', 'BR', 'MX', 'NG', 'ZA', 'AE', 'SA']
+const COUNTRY_CODES = ['PH', 'ID', 'MY', 'TH', 'VN', 'SG', 'IN', 'PK', 'BD', 'CN', 'HK', 'TW', 'JP', 'KR', 'US', 'GB', 'AU', 'DE', 'FR', 'BR', 'MX', 'CL', 'NG', 'ZA', 'AE', 'SA']
 const countryList = computed(() => {
   const isZh = locale.value.startsWith('zh')
   return COUNTRY_CODES.map(code => {
