@@ -94,6 +94,18 @@ async def _send_webhook_async(account_id: int, message_id: str, status: str, dat
             return {"success": False, "error": "SMS log not found"}
         
         # 构造回调数据
+        # 注意：sms_logs 表未存储 error_code / sender_id；前者保留位以兼容字段表，后者从 batch 取
+        sender_id_val: Optional[str] = None
+        if sms_log.batch_id:
+            try:
+                from app.modules.sms.sms_batch import SmsBatch
+                batch_row = await db.execute(
+                    select(SmsBatch.sender_id).where(SmsBatch.id == sms_log.batch_id)
+                )
+                sender_id_val = batch_row.scalar_one_or_none()
+            except Exception:
+                sender_id_val = None
+
         callback_data = {
             "message_id": message_id,
             "status": status,
@@ -102,25 +114,28 @@ async def _send_webhook_async(account_id: int, message_id: str, status: str, dat
             "submit_time": sms_log.submit_time.isoformat() if sms_log.submit_time else None,
             "sent_time": sms_log.sent_time.isoformat() if sms_log.sent_time else None,
             "delivery_time": sms_log.delivery_time.isoformat() if sms_log.delivery_time else None,
-            "error_code": sms_log.error_code,
+            "error_code": None,
             "error_message": sms_log.error_message,
             "channel_id": sms_log.channel_id,
-            "sender_id": sms_log.sender_id,
+            "sender_id": sender_id_val,
             "timestamp": datetime.now().isoformat()
         }
-        
-        # 生成HMAC-SHA256签名
+
+        # 生成HMAC-SHA256签名（与文档示例一致：sort_keys=True, ensure_ascii=False）
         secret = account.api_secret or account.api_key
-        signature = _generate_signature(secret, json.dumps(callback_data, sort_keys=True))
+        signature_payload = json.dumps(callback_data, sort_keys=True, ensure_ascii=False)
+        signature = _generate_signature(secret, signature_payload)
         
         # 发送HTTP POST
+        # 用 content= 而不是 json= 把已序列化好的字节直接发出，确保收方对 body 重新计算 HMAC 时
+        # 字节序列与我们签名时完全一致（避免 httpx 默认紧凑 separators 与 json.dumps 默认空格 separators 的差异）
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
                     webhook_url,
-                    json=callback_data,
+                    content=signature_payload.encode("utf-8"),
                     headers={
-                        "Content-Type": "application/json",
+                        "Content-Type": "application/json; charset=utf-8",
                         "X-Signature": f"sha256={signature}",
                         "X-Timestamp": str(int(datetime.now().timestamp())),
                         "User-Agent": "SMS-Gateway-Webhook/1.0"

@@ -668,6 +668,20 @@ async def download_domain_clicked_phones(
     if cc_norm:
         base_where.append(SMSLog.country_code == cc_norm)
 
+    # 审计日志必须在创建流式游标之前写入：log_operation 会在同一会话上 flush 一条 INSERT，
+    # 这会让随后 db.stream() 拿到的游标在 StreamingResponse 真正消费时失效（返回 0 行）。
+    try:
+        from app.services.operation_log import log_operation
+        await log_operation(
+            db, admin_id=admin.id, admin_name=admin.username,
+            module="sms", action="short_link_export_clicked_phones",
+            target_type="short_link_domain", target_id=str(domain_id),
+            title=f"下载短链域名 {domain.domain} 点击号码（{cc_norm or 'all'}, {fmt}）",
+            detail={"domain_id": domain_id, "domain": domain.domain, "country_code": cc_norm, "fmt": fmt},
+        )
+    except Exception as e:
+        logger.warning(f"短链域名点击号码下载审计日志写入失败 domain_id={domain_id}: {e}")
+
     if fmt == "txt":
         # 仅取去重号码（DISTINCT phone_number），避免一个号码多次点击重复出现
         rows_iter = await db.stream(
@@ -733,19 +747,6 @@ async def download_domain_clicked_phones(
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
-
-    # 审计日志（fire-and-forget 形式，不阻塞流式响应）
-    try:
-        from app.services.operation_log import log_operation
-        await log_operation(
-            db, admin_id=admin.id, admin_name=admin.username,
-            module="sms", action="short_link_export_clicked_phones",
-            target_type="short_link_domain", target_id=str(domain_id),
-            title=f"下载短链域名 {domain.domain} 点击号码（{cc_norm or 'all'}, {fmt}）",
-            detail={"domain_id": domain_id, "domain": domain.domain, "country_code": cc_norm, "fmt": fmt},
-        )
-    except Exception as e:
-        logger.warning(f"短链域名点击号码下载审计日志写入失败 domain_id={domain_id}: {e}")
 
     return resp_factory
 

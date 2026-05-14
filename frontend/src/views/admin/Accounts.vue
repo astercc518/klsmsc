@@ -716,6 +716,7 @@
         <el-empty v-else-if="!summaryLoading" :description="$t('customers.noCredentials')" />
       </div>
       <template #footer>
+        <el-button :loading="apiDocDownloading" @click="downloadApiDoc">{{ $t('customers.downloadApiDoc') }}</el-button>
         <el-button v-if="summaryData && ((summaryData.protocol === 'HTTP' && summaryData.api_key) || (summaryData.protocol === 'SMPP' && summaryData.smpp_system_id))" @click="copySummaryAll" type="primary">{{ $t('customers.copyAll') }}</el-button>
         <el-button @click="summaryVisible=false">{{ $t('common.close') }}</el-button>
       </template>
@@ -1341,6 +1342,43 @@ const submitAdjust = async () => {
 const summaryVisible = ref(false)
 const summaryLoading = ref(false)
 const summaryData = ref<any>(null)
+const apiDocDownloading = ref(false)
+
+// 知识库中「SMS Gateway HTTP与SMPP接口文档」文章 ID（固定）；按 article 取附件，附件 ID 变动不影响入口
+const API_DOC_ARTICLE_ID = 12
+
+const downloadApiDoc = async () => {
+  if (apiDocDownloading.value) return
+  apiDocDownloading.value = true
+  try {
+    const detail: any = await request.get(`/admin/knowledge/${API_DOC_ARTICLE_ID}`)
+    const atts: any[] = detail?.article?.attachments || []
+    const pdf = atts.find((a) => (a.file_name || '').toLowerCase().endsWith('.pdf')) || atts[0]
+    if (!pdf) {
+      ElMessage.error(t('customers.apiDocNotFound'))
+      return
+    }
+    const base = import.meta.env.VITE_API_BASE_URL ? `${import.meta.env.VITE_API_BASE_URL}/api/v1` : '/api/v1'
+    const token = localStorage.getItem('admin_token')
+    const res = await fetch(`${base}/admin/knowledge/attachment/${pdf.id}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = pdf.file_name || 'SMS_API_接口文档.pdf'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || t('customers.apiDocDownloadFailed'))
+  } finally {
+    apiDocDownloading.value = false
+  }
+}
 
 const openSummary = async (row: AdminAccount) => {
   summaryVisible.value = true

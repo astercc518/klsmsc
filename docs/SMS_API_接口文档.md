@@ -17,6 +17,7 @@
   - [4.1 单条发送](#41-单条发送)
   - [4.2 批量发送](#42-批量发送)
   - [4.3 短信状态查询](#43-短信状态查询)
+  - [4.4 软维 / OKCC 兼容协议（GET）](#44-软维--okcc-兼容协议get)
 - [5. 账户接口](#5-账户接口)
   - [5.1 账户登录](#51-账户登录)
   - [5.2 余额查询](#52-余额查询)
@@ -265,6 +266,89 @@ curl -u "myuser:mypassword" \
 
 ---
 
+### 4.4 软维 / OKCC 兼容协议（GET）
+
+为兼容 **OKCC** 等呼叫中心/PBX 系统的「软维 HTTP 协议」客户端，平台额外提供一个 **GET** 风格的发送端点。**新接入请优先使用 [4.1 单条发送](#41-单条发送)**；本端点仅作为兼容用途。
+
+**`GET /sms/send`**
+
+#### 请求参数（Query String）
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `action` | string | 是 | 固定为 `send` |
+| `account` | string | 是 | 账户名（与登录用户名一致） |
+| `mobile` | string | 是 | 目标号码，E.164 格式（`+` 开头）；**支持英文逗号分隔的多号码** |
+| `content` | string | 是 | 短信内容（URL 编码后再传） |
+| `password` | string | 是 | 签名（见下方计算规则） |
+| `extno` | string | 否 | 扩展号，无则传空 |
+| `rt` | string | 否 | 返回格式，目前仅支持 `json`（默认） |
+
+#### 签名计算
+
+```
+password = MD5( api_secret + extno + content + mobile )
+```
+
+- 取 32 位十六进制 MD5 摘要，**大小写不敏感**（服务端会同时接受大小写）
+- `content` 参与签名的值为 **URL 解码后的原文**（即与 PHP 端 `$_GET['content']` 接收到的字符串一致）
+- `extno` 为空时直接拼空串
+- `mobile` 为多号码时使用整段逗号分隔字符串参与签名
+
+**Python 计算示例**：
+
+```python
+import hashlib
+from urllib.parse import quote
+
+api_secret = "your_api_secret_here"
+account    = "myaccount"
+mobile     = "+5511999999999"
+content    = "Su codigo: 123456"
+extno      = ""
+
+password = hashlib.md5(f"{api_secret}{extno}{content}{mobile}".encode()).hexdigest()
+url = (
+    "https://api.kaolach.com/api/v1/sms/send"
+    f"?action=send&account={account}&extno={extno}"
+    f"&mobile={quote(mobile)}&content={quote(content)}"
+    f"&password={password}&rt=json"
+)
+```
+
+#### 响应格式
+
+```json
+{
+  "status": "0",
+  "list": [
+    {"mobile": "+5511999999999", "mid": "msg_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "result": 0}
+  ]
+}
+```
+
+**顶层 `status` 取值**：
+
+| status | 含义 |
+|--------|------|
+| `0` | 请求受理成功（请逐条检查 `list[].result`） |
+| `3` | 账户认证失败（账户不存在 / 未配置密钥 / 签名错误） |
+| `21` | 请求参数缺失（`account`/`mobile`/`content`/`password` 任一为空） |
+| `100` | `action` 不是 `send` |
+
+**`list[].result` 取值（每条号码独立）**：
+
+| result | 含义 |
+|--------|------|
+| `0` | 入队成功 |
+| `10` | 计费失败（通常为余额不足） |
+| `15` | 号码格式无效 |
+| `17` | 目标国家不允许 / 无可用通道 / 内容校验失败 / 入队失败 |
+
+> **注意**：与标准 REST 接口不同，本端点**不返回** `cost`、`message_count`、`currency` 等字段；如需获取详细计费与状态，请用 `mid` 调用 [4.3 短信状态查询](#43-短信状态查询)。
+
+---
+
 ## 5. 账户接口
 
 ### 5.1 账户登录
@@ -423,10 +507,10 @@ curl https://api.kaolach.com/api/v1/sms/public/rates
 | `submit_time` | string | 提交时间（ISO 8601） |
 | `sent_time` | string | 发送时间（ISO 8601） |
 | `delivery_time` | string | 送达时间（ISO 8601，仅 delivered 时） |
-| `error_code` | string | 错误码（失败时） |
+| `error_code` | string\|null | 错误码（预留字段，目前**始终为 `null`**；失败原因请读 `error_message`） |
 | `error_message` | string | 错误详情（失败时） |
 | `channel_id` | integer | 通道 ID |
-| `sender_id` | string | 发送方标识 |
+| `sender_id` | string\|null | 发送方标识；单条发送暂不写入，仅批量发送时为对应批次的 `sender_id` |
 | `timestamp` | string | 回调发起时间（ISO 8601） |
 
 #### 回调示例
@@ -450,13 +534,29 @@ curl https://api.kaolach.com/api/v1/sms/public/rates
 
 ### 签名验证
 
-平台使用 HMAC-SHA256 对回调请求体签名。验证步骤：
+平台使用 HMAC-SHA256 对回调请求体签名。**为避免序列化差异导致验签不通过，推荐直接对原始请求体字节计算 HMAC**：
 
-1. 将请求体 JSON 的所有键**按字母序排序**后序列化为字符串
-2. 使用您的 `api_secret` 作为密钥，对序列化字符串计算 HMAC-SHA256
-3. 将计算结果与 `X-Signature` 头中 `sha256=` 后面的值比对
+#### 方式一（推荐）：对原始请求体字节计算
 
-**Python 验签示例**：
+直接取 HTTP body 的原始字节做 HMAC-SHA256，无需反序列化为 JSON 再序列化，最稳。
+
+```python
+import hmac
+import hashlib
+
+def verify_webhook(raw_body: bytes, signature_header: str, api_secret: str) -> bool:
+    expected = hmac.new(api_secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    actual = signature_header.replace("sha256=", "")
+    return hmac.compare_digest(expected, actual)
+```
+
+#### 方式二：重新序列化后计算
+
+若框架已自动把 body 解析成 dict 且无法拿到原始字节，必须按平台**完全相同的序列化规则**重新序列化：
+
+- `sort_keys=True`
+- `ensure_ascii=False`
+- `separators=(", ", ": ")`（即 Python `json.dumps` 默认 separators，**不要**使用紧凑模式）
 
 ```python
 import hmac
@@ -467,12 +567,14 @@ def verify_webhook(body: dict, signature_header: str, api_secret: str) -> bool:
     payload = json.dumps(body, sort_keys=True, ensure_ascii=False)
     expected = hmac.new(
         api_secret.encode(),
-        payload.encode(),
+        payload.encode("utf-8"),
         hashlib.sha256
     ).hexdigest()
     actual = signature_header.replace("sha256=", "")
     return hmac.compare_digest(expected, actual)
 ```
+
+> **提示**：平台 webhook 请求头携带 `Content-Type: application/json; charset=utf-8`，body 即为上述序列化结果的 UTF-8 字节。
 
 ### 响应要求
 
