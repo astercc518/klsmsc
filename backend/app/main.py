@@ -165,11 +165,13 @@ app.include_router(_short_link_router_mod.router, tags=["短链追踪"])
 app.include_router(_short_link_admin_mod.admin_router, prefix="/api/v1", tags=["短链域名管理"])
 app.include_router(_short_link_admin_mod.public_router, prefix="/api/v1", tags=["短链域名（公开列表）"])
 app.include_router(_short_link_admin_mod.stats_router, prefix="/api/v1", tags=["短信批次-短链统计"])
+app.include_router(_short_link_admin_mod.click_detail_router, prefix="/api/v1", tags=["短链点击明细"])
 
 # 确保 ORM 元数据注册（Alembic autogenerate 依赖）
 # 注意：用 from-import，避免 `import app.modules...` 把 `app` 名遮蔽掉 FastAPI 实例
 from app.modules.sms.short_link_log import ShortLinkLog as _ShortLinkLog  # noqa: F401
 from app.modules.sms.short_link_domain import ShortLinkDomain as _ShortLinkDomain  # noqa: F401
+from app.modules.sms.short_link_click import ShortLinkClick as _ShortLinkClick  # noqa: F401
 
 from app.api.v1 import (
     sms, account, channels, admin, reports, bot_admin, internal_bot, system_config,

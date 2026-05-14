@@ -29,6 +29,7 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 from app.modules.sms.short_link_log import ShortLinkLog
+from app.modules.sms.short_link_click import ShortLinkClick
 from app.modules.sms.sms_log import SMSLog
 
 
@@ -778,25 +779,79 @@ async def list_active_domains(db: AsyncSession = Depends(get_db)):
 stats_router = APIRouter(prefix="/sms/batches", tags=["短信批次-短链统计"])
 
 
+def _per_token_clicks_subq(batch_id: int):
+    """每个 token 的点击明细聚合（限定在指定批次的 token 集合上）。
+
+    输出字段：
+      - token
+      - detail_total / detail_human / detail_bot
+      - last_human_at（仅真人点击的最大时间，用于 UI 排序展示）
+
+    把 batch 限制下推到子查询，避免对全表 short_link_clicks 做无谓聚合。
+    """
+    batch_token_subq = (
+        select(ShortLinkLog.token)
+        .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
+        .where(SMSLog.batch_id == batch_id)
+        .subquery()
+    )
+    return (
+        select(
+            ShortLinkClick.token.label("token"),
+            func.count().label("detail_total"),
+            func.sum(func.if_(ShortLinkClick.is_bot == False, 1, 0)).label("detail_human"),  # noqa: E712
+            func.sum(func.if_(ShortLinkClick.is_bot == True, 1, 0)).label("detail_bot"),  # noqa: E712
+            func.max(
+                func.if_(ShortLinkClick.is_bot == False, ShortLinkClick.clicked_at, None)  # noqa: E712
+            ).label("last_human_at"),
+        )
+        .where(ShortLinkClick.token.in_(select(batch_token_subq.c.token)))
+        .group_by(ShortLinkClick.token)
+        .subquery()
+    )
+
+
 @stats_router.get("/{batch_id}/click-stats")
 async def batch_click_stats(
     batch_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """批次点击概览：总短链数、被点击数、总点击次数。
+    """批次点击概览：默认**只统计真人点击**，机器扫描自动过滤。
 
-    公开（无鉴权）— 由前端在租户上下文展示，安全性由路径不可枚举（batch_id 自增但访问需要登录态）保证；
-    若需严格租户隔离，可在此处补 Depends 检查（已在 v2 计划中）。
+    legacy 数据（明细表上线前的旧 click_count）按"无法判定"处理，
+    保留为真人计数（避免一刀切删除旧批次）。前端会用 `legacy_clicks` 字段
+    告诉用户这部分是估算值。
+
+    返回字段：
+      - total_links     : 短链总数
+      - clicked_links   : 真人点击过的短链数（含 legacy）
+      - total_clicks    : 真人点击次数（含 legacy）
+      - bot_clicks      : 已自动过滤的机器扫描次数（仅展示用）
+      - legacy_clicks   : 没有明细行的旧点击数（计入真人）
     """
-    total_rows, clicked_rows, total_clicks = (
+    pt = _per_token_clicks_subq(batch_id)
+
+    # detail_human + MAX(0, click_count - detail_total) = "真人等价计数"
+    eff_human_expr = (
+        func.coalesce(pt.c.detail_human, 0)
+        + func.greatest(ShortLinkLog.click_count - func.coalesce(pt.c.detail_total, 0), 0)
+    )
+    legacy_expr = func.greatest(
+        ShortLinkLog.click_count - func.coalesce(pt.c.detail_total, 0), 0
+    )
+
+    total_rows, clicked_rows, total_clicks, bot_clicks, legacy_clicks = (
         await db.execute(
             select(
                 func.count(ShortLinkLog.id),
-                func.sum(func.if_(ShortLinkLog.click_count > 0, 1, 0)),
-                func.coalesce(func.sum(ShortLinkLog.click_count), 0),
+                func.coalesce(func.sum(func.if_(eff_human_expr > 0, 1, 0)), 0),
+                func.coalesce(func.sum(eff_human_expr), 0),
+                func.coalesce(func.sum(func.coalesce(pt.c.detail_bot, 0)), 0),
+                func.coalesce(func.sum(legacy_expr), 0),
             )
             .select_from(ShortLinkLog)
             .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
+            .outerjoin(pt, pt.c.token == ShortLinkLog.token)
             .where(SMSLog.batch_id == batch_id)
         )
     ).one()
@@ -808,6 +863,8 @@ async def batch_click_stats(
             "total_links": int(total_rows or 0),
             "clicked_links": int(clicked_rows or 0),
             "total_clicks": int(total_clicks or 0),
+            "bot_clicks": int(bot_clicks or 0),
+            "legacy_clicks": int(legacy_clicks or 0),
         },
     }
 
@@ -819,19 +876,31 @@ async def list_clicked_phones(
     page_size: int = Query(50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
-    """JSON 预览：分页返回点击过短链的号码。"""
+    """JSON 预览：分页返回**真人**点击过短链的号码（机器扫描自动过滤）。
+
+    legacy clicks（无明细行）按真人计入，避免旧批次空白。
+    """
+    pt = _per_token_clicks_subq(batch_id)
+    eff_human_expr = (
+        func.coalesce(pt.c.detail_human, 0)
+        + func.greatest(ShortLinkLog.click_count - func.coalesce(pt.c.detail_total, 0), 0)
+    )
+    # 排序：优先 last_human_at，缺失时回退到 sll.last_click_at
+    last_at_expr = func.coalesce(pt.c.last_human_at, ShortLinkLog.last_click_at)
+
     base = (
         select(
             SMSLog.phone_number.label("phone_number"),
-            ShortLinkLog.click_count.label("click_count"),
-            ShortLinkLog.last_click_at.label("last_click_at"),
+            eff_human_expr.label("human_clicks"),
+            last_at_expr.label("last_click_at"),
             ShortLinkLog.original_url.label("original_url"),
             ShortLinkLog.token.label("token"),
         )
         .select_from(ShortLinkLog)
         .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
-        .where(SMSLog.batch_id == batch_id, ShortLinkLog.click_count > 0)
-        .order_by(ShortLinkLog.last_click_at.desc())
+        .outerjoin(pt, pt.c.token == ShortLinkLog.token)
+        .where(SMSLog.batch_id == batch_id, eff_human_expr > 0)
+        .order_by(last_at_expr.desc())
     )
 
     total = (
@@ -839,7 +908,8 @@ async def list_clicked_phones(
             select(func.count())
             .select_from(ShortLinkLog)
             .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
-            .where(SMSLog.batch_id == batch_id, ShortLinkLog.click_count > 0)
+            .outerjoin(pt, pt.c.token == ShortLinkLog.token)
+            .where(SMSLog.batch_id == batch_id, eff_human_expr > 0)
         )
     ).scalar_one()
 
@@ -855,7 +925,8 @@ async def list_clicked_phones(
             "items": [
                 {
                     "phone_number": r.phone_number,
-                    "click_count": int(r.click_count or 0),
+                    "click_count": int(r.human_clicks or 0),  # 兼容旧字段（仅真人）
+                    "human_clicks": int(r.human_clicks or 0),
                     "last_click_at": r.last_click_at.isoformat() if r.last_click_at else None,
                     "original_url": r.original_url,
                     "token": r.token,
@@ -871,30 +942,38 @@ async def download_clicked_phones_csv(
     batch_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """CSV 下载：流式遍历，避免大批次（百万级）一次性加载到内存。"""
+    """CSV 下载（仅真人）：流式遍历，机器扫描自动过滤。"""
+    pt = _per_token_clicks_subq(batch_id)
+    eff_human_expr = (
+        func.coalesce(pt.c.detail_human, 0)
+        + func.greatest(ShortLinkLog.click_count - func.coalesce(pt.c.detail_total, 0), 0)
+    )
+    last_at_expr = func.coalesce(pt.c.last_human_at, ShortLinkLog.last_click_at)
+
     rows_iter = await db.stream(
         select(
             SMSLog.phone_number,
-            ShortLinkLog.click_count,
-            ShortLinkLog.last_click_at,
+            eff_human_expr.label("human_clicks"),
+            last_at_expr.label("last_click_at"),
             ShortLinkLog.original_url,
         )
         .select_from(ShortLinkLog)
         .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
-        .where(SMSLog.batch_id == batch_id, ShortLinkLog.click_count > 0)
-        .order_by(ShortLinkLog.last_click_at.desc())
+        .outerjoin(pt, pt.c.token == ShortLinkLog.token)
+        .where(SMSLog.batch_id == batch_id, eff_human_expr > 0)
+        .order_by(last_at_expr.desc())
     )
 
     async def gen():
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["phone_number", "click_count", "last_click_at", "original_url"])
+        w.writerow(["phone_number", "human_clicks", "last_click_at", "original_url"])
         yield buf.getvalue()
         buf.seek(0); buf.truncate(0)
 
         async for r in rows_iter:
             ts = r.last_click_at.isoformat() if r.last_click_at else ""
-            w.writerow([r.phone_number, int(r.click_count or 0), ts, r.original_url or ""])
+            w.writerow([r.phone_number, int(r.human_clicks or 0), ts, r.original_url or ""])
             data = buf.getvalue()
             if data:
                 yield data
@@ -906,3 +985,65 @@ async def download_clicked_phones_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+click_detail_router = APIRouter(prefix="/short-links", tags=["短链点击明细"])
+
+
+@click_detail_router.get("/{token}/clicks")
+async def list_token_clicks(
+    token: str,
+    limit: int = Query(100, ge=1, le=500),
+    include_bots: bool = Query(False, description="是否同时返回被过滤的机器扫描行（默认仅真人）"),
+    db: AsyncSession = Depends(get_db),
+):
+    """单个短链的点击明细，**默认只返回真人点击**；机器扫描经默认过滤。
+
+    若需排查（"为什么这条被判成机器"），传 include_bots=true 返回全部行。
+    """
+    if not token or not token.isalnum() or len(token) > 16:
+        raise HTTPException(status_code=400, detail="invalid token")
+
+    stmt = (
+        select(
+            ShortLinkClick.clicked_at,
+            ShortLinkClick.client_ip,
+            ShortLinkClick.user_agent,
+            ShortLinkClick.is_bot,
+            ShortLinkClick.bot_reason,
+        )
+        .where(ShortLinkClick.token == token)
+    )
+    if not include_bots:
+        stmt = stmt.where(ShortLinkClick.is_bot == False)  # noqa: E712
+    rows = (
+        await db.execute(
+            stmt.order_by(ShortLinkClick.clicked_at.desc()).limit(limit)
+        )
+    ).all()
+
+    # 同时返回该 token 被过滤的机器次数，便于前端展示"已过滤 N 次"
+    bot_total = (
+        await db.execute(
+            select(func.count())
+            .where(ShortLinkClick.token == token, ShortLinkClick.is_bot == True)  # noqa: E712
+        )
+    ).scalar_one()
+
+    return {
+        "success": True,
+        "data": {
+            "token": token,
+            "filtered_bot_count": int(bot_total or 0),
+            "items": [
+                {
+                    "clicked_at": r.clicked_at.isoformat() if r.clicked_at else None,
+                    "client_ip": r.client_ip,
+                    "user_agent": r.user_agent,
+                    "is_bot": bool(r.is_bot),
+                    "bot_reason": r.bot_reason,
+                }
+                for r in rows
+            ],
+        },
+    }

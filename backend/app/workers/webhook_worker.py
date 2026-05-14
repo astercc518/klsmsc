@@ -249,18 +249,33 @@ def notify_status_change(message_id: str, status: str, **kwargs):
 @celery_app.task(name="record_link_click_task", ignore_result=True)
 def record_link_click_task(token: str, client_ip: str, user_agent: str):
     """
-    原子累加短链点击次数并记录 IP/UA。
+    原子累加短链点击次数 + 写一条点击明细（含 IP/UA、UA 判定、IP 扇出判定）。
 
-    使用 UPDATE ... SET click_count = click_count + 1 而非 SELECT + UPDATE，
-    避免高并发时行锁竞争导致死锁。单条 UPDATE 持锁时间极短（μs 级）。
+    机器判定有两条线：
+    1. UA 分类器（classify_user_agent）— 命中已知 bot/CLI/扫描器签名。
+    2. IP 扇出（Redis）— 同一 IP 在 IP_FANOUT_WINDOW 秒内点击 ≥ IP_FANOUT_THRESHOLD
+       个不同 token 视为扫描器；命中后会**回写**之前同一窗口内已落表的同 IP 行
+       （它们的 is_bot 改 1，bot_reason 改 'ip_fanout'）。这能识破伪装成
+       Mobile Safari/Chrome 的运营商反诈/营销扫描——它们 UA 真但 IP 复用。
     """
     import asyncio as _asyncio
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from sqlalchemy.pool import NullPool
-    from sqlalchemy import update as _upd
-    from datetime import datetime as _dt
+    from sqlalchemy import select as _sel, update as _upd, and_
+    from datetime import datetime as _dt, timedelta as _td
     from app.modules.sms.short_link_log import ShortLinkLog
+    from app.modules.sms.short_link_click import ShortLinkClick
+    from app.utils.bot_ua import classify_user_agent
     from app.config import settings as _s
+
+    # 调参：窗口 60 秒，≥3 个不同 token 才视为扇出
+    # 阈值=3 的取舍：宁可放过同 NAT 下两个真人 60s 内各点一条，
+    # 也不误杀；批次 469 那种 1 秒内同 IP 命中 3+ 个 token 仍跑不掉。
+    IP_FANOUT_WINDOW = 60
+    IP_FANOUT_THRESHOLD = 3
+
+    ua_is_bot, ua_reason = classify_user_agent(user_agent)
+    ip_norm = (client_ip or "").strip()
 
     async def _do():
         eng = create_async_engine(
@@ -268,9 +283,48 @@ def record_link_click_task(token: str, client_ip: str, user_agent: str):
             echo=False,
             poolclass=NullPool,
         )
+
+        # IP 扇出：用 Redis SET 记录该 IP 近 IP_FANOUT_WINDOW 秒访问过的不同 token
+        # 注意：不能复用 app.utils.cache.get_redis_client() 单例 —— 那个 client 绑定到
+        # 创建它的 event loop；Celery 每个 task 都新建 loop，导致 "Event loop is closed"。
+        # 这里在本任务的 loop 内创建独立的短命 client，与下方 async engine 同生共灭。
+        ip_is_bot = False
+        retro_flip_ip = False
+        if ip_norm:
+            try:
+                import redis.asyncio as _aioredis
+                _r = _aioredis.Redis.from_url(_s.REDIS_URL, decode_responses=False)
+                try:
+                    fkey = f"sl:ipset:{ip_norm}".encode()
+                    await _r.sadd(fkey, token.encode())
+                    await _r.expire(fkey, IP_FANOUT_WINDOW)
+                    distinct = await _r.scard(fkey)
+                    if distinct and int(distinct) >= IP_FANOUT_THRESHOLD:
+                        ip_is_bot = True
+                        retro_flip_ip = True
+                finally:
+                    await _r.aclose()
+            except Exception as e:
+                logger.warning(f"ip_fanout redis check failed (token={token}, ip={ip_norm}): {e}")
+
+        is_bot = bool(ua_is_bot or ip_is_bot)
+        # reason 优先级：UA 已判定 bot 时保留 UA 原因；否则若 IP 扇出 → ip_fanout
+        if ua_is_bot:
+            reason = ua_reason
+        elif ip_is_bot:
+            reason = "ip_fanout"
+        else:
+            reason = ""
+
         try:
             factory = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
             async with factory() as db:
+                sl_id = (
+                    await db.execute(
+                        _sel(ShortLinkLog.id).where(ShortLinkLog.token == token)
+                    )
+                ).scalar_one_or_none()
+
                 await db.execute(
                     _upd(ShortLinkLog)
                     .where(ShortLinkLog.token == token)
@@ -279,6 +333,30 @@ def record_link_click_task(token: str, client_ip: str, user_agent: str):
                         last_click_at=_dt.now(),
                     )
                 )
+                db.add(ShortLinkClick(
+                    token=token,
+                    short_link_log_id=sl_id,
+                    clicked_at=_dt.now(),
+                    client_ip=(ip_norm or None) and ip_norm[:64],
+                    user_agent=(user_agent or "")[:512] or None,
+                    is_bot=is_bot,
+                    bot_reason=(reason or None),
+                ))
+
+                # 回写：把同 IP 在窗口内已落表却被判为人的早期点击，全部翻成 ip_fanout。
+                # 限定 is_bot=False 才更新（避免覆盖更具体的 UA 原因）。
+                if retro_flip_ip and ip_norm:
+                    cutoff = _dt.now() - _td(seconds=IP_FANOUT_WINDOW)
+                    await db.execute(
+                        _upd(ShortLinkClick)
+                        .where(and_(
+                            ShortLinkClick.client_ip == ip_norm,
+                            ShortLinkClick.clicked_at >= cutoff,
+                            ShortLinkClick.is_bot == False,  # noqa: E712
+                        ))
+                        .values(is_bot=True, bot_reason="ip_fanout")
+                    )
+
                 await db.commit()
         finally:
             await eng.dispose()

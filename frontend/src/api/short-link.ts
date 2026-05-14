@@ -106,20 +106,43 @@ export const adminDeleteDomainCert = (domainId: number) =>
     `/admin/short-link-domains/${domainId}/cert`,
   )
 
-// ---------- 批次点击统计 ----------
+// ---------- 批次点击统计（默认仅真人，机器扫描自动过滤） ----------
 export interface ClickStats {
   batch_id: number
   total_links: number
+  /** 真人点击过的短链数 */
   clicked_links: number
+  /** 真人点击次数 */
   total_clicks: number
+  /** 已自动过滤的机器扫描次数（仅展示用） */
+  bot_clicks?: number
+  /** 没有明细行的旧点击数（按真人计入；用于 UI 提示口径） */
+  legacy_clicks?: number
 }
 
 export interface ClickedPhoneRow {
   phone_number: string
+  /** 真人点击次数 */
   click_count: number
+  human_clicks?: number
   last_click_at: string | null
   original_url: string
   token: string
+}
+
+export interface ClickDetailRow {
+  clicked_at: string | null
+  client_ip: string | null
+  user_agent: string | null
+  is_bot: boolean
+  bot_reason: string | null
+}
+
+export interface TokenClicksResp {
+  token: string
+  /** 该 token 已被自动过滤的机器扫描次数 */
+  filtered_bot_count: number
+  items: ClickDetailRow[]
 }
 
 export const getBatchClickStats = (batchId: number) =>
@@ -133,6 +156,16 @@ export const listBatchClickedPhones = (
   request.get<{
     data: { total: number; page: number; page_size: number; items: ClickedPhoneRow[] }
   }>(`/sms/batches/${batchId}/clicked-phones`, { params: { page, page_size: pageSize } })
+
+/** 拉取单个 token 的最近真人点击明细（含 IP/UA）。include_bots=true 才含机器行，仅排查用。 */
+export const listTokenClickDetails = (
+  token: string,
+  limit = 100,
+  includeBots = false,
+) =>
+  request.get<{ data: TokenClicksResp }>(`/short-links/${token}/clicks`, {
+    params: { limit, include_bots: includeBots },
+  })
 
 /** 触发 CSV 下载（浏览器原生流） */
 export const downloadBatchClickedPhonesCsvUrl = (batchId: number): string => {

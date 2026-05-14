@@ -389,18 +389,31 @@ phone,name,code<br>
             <div class="cs-label">短链总数</div>
           </div>
           <div class="cs-card">
-            <div class="cs-num cs-num-primary">{{ clickStats.clicked_links }}</div>
-            <div class="cs-label">被点击</div>
+            <div class="cs-num cs-num-success">{{ clickStats.clicked_links }}</div>
+            <div class="cs-label">真人点击</div>
           </div>
           <div class="cs-card">
             <div class="cs-num cs-num-success">{{ clickStats.total_clicks }}</div>
-            <div class="cs-label">总点击次数</div>
+            <div class="cs-label">真人点击次数</div>
           </div>
           <div class="cs-card">
             <div class="cs-num">{{ clickRatePercent }}</div>
-            <div class="cs-label">点击率</div>
+            <div class="cs-label">真人点击率</div>
           </div>
         </div>
+
+        <div class="cs-filter-note" v-if="(clickStats.bot_clicks ?? 0) > 0">
+          <el-icon><Filter /></el-icon>
+          已自动过滤 <strong>{{ clickStats.bot_clicks }}</strong> 次机器扫描（同 IP 多链 / 已知爬虫 UA / 链接预览等）
+        </div>
+        <el-alert
+          v-if="hasLegacyClicks"
+          type="info"
+          :closable="false"
+          show-icon
+          style="margin-top: 8px"
+          title="本批次产生于点击明细上线之前，无法逐次判定真人/机器，旧点击保留为真人计数。"
+        />
 
         <div class="click-actions">
           <el-button
@@ -409,13 +422,52 @@ phone,name,code<br>
             :disabled="!clickStats.clicked_links"
             @click="downloadClickedCsv"
           >
-            下载 CSV（{{ clickStats.clicked_links }} 个号码）
+            下载 CSV（{{ clickStats.clicked_links }} 个真人号码）
           </el-button>
           <el-button size="small" @click="loadClickedPhones(1)">刷新列表</el-button>
+          <span class="cs-tip">点开任意一行可查看每次真人点击的 IP/UA</span>
         </div>
 
-        <el-table :data="clickedPhones" stripe size="small" style="margin-top: 12px">
-          <el-table-column prop="phone_number" label="手机号码" width="160" />
+        <el-table
+          :data="clickedPhones"
+          stripe
+          size="small"
+          style="margin-top: 12px"
+          @expand-change="onClickRowExpand"
+        >
+          <el-table-column type="expand">
+            <template #default="{ row }">
+              <div class="click-detail-wrap" v-loading="clickDetailLoadingMap[row.token]">
+                <div class="click-detail-head" v-if="(clickFilteredBotMap[row.token] ?? 0) > 0">
+                  本号码已过滤 {{ clickFilteredBotMap[row.token] }} 次机器扫描
+                </div>
+                <el-empty
+                  v-if="!clickDetailLoadingMap[row.token] && !(clickDetailMap[row.token] || []).length"
+                  description="无真人点击明细（可能为旧批次或全部为机器扫描）"
+                  :image-size="60"
+                />
+                <el-table
+                  v-else
+                  :data="clickDetailMap[row.token] || []"
+                  size="small"
+                  stripe
+                >
+                  <el-table-column label="时间" width="170">
+                    <template #default="{ row: d }">
+                      {{ d.clicked_at ? formatBatchDate(d.clicked_at) : '—' }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="client_ip" label="IP" width="140" />
+                  <el-table-column label="User-Agent" show-overflow-tooltip>
+                    <template #default="{ row: d }">
+                      <span class="ua-text">{{ d.user_agent || '—' }}</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="phone_number" label="手机号码" width="170" />
           <el-table-column prop="click_count" label="点击次数" width="100" align="right" />
           <el-table-column prop="last_click_at" label="最近点击时间" width="190">
             <template #default="{ row }">
@@ -452,7 +504,7 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Upload, Refresh } from '@element-plus/icons-vue'
+import { Upload, Refresh, Filter } from '@element-plus/icons-vue'
 import {
   getBatches,
   getBatchStats,
@@ -469,9 +521,11 @@ import { getTemplates } from '@/api/template'
 import {
   getBatchClickStats,
   listBatchClickedPhones,
+  listTokenClickDetails,
   downloadBatchClickedPhonesCsvUrl,
   type ClickStats,
   type ClickedPhoneRow,
+  type ClickDetailRow,
 } from '@/api/short-link'
 
 const { t } = useI18n()
@@ -529,11 +583,25 @@ const clickStats = reactive<ClickStats>({
   total_links: 0,
   clicked_links: 0,
   total_clicks: 0,
+  bot_clicks: 0,
+  legacy_clicks: 0,
 })
 const clickedPhones = ref<ClickedPhoneRow[]>([])
 const clickedPage = ref(1)
 const clickedPageSize = ref(20)
 const clickedTotal = ref(0)
+
+/** 每个 token 的真人点击明细缓存（展开时按需拉取） */
+const clickDetailMap = reactive<Record<string, ClickDetailRow[]>>({})
+const clickDetailLoadingMap = reactive<Record<string, boolean>>({})
+/** 每个 token 的"已过滤机器次数"（与明细一同返回） */
+const clickFilteredBotMap = reactive<Record<string, number>>({})
+
+/** 旧批次：有 legacy_clicks 但完全没有明细行（前端只能猜口径） */
+const hasLegacyClicks = computed(() =>
+  (clickStats.legacy_clicks ?? 0) > 0
+  && (clickStats.bot_clicks ?? 0) === 0,
+)
 
 const clickRatePercent = computed(() => {
   if (!clickStats.total_links) return '—'
@@ -541,14 +609,41 @@ const clickRatePercent = computed(() => {
   return `${r.toFixed(1)}%`
 })
 
+async function onClickRowExpand(row: ClickedPhoneRow, expanded: any[]) {
+  const isExpanding = Array.isArray(expanded)
+    ? expanded.some(r => r.token === row.token)
+    : true
+  if (!isExpanding) return
+  if (clickDetailMap[row.token]) return  // 已有缓存
+  clickDetailLoadingMap[row.token] = true
+  try {
+    const resp: any = await listTokenClickDetails(row.token, 100)
+    const data = resp?.data?.data || {}
+    clickDetailMap[row.token] = data.items || []
+    clickFilteredBotMap[row.token] = data.filtered_bot_count || 0
+  } catch (e: any) {
+    ElMessage.error(`加载点击明细失败：${e?.message || e}`)
+    clickDetailMap[row.token] = []
+  } finally {
+    clickDetailLoadingMap[row.token] = false
+  }
+}
+
 async function openClickStats(row: SmsBatch) {
   clickStatsBatch.value = row
   clickStatsVisible.value = true
   clickStatsLoading.value = true
-  Object.assign(clickStats, { batch_id: row.id, total_links: 0, clicked_links: 0, total_clicks: 0 })
+  Object.assign(clickStats, {
+    batch_id: row.id, total_links: 0, clicked_links: 0,
+    total_clicks: 0, bot_clicks: 0, legacy_clicks: 0,
+  })
   clickedPhones.value = []
   clickedTotal.value = 0
   clickedPage.value = 1
+  // 清空上一个批次的明细缓存
+  for (const k of Object.keys(clickDetailMap)) delete clickDetailMap[k]
+  for (const k of Object.keys(clickDetailLoadingMap)) delete clickDetailLoadingMap[k]
+  for (const k of Object.keys(clickFilteredBotMap)) delete clickFilteredBotMap[k]
   try {
     const [statsResp, phonesResp]: any = await Promise.all([
       getBatchClickStats(row.id),
@@ -1077,7 +1172,7 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 .cs-card {
   background: var(--el-fill-color-light);
@@ -1099,10 +1194,46 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }
+/* "已自动过滤 N 次扫描" 提示条 */
+.cs-filter-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--el-text-color-regular);
+  background: var(--el-fill-color-lighter);
+  border: 1px dashed var(--el-border-color);
+  border-radius: 6px;
+}
+.cs-filter-note strong {
+  color: var(--el-color-warning);
+  margin: 0 2px;
+}
 .click-actions {
   display: flex;
   gap: 8px;
   align-items: center;
+  margin-top: 12px;
+}
+.cs-tip {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.click-detail-wrap {
+  padding: 6px 12px 10px 60px;
+}
+.click-detail-head {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  padding: 0 4px 6px;
+}
+.ua-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--el-text-color-regular);
 }
 
 /* 列表上方：通道接受 vs 终态回执 vs 手机送达 说明 */
