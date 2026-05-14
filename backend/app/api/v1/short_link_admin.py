@@ -612,6 +612,145 @@ async def delete_domain_cert(
 
 
 # =============================================================================
+# 短链域名 → 已点击号码导出（按国家筛选）
+#
+# 与 /sms/batches/{batch_id}/clicked-phones.csv 同款数据源（short_link_logs ⋈ sms_logs），
+# 区别在于聚合维度：域名级而非批次级。运营场景：选某个营销短链域名 → 拉某国家点过链
+# 的号码做二次触达。
+# =============================================================================
+
+
+@admin_router.get("/{domain_id}/clicked-countries")
+async def list_clicked_countries(
+    domain_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """该域名下出现过的国家列表（仅含 click_count>=1 的号码所属国家），供下载弹窗下拉。"""
+    rows = (
+        await db.execute(
+            select(SMSLog.country_code, func.count(func.distinct(SMSLog.phone_number)).label("cnt"))
+            .select_from(ShortLinkLog)
+            .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
+            .where(ShortLinkLog.domain_id == domain_id, ShortLinkLog.click_count >= 1)
+            .group_by(SMSLog.country_code)
+            .order_by(func.count(func.distinct(SMSLog.phone_number)).desc())
+        )
+    ).all()
+    items = [{"country_code": (cc or "").strip() or "UNKNOWN", "count": int(c or 0)} for cc, c in rows]
+    return {"success": True, "items": items}
+
+
+@admin_router.get("/{domain_id}/clicked-phones")
+async def download_domain_clicked_phones(
+    domain_id: int,
+    fmt: str = Query("txt", regex="^(txt|csv)$"),
+    country_code: Optional[str] = Query(None, max_length=10),
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """下载该域名下「真实点击过短链」的号码。
+
+    - fmt=txt：一行一个号码，去重 + 剥前导 `+`
+    - fmt=csv：phone_number,country_code,click_count,last_click_at,original_url
+    - country_code 可选，传则按 sms_logs.country_code 精确匹配（ISO2，大写）
+    """
+    domain = (await db.execute(
+        select(ShortLinkDomain).where(ShortLinkDomain.id == domain_id)
+    )).scalar_one_or_none()
+    if not domain:
+        raise HTTPException(status_code=404, detail="domain_not_found")
+
+    cc_norm = (country_code or "").strip().upper() or None
+
+    # 公共 WHERE
+    base_where = [ShortLinkLog.domain_id == domain_id, ShortLinkLog.click_count >= 1]
+    if cc_norm:
+        base_where.append(SMSLog.country_code == cc_norm)
+
+    if fmt == "txt":
+        # 仅取去重号码（DISTINCT phone_number），避免一个号码多次点击重复出现
+        rows_iter = await db.stream(
+            select(SMSLog.phone_number)
+            .select_from(ShortLinkLog)
+            .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
+            .where(*base_where)
+            .distinct()
+        )
+
+        async def gen_txt():
+            seen = 0
+            async for (phone,) in rows_iter:
+                p = (phone or "").lstrip("+")
+                if not p:
+                    continue
+                seen += 1
+                yield p + "\n"
+            if seen == 0:
+                yield ""  # 空 body；前端按 blob.size==0 提示无数据
+
+        suffix = cc_norm or "all"
+        fname = f"clicked_phones_{domain.domain}_{suffix}_{datetime.now().strftime('%Y%m%d%H%M%S')}.txt"
+        resp_factory = StreamingResponse(
+            gen_txt(),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+    else:  # csv
+        rows_iter = await db.stream(
+            select(
+                SMSLog.phone_number,
+                SMSLog.country_code,
+                ShortLinkLog.click_count,
+                ShortLinkLog.last_click_at,
+                ShortLinkLog.original_url,
+            )
+            .select_from(ShortLinkLog)
+            .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
+            .where(*base_where)
+            .order_by(ShortLinkLog.last_click_at.desc())
+        )
+
+        async def gen_csv():
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(["phone_number", "country_code", "click_count", "last_click_at", "original_url"])
+            yield buf.getvalue()
+            buf.seek(0); buf.truncate(0)
+
+            async for r in rows_iter:
+                ts = r.last_click_at.isoformat() if r.last_click_at else ""
+                w.writerow([r.phone_number, r.country_code or "", int(r.click_count or 0), ts, r.original_url or ""])
+                data = buf.getvalue()
+                if data:
+                    yield data
+                    buf.seek(0); buf.truncate(0)
+
+        suffix = cc_norm or "all"
+        fname = f"clicked_phones_{domain.domain}_{suffix}_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
+        resp_factory = StreamingResponse(
+            gen_csv(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
+    # 审计日志（fire-and-forget 形式，不阻塞流式响应）
+    try:
+        from app.services.operation_log import log_operation
+        await log_operation(
+            db, admin_id=admin.id, admin_name=admin.username,
+            module="sms", action="short_link_export_clicked_phones",
+            target_type="short_link_domain", target_id=str(domain_id),
+            title=f"下载短链域名 {domain.domain} 点击号码（{cc_norm or 'all'}, {fmt}）",
+            detail={"domain_id": domain_id, "domain": domain.domain, "country_code": cc_norm, "fmt": fmt},
+        )
+    except Exception as e:
+        logger.warning(f"短链域名点击号码下载审计日志写入失败 domain_id={domain_id}: {e}")
+
+    return resp_factory
+
+
+# =============================================================================
 # 客户/管理员共用：仅返回 active 域名（Send 页下拉）
 # =============================================================================
 

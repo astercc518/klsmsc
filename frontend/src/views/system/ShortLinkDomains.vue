@@ -165,12 +165,17 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="270" fixed="right">
+      <el-table-column label="操作" width="340" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" size="small" @click="openCertUpload(row)">
             {{ domainCerts[row.id]?.configured ? '更新证书' : '上传证书' }}
           </el-button>
           <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button
+            v-if="(row.total_clicks || 0) > 0"
+            link type="success" size="small"
+            @click="openDownloadDialog(row)"
+          >下载号码</el-button>
           <el-button
             link
             :type="row.status === 'active' ? 'warning' : 'success'"
@@ -248,6 +253,61 @@
         <el-button type="primary" :loading="saving" @click="submitForm">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 下载点击号码对话框 -->
+    <el-dialog
+      v-model="downloadVisible"
+      title="下载点击号码"
+      width="500px"
+      destroy-on-close
+      @opened="onDownloadOpened"
+    >
+      <div v-if="downloadTarget" class="download-form">
+        <el-descriptions :column="1" border size="small">
+          <el-descriptions-item label="域名">{{ downloadTarget.domain }}</el-descriptions-item>
+          <el-descriptions-item label="累计点击">{{ formatNumber(downloadTarget.total_clicks) }}</el-descriptions-item>
+        </el-descriptions>
+
+        <el-form label-width="100px" style="margin-top: 16px">
+          <el-form-item label="国家">
+            <el-select
+              v-model="downloadCountry"
+              filterable
+              placeholder="全部国家"
+              clearable
+              style="width: 100%"
+              :loading="downloadCountriesLoading"
+            >
+              <el-option label="全部国家" value="" />
+              <el-option
+                v-for="c in downloadCountries"
+                :key="c.country_code"
+                :value="c.country_code"
+                :label="`${countryLabel(c.country_code)} — ${formatNumber(c.count)} 条`"
+              />
+            </el-select>
+            <div v-if="downloadCountries.length === 0 && !downloadCountriesLoading" class="download-hint">
+              该域名暂无点击记录，无法导出。
+            </div>
+          </el-form-item>
+          <el-form-item label="格式">
+            <el-radio-group v-model="downloadFmt">
+              <el-radio-button value="txt">TXT（一行一号）</el-radio-button>
+              <el-radio-button value="csv">CSV（含点击维度）</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+        </el-form>
+      </div>
+      <template #footer>
+        <el-button @click="downloadVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="downloading"
+          :disabled="downloadCountries.length === 0"
+          @click="submitDownload"
+        >下载</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -263,9 +323,13 @@ import {
   adminDeleteShortLinkDomain,
   adminGetDomainCert,
   adminUploadDomainCert,
+  listClickedCountries,
+  exportShortLinkClickedPhones,
   type ShortLinkDomain,
   type DomainCertInfo,
+  type ClickedCountryItem,
 } from '../../api/short-link'
+import { findCountryByIso } from '@/constants/countries'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -530,6 +594,75 @@ async function loadAllAndCerts() {
 }
 
 onMounted(loadAllAndCerts)
+
+// ---------- 下载点击号码 ----------
+
+const downloadVisible = ref(false)
+const downloadTarget = ref<ShortLinkDomain | null>(null)
+const downloadCountries = ref<ClickedCountryItem[]>([])
+const downloadCountriesLoading = ref(false)
+const downloadCountry = ref<string>('')
+const downloadFmt = ref<'txt' | 'csv'>('txt')
+const downloading = ref(false)
+
+function countryLabel(iso: string): string {
+  if (!iso || iso === 'UNKNOWN') return '未知国家'
+  const c = findCountryByIso(iso)
+  return c ? `${c.name} (${iso})` : iso
+}
+
+function openDownloadDialog(row: ShortLinkDomain) {
+  downloadTarget.value = row
+  downloadCountries.value = []
+  downloadCountry.value = ''
+  downloadFmt.value = 'txt'
+  downloadVisible.value = true
+}
+
+async function onDownloadOpened() {
+  if (!downloadTarget.value) return
+  downloadCountriesLoading.value = true
+  try {
+    const res = await listClickedCountries(downloadTarget.value.id)
+    downloadCountries.value = res.items || []
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '加载国家列表失败')
+    downloadCountries.value = []
+  } finally {
+    downloadCountriesLoading.value = false
+  }
+}
+
+async function submitDownload() {
+  if (!downloadTarget.value) return
+  downloading.value = true
+  try {
+    const blob = await exportShortLinkClickedPhones(downloadTarget.value.id, {
+      country_code: downloadCountry.value || undefined,
+      fmt: downloadFmt.value,
+    })
+    if (!blob || (blob as Blob).size === 0) {
+      ElMessage.warning('该筛选条件下无点击号码')
+      return
+    }
+    const suffix = downloadCountry.value || 'all'
+    const ts = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14)
+    const filename = `clicked_phones_${downloadTarget.value.domain}_${suffix}_${ts}.${downloadFmt.value}`
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob as Blob)
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(link.href)
+    ElMessage.success('下载已开始')
+    downloadVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '下载失败')
+  } finally {
+    downloading.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -723,5 +856,10 @@ onMounted(loadAllAndCerts)
   font-size: 11px;
   color: var(--el-text-color-placeholder);
   white-space: nowrap;
+}
+.download-form .download-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-color-warning);
 }
 </style>

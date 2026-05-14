@@ -142,6 +142,29 @@ export const downloadBatchClickedPhonesCsvUrl = (batchId: number): string => {
   return `${baseUrl}/sms/batches/${batchId}/clicked-phones.csv`
 }
 
+// ---------- 短链域名：导出已点击号码（按国家筛选） ----------
+
+export interface ClickedCountryItem {
+  country_code: string
+  count: number
+}
+
+/** 该域名下出现过的国家列表（仅含 click_count>=1 的号码） */
+export const listClickedCountries = (domainId: number) =>
+  request.get<{ success: boolean; items: ClickedCountryItem[] }>(
+    `/admin/short-link-domains/${domainId}/clicked-countries`,
+  )
+
+/** 下载该域名已点击号码：fmt=txt（去重号码，每行一个，去 + 前缀）/ csv（含多维度） */
+export const exportShortLinkClickedPhones = (
+  domainId: number,
+  opts: { country_code?: string; fmt: 'txt' | 'csv' },
+): Promise<Blob> =>
+  request.get(`/admin/short-link-domains/${domainId}/clicked-phones`, {
+    params: { country_code: opts.country_code || undefined, fmt: opts.fmt },
+    responseType: 'blob',
+  }) as unknown as Promise<Blob>
+
 // ---------- 占位符工具：在文案中插入/替换 URL ----------
 export interface BuildPlaceholderArgs {
   targetUrl: string
