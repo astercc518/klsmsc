@@ -46,11 +46,29 @@ async function tryRefreshAdminToken(): Promise<string | null> {
  * 管理员若同时存在 admin_token 与本地 api_key，原先只发 Bearer 会导致 /batches 等 401，
  * 表现成「列表/统计偶发异常、详情加载失败」等。
  */
+/** 鉴权入口路径：登录/注册/找回密码/Telegram 验证。这些请求绝不能带历史 token，
+ *  否则浏览器 localStorage 残留的旧 api_key 会被后端中间件拿去查 → 当账户已被删除/禁用时，
+ *  直接拒掉登录请求本身（即 TG15066V01 报"权限不足"现象）。
+ */
+export function isAuthEntryPath(url: string | undefined): boolean {
+  if (!url) return false
+  const path = url.split('?')[0]
+  return (
+    path.startsWith('/account/login') ||
+    path.startsWith('/account/register') ||
+    path.startsWith('/account/forgot-password') ||
+    path.startsWith('/account/reset-password') ||
+    path.startsWith('/account/telegram/') ||
+    path.startsWith('/admin/login') ||
+    path.startsWith('/admin/auth/refresh')
+  )
+}
+
 function shouldAttachCustomerApiKey(url: string | undefined): boolean {
   if (!url) return false
   const path = url.split('?')[0]
   if (path.startsWith('/admin/')) return false
-  if (path.startsWith('/account/login') || path.startsWith('/account/register')) return false
+  if (isAuthEntryPath(url)) return false
   const prefixes = [
     '/batches',
     '/templates',
@@ -75,6 +93,15 @@ function shouldAttachCustomerApiKey(url: string | undefined): boolean {
 // ---------- 请求拦截器 ----------
 request.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
+    // 鉴权入口（登录/注册/刷新等）任何情况下都不带历史 token；显式 strip 避免 axios 默认头泄漏
+    if (isAuthEntryPath(config.url)) {
+      if (config.headers) {
+        delete (config.headers as any)['X-API-Key']
+        delete (config.headers as any)['Authorization']
+      }
+      return config
+    }
+
     const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1'
 
     if (isImpersonateMode) {
@@ -150,7 +177,10 @@ request.interceptors.response.use(
 
           if (!isRedirecting) {
             isRedirecting = true
-            ElMessage.error('认证失败，请重新登录')
+            // 后端 ACCOUNT_INVALID = api_key 对应账户被删/禁用 → 给出明确提示，
+            // 顺带清掉所有残留 token，避免下次进登录页又被同样的脏 token 拦
+            const isAccountInvalid = data?.error?.code === 'ACCOUNT_INVALID'
+            ElMessage.error(isAccountInvalid ? '账户已禁用或被删除，请重新登录' : '认证失败，请重新登录')
             localStorage.removeItem('api_key')
             localStorage.removeItem('admin_token')
             localStorage.removeItem('admin_refresh_token')

@@ -21,20 +21,38 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
     
     def __init__(self, app):
         super().__init__(app)
+        # 完全跳过白名单的精确路径
         self.skip_paths = {
             "/health",
             "/docs",
             "/redoc",
             "/openapi.json",
-            "/"
+            "/",
         }
-    
+        # 鉴权入口：登录/注册/刷新/找回。这些路径必须始终可达，
+        # 不能让浏览器 localStorage 里残留的旧 X-API-Key 把当事用户挡在门外。
+        # 之前未跳过 → 老 api_key 指向已删除账户时，登录请求被白名单中间件
+        # 误判，前端反复弹「IP 不在白名单」。
+        self.auth_path_prefixes = (
+            "/api/v1/account/login",
+            "/api/v1/account/register",
+            "/api/v1/account/forgot-password",
+            "/api/v1/account/reset-password",
+            "/api/v1/account/telegram/",  # 子路径全跳：send-code / verify
+            "/api/v1/admin/login",
+            "/api/v1/admin/auth/refresh",
+        )
+
     async def dispatch(self, request: Request, call_next):
         # 跳过不需要IP验证的路径
         path = request.url.path
-        if path in self.skip_paths or path.startswith("/s/"):
+        if (
+            path in self.skip_paths
+            or path.startswith("/s/")
+            or path.startswith(self.auth_path_prefixes)
+        ):
             return await call_next(request)
-        
+
         # 获取API Key
         # 注意：Authorization Bearer 既可能是 API Key，也可能是管理员 JWT。
         # 这里仅将形如 `ak_...` 的 Bearer 视为 API Key，避免把 JWT 误当作 API Key 导致误拦截。
@@ -45,25 +63,42 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
                 bearer_token = auth_header.replace("Bearer ", "").strip()
                 if bearer_token.startswith("ak_"):
                     api_key = bearer_token
-        
+
         # 如果没有API Key，跳过IP验证（可能是公开接口）
         if not api_key:
             return await call_next(request)
-        
+
         # 获取客户端IP
         client_ip = self._get_client_ip(request)
-        
+
         try:
-            is_allowed = await self._check_ip_whitelist(api_key, client_ip)
+            check = await self._check_ip_whitelist(api_key, client_ip)
         except Exception as e:
             logger.error(f"IP白名单验证异常: {str(e)}")
-            is_allowed = True  # 降级策略：验证异常时允许访问
+            check = ("allow", None)  # 降级策略：验证异常时允许访问
 
-        if not is_allowed:
+        verdict, reason = check
+        if verdict != "allow":
+            # 区分两种失败原因：账户不存在/已禁用 vs IP 真的不在白名单
+            # 错误信息分别返回，前端按 code 决定是否清 localStorage 重登录
+            if reason == "account_invalid":
+                logger.warning(
+                    f"鉴权失败-账户不存在或已禁用: api_key={api_key[:10]}..., 路径={path}"
+                )
+                return JSONResponse(
+                    status_code=401,
+                    content={
+                        "success": False,
+                        "error": {
+                            "code": "ACCOUNT_INVALID",
+                            "message": "账户不存在或已禁用，请重新登录",
+                            "details": {}
+                        }
+                    }
+                )
             logger.warning(
                 f"IP白名单验证失败: api_key={api_key[:10]}..., "
-                f"IP={client_ip}, "
-                f"路径={request.url.path}"
+                f"IP={client_ip}, 路径={path}"
             )
             return JSONResponse(
                 status_code=403,
@@ -92,23 +127,22 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
         except ValueError:
             return False
     
-    async def _check_ip_whitelist(self, api_key: str, client_ip: str) -> bool:
+    async def _check_ip_whitelist(self, api_key: str, client_ip: str):
         """
-        检查IP是否在白名单中
-        
-        Args:
-            api_key: API密钥
-            client_ip: 客户端IP
-            
-        Returns:
-            True if allowed, False otherwise
+        检查 api_key 对应账户的 IP 白名单。
+
+        返回 (verdict, reason)：
+            ("allow", None)              通过
+            ("deny", "account_invalid")  api_key 找不到 active 且未删除的账户
+            ("deny", "ip_not_in_list")   账户存在、白名单非空、IP 不在其中
+
+        缓存层把"账户不存在"也缓存成 ['__INVALID__']，避免恶意循环对 DB 造成压力。
         """
         try:
-            # 先查缓存
             cache_manager = await get_cache_manager()
             cache_key = f"account:whitelist:{api_key}"
             cached_whitelist = await cache_manager.get(cache_key)
-            
+
             if cached_whitelist is not None:
                 whitelist = cached_whitelist
             else:
@@ -122,34 +156,39 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
                         )
                     )
                     account = result.scalar_one_or_none()
-                    
+
                     if not account:
-                        return False  # 账户不存在，拒绝访问
-                    
+                        # 用 sentinel 把"账户失效"短期缓存（5min），减少 DB 反复查找
+                        await cache_manager.set(cache_key, ["__INVALID__"], ttl=300)
+                        return ("deny", "account_invalid")
+
                     # 解析IP白名单
                     if account.ip_whitelist:
                         try:
                             whitelist = json.loads(account.ip_whitelist)
                         except json.JSONDecodeError:
-                            # 如果不是JSON，尝试按行分割
                             whitelist = [ip.strip() for ip in account.ip_whitelist.split("\n") if ip.strip()]
                     else:
                         whitelist = []
-                    
-                    # 存入缓存（5分钟TTL）
+
                     await cache_manager.set(cache_key, whitelist, ttl=300)
-            
-            # 如果白名单为空，允许所有IP（未配置白名单）
+
+            # 缓存命中的"账户失效"sentinel
+            if whitelist == ["__INVALID__"]:
+                return ("deny", "account_invalid")
+
+            # 白名单为空 → 未配置 → 放行
             if not whitelist:
-                return True
-            
-            # 检查IP是否在白名单中
-            return self._is_ip_in_whitelist(client_ip, whitelist)
-            
+                return ("allow", None)
+
+            if self._is_ip_in_whitelist(client_ip, whitelist):
+                return ("allow", None)
+            return ("deny", "ip_not_in_list")
+
         except Exception as e:
             logger.error(f"检查IP白名单失败: {str(e)}", exc_info=e)
             # 出错时允许访问（降级策略）
-            return True
+            return ("allow", None)
     
     def _is_ip_in_whitelist(self, ip: str, whitelist: List[str]) -> bool:
         """
