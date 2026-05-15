@@ -1231,7 +1231,9 @@ const GLOBAL_BANNED_WORDS = [
 
 // 去除 emoji 的工具函数
 function stripEmoji(str: string): string {
-  return str.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{200D}\u{20E3}\u{2702}-\u{27B0}\u{E0020}-\u{E007F}]/gu, '').replace(/\s{2,}/g, ' ').trim()
+  // 仅删 emoji + 去首尾空白；不压缩内部连续空格——上游模板审核常做精确比对，
+  // 「! 」「!  」是不同模板，不能擅自合并。
+  return str.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{200D}\u{20E3}\u{2702}-\u{27B0}\u{E0020}-\u{E007F}]/gu, '').trim()
 }
 
 // 截断到指定字符数
