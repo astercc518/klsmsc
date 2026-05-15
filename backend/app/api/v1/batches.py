@@ -351,6 +351,7 @@ async def list_batches(
         # 优化器自然走 idx_sms_logs_batch_id，单批 1 行命中，整体降到亚秒级。
         batch_ids = [b.id for b in batches]
         channel_by_batch: Dict[int, str] = {}
+        message_by_batch: Dict[int, str] = {}
         if batch_ids:
             _cid_subq = (
                 select(SMSLog.channel_id)
@@ -377,6 +378,19 @@ async def list_batches(
                     for bid, cid in batch_to_cid.items()
                     if cid in cid_to_code
                 }
+
+            # 同样按 batch_id 走 idx_sms_logs_batch_id + LIMIT 1，单批 1 行命中，避免全表扫描
+            _msg_subq = (
+                select(SMSLog.message)
+                .where(SMSLog.batch_id == SmsBatch.id)
+                .limit(1)
+                .correlate(SmsBatch)
+                .scalar_subquery()
+            )
+            msg_rows = (await db.execute(
+                select(SmsBatch.id, _msg_subq).where(SmsBatch.id.in_(batch_ids))
+            )).all()
+            message_by_batch = {int(r[0]): r[1] for r in msg_rows if r[1]}
 
         # 只对仍在处理中的批次扫 sms_logs；已完成批次直接用存量字段，避免全表聚合
         live_batches = [b for b in batches if b.status in (BatchStatus.PROCESSING, BatchStatus.PENDING)]
@@ -411,6 +425,7 @@ async def list_batches(
                 p = await _maybe_sync_batch_row_from_logs(db, b, p, total_by_id)
                 patches[b.id] = p
             p["channel_code"] = channel_by_batch.get(int(b.id))
+            p["message_preview"] = message_by_batch.get(int(b.id))
             base = SmsBatchResponse.model_validate(b, from_attributes=True)
             items.append(base.model_copy(update=p))
 

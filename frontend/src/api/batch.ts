@@ -18,6 +18,8 @@ export interface SmsBatch {
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled'
   error_message: string | null
   sender_id: string | null
+  /** 批次内首条 sms_logs.message 样本（列表行内短信内容预览） */
+  message_preview?: string | null
   progress: number
   started_at: string | null
   completed_at: string | null

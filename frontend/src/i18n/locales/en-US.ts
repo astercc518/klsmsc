@@ -260,6 +260,7 @@ export default {
     batchDetail: 'Batch Details',
     batchIdCol: 'ID',
     batchName: 'Batch Name',
+    messagePreview: 'Message',
     cancelled: 'Cancelled',
     completed: 'Completed',
     completedAt: 'Completed At',

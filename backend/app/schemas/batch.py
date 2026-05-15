@@ -46,6 +46,10 @@ class SmsBatchResponse(BaseModel):
     error_message: Optional[str]
     sender_id: Optional[str]
     channel_code: Optional[str] = None
+    message_preview: Optional[str] = Field(
+        None,
+        description="批次内首条 sms_logs.message 的样本，用于列表行内展示短信内容（前端截断显示）",
+    )
     progress: int
     started_at: Optional[datetime]
     completed_at: Optional[datetime]

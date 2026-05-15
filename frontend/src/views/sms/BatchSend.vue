@@ -70,7 +70,21 @@
       <div v-else class="table-scroll-wrapper">
       <el-table :data="batches" v-loading="loading" stripe class="task-table-inner" :table-layout="'auto'">
         <el-table-column prop="id" :label="$t('batchSend.batchIdCol')" width="72" />
-        <el-table-column prop="batch_name" :label="$t('batchSend.batchName')" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="message_preview" :label="$t('batchSend.messagePreview')" min-width="280">
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="row.message_preview"
+              :content="row.message_preview"
+              placement="top-start"
+              effect="dark"
+              :show-after="200"
+              popper-class="batch-msg-tooltip"
+            >
+              <span class="batch-msg-cell">{{ row.message_preview }}</span>
+            </el-tooltip>
+            <span v-else style="color:var(--text-quaternary)">—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="channel_code" :label="$t('smsSend.channel')" width="120" show-overflow-tooltip>
           <template #default="{ row }">
             <el-tag v-if="row.channel_code" size="small" effect="plain" type="info">{{ row.channel_code }}</el-tag>
@@ -390,15 +404,15 @@ phone,name,code<br>
           </div>
           <div class="cs-card">
             <div class="cs-num cs-num-success">{{ clickStats.clicked_links }}</div>
-            <div class="cs-label">真人点击</div>
+            <div class="cs-label">点击</div>
           </div>
           <div class="cs-card">
             <div class="cs-num cs-num-success">{{ clickStats.total_clicks }}</div>
-            <div class="cs-label">真人点击次数</div>
+            <div class="cs-label">点击次数</div>
           </div>
           <div class="cs-card">
             <div class="cs-num">{{ clickRatePercent }}</div>
-            <div class="cs-label">真人点击率</div>
+            <div class="cs-label">点击率</div>
           </div>
         </div>
 
@@ -422,10 +436,10 @@ phone,name,code<br>
             :disabled="!clickStats.clicked_links"
             @click="downloadClickedCsv"
           >
-            下载 CSV（{{ clickStats.clicked_links }} 个真人号码）
+            下载 CSV（{{ clickStats.clicked_links }} 个号码）
           </el-button>
           <el-button size="small" @click="loadClickedPhones(1)">刷新列表</el-button>
-          <span class="cs-tip">点开任意一行可查看每次真人点击的 IP/UA</span>
+          <span class="cs-tip">点开任意一行可查看每次点击的 IP/UA</span>
         </div>
 
         <el-table
@@ -443,7 +457,7 @@ phone,name,code<br>
                 </div>
                 <el-empty
                   v-if="!clickDetailLoadingMap[row.token] && !(clickDetailMap[row.token] || []).length"
-                  description="无真人点击明细（可能为旧批次或全部为机器扫描）"
+                  description="暂无点击明细（可能为旧批次或全部为机器扫描）"
                   :image-size="60"
                 />
                 <el-table
@@ -1258,6 +1272,17 @@ onUnmounted(() => {
   border-bottom: 1px dashed var(--el-text-color-secondary);
 }
 
+/* 短信内容预览：单元格内截断，hover 走 tooltip 显示全文 */
+.batch-msg-cell {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
 .awaiting-receipt {
   color: #e6a23c;
   font-weight: 600;
@@ -1552,5 +1577,15 @@ code {
   .stats-cards {
     grid-template-columns: 1fr;
   }
+}
+</style>
+
+<!-- 短信预览 tooltip 走 Element-Plus 的 popper，到了 body 上脱离 scoped；用全局样式限宽换行 -->
+<style>
+.batch-msg-tooltip {
+  max-width: 420px !important;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
 }
 </style>

@@ -260,6 +260,7 @@ export default {
     batchDetail: '批次详情',
     batchIdCol: 'ID',
     batchName: '批次名称',
+    messagePreview: '短信内容',
     cancelled: '已取消',
     completed: '已完成',
     completedAt: '完成时间',
