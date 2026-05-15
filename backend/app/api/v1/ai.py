@@ -100,7 +100,9 @@ async def generate_sms(req: GenerateSmsRequest, account: Account = Depends(get_c
                 continue
             cleaned = re.sub(r"^\d+[.、)\]\s]+", "", line).strip()
             cleaned = emoji_pattern.sub("", cleaned).strip()
-            cleaned = re.sub(r"\s{2,}", " ", cleaned)
+            # 注意：不压缩内部连续空格——上游模板审核常按字节精确比对，
+            # 「! 」「!  」是两个不同模板；以前 re.sub(r"\s{2,}", " ", ...) 会把
+            # 客户特意保留的双空格压成单空格，导致提交 65 字符发送变 64 字符。
             if cleaned:
                 lines.append(cleaned[:req.max_length])
 
