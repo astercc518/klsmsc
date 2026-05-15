@@ -114,11 +114,21 @@
             <span class="account-text">{{ row.username || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="connection_status" :label="$t('channels.channelStatus')" min-width="90" align="center">
+        <el-table-column prop="connection_status" :label="$t('channels.channelStatus')" min-width="110" align="center">
           <template #default="{ row }">
-            <el-tag :type="getConnectionStatusType(row.connection_status)" size="small" effect="light" round>
-              {{ getConnectionStatusText(row.connection_status) }}
-            </el-tag>
+            <div class="status-stack">
+              <el-tag
+                :type="row.status === 'active' ? 'success' : 'danger'"
+                size="small"
+                effect="dark"
+                round
+              >
+                {{ row.status === 'active' ? $t('common.enabled') : $t('common.disabled') }}
+              </el-tag>
+              <el-tag :type="getConnectionStatusType(row.connection_status)" size="small" effect="light" round>
+                {{ getConnectionStatusText(row.connection_status) }}
+              </el-tag>
+            </div>
           </template>
         </el-table-column>
         <el-table-column :label="$t('channels.rateControl')" min-width="140" align="center">
@@ -153,6 +163,20 @@
               <el-button type="success" link size="small" @click="openPricing(row)">{{ $t('channels.pricing') }}</el-button>
               <el-button link size="small" @click="openTestSend(row)">{{ $t('channels.test') }}</el-button>
               <el-button link size="small" @click="handleCheckStatus(row)">{{ $t('channels.checkStatus') }}</el-button>
+              <el-popconfirm
+                :title="row.status === 'active' ? $t('channels.confirmDisable') : $t('channels.confirmEnable')"
+                @confirm="handleToggleStatus(row)"
+              >
+                <template #reference>
+                  <el-button
+                    :type="row.status === 'active' ? 'info' : 'success'"
+                    link
+                    size="small"
+                  >
+                    {{ row.status === 'active' ? $t('common.disable') : $t('common.enable') }}
+                  </el-button>
+                </template>
+              </el-popconfirm>
               <el-popconfirm :title="$t('channels.confirmDeleteChannel')" @confirm="handleDelete(row)">
                 <template #reference>
                   <el-button type="danger" link size="small">{{ $t('common.delete') }}</el-button>
@@ -1338,6 +1362,17 @@ const handleDelete = async (row: any) => {
   }
 }
 
+const handleToggleStatus = async (row: any) => {
+  const newStatus = row.status === 'active' ? 'inactive' : 'active'
+  try {
+    await updateChannel(row.id, { status: newStatus })
+    ElMessage.success(newStatus === 'active' ? t('common.enableSuccess') : t('common.disableSuccess'))
+    loadChannels()
+  } catch (error: any) {
+    ElMessage.error((newStatus === 'active' ? t('common.enableFailed') : t('common.disableFailed')) + ': ' + (error.message || t('common.unknownError')))
+  }
+}
+
 /** 从 Axios 错误中解析后端 detail（含 FastAPI 422 数组），用于保存失败提示 */
 const formatRequestErrorMessage = (error: any): string => {
   const d = error?.response?.data?.detail
@@ -1649,6 +1684,13 @@ onMounted(() => {
 .page-container {
   width: 100%;
   padding: 20px;
+}
+
+.status-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
 }
 
 .page-header {
