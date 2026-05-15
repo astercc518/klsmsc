@@ -20,6 +20,9 @@ _MY_NUMBERS_REDIS_ONLY_PREFIXES = (
     # 公共运营商列表由 Celery beat 定时刷新（data_refresh_carriers_cache_task），
     # 进程内 L1 没有 TTL，命中后永远不会感知到 worker 写回的新值；强制只走 Redis。
     "data:public_carriers:",
+    # 路由通道列表：通道启停 / 路由规则改动后，必须让 worker 进程也立刻看到新值，
+    # 否则旧通道仍会被选中（含已停用通道）。强制只走 Redis，单次失效跨进程生效。
+    "route:",
 )
 
 
