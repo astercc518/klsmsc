@@ -1741,7 +1741,7 @@ async def get_template_detail(template_id: int, db: AsyncSession = Depends(get_d
         "template_name": template.template_name,
         "country_code": template.country_code,
         "default_price": float(template.default_price or 0),
-        "biz_type": template.biz_type,
+        "biz_type": template.business_type,
         "status": template.status
     }
 

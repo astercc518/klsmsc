@@ -685,10 +685,7 @@ class APIClient:
                 data = response.json() if response.content else {}
                 if response.status_code != 200:
                     logger.warning(
-                        "get_template_internal HTTP %s id=%s body=%s",
-                        response.status_code,
-                        template_id,
-                        data,
+                        f"get_template_internal HTTP {response.status_code} id={template_id} body={data}"
                     )
                     return {}
                 if not isinstance(data, dict) or data.get("id") is None:
