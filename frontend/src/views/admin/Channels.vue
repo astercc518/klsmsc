@@ -80,7 +80,65 @@
     
     <!-- 通道列表 -->
     <div class="table-card">
-      <el-table :data="filteredChannels" v-loading="loading" class="data-table" :default-sort="{ prop: 'id', order: 'ascending' }">
+      <!-- 移动端：卡片列表（重点突出「启用/停用」操作） -->
+      <div v-if="isMobile" class="ch-card-list" v-loading="loading">
+        <div v-for="row in filteredChannels" :key="row.id" class="ch-card" :class="row.status">
+          <div class="ch-row ch-row-top">
+            <div class="ch-code-block">
+              <span class="ch-code">{{ row.channel_code }}</span>
+              <el-tag
+                :type="row.protocol === 'SMPP' ? 'primary' : row.protocol === 'VIRTUAL' ? 'warning' : 'success'"
+                size="small"
+                effect="plain"
+              >{{ row.protocol }}</el-tag>
+            </div>
+            <el-tag :type="statusTagType(row.status)" size="small">{{ getStatusLabel(row.status) }}</el-tag>
+          </div>
+          <div class="ch-name">{{ row.channel_name }}</div>
+          <div class="ch-meta" v-if="row.host">
+            <span class="ch-host">{{ row.host }}:{{ row.port }}</span>
+            <el-tag v-if="row.protocol === 'SMPP'" size="small" effect="plain" type="info">
+              {{ (row.smpp_bind_mode || 'transceiver').toUpperCase() }}
+            </el-tag>
+          </div>
+          <div class="ch-meta">
+            <span class="ch-meta-k">{{ $t('channels.costPrice') }}</span>
+            <span class="ch-meta-v">${{ (row.cost_rate || 0).toFixed(4) }}</span>
+            <span class="ch-meta-sep">·</span>
+            <span class="ch-meta-k">{{ $t('channels.priority') }}</span>
+            <span class="ch-meta-v">{{ row.priority }}</span>
+            <span class="ch-meta-sep">·</span>
+            <span class="ch-meta-k">{{ $t('channels.weight') }}</span>
+            <span class="ch-meta-v">{{ row.weight }}</span>
+          </div>
+          <div class="ch-meta" v-if="row.supplier || row.default_sender_id">
+            <span v-if="row.supplier" class="ch-supplier">{{ row.supplier.supplier_name }}</span>
+            <span v-if="row.default_sender_id" class="ch-sid">SID: {{ row.default_sender_id }}</span>
+          </div>
+          <div class="ch-actions">
+            <!-- 高频操作：启用/停用 用更醒目的按钮 -->
+            <el-button
+              :type="row.status === 'active' ? 'warning' : 'success'"
+              size="small"
+              @click="handleToggleStatus(row)"
+            >
+              {{ row.status === 'active' ? $t('common.disable') : $t('common.enable') }}
+            </el-button>
+            <el-button size="small" plain @click="handleEdit(row)">{{ $t('common.edit') }}</el-button>
+            <el-button size="small" plain type="success" @click="manageCountries(row)">{{ $t('channels.countries') }}</el-button>
+            <el-button size="small" plain type="warning" @click="manageSids(row)">SID</el-button>
+            <el-popconfirm :title="$t('channels.confirmDelete')" @confirm="handleDelete(row)">
+              <template #reference>
+                <el-button size="small" plain type="danger">{{ $t('common.delete') }}</el-button>
+              </template>
+            </el-popconfirm>
+          </div>
+        </div>
+        <el-empty v-if="!filteredChannels.length && !loading" :image-size="60" />
+      </div>
+
+      <!-- 桌面端：表格 -->
+      <el-table v-else :data="filteredChannels" v-loading="loading" class="data-table" :default-sort="{ prop: 'id', order: 'ascending' }">
         <el-table-column prop="id" label="ID" width="80" sortable align="center" />
         <el-table-column prop="channel_code" :label="$t('channels.channelCode')" width="160" sortable>
           <template #default="{ row }">
@@ -526,6 +584,9 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+
+const { isMobile } = useBreakpoint()
 import { Plus, Refresh, Search, Connection, CircleCheck, Promotion, Link } from '@element-plus/icons-vue'
 import { getChannelsAdmin, createChannel,  updateChannel, deleteChannel,
   getChannelRelationsAdmin,
@@ -1166,8 +1227,85 @@ onMounted(() => {
 }
 
 @media (max-width: 768px) {
-  .stats-grid { grid-template-columns: 1fr; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .stat-card { padding: 12px; }
+  .stat-value { font-size: 18px; }
   .filter-bar { flex-direction: column; align-items: stretch; }
   .filter-bar > * { width: 100% !important; }
+}
+
+@media (max-width: 380px) {
+  .stats-grid { grid-template-columns: 1fr; }
+}
+
+/* 通道卡片（移动端） */
+.ch-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 200px;
+}
+.ch-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-default, rgba(0,0,0,0.08));
+  border-left: 3px solid var(--border-default, rgba(0,0,0,0.12));
+  border-radius: 10px;
+}
+.ch-card.active       { border-left-color: #67c23a; }
+.ch-card.inactive     { border-left-color: #909399; opacity: 0.85; }
+.ch-card.maintenance  { border-left-color: #e6a23c; }
+
+.ch-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.ch-code-block { display: inline-flex; align-items: center; gap: 8px; }
+.ch-code {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary, #0a1425);
+}
+.ch-name {
+  font-size: 13px;
+  color: var(--text-primary, #0a1425);
+  font-weight: 500;
+}
+.ch-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 12px;
+  color: var(--text-tertiary, #8a96a6);
+}
+.ch-host {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  color: var(--text-secondary, #5f6c7c);
+}
+.ch-meta-k { color: var(--text-tertiary, #8a96a6); }
+.ch-meta-v {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  color: var(--text-primary, #0a1425);
+  font-weight: 600;
+}
+.ch-meta-sep { color: var(--text-quaternary, #c0c4cc); }
+.ch-supplier,
+.ch-sid {
+  background: var(--bg-input, rgba(0,0,0,0.04));
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.ch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-default, rgba(0,0,0,0.06));
+}
+.ch-actions :deep(.el-button) {
+  margin-left: 0 !important;
 }
 </style>

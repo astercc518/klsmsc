@@ -1850,18 +1850,44 @@ onUnmounted(() => {
     align-items: flex-start;
     gap: 12px;
   }
-  
+
   .header-left {
     flex-wrap: wrap;
   }
-  
-  .metrics-grid {
-    grid-template-columns: 1fr;
+
+  /* 手机端：KPI 卡片保持双列，信息密度更高（单列太空旷） */
+  .metrics-grid,
+  .metrics-grid.metrics-4,
+  .metrics-grid.metrics-6 {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
   }
-  
+
+  .metric-card {
+    padding: 12px;
+  }
+  .metric-value {
+    font-size: 20px;
+  }
+
   .record-item {
     grid-template-columns: 1fr;
     gap: 6px;
+  }
+
+  /* 操作快捷入口铺满两列 */
+  .actions-grid,
+  .actions-grid.admin-actions {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+@media (max-width: 380px) {
+  /* 极窄屏：KPI 改单列以避免文字溢出 */
+  .metrics-grid,
+  .metrics-grid.metrics-4,
+  .metrics-grid.metrics-6 {
+    grid-template-columns: 1fr;
   }
 }
 

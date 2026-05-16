@@ -6,9 +6,16 @@
       <div class="orb orb-2"></div>
     </div>
     
-    <el-container class="layout-container">
+    <el-container class="layout-container" :class="{ 'mobile-mode': isMobile, 'mobile-drawer-open': isMobile && mobileDrawerOpen }">
+      <!-- 移动端遮罩 -->
+      <div
+        v-if="isMobile && mobileDrawerOpen"
+        class="mobile-backdrop"
+        @click="closeMobileDrawer"
+        aria-hidden="true"
+      ></div>
       <!-- 侧边栏 -->
-      <el-aside :width="sidebarCollapsed ? '80px' : '240px'" class="sidebar" :class="{ collapsed: sidebarCollapsed }">
+      <el-aside :width="isMobile ? '260px' : (sidebarCollapsed ? '80px' : '240px')" class="sidebar" :class="{ collapsed: !isMobile && sidebarCollapsed, 'mobile-drawer': isMobile, 'mobile-drawer-open': isMobile && mobileDrawerOpen }">
         <!-- Logo区域 -->
         <div class="logo-area">
           <div class="logo-wrapper" @click="toggleSidebar">
@@ -722,6 +729,8 @@ const { t } = useI18n()
 
 const sidebarCollapsed = ref(false)
 const isMobile = ref(false)
+const mobileDrawerOpen = ref(false)
+const closeMobileDrawer = () => { mobileDrawerOpen.value = false }
 const theme = ref<'dark' | 'light'>('dark')
 const currentLocale = ref(getLocale())
 
@@ -827,10 +836,16 @@ const toggleSubmenu = (menu: string) => {
 
 const navigate = (path: string) => {
   router.push(path)
+  // 移动端：点选导航后自动收回抽屉，避免遮挡内容
+  if (isMobile.value) mobileDrawerOpen.value = false
 }
 
 const toggleSidebar = () => {
-  sidebarCollapsed.value = !sidebarCollapsed.value
+  if (isMobile.value) {
+    mobileDrawerOpen.value = !mobileDrawerOpen.value
+  } else {
+    sidebarCollapsed.value = !sidebarCollapsed.value
+  }
 }
 
 const toggleUserMenu = () => {
@@ -884,10 +899,15 @@ const handleLogout = () => {
 }
 
 const checkMobile = () => {
-  isMobile.value = window.innerWidth < 768
-  if (isMobile.value) {
-    sidebarCollapsed.value = true
+  const nowMobile = window.innerWidth < 768
+  // 桌面 → 移动：抽屉保持关闭；移动 → 桌面：抽屉自动关闭、侧栏展开
+  if (nowMobile && !isMobile.value) {
+    mobileDrawerOpen.value = false
+  } else if (!nowMobile && isMobile.value) {
+    mobileDrawerOpen.value = false
+    sidebarCollapsed.value = false
   }
+  isMobile.value = nowMobile
 }
 
 // 加载客户服务信息
@@ -932,6 +952,15 @@ onUnmounted(() => {
 // 监听路由变化，刷新用户信息
 watch(() => route.path, () => {
   refreshUserInfo()
+  // 路由变更时（含 router.push/replace、浏览器前进后退）保险关闭移动抽屉
+  if (isMobile.value) mobileDrawerOpen.value = false
+})
+
+// 侧栏宽度变化时主动派发 resize 事件，让页面内的 echarts 等基于
+// 容器宽度的图表能自适应（侧栏折叠不会触发原生 resize）
+// 用 nextTick + 略微延迟，等 CSS 过渡完成再 resize，避免拿到中间宽度。
+watch([sidebarCollapsed, () => isMobile.value], () => {
+  setTimeout(() => window.dispatchEvent(new Event('resize')), 320)
 })
 </script>
 
@@ -1520,15 +1549,82 @@ watch(() => route.path, () => {
 /* 响应式 */
 @media (max-width: 768px) {
   .header {
-    padding: 0 16px;
+    padding: 0 12px;
+    /* 移动端顶栏黏顶，便于滚动时随时打开抽屉 */
+    position: sticky;
+    top: 0;
+    z-index: 90;
   }
-  
+
   .content-wrapper {
-    padding: 16px;
+    padding: 12px;
   }
-  
+
   .header-status {
     display: none;
+  }
+
+  /* 隐藏顶栏的语言文字（仅留地球图标） */
+  .lang-text-header {
+    display: none;
+  }
+
+  /* 页面标题在窄屏下不允许换行，溢出省略 */
+  .page-title {
+    font-size: 16px;
+    max-width: 50vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 侧栏：移动端转为「全屏抽屉」覆盖在内容之上 */
+  .sidebar.mobile-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    height: 100vh;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform 0.25s var(--ease-default, ease);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.25);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .sidebar.mobile-drawer.mobile-drawer-open {
+    transform: translateX(0);
+  }
+
+  /* 抽屉打开时禁止背景滚动穿透 */
+  .layout-container.mobile-drawer-open {
+    overflow: hidden;
+  }
+
+  .mobile-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 999;
+    animation: mobile-backdrop-in 0.2s ease;
+  }
+  @keyframes mobile-backdrop-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  /* 移动端主区域全宽（el-aside 在 mobile-drawer 模式下脱离文档流） */
+  .layout-container.mobile-mode .main-container {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+/* 平板/中等屏：内容区水平内距收紧 */
+@media (max-width: 1024px) {
+  .content-wrapper {
+    padding-left: 16px;
+    padding-right: 16px;
   }
 }
 </style>

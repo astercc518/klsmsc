@@ -32,7 +32,43 @@
     <el-card style="margin-top: 20px">
       <template #header><h3>{{ $t('apiKeys.keyList') }}</h3></template>
       
-      <el-table :data="keys" v-loading="loading" stripe>
+      <!-- 移动端：卡片列表 -->
+      <div v-if="isMobile" class="ak-card-list" v-loading="loading">
+        <div v-for="row in keys" :key="row.api_key" class="ak-card" :class="row.status">
+          <div class="ak-row ak-row-top">
+            <span class="ak-name">{{ row.key_name }}</span>
+            <el-tag v-if="row.status === 'active'" type="success" size="small">{{ $t('apiKeys.active') }}</el-tag>
+            <el-tag v-else type="info" size="small">{{ $t('apiKeys.disabled') }}</el-tag>
+          </div>
+          <div class="ak-key-row">
+            <code class="ak-key">{{ row.api_key }}</code>
+            <el-button link size="small" @click="copyKey(row.api_key)">
+              <el-icon><CopyDocument /></el-icon>
+            </el-button>
+          </div>
+          <div class="ak-meta">
+            <el-tag v-if="row.permission === 'read_only'" size="small" type="info">{{ $t('apiKeys.readOnly') }}</el-tag>
+            <el-tag v-else-if="row.permission === 'read_write'" size="small" type="success">{{ $t('apiKeys.readWrite') }}</el-tag>
+            <el-tag v-else size="small" type="warning">{{ $t('apiKeys.fullAccess') }}</el-tag>
+            <span class="ak-meta-sep">·</span>
+            <span class="ak-meta-k">{{ $t('apiKeys.usageCount') }}</span>
+            <span class="ak-meta-v">{{ row.usage_count || 0 }}</span>
+          </div>
+          <div class="ak-meta" v-if="row.last_used_at">
+            <span class="ak-meta-k">{{ $t('apiKeys.lastUsed') }}</span>
+            <span class="ak-meta-v">{{ row.last_used_at }}</span>
+          </div>
+          <div class="ak-actions">
+            <el-button size="small" plain @click="editKey(row)">{{ $t('common.edit') }}</el-button>
+            <el-button size="small" plain type="warning" @click="regenerateKey(row)">{{ $t('apiKeys.regenerate') }}</el-button>
+            <el-button size="small" plain type="danger" @click="deleteKey(row)">{{ $t('common.delete') }}</el-button>
+          </div>
+        </div>
+        <el-empty v-if="!keys.length && !loading" :image-size="60" />
+      </div>
+
+      <!-- 桌面端：表格 -->
+      <el-table v-else :data="keys" v-loading="loading" stripe>
         <el-table-column prop="key_name" :label="$t('apiKeys.keyName')" width="150" />
         <el-table-column prop="api_key" :label="$t('apiKeys.apiKey')" min-width="250">
           <template #default="{ row }">
@@ -138,6 +174,9 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, CopyDocument } from '@element-plus/icons-vue'
 import { getApiKeys, getApiKeyStats, createApiKey, updateApiKey, regenerateApiKey, deleteApiKey as delApiKey, type ApiKey } from '@/api/apiKey'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+
+const { isMobile } = useBreakpoint()
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -297,5 +336,85 @@ code {
   padding: 2px 6px;
   border-radius: 3px;
   font-family: 'Courier New', monospace;
+}
+
+/* ===== 移动端卡片列表 ===== */
+.ak-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 160px;
+}
+.ak-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-default, rgba(0,0,0,0.08));
+  border-left: 3px solid var(--border-default, rgba(0,0,0,0.12));
+  border-radius: 10px;
+}
+.ak-card.active   { border-left-color: var(--el-color-success, #67c23a); }
+.ak-card.disabled { border-left-color: #909399; opacity: 0.8; }
+
+.ak-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.ak-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #0a1425);
+  word-break: break-word;
+}
+.ak-key-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-input, rgba(0,0,0,0.03));
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.ak-key {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-family: 'SF Mono', 'Courier New', monospace;
+  background: transparent;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ak-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 12px;
+  color: var(--text-tertiary, #8a96a6);
+}
+.ak-meta-k { color: var(--text-tertiary, #8a96a6); }
+.ak-meta-v {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  color: var(--text-primary, #0a1425);
+  font-weight: 600;
+}
+.ak-meta-sep { color: var(--text-quaternary, #c0c4cc); }
+.ak-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-default, rgba(0,0,0,0.06));
+}
+.ak-actions :deep(.el-button) {
+  margin-left: 0 !important;
+}
+
+@media (max-width: 768px) {
+  .api-keys-page { padding: 12px; }
+  .stats-row :deep(.el-col) {
+    margin-bottom: 8px;
+  }
+  .pagination { justify-content: center; }
 }
 </style>

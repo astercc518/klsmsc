@@ -43,8 +43,12 @@
       </div>
     </div>
 
-    <!-- 筛选栏 -->
-    <div class="filter-card">
+    <!-- 筛选栏（移动端折叠为抽屉） -->
+    <MobileFilterDrawer
+      :active-count="activeFilterCount"
+      @apply="handleSearch"
+      @reset="handleReset"
+    >
       <div class="filter-content">
         <div class="filter-item" v-if="isAdmin">
           <label class="filter-label">{{ $t('smsRecords.customerAccount') }}</label>
@@ -130,11 +134,48 @@
           <button class="filter-btn reset" @click="handleReset">{{ $t('common.reset') }}</button>
         </div>
       </div>
-    </div>
+    </MobileFilterDrawer>
 
     <!-- 数据表格 -->
     <div class="table-card">
-      <div class="table-wrapper" v-loading="loading">
+      <!-- 移动端：卡片列表 -->
+      <div class="mobile-card-list" v-if="isMobile" v-loading="loading">
+        <div
+          v-for="row in records"
+          :key="row.id"
+          class="record-card"
+          :class="row.status"
+          @click="handleViewDetail(row)"
+        >
+          <div class="rc-row rc-row-top">
+            <span class="rc-phone">{{ row.phone_number }}</span>
+            <span class="status-badge" :class="row.status">{{ getStatusText(row.status) }}</span>
+          </div>
+          <div class="rc-message">{{ truncate(row.message, 80) }}</div>
+          <div class="rc-row rc-row-meta">
+            <span class="rc-meta-item">
+              <span class="rc-flag">{{ countryDisplay(row.country_code) }}</span>
+              <el-tag v-if="row.channel_code" size="small" effect="plain">{{ row.channel_code }}</el-tag>
+            </span>
+            <span class="rc-time">{{ formatTime(row.submit_time) }}</span>
+          </div>
+          <div class="rc-row rc-row-bottom" v-if="isAdmin && row.account_name">
+            <span class="rc-account">{{ row.account_name }}</span>
+            <span class="rc-cost" v-if="row.selling_price != null">{{ row.selling_price?.toFixed(4) }}</span>
+          </div>
+          <div class="rc-row rc-row-bottom" v-else-if="!isAdmin && row.selling_price != null">
+            <span class="rc-cost">{{ row.selling_price?.toFixed(4) }} {{ row.currency }}</span>
+          </div>
+          <div class="rc-error" v-if="shouldShowErrorMessage(row)">
+            <span v-if="friendlyError(row.error_message)">{{ friendlyError(row.error_message)!.title }}</span>
+            <span v-else>{{ row.error_message }}</span>
+          </div>
+        </div>
+        <div v-if="!records.length && !loading" class="rc-empty">{{ $t('common.noData') || '暂无记录' }}</div>
+      </div>
+
+      <!-- 桌面端：表格 -->
+      <div class="table-wrapper" v-else v-loading="loading">
         <el-table :data="records" class="records-table" :row-class-name="tableRowClassName" @row-click="handleViewDetail" empty-text="暂无记录" stripe>
           <el-table-column v-if="isAdmin" prop="account_name" label="客户" min-width="180" show-overflow-tooltip>
             <template #default="{ row }">
@@ -401,6 +442,11 @@ import { getSMSRecords } from '@/api/sms'
 import { getAccountsAdmin, getChannelsAdmin } from '@/api/admin'
 import { getChannels } from '@/api/channel'
 import { COUNTRY_LIST, findCountryByDial, findCountryByIso } from '@/constants/countries'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useFilterPersist } from '@/composables/useFilterPersist'
+import MobileFilterDrawer from '@/components/MobileFilterDrawer.vue'
+
+const { isMobile } = useBreakpoint()
 
 const { t } = useI18n()
 const route = useRoute()
@@ -445,6 +491,21 @@ const searchForm = ref({
 
 const pagination = ref({ page: 1, pageSize: 20, total: 0 })
 const records = ref<any[]>([])
+
+/** 已生效的筛选项个数 — 用于移动端「筛选」按钮上的徽标 */
+const activeFilterCount = computed(() => {
+  const f = searchForm.value
+  let n = 0
+  if (f.phone_number) n++
+  if (f.message_id) n++
+  if (f.status) n++
+  if (f.account_id) n++
+  if (f.channel_id) n++
+  if (f.country_code) n++
+  if (f.batch_id) n++
+  if (dateRange.value && dateRange.value.length === 2) n++
+  return n
+})
 
 const statusCounts = computed(() => {
   const map: Record<string, number> = { sent: 0, delivered: 0, failed: 0, pending: 0, queued: 0, expired: 0 }
@@ -648,7 +709,14 @@ const loadChannels = async () => {
   } catch { /* ignore */ }
 }
 
+// 持久化筛选条件（按账号 ID 隔离，避免共用浏览器时串号）
+useFilterPersist(`sms-records:${localStorage.getItem('account_id') || 'anon'}`, {
+  searchForm,
+  dateRange,
+})
+
 onMounted(() => {
+  // URL ?batch_id=... 优先级最高（来自"发送任务"页跳转），覆盖恢复的筛选
   const qBatchId = route.query.batch_id
   if (qBatchId) {
     const bid = Number(qBatchId)
@@ -1068,7 +1136,92 @@ onMounted(() => {
 }
 @media (max-width: 640px) {
   .page-header { flex-direction: column; gap: 12px; align-items: flex-start; }
-  .stats-row { flex-direction: column; }
+  .stats-row { flex-direction: row; flex-wrap: wrap; gap: 8px; }
+  .stat-chip { flex: 1 1 calc(50% - 4px); }
   .detail-grid-3 { grid-template-columns: 1fr; }
+  .detail-dialog { width: 92vw !important; }
+}
+
+/* 移动端卡片列表 */
+.mobile-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 4px;
+  min-height: 200px;
+}
+.record-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-default, rgba(0,0,0,0.08));
+  border-left: 3px solid var(--border-default, rgba(0,0,0,0.12));
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.05s;
+}
+.record-card:active { transform: scale(0.995); background: var(--bg-hover, rgba(0,0,0,0.04)); }
+.record-card.delivered { border-left-color: #34b1a2; }
+.record-card.sent      { border-left-color: #2f6df0; }
+.record-card.failed    { border-left-color: #f56c6c; }
+.record-card.expired   { border-left-color: #909399; }
+
+.rc-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rc-row-top .rc-phone {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary, #0a1425);
+}
+.rc-message {
+  font-size: 13px;
+  color: var(--text-secondary, #5f6c7c);
+  line-height: 1.4;
+  word-break: break-word;
+}
+.rc-row-meta {
+  font-size: 12px;
+  color: var(--text-tertiary, #8a96a6);
+}
+.rc-meta-item { display: inline-flex; align-items: center; gap: 6px; }
+.rc-flag { font-size: 12px; }
+.rc-time { font-variant-numeric: tabular-nums; }
+.rc-row-bottom {
+  font-size: 12px;
+  color: var(--text-tertiary, #8a96a6);
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-default, rgba(0,0,0,0.06));
+}
+.rc-account { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+.rc-cost {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  color: var(--text-primary, #0a1425);
+  font-weight: 600;
+}
+.rc-error {
+  font-size: 12px;
+  color: #f56c6c;
+  padding: 4px 8px;
+  background: rgba(245, 108, 108, 0.08);
+  border-radius: 6px;
+}
+.rc-empty {
+  text-align: center;
+  padding: 40px 16px;
+  color: var(--text-tertiary, #8a96a6);
+}
+
+/* 移动端分页器精简：仅保留页码切换 */
+@media (max-width: 768px) {
+  .pagination-wrapper :deep(.el-pagination__sizes),
+  .pagination-wrapper :deep(.el-pagination__jump) {
+    display: none;
+  }
+  .pagination-wrapper :deep(.el-pagination) {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
 }
 </style>

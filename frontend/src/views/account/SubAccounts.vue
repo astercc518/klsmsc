@@ -46,7 +46,38 @@
         </el-form-item>
       </el-form>
 
-      <el-table :data="subAccounts" v-loading="loading" style="width: 100%">
+      <!-- 移动端：卡片列表 -->
+      <div v-if="isMobile" class="sa-card-list" v-loading="loading">
+        <div v-for="row in subAccounts" :key="row.id" class="sa-card" :class="row.status">
+          <div class="sa-row sa-row-top">
+            <span class="sa-name">{{ row.username }}</span>
+            <el-tag v-if="row.status === 'active'" type="success" size="small">{{ $t('subAccounts.active') }}</el-tag>
+            <el-tag v-else-if="row.status === 'suspended'" type="warning" size="small">{{ $t('subAccounts.suspended') }}</el-tag>
+            <el-tag v-else type="danger" size="small">{{ $t('subAccounts.disabled') }}</el-tag>
+          </div>
+          <div class="sa-email" v-if="row.email">{{ row.email }}</div>
+          <div class="sa-meta">
+            <el-tag v-if="row.role === 'viewer'" type="info" size="small">{{ $t('subAccounts.viewer') }}</el-tag>
+            <el-tag v-else-if="row.role === 'operator'" type="success" size="small">{{ $t('subAccounts.operator') }}</el-tag>
+            <el-tag v-else type="warning" size="small">{{ $t('subAccounts.manager') }}</el-tag>
+            <span class="sa-meta-sep">·</span>
+            <span class="sa-meta-k">{{ $t('subAccounts.totalSent') }}</span>
+            <span class="sa-meta-v">{{ row.total_sent || 0 }}</span>
+          </div>
+          <div class="sa-meta sa-time">
+            {{ $t('subAccounts.lastLogin') }}: {{ row.last_login_at ? formatDateTime(row.last_login_at) : $t('subAccounts.notLoggedIn') }}
+          </div>
+          <div class="sa-actions">
+            <el-button size="small" plain @click="showEditDialog(row)">{{ $t('common.edit') }}</el-button>
+            <el-button size="small" plain type="warning" @click="showResetPasswordDialog(row)">{{ $t('subAccounts.resetPassword') }}</el-button>
+            <el-button size="small" plain type="danger" @click="deleteSubAccount(row.id)">{{ $t('common.delete') }}</el-button>
+          </div>
+        </div>
+        <el-empty v-if="!subAccounts.length && !loading" :image-size="60" />
+      </div>
+
+      <!-- 桌面端：表格 -->
+      <el-table v-else :data="subAccounts" v-loading="loading" style="width: 100%">
         <el-table-column prop="id" label="ID" width="80" />
         <el-table-column prop="username" :label="$t('subAccounts.username')" min-width="120" />
         <el-table-column prop="email" :label="$t('subAccounts.email')" min-width="150" />
@@ -160,6 +191,9 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { subAccountApi } from '@/api/subAccount'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+
+const { isMobile } = useBreakpoint()
 import type { FormInstance } from 'element-plus'
 
 const { t } = useI18n()
@@ -395,4 +429,60 @@ onMounted(() => {
 .search-form {
   margin-bottom: 20px;
 }
+
+/* ===== 移动端子账户卡片 ===== */
+.sa-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 160px;
+}
+.sa-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-default, rgba(0,0,0,0.08));
+  border-left: 3px solid var(--border-default, rgba(0,0,0,0.12));
+  border-radius: 10px;
+}
+.sa-card.active    { border-left-color: #67c23a; }
+.sa-card.suspended { border-left-color: #e6a23c; }
+.sa-card.disabled  { border-left-color: #f56c6c; opacity: 0.85; }
+.sa-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.sa-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #0a1425);
+}
+.sa-email {
+  font-size: 12px;
+  color: var(--text-secondary, #5f6c7c);
+  word-break: break-all;
+}
+.sa-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 12px;
+  color: var(--text-tertiary, #8a96a6);
+}
+.sa-meta-k { color: var(--text-tertiary, #8a96a6); }
+.sa-meta-v {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  color: var(--text-primary, #0a1425);
+  font-weight: 600;
+}
+.sa-meta-sep { color: var(--text-quaternary, #c0c4cc); }
+.sa-time { font-size: 11px; }
+.sa-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-default, rgba(0,0,0,0.06));
+}
+.sa-actions :deep(.el-button) { margin-left: 0 !important; }
 </style>

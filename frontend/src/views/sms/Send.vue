@@ -2864,8 +2864,77 @@ onUnmounted(() => clearInterval(timeInterval))
 .slide-enter-active, .slide-leave-active { transition: all 0.3s ease; }
 .slide-enter-from, .slide-leave-to { opacity: 0; transform: translateY(-10px); }
 
-@media (max-width: 1200px) { .stats-cards { grid-template-columns: repeat(2, 1fr); } .page-grid { grid-template-columns: 1fr; } .preview-panel { display: none; } }
-@media (max-width: 768px) { .stats-cards { grid-template-columns: 1fr; } .options-row { flex-direction: column; } .number-actions { flex-direction: column; } .source-tabs { flex-direction: column; } }
+@media (max-width: 1200px) {
+  .stats-cards { grid-template-columns: repeat(2, 1fr); }
+  .page-grid { grid-template-columns: 1fr; }
+  .preview-panel { display: none; }
+}
+
+/* ===== 手机端（≤768px）适配 ===== */
+@media (max-width: 768px) {
+  /* 顶部 KPI：2 列保持密度，单卡更紧凑 */
+  .stats-cards { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 14px; }
+  .stat-card { padding: 12px 14px; gap: 10px; border-radius: 12px; }
+  .stat-icon { width: 36px; height: 36px; border-radius: 10px; }
+  .stat-value { font-size: 18px; }
+  .stat-label { font-size: 11px; }
+
+  /* 表单容器内边距收紧 */
+  .panel-header { padding: 14px 16px; }
+  .panel-title { font-size: 16px; }
+  .form-body { padding: 14px 16px; }
+  .field-group { margin-bottom: 14px; }
+
+  /* 字段堆叠 */
+  .options-row { flex-direction: column; gap: 14px; }
+  .options-row > .field-group { width: 100%; }
+  .number-actions { flex-direction: column; align-items: stretch; gap: 8px; }
+  .action-group { flex-wrap: wrap; gap: 4px 12px; }
+  .source-tabs { flex-direction: column; gap: 8px; }
+  .source-tab { padding: 12px 14px; justify-content: flex-start; }
+
+  /* 变量工具栏：内距收紧，按钮换行 */
+  .var-toolbar { padding: 6px 10px; gap: 6px; }
+  .var-toolbar-left, .var-toolbar-right { gap: 4px; }
+
+  /* 计划发送：在自己一行（避免 picker 被挤压） */
+  .checkbox-options { gap: 12px; }
+  .schedule-picker { margin-left: 0; width: 100%; }
+  .schedule-picker :deep(.el-date-editor) { width: 100% !important; }
+
+  /* 私有库 / 数据商店内的数量输入：占满 */
+  .store-quantity { gap: 8px; }
+  .store-quantity :deep(.el-input-number) { width: 100% !important; }
+  .store-cost { width: 100%; line-height: 1.6; }
+  .store-cost > span[style*="margin-left"] { display: block; margin-left: 0 !important; padding-top: 4px; }
+
+  /* 运营商筛选：横向滚动避免高度爆炸 */
+  .carrier-tags > .tag-row {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 4px;
+  }
+  .carrier-tag { flex-shrink: 0; }
+
+  /* 底部操作按钮：主按钮独占一行且更高，便于拇指点击 */
+  .form-footer {
+    flex-direction: column-reverse;
+    gap: 10px;
+    padding-top: 16px;
+    margin-top: 16px;
+  }
+  .form-footer > .btn-send { width: 100%; min-height: 48px; font-size: 15px; }
+  .form-footer > .btn-audit { width: 100%; min-height: 44px; }
+  .form-footer > .btn-reset { width: 100%; min-height: 40px; }
+
+  /* 发送结果横幅：减小内距 */
+  .result-banner { padding: 12px; }
+}
+
+@media (max-width: 380px) {
+  .stats-cards { grid-template-columns: 1fr; }
+}
 
 /* ========== 自定义变量对话框 ========== */
 .cv-empty { margin-bottom: 12px; }

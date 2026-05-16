@@ -39,7 +39,34 @@
 
     <!-- 工单列表 -->
     <el-card class="table-card">
-      <el-table :data="tickets" v-loading="loading" stripe @row-click="viewTicket">
+      <!-- 移动端：卡片列表 -->
+      <div v-if="isMobile" class="tk-card-list" v-loading="loading">
+        <div
+          v-for="row in tickets"
+          :key="row.id"
+          class="tk-card"
+          :class="row.status"
+          @click="viewTicket(row)"
+        >
+          <div class="tk-row tk-row-top">
+            <span class="tk-no">{{ row.ticket_no }}</span>
+            <el-tag :type="statusTagType(row.status)" size="small">{{ statusMap[row.status] || row.status }}</el-tag>
+          </div>
+          <div class="tk-title">{{ row.title }}</div>
+          <div class="tk-meta">
+            <el-tag size="small">{{ ticketTypeMap[row.ticket_type] || row.ticket_type }}</el-tag>
+            <el-tag :type="priorityTagType(row.priority)" size="small">{{ priorityMap[row.priority] || row.priority }}</el-tag>
+          </div>
+          <div class="tk-meta tk-time-row">
+            <span>{{ $t('common.createdAt') }}: {{ formatTime(row.created_at) }}</span>
+            <span v-if="row.resolved_at">{{ $t('myTickets.resolvedAt') }}: {{ formatTime(row.resolved_at) }}</span>
+          </div>
+        </div>
+        <el-empty v-if="!tickets.length && !loading" :image-size="60" />
+      </div>
+
+      <!-- 桌面端：表格 -->
+      <el-table v-else :data="tickets" v-loading="loading" stripe @row-click="viewTicket">
         <el-table-column prop="ticket_no" :label="$t('myTickets.ticketNo')" width="180" />
         <el-table-column prop="title" :label="$t('myTickets.ticketTitle')" min-width="200" show-overflow-tooltip />
         <el-table-column prop="ticket_type" :label="$t('myTickets.type')" width="100">
@@ -231,6 +258,10 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useFilterPersist } from '@/composables/useFilterPersist'
+
+const { isMobile } = useBreakpoint()
 import {
   getMyTickets, createTicket, getTicketDetail, replyTicket, rateTicket,
   type Ticket, type TicketDetail
@@ -446,6 +477,8 @@ const submitRating = async () => {
   }
 }
 
+useFilterPersist(`my-tickets:${localStorage.getItem('account_id') || 'anon'}`, { filters })
+
 onMounted(() => {
   loadTickets()
 })
@@ -589,5 +622,66 @@ onMounted(() => {
   padding: 20px;
   background: var(--bg-hover);
   border-radius: 8px;
+}
+
+/* ===== 移动端工单卡片 ===== */
+.tk-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 160px;
+}
+.tk-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-default, rgba(0,0,0,0.08));
+  border-left: 3px solid var(--border-default, rgba(0,0,0,0.12));
+  border-radius: 10px;
+  cursor: pointer;
+}
+.tk-card:active { transform: scale(0.995); }
+.tk-card.open       { border-left-color: #2f6df0; }
+.tk-card.processing { border-left-color: #e6a23c; }
+.tk-card.resolved   { border-left-color: #67c23a; }
+.tk-card.closed     { border-left-color: #909399; }
+.tk-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.tk-no {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--text-tertiary, #8a96a6);
+}
+.tk-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #0a1425);
+  line-height: 1.4;
+  word-break: break-word;
+}
+.tk-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-tertiary, #8a96a6);
+}
+.tk-time-row {
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-default, rgba(0,0,0,0.06));
+  justify-content: space-between;
+}
+
+@media (max-width: 768px) {
+  .pagination-wrapper :deep(.el-pagination__sizes),
+  .pagination-wrapper :deep(.el-pagination__jump) {
+    display: none;
+  }
+  .pagination-wrapper :deep(.el-pagination) {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
 }
 </style>

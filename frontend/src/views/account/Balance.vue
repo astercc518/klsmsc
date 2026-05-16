@@ -546,17 +546,43 @@ onMounted(() => {
 
 /* ========== 响应式 ========== */
 @media (max-width: 768px) {
+  .page-header { margin-bottom: 18px; }
+  .page-title { font-size: 20px; }
+  .page-desc { font-size: 13px; }
+
   .balance-grid {
     grid-template-columns: 1fr;
+    gap: 14px;
+    margin-bottom: 18px;
   }
-  
+
+  /* 余额卡片：保留视觉冲击但收紧 padding；金额仍大但不溢出 */
+  .balance-card { padding: 20px; border-radius: 18px; }
+  .balance-header { margin-bottom: 16px; gap: 10px; }
+  .balance-icon { width: 40px; height: 40px; border-radius: 12px; }
   .amount {
     font-size: 44px;
+    /* 避免被父级缩放挤变形 */
+    letter-spacing: -0.04em;
   }
-  
+  .currency { font-size: 22px; }
+
   .balance-info {
     grid-template-columns: 1fr;
   }
+
+  /* 充值说明卡片 */
+  .info-card { padding: 18px; border-radius: 16px; }
+  .info-card-title { font-size: 15px; }
+
+  /* 联系销售按钮：占满 + 加大触控区域 */
+  .recharge-btn { width: 100%; min-height: 46px; font-size: 15px; }
+
+  .transactions-section { padding: 14px; border-radius: 14px; }
+}
+
+@media (max-width: 380px) {
+  .amount { font-size: 36px; }
 }
 
 /* ========== 亮色主题 - Apple Style ========== */

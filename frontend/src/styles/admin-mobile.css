@@ -1,0 +1,211 @@
+/**
+ * 管理员后台全局移动端适配
+ *
+ * 设计取舍：
+ *   admin 列表信息密度高，不像客户端那样适合「卡片化」一刀切。
+ *   这里只做「不破坏现有桌面布局」的最小集合：
+ *     - 表格容器自动横向滚动（保留所有列，手指拖动）
+ *     - 顶部 padding/标题 收紧
+ *     - 筛选表单标签上移、控件占满宽度
+ *     - 对话框宽度限制 90vw
+ *     - 分页器精简
+ *
+ * 个别高频页面（Channels 等）仍单独走「移动卡片模式」。
+ */
+
+@media (max-width: 768px) {
+  /* ===== 页面容器 ===== */
+  /* 项目里 admin 页面普遍用 .page-container / .recharge-records-page / 各自的 *-page 命名，
+   * 这里只针对常见 wrapper 收紧内距；不命中也无副作用。 */
+  .page-container,
+  .accounts-page,
+  .channels-page,
+  .staff-page,
+  .suppliers-page,
+  .business-report-page,
+  .data-numbers-page,
+  .data-orders-page,
+  .data-products-page,
+  .data-accounts-page,
+  .data-pricing-page,
+  .private-library-page,
+  .business-accounts-page,
+  .tickets-page,
+  .account-templates-page,
+  .business-knowledge-page,
+  .water-tasks-page,
+  .water-logs-page,
+  .water-scripts-page,
+  .water-proxy-page,
+  .sms-tasks-page,
+  .sms-refund-audit-page {
+    padding: 12px !important;
+  }
+
+  /* ===== 页面标题 ===== */
+  .page-header h1,
+  .page-header h2 {
+    font-size: 18px !important;
+  }
+  .page-header .page-desc {
+    font-size: 12px !important;
+  }
+
+  /* ===== 表格：包一层横向滚动 ===== */
+  /* el-table 自身已支持横滚，但默认 fixed 列在过窄屏会出问题；
+   * 这里给容器加 -webkit-overflow-scrolling 让滚动更顺滑 */
+  .el-table {
+    font-size: 12px;
+  }
+  .el-table .cell {
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+  }
+  .el-table th.el-table__cell > .cell {
+    font-size: 12px !important;
+  }
+  /* 操作列按钮挤一点 */
+  .el-table .action-btns,
+  .el-table .table-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 2px 6px;
+    justify-content: center;
+  }
+  .el-table .el-button + .el-button {
+    margin-left: 0;
+  }
+
+  /* ===== 对话框 ===== */
+  /* admin 表单类对话框多用固定 width，移动端会被强行撑出屏幕外 */
+  .el-overlay-dialog {
+    padding: 0 !important;
+  }
+  .el-dialog {
+    --el-dialog-width: 92vw !important;
+    width: 92vw !important;
+    max-width: 92vw !important;
+    margin: 16px auto !important;
+  }
+  .el-dialog .el-form-item__label {
+    width: auto !important;
+    text-align: left !important;
+  }
+  .el-dialog .el-form-item {
+    /* 表单标签换行更紧凑；admin 对话框普遍 label-width="100px"，在窄屏会断 */
+    margin-bottom: 12px;
+  }
+  .el-dialog .el-form--label-top .el-form-item__label {
+    padding-bottom: 4px;
+  }
+  /* 让 admin 对话框内的 el-row :gutter 在窄屏堆叠为单列 */
+  .el-dialog .el-row > .el-col {
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: 0 0 100% !important;
+  }
+  .el-dialog .el-input-number,
+  .el-dialog .el-select,
+  .el-dialog .el-date-editor {
+    width: 100% !important;
+  }
+
+  /* 抽屉同样收宽 */
+  .el-drawer.ltr,
+  .el-drawer.rtl {
+    width: min(420px, 92vw) !important;
+  }
+
+  /* ===== 顶部筛选栏 ===== */
+  /* admin 普遍用 .filter-bar / .filter-form / .filter-section / :inline="true" 的 el-form */
+  .filter-bar,
+  .filter-form,
+  .filter-section {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    flex-wrap: wrap !important;
+    gap: 10px !important;
+  }
+  .filter-form .el-form-item {
+    margin-right: 0 !important;
+    margin-bottom: 0 !important;
+    width: 100%;
+  }
+  .filter-form .el-form-item__content {
+    flex: 1;
+  }
+  .filter-bar > *,
+  .filter-section > *,
+  .filter-form .el-select,
+  .filter-form .el-input,
+  .filter-form .el-input-number,
+  .filter-form .el-date-editor,
+  .filter-form .el-cascader {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+  .filter-section .el-input,
+  .filter-section .el-select,
+  .filter-section .el-date-editor {
+    width: 100% !important;
+  }
+  /* 兼容用 inline-style 写宽度的输入（Accounts/Channels 都常见） */
+  .filter-bar [style*="width:"],
+  .filter-section [style*="width:"] {
+    width: 100% !important;
+  }
+  /* 「查询/重置/刷新」按钮组改为一行平分 */
+  .filter-section .el-button,
+  .filter-bar .el-button {
+    flex: 1;
+  }
+  .filter-form .el-form-item:last-child .el-button + .el-button {
+    margin-left: 8px;
+  }
+
+  /* ===== 分页器 ===== */
+  .el-pagination {
+    flex-wrap: wrap !important;
+    justify-content: center !important;
+    padding: 8px 0 !important;
+  }
+  .el-pagination .el-pagination__sizes,
+  .el-pagination .el-pagination__jump {
+    display: none !important;
+  }
+  .el-pagination .el-pagination__total {
+    margin-right: 8px;
+    font-size: 12px;
+  }
+
+  /* ===== 标签页 ===== */
+  /* 系统配置等页面用 el-tabs，避免标签被撑出屏 */
+  .el-tabs__nav-wrap::after {
+    bottom: 0;
+  }
+  .el-tabs__item {
+    padding: 0 10px !important;
+    font-size: 13px !important;
+  }
+
+  /* ===== 卡片内距 ===== */
+  .el-card__body {
+    padding: 12px !important;
+  }
+  .el-card__header {
+    padding: 12px !important;
+  }
+}
+
+/* 超窄屏（< 380px）极端兜底 */
+@media (max-width: 380px) {
+  .el-dialog {
+    width: 96vw !important;
+    max-width: 96vw !important;
+    margin: 8px auto !important;
+  }
+  .el-table .cell {
+    padding-left: 4px !important;
+    padding-right: 4px !important;
+  }
+}

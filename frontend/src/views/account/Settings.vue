@@ -9,7 +9,7 @@
 
     <el-row :gutter="20">
       <!-- 基础信息 -->
-      <el-col :span="12">
+      <el-col :xs="24" :sm="12">
         <el-card>
           <template #header><h3>{{ $t('accountSettings.basicInfo') }}</h3></template>
           <el-form :model="profileForm" label-width="120px">
@@ -35,7 +35,7 @@
       </el-col>
 
       <!-- 修改密码 -->
-      <el-col :span="12">
+      <el-col :xs="24" :sm="12">
         <el-card>
           <template #header><h3>{{ $t('accountSettings.changePassword') }}</h3></template>
           <el-form :model="passwordForm" ref="passwordFormRef" label-width="120px">
@@ -409,5 +409,19 @@ onMounted(() => {
 .code-expire {
   font-size: 12px;
   color: var(--text-quaternary);
+}
+
+@media (max-width: 768px) {
+  .settings-page { padding: 12px; }
+  /* label-width="120px"/"200px" 在窄屏会把输入挤到溢出 */
+  .settings-page :deep(.el-form-item__label) {
+    width: auto !important;
+    float: none !important;
+    padding-bottom: 4px;
+    text-align: left !important;
+  }
+  .settings-page :deep(.el-form-item__content) {
+    margin-left: 0 !important;
+  }
 }
 </style>

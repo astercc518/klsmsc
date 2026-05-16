@@ -331,4 +331,22 @@ onMounted(() => {
   display: flex;
   gap: 10px;
 }
+
+@media (max-width: 768px) {
+  .notifications-page,
+  .page-container { padding: 12px; }
+  :deep(.el-form-item__label) {
+    width: auto !important;
+    float: none !important;
+    padding-bottom: 4px;
+    text-align: left !important;
+  }
+  :deep(.el-form-item__content) {
+    margin-left: 0 !important;
+  }
+  /* 通知卡片操作按钮纵向 */
+  .notification-actions {
+    flex-wrap: wrap;
+  }
+}
 </style>

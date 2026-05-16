@@ -67,6 +67,82 @@
       </el-alert>
 
       <el-empty v-if="!loading && batches.length === 0" :description="$t('batchSend.emptyList')" class="task-empty" />
+
+      <!-- 移动端：卡片列表 -->
+      <div v-else-if="isMobile" class="batch-card-list" v-loading="loading">
+        <div v-for="row in batches" :key="row.id" class="batch-card" :class="row.status">
+          <div class="bc-row bc-row-top">
+            <span class="bc-id">#{{ row.id }}</span>
+            <el-tag size="small" :type="batchStatusTagType(row.status)">{{ batchStatusLabel(row.status) }}</el-tag>
+          </div>
+          <div class="bc-message" v-if="row.message_preview">{{ row.message_preview }}</div>
+          <el-progress
+            :percentage="row.progress"
+            :status="row.status === 'completed' ? 'success' : (row.status === 'failed' ? 'exception' : undefined)"
+            :stroke-width="6"
+            :show-text="false"
+            class="bc-progress"
+          />
+          <div class="bc-row bc-row-meta">
+            <span class="bc-meta-item">
+              <span class="bc-meta-k">{{ $t('batchSend.totalCount') }}</span>
+              <span class="bc-meta-v">{{ row.total_count }}</span>
+            </span>
+            <span class="bc-meta-item">
+              <span class="bc-meta-k">{{ $t('batchSend.deliveredReceiptCount') }}</span>
+              <span class="bc-meta-v delivered">{{ batchDeliveredCount(row) }}</span>
+            </span>
+            <span class="bc-meta-item" v-if="row.failed_count > 0">
+              <span class="bc-meta-k">{{ $t('batchSend.failedCount') }}</span>
+              <span class="bc-meta-v failed">{{ row.failed_count }}</span>
+            </span>
+            <span class="bc-meta-item" v-if="row.total_count > 0">
+              <span class="bc-meta-k">{{ $t('batchSend.successRate') }}</span>
+              <span class="bc-meta-v" :class="getDeliveryRateClass(row)">{{ batchDeliveryRatePercent(row) }}</span>
+            </span>
+          </div>
+          <div class="bc-row bc-row-bottom">
+            <span class="bc-time">{{ formatBatchDate(row.created_at) }}</span>
+            <el-tag v-if="row.channel_code" size="small" effect="plain" type="info">{{ row.channel_code }}</el-tag>
+          </div>
+          <div class="bc-actions">
+            <el-button size="small" type="primary" plain @click="viewDetail(row)">{{ $t('common.detail') }}</el-button>
+            <el-button size="small" plain :loading="exportingBatchId === row.id" @click="exportBatchCsv(row)">CSV</el-button>
+            <el-button
+              v-if="canRetryFailedBatch(row)"
+              size="small"
+              type="warning"
+              plain
+              :loading="isRetrying(row)"
+              :disabled="isRetrying(row)"
+              @click="retryFailedBatch(row)"
+            >{{ $t('batchSend.retryFailed') }}</el-button>
+            <el-button
+              v-if="canResendUnsentBatch(row)"
+              size="small"
+              type="primary"
+              plain
+              @click="resendUnsentBatch(row)"
+            >{{ $t('batchSend.resendUnsent') }}</el-button>
+            <el-button
+              v-if="canRequeueQueuedBatch(row)"
+              size="small"
+              type="warning"
+              plain
+              @click="requeueQueuedBatch(row)"
+            >{{ $t('batchSend.requeueQueued') }}</el-button>
+            <el-button
+              v-if="row.status === 'pending' || row.status === 'processing'"
+              size="small"
+              type="danger"
+              plain
+              @click="cancelBatch(row)"
+            >{{ $t('common.cancel') }}</el-button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 桌面端：表格 -->
       <div v-else class="table-scroll-wrapper">
       <el-table :data="batches" v-loading="loading" stripe class="task-table-inner" :table-layout="'auto'">
         <el-table-column prop="id" :label="$t('batchSend.batchIdCol')" width="72" />
@@ -518,6 +594,9 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+
+const { isMobile } = useBreakpoint()
 import { Upload, Refresh, Filter } from '@element-plus/icons-vue'
 import {
   getBatches,
@@ -1575,8 +1654,94 @@ code {
 
 @media (max-width: 768px) {
   .stats-cards {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
   }
+  .pagination :deep(.el-pagination__sizes),
+  .pagination :deep(.el-pagination__jump) {
+    display: none;
+  }
+  .pagination :deep(.el-pagination) {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 380px) {
+  .stats-cards { grid-template-columns: 1fr; }
+}
+
+/* 批次卡片列表（移动端） */
+.batch-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px;
+  min-height: 200px;
+}
+.batch-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-default, rgba(0,0,0,0.08));
+  border-left: 3px solid var(--border-default, rgba(0,0,0,0.12));
+  border-radius: 10px;
+}
+.batch-card.completed  { border-left-color: #67c23a; }
+.batch-card.processing { border-left-color: #2f6df0; }
+.batch-card.pending    { border-left-color: #909399; }
+.batch-card.failed     { border-left-color: #f56c6c; }
+.batch-card.cancelled  { border-left-color: #e6a23c; }
+
+.bc-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.bc-id {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary, #0a1425);
+}
+.bc-message {
+  font-size: 13px;
+  color: var(--text-secondary, #5f6c7c);
+  line-height: 1.4;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bc-progress :deep(.el-progress-bar) { padding-right: 0; }
+.bc-row-meta {
+  gap: 4px 14px;
+  font-size: 12px;
+}
+.bc-meta-item { display: inline-flex; align-items: baseline; gap: 4px; }
+.bc-meta-k { color: var(--text-tertiary, #8a96a6); }
+.bc-meta-v {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-weight: 600;
+  color: var(--text-primary, #0a1425);
+}
+.bc-meta-v.delivered { color: #67c23a; }
+.bc-meta-v.failed { color: #f56c6c; }
+
+.bc-row-bottom {
+  font-size: 12px;
+  color: var(--text-tertiary, #8a96a6);
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-default, rgba(0,0,0,0.06));
+}
+.bc-time { font-variant-numeric: tabular-nums; }
+.bc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 6px;
+}
+.bc-actions :deep(.el-button) {
+  margin-left: 0 !important;
 }
 </style>
 

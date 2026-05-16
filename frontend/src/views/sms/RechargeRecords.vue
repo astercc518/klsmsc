@@ -41,7 +41,35 @@
     </el-card>
 
     <el-card>
-      <el-table :data="logs" v-loading="loading" class="data-table">
+      <!-- 移动端：卡片列表 -->
+      <div v-if="isMobile" class="rec-card-list" v-loading="loading">
+        <div
+          v-for="row in logs"
+          :key="row.id || row.created_at"
+          class="rec-card"
+          :class="row.amount >= 0 ? 'positive' : 'negative'"
+        >
+          <div class="rec-row rec-row-top">
+            <el-tag :type="changeTypeTag(row.change_type)" size="small">{{ changeTypeLabel(row.change_type) }}</el-tag>
+            <span class="rec-amount" :class="row.amount >= 0 ? 'text-success' : 'text-danger'">
+              {{ row.amount >= 0 ? '+' : '' }}{{ row.amount.toFixed(2) }}
+            </span>
+          </div>
+          <div class="rec-customer" v-if="row.account_name">{{ row.account_name }}</div>
+          <div class="rec-row rec-row-meta">
+            <span class="rec-time">{{ formatDate(row.created_at) }}</span>
+            <span class="rec-balance" v-if="row.balance_after != null">
+              {{ $t('rechargeRecords.balanceAfter') }}: {{ row.balance_after.toFixed(2) }}
+            </span>
+          </div>
+          <div class="rec-remark" v-if="row.description">{{ row.description }}</div>
+          <el-tag v-if="row.exclude_performance" type="info" size="small">{{ $t('rechargeRecords.excludePerformance') }}</el-tag>
+        </div>
+        <el-empty v-if="!logs.length && !loading" :image-size="60" />
+      </div>
+
+      <!-- 桌面端：表格 -->
+      <el-table v-else :data="logs" v-loading="loading" class="data-table">
         <el-table-column prop="created_at" :label="$t('rechargeRecords.time')" width="170">
           <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
         </el-table-column>
@@ -84,6 +112,10 @@ import { getRechargeLogs, getAccountsAdmin } from '@/api/admin'
 import request from '@/api/index'
 import { formatDate } from '@/utils/date'
 import { ElMessage } from 'element-plus'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+import { useFilterPersist } from '@/composables/useFilterPersist'
+
+const { isMobile } = useBreakpoint()
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -169,14 +201,20 @@ const resetFilters = () => {
   loadData()
 }
 
+// 持久化筛选条件（按账号隔离）；放在 onMounted 之前以便恢复值优先于默认值
+useFilterPersist(`recharge-records:${localStorage.getItem('account_id') || 'anon'}`, { filters })
+
 onMounted(() => {
   loadAccounts()
   loadStaff()
-  const end = new Date()
-  const start = new Date()
-  start.setDate(start.getDate() - 30)
-  filters.start_date = start.toISOString().slice(0, 10)
-  filters.end_date = end.toISOString().slice(0, 10)
+  // 仅在恢复值为空时填默认 30 天窗口
+  if (!filters.start_date || !filters.end_date) {
+    const end = new Date()
+    const start = new Date()
+    start.setDate(start.getDate() - 30)
+    filters.start_date = start.toISOString().slice(0, 10)
+    filters.end_date = end.toISOString().slice(0, 10)
+  }
   loadData()
 })
 </script>
@@ -192,4 +230,62 @@ onMounted(() => {
 .text-danger { color: var(--el-color-danger); }
 .ml-1 { margin-left: 4px; }
 .mt-16 { margin-top: 16px; }
+
+/* 移动端卡片列表 */
+.rec-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 160px;
+}
+.rec-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-default, rgba(0,0,0,0.08));
+  border-left: 3px solid var(--border-default, rgba(0,0,0,0.12));
+  border-radius: 10px;
+}
+.rec-card.positive { border-left-color: var(--el-color-success, #67c23a); }
+.rec-card.negative { border-left-color: var(--el-color-warning, #e6a23c); }
+.rec-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rec-amount {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 18px;
+  font-weight: 700;
+}
+.rec-customer {
+  font-size: 13px;
+  color: var(--text-primary, #0a1425);
+  font-weight: 500;
+}
+.rec-row-meta {
+  font-size: 12px;
+  color: var(--text-tertiary, #8a96a6);
+}
+.rec-time { font-variant-numeric: tabular-nums; }
+.rec-balance { font-family: 'SF Mono', 'Consolas', monospace; }
+.rec-remark {
+  font-size: 12px;
+  color: var(--text-secondary, #5f6c7c);
+  background: var(--bg-input, rgba(0,0,0,0.03));
+  padding: 6px 8px;
+  border-radius: 6px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+@media (max-width: 768px) {
+  .recharge-records-page { padding: 12px; }
+  .filter-form :deep(.el-form-item) {
+    width: 100%;
+    margin-right: 0 !important;
+  }
+  .filter-form :deep(.el-select),
+  .filter-form :deep(.el-date-editor) {
+    width: 100% !important;
+  }
+}
 </style>

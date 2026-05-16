@@ -316,4 +316,25 @@ onMounted(() => {
 .search-form {
   margin-bottom: 20px;
 }
+
+@media (max-width: 768px) {
+  .security-page,
+  .security-settings,
+  .page-container { padding: 12px; }
+  /* 表单标签上移 */
+  :deep(.el-form-item__label) {
+    width: auto !important;
+    float: none !important;
+    padding-bottom: 4px;
+    text-align: left !important;
+  }
+  :deep(.el-form-item__content) {
+    margin-left: 0 !important;
+  }
+  /* 行内 style="width:NNNpx" 的输入框拉满 */
+  :deep(.el-input),
+  :deep(.el-select) {
+    width: 100% !important;
+  }
+}
 </style>

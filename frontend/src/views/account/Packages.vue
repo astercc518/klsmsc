@@ -3,7 +3,7 @@
     <el-tabs v-model="activeTab">
       <el-tab-pane :label="$t('packages.market')" name="market">
         <el-row :gutter="20">
-          <el-col :span="6" v-for="pkg in packages" :key="pkg.id">
+          <el-col :xs="24" :sm="12" :md="8" :lg="6" v-for="pkg in packages" :key="pkg.id">
             <el-card class="package-card" :class="{ featured: pkg.is_featured }">
               <div class="package-header">
                 <h3>{{ pkg.package_name }}</h3>
@@ -41,7 +41,41 @@
       </el-tab-pane>
 
       <el-tab-pane :label="$t('packages.myPackages')" name="my-packages">
-        <el-table :data="myPackages" v-loading="loadingMyPackages" style="width: 100%">
+        <!-- 移动端：卡片列表 -->
+        <div v-if="isMobile" class="pkg-card-list" v-loading="loadingMyPackages">
+          <div v-for="row in myPackages" :key="row.id" class="pkg-card" :class="{ active: row.is_active, expired: !row.is_active }">
+            <div class="pkg-row pkg-row-top">
+              <span class="pkg-name">{{ row.package_name }}</span>
+              <el-tag v-if="row.is_active" type="success" size="small">{{ $t('packages.active') }}</el-tag>
+              <el-tag v-else type="info" size="small">{{ $t('packages.expired') }}</el-tag>
+            </div>
+            <el-progress
+              :percentage="calculateUsagePercent(row)"
+              :color="getProgressColor(row)"
+              :stroke-width="6"
+            />
+            <div class="pkg-usage">
+              {{ $t('packages.usedRemaining', { used: row.sms_used, remaining: row.sms_remaining || 0 }) }}
+            </div>
+            <div class="pkg-meta">
+              <span class="pkg-meta-k">{{ $t('packages.purchasePrice') }}</span>
+              <span class="pkg-meta-v">${{ parseFloat(row.purchase_price || 0).toFixed(2) }}</span>
+            </div>
+            <div class="pkg-meta pkg-validity">
+              <span class="pkg-meta-k">{{ $t('packages.validity') }}</span>
+              <span class="pkg-validity-text">
+                {{ formatDateTime(row.start_date) }} ~ {{ formatDateTime(row.end_date) }}
+              </span>
+            </div>
+            <div class="pkg-meta pkg-purchase-time">
+              {{ $t('packages.purchaseTime') }}: {{ formatDateTime(row.created_at) }}
+            </div>
+          </div>
+          <el-empty v-if="!myPackages.length && !loadingMyPackages" :image-size="60" />
+        </div>
+
+        <!-- 桌面端：表格 -->
+        <el-table v-else :data="myPackages" v-loading="loadingMyPackages" style="width: 100%">
           <el-table-column prop="package_name" :label="$t('packages.packageName')" min-width="150" />
           <el-table-column :label="$t('packages.purchasePrice')" width="120">
             <template #default="{ row }">
@@ -121,6 +155,9 @@ import { ref, reactive, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { packageApi } from '@/api/package'
+import { useBreakpoint } from '@/composables/useBreakpoint'
+
+const { isMobile } = useBreakpoint()
 
 const { t } = useI18n()
 const activeTab = ref('market')
@@ -295,5 +332,65 @@ onMounted(() => {
 .purchase-confirm .value {
   font-weight: bold;
   color: #303133;
+}
+
+/* ===== 移动端套餐卡片 ===== */
+.pkg-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 160px;
+}
+.pkg-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--border-default, rgba(0,0,0,0.08));
+  border-left: 3px solid var(--border-default, rgba(0,0,0,0.12));
+  border-radius: 10px;
+}
+.pkg-card.active  { border-left-color: #67c23a; }
+.pkg-card.expired { border-left-color: #909399; opacity: 0.85; }
+.pkg-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.pkg-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #0a1425);
+}
+.pkg-usage {
+  font-size: 11px;
+  color: var(--text-tertiary, #8a96a6);
+}
+.pkg-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 12px;
+  color: var(--text-tertiary, #8a96a6);
+}
+.pkg-meta-k { color: var(--text-tertiary, #8a96a6); }
+.pkg-meta-v {
+  font-family: 'SF Mono', 'Consolas', monospace;
+  color: var(--text-primary, #0a1425);
+  font-weight: 600;
+}
+.pkg-validity-text {
+  font-size: 11px;
+  font-family: 'SF Mono', 'Consolas', monospace;
+  color: var(--text-secondary, #5f6c7c);
+}
+.pkg-purchase-time {
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-default, rgba(0,0,0,0.06));
+  font-size: 11px;
+}
+
+@media (max-width: 768px) {
+  .packages { padding: 12px; }
+  /* 市场页：套餐卡片之间留间距 */
+  .package-card { margin-bottom: 12px; }
 }
 </style>
