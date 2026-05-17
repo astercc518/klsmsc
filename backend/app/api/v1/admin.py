@@ -711,7 +711,7 @@ async def list_accounts_admin(
     db: AsyncSession = Depends(get_db),
 ):
     """管理员：获取账户列表（支持按员工、TG、国家、通道等筛选）"""
-    from sqlalchemy import func, or_, and_, exists
+    from sqlalchemy import func, or_, and_, exists, case
     import json
 
     safe_limit = max(1, min(limit, 200))
@@ -758,8 +758,20 @@ async def list_accounts_admin(
 
     where_expr = and_(*where_clauses)
 
-    total_result = await db.execute(select(func.count(Account.id)).where(where_expr))
-    total = total_result.scalar() or 0
+    # 全表统计（按相同筛选条件，不受分页影响）
+    stats_result = await db.execute(
+        select(
+            func.count(Account.id),
+            func.coalesce(func.sum(Account.balance), 0),
+            func.sum(case((Account.status == "active", 1), else_=0)),
+            func.sum(case((Account.sales_id.isnot(None), 1), else_=0)),
+        ).where(where_expr)
+    )
+    total, total_balance, active_count, bound_sales_count = stats_result.one()
+    total = total or 0
+    total_balance = float(total_balance or 0)
+    active_count = int(active_count or 0)
+    bound_sales_count = int(bound_sales_count or 0)
 
     from sqlalchemy.orm import selectinload, joinedload
     from app.modules.common.account import AccountChannel
@@ -789,6 +801,9 @@ async def list_accounts_admin(
     return {
         "success": True,
         "total": total,
+        "total_balance": total_balance,
+        "active_count": active_count,
+        "bound_sales_count": bound_sales_count,
         "accounts": [
             {
                 "id": a.id,

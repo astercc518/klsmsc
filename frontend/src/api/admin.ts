@@ -384,6 +384,9 @@ export interface AdminAccount {
 export interface AdminAccountListResponse {
   success: boolean;
   total: number;
+  total_balance?: number;
+  active_count?: number;
+  bound_sales_count?: number;
   accounts: AdminAccount[];
 }
 

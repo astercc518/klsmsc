@@ -66,7 +66,7 @@
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M22 4 12 14.01l-3-3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </div>
         <div class="stat-info">
-          <span class="stat-value">{{ accounts.filter(a => a.status === 'active').length }}</span>
+          <span class="stat-value">{{ activeCount }}</span>
           <span class="stat-label">{{ $t('customers.activeAccounts') }}</span>
         </div>
       </div>
@@ -84,7 +84,7 @@
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke="currentColor" stroke-width="2"/></svg>
         </div>
         <div class="stat-info">
-          <span class="stat-value">{{ accounts.filter(a => a.sales).length }}</span>
+          <span class="stat-value">{{ boundSalesCount }}</span>
           <span class="stat-label">{{ $t('customers.boundSales') }}</span>
         </div>
       </div>
@@ -947,10 +947,10 @@ const pageDesc = computed(() => {
   return t('customers.pageDesc')
 })
 
-// 计算总余额
-const totalBalance = computed(() => {
-  return accounts.value.reduce((sum, a) => sum + (parseFloat(String(a.balance)) || 0), 0)
-})
+// 全表统计（来自接口，按当前筛选条件，不受分页影响）
+const totalBalance = ref(0)
+const activeCount = ref(0)
+const boundSalesCount = ref(0)
 
 const loading = ref(false)
 const accounts = ref<AdminAccount[]>([])
@@ -1016,6 +1016,9 @@ const loadAccounts = async () => {
     })
     accounts.value = res.accounts || []
     total.value = res.total || 0
+    totalBalance.value = res.total_balance || 0
+    activeCount.value = res.active_count || 0
+    boundSalesCount.value = res.bound_sales_count || 0
   } catch (e: any) {
     ElMessage.error(e?.message || t('customers.loadFailed'))
   } finally {
