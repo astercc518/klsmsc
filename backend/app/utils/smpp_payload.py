@@ -11,6 +11,7 @@ def smpp_payload_public_dict_from_row(
     channel_id: int,
     record_status: str,
     batch_status: str = "",
+    batch_id: int = 0,
 ) -> dict:
     """
     将 Core 查询行 / 原生字段转为投递 sms_send_smpp 的 JSON（与 Go 侧 SMSLogData 对齐）。
@@ -26,6 +27,7 @@ def smpp_payload_public_dict_from_row(
         "channel_id": int(channel_id or 0),
         "batch_status": str(bs or ""),
         "record_status": str(st),
+        "batch_id": int(batch_id or 0),
     }
 
 
@@ -47,4 +49,5 @@ def smpp_payload_public_dict(sms_log, batch_status: str = "") -> dict:
         int(sms_log.channel_id or 0),
         st,
         bs,
+        int(sms_log.batch_id or 0),
     )

@@ -54,4 +54,5 @@ type SMSLogData struct {
 	ChannelID    int    `json:"channel_id"`
 	BatchStatus  string `json:"batch_status"`
 	RecordStatus string `json:"record_status"`
+	BatchID      int64  `json:"batch_id"` // 关联 sms_batches.id；0 表示单发非批次
 }

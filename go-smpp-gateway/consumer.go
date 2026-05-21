@@ -97,6 +97,16 @@ func parseSMSLogData(m map[string]interface{}) (SMSLogData, error) {
 	if v, ok := m["record_status"].(string); ok {
 		d.RecordStatus = v
 	}
+	if v, ok := m["batch_id"]; ok {
+		switch x := v.(type) {
+		case float64:
+			d.BatchID = int64(x)
+		case int64:
+			d.BatchID = x
+		case int:
+			d.BatchID = int64(x)
+		}
+	}
 	return d, nil
 }
 
@@ -511,8 +521,16 @@ func PublishCeleryTask(queue string, taskName string, args []interface{}) error 
 func processSingleSMSData(data SMSLogData) (smsFailureKind, error) {
 	bs := strings.ToLower(strings.TrimSpace(data.BatchStatus))
 	rs := strings.TrimSpace(data.RecordStatus)
-	if bs == "cancelled" && (rs == "pending" || rs == "queued") {
-		log.Printf("跳过 SMPP 提交: 批次已取消 message_id=%s", data.MessageID)
+	// 兼容旧 payload（升级前入队、不带 batch_id 字段）：按 log_id 反查 sms_logs.batch_id。
+	// 升级后所有新 payload 都直接带 batch_id，此分支不会触发。
+	effectiveBatchID := data.BatchID
+	if effectiveBatchID == 0 {
+		effectiveBatchID = LookupBatchIDByLogID(data.LogID)
+	}
+	// 1) payload 自带 batch_status==cancelled（入队时已是取消态，少见）
+	// 2) Redis 运行期标记：cancel_batch 在入队后才执行，绝大多数取消路径走这里
+	if (bs == "cancelled" || IsBatchCancelled(effectiveBatchID)) && (rs == "pending" || rs == "queued") {
+		log.Printf("跳过 SMPP 提交: 批次已取消 message_id=%s batch_id=%d", data.MessageID, effectiveBatchID)
 		if err := publishSmsSubmitResult(data.LogID, data.MessageID, "", "failed", "批次已取消"); err != nil {
 			log.Printf("WARN: publish cancel result id=%d: %v", data.LogID, err)
 		}

@@ -18,6 +18,9 @@ func main() {
     //     依赖 DB 用于启动回填，必须在 InitDB 之后
     InitDLROwnership()
 
+    // 1c. 批次取消运行期标记（Redis）：消费 sms_send_smpp 单条短信前查询，跳过已取消批次
+    InitBatchCancel()
+
     // 2. Initialize SMPP Manager
     InitSMPPManager()
     go func() {

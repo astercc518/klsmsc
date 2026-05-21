@@ -661,11 +661,21 @@ async def cancel_batch(
     try:
         batch.status = BatchStatus.CANCELLED
         await db.commit()
-        
+
+        # 写 Redis 取消标记：Go 网关消费 sms_send_smpp 时按 batch_id 查询此标记，
+        # 已入队但未发出的消息会被跳过。TTL 7 天，远大于队列可能积压时长。
+        # Redis 不可用时 fail-open（不影响 DB 取消成功），网关仍会按 payload 内的旧 batch_status 处理。
+        try:
+            from app.utils.cache import get_redis_client
+            redis_client = await get_redis_client()
+            await redis_client.set(f"batch:cancelled:{batch_id}", "1", ex=7 * 24 * 3600)
+        except Exception as _redis_err:
+            logger.warning(f"Failed to write batch cancel flag to Redis: batch={batch_id}, err={_redis_err}")
+
         logger.info(f"Batch cancelled: id={batch_id}")
-        
+
         return {"success": True, "message": "批次已取消"}
-        
+
     except Exception as e:
         await db.rollback()
         logger.error(f"Failed to cancel batch: {str(e)}")
