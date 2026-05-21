@@ -549,8 +549,32 @@
                         · <router-link class="result-task-link" to="/sms/tasks">{{ $t('smsSend.viewSendTask') }} #{{ result.batchId }}</router-link>
                       </span>
                     </template>
+                    <template v-else-if="result.total != null && (result.succeeded != null || result.failed != null)">
+                      <span>共 {{ result.total }} 条 · 成功 {{ result.succeeded ?? 0 }} · 失败 {{ result.failed ?? 0 }}</span>
+                      <span v-if="result.batch_id != null" class="result-task-wrap">
+                        · <router-link class="result-task-link" to="/sms/tasks">{{ $t('smsSend.viewSendTask') }} #{{ result.batch_id }}</router-link>
+                      </span>
+                    </template>
                     <span v-else-if="result.success && result.message">{{ result.message }}</span>
                     <span v-else-if="!result.success">{{ result.error?.message || result.message }}</span>
+                  </div>
+
+                  <!-- 失败原因汇总：当存在 messages 明细且有失败项时按原因分组展示 -->
+                  <div v-if="failureSummary.length > 0" class="failure-summary">
+                    <div class="failure-summary-title">失败原因汇总</div>
+                    <div v-for="grp in failureSummary" :key="grp.code" class="failure-group">
+                      <div class="failure-group-head">
+                        <span class="failure-count">{{ grp.count }} 条</span>
+                        <span class="failure-reason">{{ grp.message }}</span>
+                        <el-button link type="primary" size="small" @click="grp.expanded = !grp.expanded">
+                          {{ grp.expanded ? '收起' : '查看号码' }}
+                        </el-button>
+                      </div>
+                      <div v-if="grp.expanded" class="failure-phones">
+                        <span v-for="(p, i) in grp.phones.slice(0, 100)" :key="i" class="failure-phone-chip">{{ p }}</span>
+                        <span v-if="grp.phones.length > 100" class="failure-phones-more">… 共 {{ grp.phones.length }} 个号码（仅显示前 100 个）</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1366,6 +1390,42 @@ const TEMPLATE_POOL: Record<string, Record<string, string[]>> = {
 const formRef = ref<FormInstance>()
 const loading = ref(false)
 const result = ref<any>(null)
+
+/**
+ * 失败原因汇总：把后端 result.messages（同步路径返回的每条号码结果）按 error.message 分组，
+ * 暴露给模板的 result-banner 用于「7 条号码格式无效」这种聚合提示，避免客户以为系统"少发"。
+ * 异步路径（>10 条）不返回 messages，computed 自然为空数组、不渲染。
+ */
+const failureSummary = computed<Array<{ code: string; message: string; count: number; phones: string[]; expanded: boolean }>>(() => {
+  const msgs = result.value?.messages
+  if (!Array.isArray(msgs) || msgs.length === 0) return []
+  const groups = new Map<string, { code: string; message: string; count: number; phones: string[]; expanded: boolean }>()
+  for (const m of msgs) {
+    if (m && m.success === false) {
+      // 后端 error 字段两种形态：对象 {code, message} 或直接是字符串（如 "入队失败"）
+      let code = 'UNKNOWN'
+      let text = ''
+      if (typeof m.error === 'string') {
+        text = m.error
+        code = m.error
+      } else if (m.error && typeof m.error === 'object') {
+        code = m.error.code || 'UNKNOWN'
+        text = m.error.message || code
+      } else {
+        text = '未知错误'
+      }
+      const key = `${code}::${text}`
+      let g = groups.get(key)
+      if (!g) {
+        g = { code, message: text, count: 0, phones: [], expanded: false }
+        groups.set(key, g)
+      }
+      g.count += 1
+      if (m.phone_number) g.phones.push(String(m.phone_number))
+    }
+  }
+  return Array.from(groups.values()).sort((a, b) => b.count - a.count)
+})
 const channels = ref<any[]>([])
 const channelBound = ref(false)
 const currentTime = ref('')
@@ -2930,6 +2990,72 @@ onUnmounted(() => clearInterval(timeInterval))
 
   /* 发送结果横幅：减小内距 */
   .result-banner { padding: 12px; }
+}
+
+/* ========== 失败原因汇总 ========== */
+.failure-summary {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(var(--el-color-danger-rgb, 245, 108, 108), 0.3);
+}
+.failure-summary-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-color-danger);
+  margin-bottom: 6px;
+}
+.failure-group {
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.failure-group:last-child { margin-bottom: 0; }
+.failure-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.failure-count {
+  display: inline-block;
+  min-width: 38px;
+  padding: 1px 8px;
+  background: var(--el-color-danger-light-9, #fef0f0);
+  color: var(--el-color-danger);
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+.failure-reason {
+  color: var(--el-text-color-regular);
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.failure-phones {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--el-fill-color-light, #f5f7fa);
+  border-radius: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.failure-phone-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  padding: 2px 6px;
+  background: var(--el-bg-color, #fff);
+  border-radius: 4px;
+  border: 1px solid var(--el-border-color-lighter, #eee);
+}
+.failure-phones-more {
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+  align-self: center;
 }
 
 @media (max-width: 380px) {
