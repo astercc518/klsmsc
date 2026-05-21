@@ -94,6 +94,21 @@ func LookupBatchIDByLogID(logID int64) int64 {
 	return batchID
 }
 
+// LookupCurrentStatus 实时查 sms_logs.status，用于 SMPP 提交前的幂等兜底：
+// 若网关因重启等原因重新消费到已处理过的 delivery，DB status 已不是 pending/queued，
+// 即跳过此次重复 submit，避免在上游重复计费。
+func LookupCurrentStatus(logID int64) string {
+	if db == nil || logID <= 0 {
+		return ""
+	}
+	var status string
+	row := db.QueryRow("SELECT status FROM sms_logs WHERE id=? LIMIT 1", logID)
+	if err := row.Scan(&status); err != nil {
+		return ""
+	}
+	return status
+}
+
 func cancelStatsLogger() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()

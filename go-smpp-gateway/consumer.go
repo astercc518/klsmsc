@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -313,8 +314,10 @@ func workerProcessDelivery(d amqp.Delivery, ackCh chan<- rabbitAckOp) {
 	ackCh <- rabbitAckOp{d: d, ack: true}
 }
 
-// startSingleConsumerSession 建立连接、注册 sms_send_smpp 消费者并阻塞直到连接/通道结束
-func startSingleConsumerSession(url string) error {
+// startSingleConsumerSession 建立连接、注册 sms_send_smpp 消费者并阻塞直到连接/通道结束。
+// 收到 ctx.Done() 时优雅退出：先 ch.Cancel 停止派发新 delivery，等 in-flight 处理完再返回，
+// 避免容器重启时把 prefetch 内已 submit 给上游的 SMS payload requeue 后被重复 submit。
+func startSingleConsumerSession(ctx context.Context, url string) error {
 	conn, err := amqp.Dial(url)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
@@ -374,14 +377,16 @@ func startSingleConsumerSession(url string) error {
 		return fmt.Errorf("qos: %w", err)
 	}
 
+	// 使用固定 consumer tag，便于 graceful shutdown 时 ch.Cancel(tag)
+	consumerTag := "smpp-gateway-consumer"
 	msgs, err := ch.Consume(
-		q.Name, // queue
-		"",     // consumer
-		false,  // auto-ack (set to false for manual ack)
-		false,  // exclusive
-		false,  // no-local
-		false,  // no-wait
-		nil,    // args
+		q.Name,      // queue
+		consumerTag, // consumer
+		false,       // auto-ack (set to false for manual ack)
+		false,       // exclusive
+		false,       // no-local
+		false,       // no-wait
+		nil,         // args
 	)
 	if err != nil {
 		_ = ch.Close()
@@ -425,6 +430,16 @@ func startSingleConsumerSession(url string) error {
 		}()
 	}
 
+	// Graceful shutdown：ctx 取消时 ch.Cancel 停止派发，AMQP 会关闭 msgs 通道，
+	// 下面的 for d := range msgs 自然退出，wg.Wait 等待 in-flight delivery 完成。
+	go func() {
+		<-ctx.Done()
+		log.Printf("[SHUTDOWN] ctx cancelled, cancelling consumer tag=%s", consumerTag)
+		if err := ch.Cancel(consumerTag, false); err != nil {
+			log.Printf("[SHUTDOWN] ch.Cancel failed: %v", err)
+		}
+	}()
+
 	for d := range msgs {
 		jobs <- d
 	}
@@ -440,13 +455,22 @@ func startSingleConsumerSession(url string) error {
 	return fmt.Errorf("deliveries channel closed")
 }
 
-// RunConsumerForever Broker 重启或网络闪断后自动重连，避免 sms_send_smpp 长期无消费者
-func RunConsumerForever(url string) {
+// RunConsumerForever Broker 重启或网络闪断后自动重连，避免 sms_send_smpp 长期无消费者。
+// ctx 取消时停止重连循环，让 main 退出前能确实排空 in-flight。
+func RunConsumerForever(ctx context.Context, url string) {
 	const reconnectDelay = 5 * time.Second
 	for {
-		err := startSingleConsumerSession(url)
+		err := startSingleConsumerSession(ctx, url)
+		if ctx.Err() != nil {
+			log.Printf("RabbitMQ consumer session ended cleanly (shutdown): %v", err)
+			return
+		}
 		log.Printf("RabbitMQ consumer session ended: %v; reconnecting in %v", err, reconnectDelay)
-		time.Sleep(reconnectDelay)
+		select {
+		case <-time.After(reconnectDelay):
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
@@ -539,6 +563,17 @@ func processSingleSMSData(data SMSLogData) (smsFailureKind, error) {
 	if rs == "failed" || rs == "expired" || rs == "delivered" || rs == "sent" {
 		log.Printf("跳过 SMPP 提交: 已是终态 message_id=%s status=%s", data.MessageID, rs)
 		return smsSentOK, nil
+	}
+
+	// 幂等兜底：payload 内 RecordStatus 是入队时快照；若网关重启后重复消费同一 delivery，
+	// 实际 DB 状态可能已变为 sent/delivered/failed/expired，必须实时查 DB 防止重复 submit。
+	// 仅在 payload 自报 pending/queued 时查询，避免对所有消息都增加 DB 开销。
+	if rs == "pending" || rs == "queued" {
+		if curStatus := LookupCurrentStatus(data.LogID); curStatus != "" && curStatus != "pending" && curStatus != "queued" {
+			log.Printf("跳过 SMPP 提交: DB 实时 status=%s (疑似重启后重复消费) message_id=%s log_id=%d",
+				curStatus, data.MessageID, data.LogID)
+			return smsSentOK, nil
+		}
 	}
 
 	err := manager.SendSMS(data.LogID, data.MessageID, data.PhoneNumber, data.Message, data.ChannelID)

@@ -1,9 +1,11 @@
 package main
 
 import (
+    "context"
     "log"
     "os"
     "os/signal"
+    "sync"
     "syscall"
     "time"
 )
@@ -30,8 +32,15 @@ func main() {
     }()
 
     // 3. RabbitMQ 消费：断线/ Broker 重建后自动重连，避免 sms_send_smpp 无消费者
+    // ctx 用于 graceful shutdown：SIGTERM 时停止派发新 delivery、等 in-flight 完成
+    rootCtx, cancelRoot := context.WithCancel(context.Background())
+    var consumerWg sync.WaitGroup
+    consumerWg.Add(1)
     rabbitURL := os.Getenv("RABBITMQ_URL")
-    go RunConsumerForever(rabbitURL)
+    go func() {
+        defer consumerWg.Done()
+        RunConsumerForever(rootCtx, rabbitURL)
+    }()
 
     // 3c. SMPP 入站服务器（客户接入）
     inboundListen := os.Getenv("INBOUND_LISTEN")
@@ -80,5 +89,20 @@ func main() {
     signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
     <-sigChan
 
-    log.Println("Shutting down Gateway...")
+    log.Println("Shutting down Gateway... draining in-flight RabbitMQ deliveries")
+    cancelRoot()
+
+    // 等消费者优雅退出：停止派发新 delivery、等 worker 把已 prefetch 的处理完。
+    // 超时 60s 作为兜底，避免 Docker SIGKILL 前不能正常退出（默认 10s 太短，已通过 stop_grace_period 调到 90s）。
+    done := make(chan struct{})
+    go func() {
+        consumerWg.Wait()
+        close(done)
+    }()
+    select {
+    case <-done:
+        log.Println("Gateway shutdown complete (consumers drained cleanly).")
+    case <-time.After(60 * time.Second):
+        log.Println("WARN: shutdown timeout, some deliveries may be requeued by RabbitMQ.")
+    }
 }

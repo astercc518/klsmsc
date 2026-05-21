@@ -621,6 +621,10 @@ services:
       redis:
         condition: service_started
     restart: unless-stopped
+    # Graceful shutdown：网关收到 SIGTERM 后需排空 prefetch=32 的 in-flight RabbitMQ delivery
+    # 再 Ack 退出；否则 RabbitMQ 会把已 submit 给上游的 payload 重新 requeue 导致重复计费。
+    # 60s 大于 main.go 内 ctx 等待超时（60s），留出本地排空 + ack 的余量。
+    stop_grace_period: 90s
     logging: *default-logging
     networks:
       - smsc-network
