@@ -1502,10 +1502,54 @@ async def _auto_create_product(
     return code
 
 
+def _mark_upload_task_failed_sync(task_id: str, reason: str) -> None:
+    """同步兜底：当 _run_async 被取消/超时打断时，无法在被取消的事件循环里再 await db.commit()，
+    所以用 pymysql 直连把任务从 processing 改为 failed，避免幽灵记录。"""
+    try:
+        import pymysql
+        from app.config import settings
+        # 复用 asyncmy URL 的 host/port/user/pass/db；与 ProxySQL 解耦，直连 mysql 容器内网更稳
+        conn = pymysql.connect(
+            host=settings.DATABASE_HOST,
+            port=int(settings.DATABASE_PORT),
+            user=settings.DATABASE_USER,
+            password=settings.DATABASE_PASSWORD,
+            database=settings.DATABASE_NAME,
+            connect_timeout=5,
+            read_timeout=10,
+            write_timeout=10,
+            charset="utf8mb4",
+            autocommit=True,
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE private_library_upload_tasks "
+                    "SET status='failed', error_message=%s, completed_at=NOW() "
+                    "WHERE task_id=%s AND status IN ('pending','processing')",
+                    ((reason or "")[:4000], task_id),
+                )
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("私库上传任务兜底标记 failed 失败: %s err=%s", task_id, e)
+
+
 @celery_app.task(name="private_library_upload", bind=True, soft_time_limit=3600, time_limit=3660)
 def private_library_upload(self, task_id: str):
     """客户私库异步上传（大文件），进度写入 private_library_upload_tasks"""
-    return _run_async(_do_private_library_upload_task(task_id))
+    # 大文件解析 + 运营商识别 + 批量写入可能远超 _run_async 默认 60s；
+    # 与 Celery soft_time_limit 对齐避免被全局超时打断后留下幽灵 processing 行
+    try:
+        return _run_async(_do_private_library_upload_task(task_id), timeout=3600)
+    except asyncio.TimeoutError:
+        # wait_for 取消内部协程后再外层重抛 TimeoutError；
+        # 此时 async 会话已无法 commit，必须用同步连接补打 failed
+        _mark_upload_task_failed_sync(task_id, "任务执行超时（超过 1 小时未完成）")
+        raise
+    except BaseException as e:  # SoftTimeLimit/SystemExit/KeyboardInterrupt 都要兜底
+        _mark_upload_task_failed_sync(task_id, f"任务异常中断: {type(e).__name__}: {e}")
+        raise
 
 
 async def _do_private_library_upload_task(task_id: str):
