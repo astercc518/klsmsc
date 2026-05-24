@@ -194,6 +194,7 @@ async def upload_batch_file(
     file_path: Optional[str] = None
     try:
         import os as _os
+        from app.utils.upload_validator import validate_upload_csv_txt, UploadValidationError
         clean_name = _os.path.basename(file.filename or "upload.csv")
         if not clean_name.lower().endswith('.csv'):
             raise HTTPException(status_code=400, detail="仅支持CSV文件")
@@ -218,6 +219,7 @@ async def upload_batch_file(
         last_byte: Optional[int] = None
         header_buf = bytearray()
         header_validated = False
+        magic_validated = False
 
         f = await asyncio.to_thread(open, file_path, 'wb')
         try:
@@ -228,6 +230,14 @@ async def upload_batch_file(
                 file_size += len(chunk)
                 if file_size > MAX_FILE_SIZE:
                     raise HTTPException(status_code=400, detail="文件大小不能超过100MB")
+
+                # magic number 嗅探：仅在收到首个非空 chunk 时校验首 4KB（防伪装成 CSV 的可执行/HTML）
+                if not magic_validated:
+                    try:
+                        validate_upload_csv_txt(bytes(chunk[:4096]), filename=clean_name, max_bytes=MAX_FILE_SIZE, label="批次 CSV")
+                    except UploadValidationError as ue:
+                        raise HTTPException(status_code=400, detail=str(ue))
+                    magic_validated = True
 
                 if not header_validated:
                     header_buf.extend(chunk)

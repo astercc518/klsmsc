@@ -20,7 +20,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.admin import get_current_admin
-from app.core.auth import AuthService
+from app.core.auth import AuthService, get_current_account
 from app.database import get_db
 from app.modules.common.account import Account
 from app.modules.common.admin_user import AdminUser
@@ -306,10 +306,24 @@ server {{
     set_real_ip_from 0.0.0.0/0;
     real_ip_header CF-Connecting-IP;
 
-    # 根路径：跳官网，避免短链域名被当主站访问
+    # 短链域名落地页：不暴露 Kaolach 关联，但呈现自洽内容，
+    # 避免运营商/反垃圾扫描器把根路径空壳判定为可疑域名
+    root /usr/share/nginx/shortlink_landing;
+    index index.html;
+
     location = / {{
-        return 302 https://www.kaolach.com/;
+        try_files /index.html =200;
+        add_header Cache-Control "public, max-age=3600" always;
+        add_header X-Robots-Tag "noindex, nofollow" always;
+        add_header Referrer-Policy "no-referrer" always;
     }}
+
+    # 隐私 / 条款 / 联系页：让"看似正经的小站"骨架完整
+    location = /privacy {{ try_files /privacy.html =404; add_header X-Robots-Tag "noindex, nofollow" always; }}
+    location = /terms   {{ try_files /terms.html   =404; add_header X-Robots-Tag "noindex, nofollow" always; }}
+    location = /contact {{ try_files /contact.html =404; add_header X-Robots-Tag "noindex, nofollow" always; }}
+    location = /robots.txt {{ try_files /robots.txt =404; access_log off; }}
+    location = /favicon.ico {{ try_files /favicon.ico =204; access_log off; log_not_found off; }}
 
     # 健康检查
     location = /health {{
@@ -815,6 +829,7 @@ def _per_token_clicks_subq(batch_id: int):
 async def batch_click_stats(
     batch_id: int,
     db: AsyncSession = Depends(get_db),
+    account: Account = Depends(get_current_account),
 ):
     """批次点击概览：默认**只统计真人点击**，机器扫描自动过滤。
 
@@ -852,7 +867,7 @@ async def batch_click_stats(
             .select_from(ShortLinkLog)
             .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
             .outerjoin(pt, pt.c.token == ShortLinkLog.token)
-            .where(SMSLog.batch_id == batch_id)
+            .where(SMSLog.batch_id == batch_id, SMSLog.account_id == account.id)
         )
     ).one()
 
@@ -875,6 +890,7 @@ async def list_clicked_phones(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
+    account: Account = Depends(get_current_account),
 ):
     """JSON 预览：分页返回**真人**点击过短链的号码（机器扫描自动过滤）。
 
@@ -899,7 +915,11 @@ async def list_clicked_phones(
         .select_from(ShortLinkLog)
         .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
         .outerjoin(pt, pt.c.token == ShortLinkLog.token)
-        .where(SMSLog.batch_id == batch_id, eff_human_expr > 0)
+        .where(
+            SMSLog.batch_id == batch_id,
+            SMSLog.account_id == account.id,
+            eff_human_expr > 0,
+        )
         .order_by(last_at_expr.desc())
     )
 
@@ -909,7 +929,11 @@ async def list_clicked_phones(
             .select_from(ShortLinkLog)
             .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
             .outerjoin(pt, pt.c.token == ShortLinkLog.token)
-            .where(SMSLog.batch_id == batch_id, eff_human_expr > 0)
+            .where(
+                SMSLog.batch_id == batch_id,
+                SMSLog.account_id == account.id,
+                eff_human_expr > 0,
+            )
         )
     ).scalar_one()
 
@@ -941,6 +965,7 @@ async def list_clicked_phones(
 async def download_clicked_phones_csv(
     batch_id: int,
     db: AsyncSession = Depends(get_db),
+    account: Account = Depends(get_current_account),
 ):
     """CSV 下载（仅真人）：流式遍历，机器扫描自动过滤。"""
     pt = _per_token_clicks_subq(batch_id)
@@ -960,7 +985,11 @@ async def download_clicked_phones_csv(
         .select_from(ShortLinkLog)
         .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
         .outerjoin(pt, pt.c.token == ShortLinkLog.token)
-        .where(SMSLog.batch_id == batch_id, eff_human_expr > 0)
+        .where(
+            SMSLog.batch_id == batch_id,
+            SMSLog.account_id == account.id,
+            eff_human_expr > 0,
+        )
         .order_by(last_at_expr.desc())
     )
 
@@ -996,6 +1025,7 @@ async def list_token_clicks(
     limit: int = Query(100, ge=1, le=500),
     include_bots: bool = Query(False, description="是否同时返回被过滤的机器扫描行（默认仅真人）"),
     db: AsyncSession = Depends(get_db),
+    account: Account = Depends(get_current_account),
 ):
     """单个短链的点击明细，**默认只返回真人点击**；机器扫描经默认过滤。
 
@@ -1003,6 +1033,20 @@ async def list_token_clicks(
     """
     if not token or not token.isalnum() or len(token) > 16:
         raise HTTPException(status_code=400, detail="invalid token")
+
+    # 归属校验：token → ShortLinkLog → SMSLog.account_id，必须等于当前账户
+    owner_account_id = (
+        await db.execute(
+            select(SMSLog.account_id)
+            .select_from(ShortLinkLog)
+            .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
+            .where(ShortLinkLog.token == token)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if owner_account_id is None or int(owner_account_id) != int(account.id):
+        # 不区分 "不存在" 与 "无权访问"，避免暴露 token 是否真实存在
+        raise HTTPException(status_code=404, detail="not found")
 
     stmt = (
         select(

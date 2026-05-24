@@ -1572,8 +1572,16 @@ async def _do_private_library_upload_task(task_id: str):
             row.progress_percent = 1
             await db.commit()
 
-            fpath = row.file_path
+            # 路径穿越防护：file_path 来自 DB，若被污染（admin 工具/未来接口）可能指向 /etc/passwd 或 .env
+            # 允许根：私库异步上传(/tmp/smsc_pl_uploads) + 数据导入(/tmp/smsc_imports)
+            _UPLOAD_ROOTS = (
+                os.path.abspath("/tmp/smsc_pl_uploads"),
+                os.path.abspath("/tmp/smsc_imports"),
+            )
             try:
+                fpath = os.path.abspath(row.file_path or "")
+                if not any(fpath == r or fpath.startswith(r + os.sep) for r in _UPLOAD_ROOTS):
+                    raise OSError(f"非法上传路径（不在允许目录之内）: {row.file_path}")
                 with open(fpath, "rb") as f:
                     content = f.read()
             except OSError as e:

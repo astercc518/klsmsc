@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/linxGnu/gosmpp"
@@ -175,6 +176,63 @@ func stripLeadingPlusFromConfigJSON(raw string) bool {
 	default:
 		return true
 	}
+}
+
+// longMessageModeFromConfigJSON 解析 channels.config_json 中 long_message_mode；
+// 取值：
+//   "message_payload"（默认）   — UCS-2 编码 > 254 字节时用 message_payload TLV 旁路（兼容多数现代上游）
+//   "udh_segmentation"           — 改用标准 UDH 8-bit ref 多段 SMS 分段，每段 ≤ 140 字节
+// 在 wold_kafa 这类上游不实现 message_payload TLV、对 PDU 返 ESME_RINVCMDLEN (2) 的场景必须用 udh。
+func longMessageModeFromConfigJSON(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "message_payload"
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return "message_payload"
+	}
+	v, ok := m["long_message_mode"]
+	if !ok || v == nil {
+		return "message_payload"
+	}
+	if s, ok := v.(string); ok {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "udh_segmentation" || s == "udh" {
+			return "udh_segmentation"
+		}
+	}
+	return "message_payload"
+}
+
+// splitUCS2ForUDH 把 UCS-2 编码后的字节流拆为多段，每段 ≤ 134 字节
+// （UCS-2 字符是 2 字节宽，按 67 字符 = 134 字节切，避免拆中一个字符）。
+// 调用方需自己加 6 字节 UDH 头到每段前面。
+func splitUCS2ForUDH(encoded []byte) [][]byte {
+	const seg = 134
+	if len(encoded) <= seg {
+		return [][]byte{encoded}
+	}
+	out := make([][]byte, 0, (len(encoded)+seg-1)/seg)
+	for i := 0; i < len(encoded); i += seg {
+		end := i + seg
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		// 防御：UCS-2 必须按 2 字节对齐；len(encoded) 一定是偶数，seg 也是偶数，对齐安全
+		out = append(out, encoded[i:end])
+	}
+	return out
+}
+
+// concatRefCounter 为同一 gateway 进程内不同消息生成 UDH 8-bit 拼接 ref。
+// 同会话/同号码短时间内不重复即可；单字节空间足够（短信预览组按 ref+from+to 三元组判定，
+// 67ms 内同号同 ref 撞车的概率可忽略）。
+var concatRefCounter uint32
+
+func nextConcatRef() byte {
+	v := atomic.AddUint32(&concatRefCounter, 1)
+	return byte(v & 0xFF)
 }
 
 func InitSMPPManager() {
@@ -819,42 +877,129 @@ func (m *SMPPManager) SendSMS(logID int64, messageID string, phoneNumber string,
 		log.Printf("[SMPP-ERROR] UCS2 Encode failed: channel=%s, msg=%s err=%v", cfg.ChannelCode, messageID, encErr)
 		return fmt.Errorf("ucs2 encode: %w", encErr)
 	}
-	if len(encoded) <= data.SM_MSG_LEN {
-		if err := s.Message.SetMessageDataWithEncoding(encoded, data.UCS2); err != nil {
-			log.Printf("[SMPP-ERROR] SetMessageDataWithEncoding failed: channel=%s, msg=%s len=%d err=%v",
-				cfg.ChannelCode, messageID, len(encoded), err)
-			return fmt.Errorf("short_message: %w", err)
-		}
-	} else {
-		if err := s.Message.SetMessageDataWithEncoding(nil, data.UCS2); err != nil {
-			log.Printf("[SMPP-ERROR] clear short_message failed: channel=%s, msg=%s err=%v", cfg.ChannelCode, messageID, err)
-			return fmt.Errorf("empty short_message: %w", err)
-		}
-		payload := make([]byte, len(encoded))
-		copy(payload, encoded)
-		s.RegisterOptionalParam(pdu.Field{Tag: pdu.TagMessagePayload, Data: payload})
-	}
-	s.RegisteredDelivery = 1
 
 	trans := session.Transmitter()
 	if trans == nil {
 		return fmt.Errorf("session has no transmitter")
 	}
 
+	// 短消息：直接 short_message 字段，与历史行为一致
+	if len(encoded) <= data.SM_MSG_LEN {
+		if err := s.Message.SetMessageDataWithEncoding(encoded, data.UCS2); err != nil {
+			log.Printf("[SMPP-ERROR] SetMessageDataWithEncoding failed: channel=%s, msg=%s len=%d err=%v",
+				cfg.ChannelCode, messageID, len(encoded), err)
+			return fmt.Errorf("short_message: %w", err)
+		}
+		s.RegisteredDelivery = 1
+		return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0)
+	}
+
+	// 长消息：按通道配置选择 message_payload TLV 或 UDH 多段分段
+	mode := longMessageModeFromConfigJSON(cfg.ConfigJSON)
+
+	if mode == "udh_segmentation" {
+		// UDH 8-bit ref 多段 SMS：每段 6 字节 UDH 头 + 134 字节 UCS-2 payload = 140 字节
+		// 第一段持有 sequenceMap 条目（决定整条消息的 sent/failed/DLR 归属），
+		// 其它段静默 Submit；其 SubmitSMResp 命中 OnPDU 的「无匹配映射」分支被忽略。
+		// 折中：若第一段 sent 而后续段 failed，只能查日志发现；多数运营商对同一 concat 组
+		// 全段同状态，跨段 status 分裂极少见。换全段联动跟踪需要在 Python 端引入「分段表」
+		// 与 DLR 汇总逻辑，工程量大；当前最小可用方案优先解决发不出去的问题。
+		segments := splitUCS2ForUDH(encoded)
+		ref := nextConcatRef()
+		total := byte(len(segments))
+		for i, seg := range segments {
+			part := byte(i + 1)
+			var psm *pdu.SubmitSM
+			if i == 0 {
+				psm = s
+			} else {
+				psm = pdu.NewSubmitSM().(*pdu.SubmitSM)
+				psm.SourceAddr = pdu.NewAddress()
+				psm.SourceAddr.SetAddress(cfg.DefaultSenderID)
+				psm.DestAddr = pdu.NewAddress()
+				psm.DestAddr.SetAddress(destDigits)
+				psm.RegisteredDelivery = s.RegisteredDelivery
+			}
+
+			// 清掉 short_message 后挂 UDH + payload
+			if err := psm.Message.SetMessageDataWithEncoding(seg, data.UCS2); err != nil {
+				log.Printf("[SMPP-ERROR] UDH SetMessageData failed: channel=%s msg=%s part=%d/%d err=%v",
+					cfg.ChannelCode, messageID, part, total, err)
+				if i == 0 {
+					return fmt.Errorf("udh segment 1 set: %w", err)
+				}
+				continue
+			}
+			// 标准 1-byte ref concat UDH：IEI=0x00, IEDL=0x03, [ref, total, part]
+			psm.Message.SetUDH(pdu.UDH{pdu.InfoElement{ID: 0x00, Data: []byte{ref, total, part}}})
+
+			if i == 0 {
+				psm.RegisteredDelivery = 1
+				if err := m.submitOneAndTrack(psm, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), true, ref, total, part); err != nil {
+					return err
+				}
+			} else {
+				// 后续段：不要求 DLR（避免 N 段各回一条 DLR），不存 sequenceMap
+				psm.RegisteredDelivery = 0
+				if err := trans.Submit(psm); err != nil {
+					errMsg := err.Error()
+					if strings.Contains(errMsg, "closing") || strings.Contains(errMsg, "closed") {
+						log.Printf("[SMPP-WARN] UDH part %d/%d submit temp error (session closing): channel=%s msg=%s %v",
+							part, total, cfg.ChannelCode, messageID, err)
+						// 主段已成功提交，这里不返回 _temp_error 以免上层重发整条
+						return nil
+					}
+					log.Printf("[SMPP-ERROR] UDH part %d/%d submit failed: channel=%s msg=%s %v",
+						part, total, cfg.ChannelCode, messageID, err)
+					// 不阻断后续段；接收端能收到的段会拼接展示，缺段处显示空白
+				} else {
+					log.Printf("[SMPP-DEBUG] Submitting SM (UDH part %d/%d): channel=%s sequence=%d dest=%s ref=%d seg_bytes=%d",
+						part, total, cfg.ChannelCode, psm.SequenceNumber, destDigits, ref, len(seg))
+				}
+			}
+		}
+		return nil
+	}
+
+	// 默认：message_payload TLV（多数现代 SMSC 支持，且效率高于多段）
+	if err := s.Message.SetMessageDataWithEncoding(nil, data.UCS2); err != nil {
+		log.Printf("[SMPP-ERROR] clear short_message failed: channel=%s, msg=%s err=%v", cfg.ChannelCode, messageID, err)
+		return fmt.Errorf("empty short_message: %w", err)
+	}
+	payload := make([]byte, len(encoded))
+	copy(payload, encoded)
+	s.RegisterOptionalParam(pdu.Field{Tag: pdu.TagMessagePayload, Data: payload})
+	s.RegisteredDelivery = 1
+	return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0)
+}
+
+// submitOneAndTrack 注册 sequenceMap 后 Submit，统一处理 closing/closed 临时错误。
+// udhInfo 仅供日志，udhTotal=0 表示非 UDH。
+func (m *SMPPManager) submitOneAndTrack(
+	s *pdu.SubmitSM, trans gosmpp.Transmitter,
+	channelID int, messageID string, logID int64,
+	destDigits string, cfg ChannelConfig,
+	utf16Len int,
+	udh bool, udhRef byte, udhTotal byte, udhPart byte,
+) error {
 	m.sequenceMap.Store(smppSeqMapKey(channelID, s.SequenceNumber), sequenceData{
 		messageID:  messageID,
 		logID:      logID,
 		submitTime: time.Now(),
 	})
 
-	log.Printf("[SMPP-DEBUG] Submitting SM: channel=%s, sequence=%d, dest=%s, sender=%s, utf16_len=%d message_payload=%v",
-		cfg.ChannelCode, s.SequenceNumber, destDigits, cfg.DefaultSenderID, len(encoded), len(encoded) > data.SM_MSG_LEN)
+	if udh {
+		log.Printf("[SMPP-DEBUG] Submitting SM (UDH part %d/%d): channel=%s sequence=%d dest=%s ref=%d total_utf16_len=%d",
+			udhPart, udhTotal, cfg.ChannelCode, s.SequenceNumber, destDigits, udhRef, utf16Len)
+	} else {
+		log.Printf("[SMPP-DEBUG] Submitting SM: channel=%s, sequence=%d, dest=%s, sender=%s, utf16_len=%d message_payload=%v",
+			cfg.ChannelCode, s.SequenceNumber, destDigits, cfg.DefaultSenderID, utf16Len, utf16Len > data.SM_MSG_LEN)
+	}
 
 	err := trans.Submit(s)
 	if err != nil {
 		m.sequenceMap.Delete(smppSeqMapKey(channelID, s.SequenceNumber))
 		errMsg := err.Error()
-		// session 正在关闭/已关闭属临时错误：调用方 nack+requeue，不写 DB failed
 		if strings.Contains(errMsg, "closing") || strings.Contains(errMsg, "closed") {
 			log.Printf("[SMPP-WARN] Submit temp error (session closing): channel=%s %v", cfg.ChannelCode, err)
 			return fmt.Errorf("_temp_error: session closing: %v", err)
@@ -862,6 +1007,5 @@ func (m *SMPPManager) SendSMS(logID int64, messageID string, phoneNumber string,
 		log.Printf("[SMPP-ERROR] Submit failed: %v", err)
 		return err
 	}
-
 	return nil
 }

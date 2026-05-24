@@ -5,10 +5,14 @@ import asyncio
 import httpx
 import hmac
 import hashlib
+import ipaddress
 import json
 import os
+import socket
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlparse
+
 from app.workers.celery_app import celery_app
 from app.utils.logger import get_logger
 from app.modules.common.account import Account
@@ -20,6 +24,64 @@ logger = get_logger(__name__)
 
 # webhook 整体超时：HTTP 调用本身已限制 30s，留点余量给 DB 查询
 _WEBHOOK_TASK_TIMEOUT = float(os.getenv("WORKER_WEBHOOK_TASK_TIMEOUT_SEC", "60"))
+
+
+def validate_webhook_url(url: str) -> Tuple[bool, str]:
+    """
+    SSRF 防护：校验 webhook URL 不指向内网/本机/链路本地/云元数据等敏感地址。
+
+    Returns: (ok, error_reason)。ok=True 表示安全可外联。
+
+    防御点：
+    - 只允许 http/https
+    - 拒绝 host 是 IP 字面量直接命中私网/回环/链路本地/保留段
+    - 解析 DNS 后逐个 IP 校验（防止 DNS rebinding 与 *.localhost 指向 127.x）
+    """
+    if not url or not isinstance(url, str):
+        return False, "webhook_url 为空"
+    try:
+        parsed = urlparse(url.strip())
+    except Exception as e:
+        return False, f"webhook_url 解析失败: {e}"
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return False, f"仅允许 http/https 协议（当前: {scheme or '空'}）"
+
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return False, "webhook_url 缺少 host"
+
+    # 解析所有 A/AAAA 记录；任何一个落在禁段都拒绝（防 DNS rebinding 在多记录间漂移）
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        return False, f"webhook_url DNS 解析失败: {e}"
+
+    seen_addrs = set()
+    for info in infos:
+        addr = info[4][0]
+        if addr in seen_addrs:
+            continue
+        seen_addrs.add(addr)
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False, f"无法解析地址: {addr}"
+        # 一刀切拒绝所有非公网 IP（私网/回环/链路本地/多播/保留/未指定）
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return False, f"webhook_url 指向受限地址段: {addr}"
+
+    if not seen_addrs:
+        return False, "webhook_url DNS 解析为空"
+    return True, ""
 
 
 @celery_app.task(
@@ -83,6 +145,19 @@ async def _send_webhook_async(account_id: int, message_id: str, status: str, dat
         if not webhook_url:
             logger.debug(f"账户 {account_id} 未配置Webhook URL，跳过回调")
             return {"success": True, "skipped": True, "reason": "No webhook URL configured"}
+
+        # SSRF 防护：发送前再校验一次（即便入库时漏了，这里兜底）。
+        # 不重试——指向内网的 URL 重试再多次也是错，避免反复扫探内网。
+        ok, reason = validate_webhook_url(webhook_url)
+        if not ok:
+            logger.warning(
+                f"Webhook回调拒绝（疑似 SSRF）: account={account_id} url={webhook_url} reason={reason}"
+            )
+            return {
+                "success": True,  # 标 True 防止 Celery 重试；但 skipped 字段告知调用方
+                "skipped": True,
+                "reason": f"webhook_url 被安全策略拒绝: {reason}",
+            }
         
         # 查询短信记录获取详细信息
         result = await db.execute(
@@ -130,7 +205,9 @@ async def _send_webhook_async(account_id: int, message_id: str, status: str, dat
         # 用 content= 而不是 json= 把已序列化好的字节直接发出，确保收方对 body 重新计算 HMAC 时
         # 字节序列与我们签名时完全一致（避免 httpx 默认紧凑 separators 与 json.dumps 默认空格 separators 的差异）
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            # follow_redirects=False：防止 302 跳到内网（30x → http://127.0.0.1 仍是 SSRF）。
+            # 客户的合法 webhook 不应该重定向。
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
                 response = await client.post(
                     webhook_url,
                     content=signature_payload.encode("utf-8"),
@@ -266,6 +343,7 @@ def record_link_click_task(token: str, client_ip: str, user_agent: str):
     from app.modules.sms.short_link_log import ShortLinkLog
     from app.modules.sms.short_link_click import ShortLinkClick
     from app.utils.bot_ua import classify_user_agent
+    from app.utils.bot_ip import classify_client_ip
     from app.config import settings as _s
 
     # 调参：窗口 60 秒，≥3 个不同 token 才视为扇出
@@ -276,6 +354,7 @@ def record_link_click_task(token: str, client_ip: str, user_agent: str):
 
     ua_is_bot, ua_reason = classify_user_agent(user_agent)
     ip_norm = (client_ip or "").strip()
+    ip_static_is_bot, ip_static_reason = classify_client_ip(ip_norm)
 
     async def _do():
         eng = create_async_engine(
@@ -307,10 +386,13 @@ def record_link_click_task(token: str, client_ip: str, user_agent: str):
             except Exception as e:
                 logger.warning(f"ip_fanout redis check failed (token={token}, ip={ip_norm}): {e}")
 
-        is_bot = bool(ua_is_bot or ip_is_bot)
-        # reason 优先级：UA 已判定 bot 时保留 UA 原因；否则若 IP 扇出 → ip_fanout
+        is_bot = bool(ua_is_bot or ip_static_is_bot or ip_is_bot)
+        # reason 优先级：UA > 静态 IP 名单（google_scanner 等）> IP 扇出。
+        # 把更具体的命中原因放前面，便于后台按规则名分类排查。
         if ua_is_bot:
             reason = ua_reason
+        elif ip_static_is_bot:
+            reason = ip_static_reason
         elif ip_is_bot:
             reason = "ip_fanout"
         else:

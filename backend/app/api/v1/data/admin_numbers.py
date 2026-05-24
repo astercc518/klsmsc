@@ -189,10 +189,20 @@ async def import_numbers_raw(
     batch_id = f"IMP-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
     file_path = os.path.join(upload_dir, f"{batch_id}.{ext}")
 
+    from app.utils.upload_validator import validate_upload_csv_txt, UploadValidationError
     file_size = 0
+    magic_validated = False
     try:
         with open(file_path, "wb") as f:
             async for chunk in request.stream():
+                # 首块嗅探 magic number（防 PE/ELF/ZIP/HTML/PHP 等伪装）
+                if not magic_validated and chunk:
+                    try:
+                        validate_upload_csv_txt(bytes(chunk[:4096]), filename=fn, max_bytes=MAX_SIZE, label="号码导入文件")
+                    except UploadValidationError as ue:
+                        os.remove(file_path) if os.path.exists(file_path) else None
+                        raise HTTPException(status_code=400, detail=str(ue))
+                    magic_validated = True
                 file_size += len(chunk)
                 if file_size > MAX_SIZE:
                     os.remove(file_path)
@@ -343,6 +353,14 @@ async def import_raw_session_chunk(
             new_total = meta.get("total_bytes", 0) + len(body)
             if new_total > IMPORT_TOTAL_MAX:
                 raise HTTPException(status_code=413, detail="文件大小超过限制(最大500MB)")
+            # 首块嗅探 magic number（仅 index==0）
+            if index == 0:
+                from app.utils.upload_validator import validate_upload_csv_txt, UploadValidationError
+                try:
+                    fn_for_check = meta.get("filename") or "data.txt"
+                    validate_upload_csv_txt(bytes(body[:4096]), filename=fn_for_check, max_bytes=IMPORT_TOTAL_MAX, label="号码导入文件")
+                except UploadValidationError as ue:
+                    raise HTTPException(status_code=400, detail=str(ue))
             with open(data_path, "ab") as df:
                 df.write(body)
             meta["next_index"] = meta.get("next_index", 0) + 1
@@ -1109,8 +1127,17 @@ async def upload_blacklist(
     admin=Depends(get_current_admin),
 ):
     """上传黑名单文件，批量标记为 blacklisted"""
+    from app.utils.upload_validator import validate_upload_csv_txt, UploadValidationError
     content = await file.read()
-    text = content.decode("utf-8")
+    # 补缺失校验：后缀 + 大小 + magic number。黑名单文件通常小（<10MB），上限 50MB 足够
+    try:
+        validate_upload_csv_txt(content, filename=file.filename or "blacklist.csv", max_bytes=50 * 1024 * 1024, label="黑名单文件")
+    except UploadValidationError as ue:
+        raise HTTPException(status_code=400, detail=str(ue))
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = content.decode("utf-8", errors="replace")
     reader = csv.reader(io.StringIO(text))
 
     blacklisted = 0

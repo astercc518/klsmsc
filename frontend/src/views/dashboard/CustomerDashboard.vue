@@ -371,7 +371,7 @@ const showSystemMonitor = computed(() => permissions.value.view_system_monitor)
 const dashboardLoading = computed(() => loading.value && isStaff.value)
 
 const accountName = ref(localStorage.getItem('account_name') || 'User')
-const apiKey = ref(localStorage.getItem('api_key') || '')
+const apiKey = ref(sessionStorage.getItem('api_key') || localStorage.getItem('api_key') || '')
 
 const maskedApiKey = computed(() => {
   if (!apiKey.value) return '-'

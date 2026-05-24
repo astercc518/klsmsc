@@ -71,7 +71,7 @@ router.beforeEach(async (to, from, next) => {
   }
 
   const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1'
-  const apiKey = localStorage.getItem('api_key')
+  const apiKey = sessionStorage.getItem('api_key') || localStorage.getItem('api_key')
   const adminToken = localStorage.getItem('admin_token')
   const isLoggedIn = !!(isImpersonateMode || apiKey || adminToken)
 

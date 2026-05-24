@@ -55,8 +55,8 @@ export const getChannels = async () => {
     }
   }
   
-  // 客户账户使用 API Key 访问通道列表
-  const apiKey = localStorage.getItem('api_key')
+  // 客户账户使用 API Key 访问通道列表（api_key 已迁至 sessionStorage，localStorage 兼容残留）
+  const apiKey = sessionStorage.getItem('api_key') || localStorage.getItem('api_key')
   if (apiKey) {
     const res: any = await request.get('/channels/list')
     return {

@@ -350,7 +350,9 @@ const handleTgVerify = async () => {
       if (res?.success && res?.token) {
         localStorage.removeItem('admin_token'); localStorage.removeItem('admin_id'); localStorage.removeItem('admin_role')
         sessionStorage.removeItem('impersonate_mode')
-        localStorage.setItem('api_key', res.token)
+        // api_key 改存 sessionStorage（关浏览器即失效，限缩 XSS 后果）；并清掉历史 localStorage 副本
+        sessionStorage.setItem('api_key', res.token)
+        localStorage.removeItem('api_key')
         localStorage.setItem('account_id', String(res.account_id || ''))
         try { const info: any = await getAccountInfo(); if (info?.account_name) localStorage.setItem('account_name', info.account_name) } catch {}
         ElMessage.success(t('login.loginSuccess'))
@@ -443,7 +445,9 @@ const doCustomerSuccess = async (accountResp: { token?: string; account_id?: num
   localStorage.removeItem('admin_token'); localStorage.removeItem('admin_id'); localStorage.removeItem('admin_role')
   localStorage.removeItem('admin_username'); localStorage.removeItem('admin_refresh_token')
   sessionStorage.removeItem('impersonate_mode')
-  localStorage.setItem('api_key', accountResp.token!)
+  // api_key 改存 sessionStorage（关浏览器即失效，限缩 XSS 后果）；并清掉历史 localStorage 副本
+  sessionStorage.setItem('api_key', accountResp.token!)
+  localStorage.removeItem('api_key')
   localStorage.setItem('account_id', String(accountResp.account_id || ''))
   try { const info: any = await getAccountInfo(); if (info?.account_name) localStorage.setItem('account_name', info.account_name) } catch {}
   ElMessage.success(t('login.loginSuccess'))

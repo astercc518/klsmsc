@@ -782,8 +782,9 @@ async function onAbandonUploadTask(taskId: string) {
 
 async function handleExport(g: NumberGroup, fmt: string) {
   const impersonateApiKey = sessionStorage.getItem('impersonate_api_key')
-  const localStorageApiKey = localStorage.getItem('api_key')
-  const apiKey = (sessionStorage.getItem('impersonate_mode') === '1') ? impersonateApiKey : localStorageApiKey
+  // api_key 已迁至 sessionStorage，localStorage 作为旧用户兼容回退
+  const customerApiKey = sessionStorage.getItem('api_key') || localStorage.getItem('api_key')
+  const apiKey = (sessionStorage.getItem('impersonate_mode') === '1') ? impersonateApiKey : customerApiKey
   if (!apiKey) return ElMessage.error('认证信息缺失，请重新登录')
 
   // 若批次已加密，先弹框让用户输入密码

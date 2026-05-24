@@ -4,10 +4,12 @@ import httpx
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.utils.logger import get_logger
 from app.core.auth import get_current_account
 from app.modules.common.account import Account
+from app.database import get_db
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -36,7 +38,11 @@ async def ai_config(account: Account = Depends(get_current_account)):
 
 
 @router.post("/generate-sms", response_model=GenerateSmsResponse)
-async def generate_sms(req: GenerateSmsRequest, account: Account = Depends(get_current_account)):
+async def generate_sms(
+    req: GenerateSmsRequest,
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
     """调用外部 AI API 批量生成短信文案"""
     if not settings.AI_API_KEY:
         raise HTTPException(400, "AI 功能未配置，请在环境变量中设置 AI_API_KEY")
@@ -106,7 +112,27 @@ async def generate_sms(req: GenerateSmsRequest, account: Account = Depends(get_c
             if cleaned:
                 lines.append(cleaned[:req.max_length])
 
-        return GenerateSmsResponse(success=True, messages=lines, source="ai")
+        # AI 输出二次过滤：丢弃命中全局违禁词的行（仅全局，AI 阶段无通道/国家）
+        from app.utils.banned_words import check_banned_words
+        from app.services.operation_log import log_operation
+        safe_lines: List[str] = []
+        dropped_hits: List[str] = []
+        for ln in lines:
+            hit = await check_banned_words(db, ln)
+            if hit:
+                dropped_hits.append(hit)
+            else:
+                safe_lines.append(ln)
+        if dropped_hits:
+            await log_operation(
+                db, module="security", action="content_blocked",
+                title=f"AI 生成内容违禁词过滤：丢 {len(dropped_hits)}/{len(lines)} 条",
+                target_type="account", target_id=account.id,
+                detail={"account_id": account.id, "stage": "ai_output", "hits": dropped_hits[:10], "kept": len(safe_lines), "dropped": len(dropped_hits)},
+                status="failed", error_message="CONTENT_BLOCKED",
+            )
+
+        return GenerateSmsResponse(success=True, messages=safe_lines, source="ai")
 
     except httpx.HTTPStatusError as e:
         logger.error(f"AI API 返回错误: {e.response.status_code} - {e.response.text}")

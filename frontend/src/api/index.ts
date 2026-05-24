@@ -104,14 +104,19 @@ request.interceptors.request.use(
 
     const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1'
 
+    // api_key 优先从 sessionStorage 读（新位置：关浏览器即失效），
+    // localStorage 作为兼容已登录用户的回退
+    const readCustomerApiKey = () =>
+      sessionStorage.getItem('api_key') || localStorage.getItem('api_key')
+
     if (isImpersonateMode) {
       const impersonateApiKey = sessionStorage.getItem('impersonate_api_key')
-      const fallbackApiKey = localStorage.getItem('api_key')
+      const fallbackApiKey = readCustomerApiKey()
       const apiKeyToUse = impersonateApiKey || fallbackApiKey
       if (apiKeyToUse) config.headers['X-API-Key'] = apiKeyToUse
     } else {
       const adminToken = localStorage.getItem('admin_token')
-      const apiKey = localStorage.getItem('api_key')
+      const apiKey = readCustomerApiKey()
       if (apiKey && adminToken && shouldAttachCustomerApiKey(config.url)) {
         config.headers['X-API-Key'] = apiKey
         config.headers['Authorization'] = `Bearer ${adminToken}`
@@ -182,6 +187,7 @@ request.interceptors.response.use(
             const isAccountInvalid = data?.error?.code === 'ACCOUNT_INVALID'
             ElMessage.error(isAccountInvalid ? '账户已禁用或被删除，请重新登录' : '认证失败，请重新登录')
             localStorage.removeItem('api_key')
+            sessionStorage.removeItem('api_key')
             localStorage.removeItem('admin_token')
             localStorage.removeItem('admin_refresh_token')
             localStorage.removeItem('admin_id')

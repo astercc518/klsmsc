@@ -170,8 +170,8 @@ class AuthService:
 
         pwd = credentials.password
 
-        # 优先匹配 api_secret（接口密码，明文比对）
-        if account.api_secret and pwd == account.api_secret:
+        # 优先匹配 api_secret（接口密码，**常量时间比对** 防 timing attack）
+        if account.api_secret and hmac.compare_digest(pwd, account.api_secret):
             logger.debug(f"Basic Auth(api_secret) 认证成功: 账户 {account.id} ({account.account_name})")
             return account
 

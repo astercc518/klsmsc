@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="robots" content="noindex,nofollow" />
+<meta name="referrer" content="no-referrer" />
+<title>Link Service</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111827'/%3E%3Cpath d='M20 32a8 8 0 0 1 8-8h6v6h-6a2 2 0 0 0 0 4h6v6h-6a8 8 0 0 1-8-8zm24 0a8 8 0 0 1-8 8h-6v-6h6a2 2 0 0 0 0-4h-6v-6h6a8 8 0 0 1 8 8z' fill='%2360a5fa'/%3E%3C/svg%3E" />
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    background:radial-gradient(circle at 20% 0%,#1e293b 0%,#0f172a 60%,#020617 100%);
+    color:#e2e8f0;
+    min-height:100%;
+    display:flex;flex-direction:column;
+  }
+  main{
+    flex:1;
+    display:flex;align-items:center;justify-content:center;
+    padding:48px 24px;
+  }
+  .card{
+    width:100%;max-width:560px;
+    background:rgba(15,23,42,.6);
+    border:1px solid rgba(148,163,184,.15);
+    border-radius:18px;
+    padding:40px 36px;
+    backdrop-filter:blur(8px);
+    box-shadow:0 20px 60px rgba(2,6,23,.6);
+  }
+  .logo{
+    display:flex;align-items:center;gap:12px;
+    margin-bottom:24px;
+  }
+  .logo-mark{
+    width:40px;height:40px;border-radius:10px;
+    background:linear-gradient(135deg,#60a5fa,#a78bfa);
+    display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:18px;color:#0f172a;
+  }
+  .brand{font-size:18px;font-weight:600;letter-spacing:.2px}
+  h1{
+    font-size:30px;line-height:1.2;font-weight:700;
+    margin-bottom:14px;
+    background:linear-gradient(90deg,#e2e8f0,#94a3b8);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  p{font-size:15px;line-height:1.7;color:#94a3b8;margin-bottom:14px}
+  .meta{
+    margin-top:28px;padding-top:20px;
+    border-top:1px solid rgba(148,163,184,.12);
+    display:flex;flex-wrap:wrap;gap:18px;
+    font-size:13px;color:#64748b;
+  }
+  .meta a{color:#94a3b8;text-decoration:none}
+  .meta a:hover{color:#e2e8f0;text-decoration:underline}
+  footer{
+    padding:18px 24px;text-align:center;
+    font-size:12px;color:#475569;
+  }
+  code{
+    background:rgba(148,163,184,.1);
+    padding:2px 6px;border-radius:4px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:13px;color:#cbd5e1;
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="card">
+    <div class="logo">
+      <div class="logo-mark">L</div>
+      <div class="brand" id="brand">link service</div>
+    </div>
+    <h1>Secure link redirection</h1>
+    <p>
+      This service provides shortened URLs for messaging and notification
+      delivery. If you arrived here from a message, the short link you
+      clicked should redirect automatically. If it didn't, please check
+      that the full URL was copied — short links look like
+      <code id="example">/AbCd123</code>.
+    </p>
+    <p>
+      We do not host content on this domain. Every link points to a
+      third-party destination chosen by the sender.
+    </p>
+    <div class="meta">
+      <span id="host-line">Service host: <code id="hostname">—</code></span>
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+      <a href="/contact">Contact</a>
+    </div>
+  </section>
+</main>
+<footer>© <span id="year">2026</span> <span id="brand-foot">link service</span>. All rights reserved.</footer>
+<script>
+  (function(){
+    var h = (location.hostname || '').toLowerCase();
+    if (h) {
+      document.getElementById('hostname').textContent = h;
+      document.getElementById('brand').textContent = h;
+      document.getElementById('brand-foot').textContent = h;
+      document.title = h + ' – Link Service';
+    }
+    document.getElementById('year').textContent = new Date().getFullYear();
+  })();
+</script>
+</body>
+</html>

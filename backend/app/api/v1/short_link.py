@@ -44,4 +44,11 @@ async def redirect_short_link(
         # 点击统计失败不影响重定向
         logger.warning(f"record_link_click dispatch failed: {e}")
 
-    return RedirectResponse(url=original_url, status_code=302)
+    # 兜底：历史数据可能存了不带 scheme 的 URL（如 "hi805.com"），
+    # 浏览器会把 Location 头当成相对路径解析到当前短链域名，导致 404；
+    # 这里统一补 https:// 让旧记录也能正常跳转
+    redirect_url = original_url
+    if not redirect_url.lower().startswith(("http://", "https://")):
+        redirect_url = "https://" + redirect_url.lstrip("/")
+
+    return RedirectResponse(url=redirect_url, status_code=302)

@@ -35,8 +35,39 @@ _REDIS_SMSLOG_PREFIX = "sl:s:"  # sl:s:{sms_log_id} -> token
 _REDIS_TTL = 90 * 86400         # 90 天
 
 
-def _gen_token(length: int = 7) -> str:
+# 默认 token 长度从 7 升到 8 位（Base62 8 位 ≈ 218 万亿组合，约 47 bits，
+# 与 Twitter t.co 同量级；7 位仅 3.5 万亿 ≈ 41 bits，慢速扫库可枚举）。
+# 历史 7 位 token 仍可正常访问（DB 已存）。
+def _gen_token(length: int = 8) -> str:
     return "".join(secrets.choice(_BASE62) for _ in range(length))
+
+
+def _normalize_target_url(url: Optional[str]) -> str:
+    """
+    规范化客户填写的「原始链接」。
+    - 去前后空白
+    - 不带 scheme 时补 https://（避免重定向时 Location 被浏览器当相对路径）
+    - 拦 javascript: / data: / file: 等危险协议（短信扫描器渲染时会被执行）
+    - 拦私网/回环/链路本地/云元数据地址（防钓鱼扫库 + 内网穿透）
+    返回空串视作无效（调用方应抛错让前端展示）。
+    """
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if not u.lower().startswith(("http://", "https://")):
+        u = "https://" + u.lstrip("/")
+    # 调入安全校验；非法则返回空串触发上层错误
+    try:
+        from app.utils.url_safety import validate_redirect_target_url
+        ok, reason = validate_redirect_target_url(u)
+        if not ok:
+            logger.warning(f"short_link target URL 被安全策略拒绝: {u!r} reason={reason}")
+            return ""
+    except Exception as e:
+        # 校验本身失败（如 DNS 不可达）：保守不放行，避免开后门
+        logger.warning(f"short_link target URL 校验异常: {u!r} err={e}")
+        return ""
+    return u
 
 
 def has_track_url_placeholder(message: Optional[str]) -> bool:
@@ -314,6 +345,12 @@ async def replace_track_url_in_message(
         logger.warning(f"short_link: no target URL for sms_log_id={sms_log_id}, skipping replacement")
         return message
     target_url, effective_base = parts
+    # 客户在「短链转换」表单里可能漏写 https://，统一补全后再入库；
+    # 否则重定向时浏览器会把 "hi805.com" 当作相对路径，跳到当前短链域名下报 404
+    target_url = _normalize_target_url(target_url)
+    if not target_url:
+        logger.warning(f"short_link: empty target URL for sms_log_id={sms_log_id}, skipping replacement")
+        return message
 
     _, short_url = await generate_short_link(db, sms_log_id, target_url, effective_base)
     return _PLACEHOLDER_RE.sub(short_url, message)

@@ -369,6 +369,13 @@ export const SYSTEM_CONFIG_META: Record<string, ConfigMeta> = {
     restartRequired: true,
     restartHint: '修改后需重启 api 容器',
   },
+  global_banned_words: {
+    label: '全局违禁词',
+    hint: '逗号 / 换行 / 中文标点 分隔。任何短信内容（含 AI 生成）命中即拦截，并在「安全日志」留痕。通道/国家级违禁词请到「通道管理」配置',
+    group: 'security', subgroup: 'access',
+    uiType: 'text',
+    maxLength: 4000,
+  },
 }
 
 /* ================================================================

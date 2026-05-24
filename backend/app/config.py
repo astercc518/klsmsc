@@ -22,10 +22,13 @@ class Settings(BaseSettings):
     
     @property
     def cors_origin_list(self) -> List[str]:
-        """将逗号分隔的 CORS_ORIGINS 转为列表"""
+        """将逗号分隔的 CORS_ORIGINS 转为列表。
+
+        历史上 dev 环境为空时回落到 ["*"]，但一旦 APP_ENV 被误设为
+        development 即等同于关闭 CORS，所以现在所有环境都强制显式声明；
+        dev 同学需在 .env.local 写 `CORS_ORIGINS=http://localhost:5173`。
+        """
         if not self.CORS_ORIGINS:
-            if self.APP_ENV == "development":
-                return ["*"]
             return []
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
     
@@ -128,6 +131,18 @@ class Settings(BaseSettings):
     DLR_CALLBACK_IP_WHITELIST: str = ""
     # 设为 true/1 时允许无认证回调（上游不支持 Token 时使用，生产环境建议用 Token 或 IP 白名单）
     DLR_CALLBACK_OPEN: bool = False
+
+    @field_validator("DLR_CALLBACK_OPEN", mode="before")
+    @classmethod
+    def _validate_dlr_open(cls, v, info) -> bool:
+        env = (info.data or {}).get("APP_ENV", "development")
+        is_open = str(v).lower() in {"1", "true", "yes", "y"} if not isinstance(v, bool) else bool(v)
+        if env == "production" and is_open:
+            raise ValueError(
+                "生产环境禁止 DLR_CALLBACK_OPEN=true（任何人能伪造 DLR 篡改投递状态）。"
+                "请改为配置 DLR_CALLBACK_TOKEN 或 DLR_CALLBACK_IP_WHITELIST"
+            )
+        return is_open
 
     @property
     def dlr_callback_ip_list(self) -> List[str]:

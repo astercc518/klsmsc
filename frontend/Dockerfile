@@ -13,6 +13,7 @@ RUN npm run build
 FROM nginx:alpine
 
 COPY --from=builder /app/dist /usr/share/nginx/html
+COPY shortlink_landing /usr/share/nginx/shortlink_landing
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY security_headers.conf /etc/nginx/security_headers.conf
 

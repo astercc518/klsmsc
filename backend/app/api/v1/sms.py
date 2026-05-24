@@ -310,6 +310,26 @@ async def submit_sms_core(
                 error={"code": "INVALID_CONTENT", "message": error_msg}
             )
 
+        # 2.1 全局违禁词早查（不依赖通道；通道/国家级在路由选定后再查）
+        from app.utils.banned_words import check_banned_words
+        from app.services.operation_log import log_operation
+        global_hit = await check_banned_words(db, final_message)
+        if global_hit:
+            await log_operation(
+                db, module="security", action="content_blocked",
+                title=f"全局违禁词命中：{global_hit}",
+                target_type="account", target_id=account.id,
+                detail={
+                    "account_id": account.id, "account_name": account.account_name,
+                    "phone_number": phone_number, "hit": global_hit, "stage": "global",
+                },
+                status="failed", error_message="CONTENT_BLOCKED",
+            )
+            return SMSSendResponse(
+                success=False,
+                error={"code": "CONTENT_BLOCKED", "message": f"内容包含违禁词: {global_hit}"}
+            )
+
         # 3. 路由选择通道（账户已绑定通道时，仅在绑定通道中路由）
         routing_engine = RoutingEngine(db)
         channel = await routing_engine.select_channel(
@@ -323,6 +343,26 @@ async def submit_sms_core(
             return SMSSendResponse(
                 success=False,
                 error={"code": "NO_CHANNEL", "message": "No available channel"}
+            )
+
+        # 3.1 通道 × 国家违禁词（路由已确定，能取到精确词表）
+        channel_hit = await check_banned_words(db, final_message, channel_id=channel.id, country_code=country_code)
+        if channel_hit:
+            await log_operation(
+                db, module="security", action="content_blocked",
+                title=f"通道/国家违禁词命中：{channel_hit}",
+                target_type="account", target_id=account.id,
+                detail={
+                    "account_id": account.id, "account_name": account.account_name,
+                    "phone_number": phone_number,
+                    "channel_id": channel.id, "channel_code": channel.channel_code,
+                    "country_code": country_code, "hit": channel_hit, "stage": "channel",
+                },
+                status="failed", error_message="CONTENT_BLOCKED",
+            )
+            return SMSSendResponse(
+                success=False,
+                error={"code": "CONTENT_BLOCKED", "message": f"内容包含违禁词: {channel_hit}"}
             )
 
         logger.info(f"选择通道: {channel.channel_code}")
@@ -535,10 +575,42 @@ async def send_sms_ruanwei_compat(
             items.append({"mobile": phone, "mid": "", "result": 17})
             continue
 
+        # 全局违禁词早查
+        from app.utils.banned_words import check_banned_words as _check_bw
+        from app.services.operation_log import log_operation as _log_op
+        _g_hit = await _check_bw(db, final_message)
+        if _g_hit:
+            await _log_op(
+                db, module="security", action="content_blocked",
+                title=f"全局违禁词命中（软维协议）：{_g_hit}",
+                target_type="account", target_id=acc.id,
+                detail={"account_id": acc.id, "phone_number": phone, "hit": _g_hit, "stage": "global", "protocol": "ruanwei"},
+                status="failed", error_message="CONTENT_BLOCKED",
+            )
+            items.append({"mobile": phone, "mid": "", "result": 17})
+            continue
+
         channel = await routing_engine.select_channel(
             country_code=country_code, strategy='priority', account_id=acc.id
         )
         if not channel:
+            items.append({"mobile": phone, "mid": "", "result": 17})
+            continue
+
+        # 通道 × 国家违禁词
+        _c_hit = await _check_bw(db, final_message, channel_id=channel.id, country_code=country_code)
+        if _c_hit:
+            await _log_op(
+                db, module="security", action="content_blocked",
+                title=f"通道/国家违禁词命中（软维协议）：{_c_hit}",
+                target_type="account", target_id=acc.id,
+                detail={
+                    "account_id": acc.id, "phone_number": phone,
+                    "channel_id": channel.id, "channel_code": channel.channel_code,
+                    "country_code": country_code, "hit": _c_hit, "stage": "channel", "protocol": "ruanwei",
+                },
+                status="failed", error_message="CONTENT_BLOCKED",
+            )
             items.append({"mobile": phone, "mid": "", "result": 17})
             continue
 
@@ -970,6 +1042,23 @@ async def send_batch_sms(
                                 "message_id": None, "error": {"code": "INVALID_CONTENT", "message": content_err}})
                 continue
 
+            # 全局违禁词早查
+            from app.utils.banned_words import check_banned_words as _check_bw
+            from app.services.operation_log import log_operation as _log_op
+            _g_hit = await _check_bw(db, final_message)
+            if _g_hit:
+                await _log_op(
+                    db, module="security", action="content_blocked",
+                    title=f"全局违禁词命中（批量）：{_g_hit}",
+                    target_type="account", target_id=account.id,
+                    detail={"account_id": account.id, "phone_number": phone_number, "hit": _g_hit, "stage": "global", "protocol": "batch"},
+                    status="failed", error_message="CONTENT_BLOCKED",
+                )
+                failed += 1
+                results.append({"phone_number": phone_number, "success": False,
+                                "message_id": None, "error": {"code": "CONTENT_BLOCKED", "message": f"内容包含违禁词: {_g_hit}"}})
+                continue
+
             routing_engine = RoutingEngine(db)
             channel = await routing_engine.select_channel(
                 country_code=country_code,
@@ -981,6 +1070,25 @@ async def send_batch_sms(
                 failed += 1
                 results.append({"phone_number": phone_number, "success": False,
                                 "message_id": None, "error": {"code": "NO_CHANNEL", "message": "No available channel"}})
+                continue
+
+            # 通道 × 国家违禁词
+            _c_hit = await _check_bw(db, final_message, channel_id=channel.id, country_code=country_code)
+            if _c_hit:
+                await _log_op(
+                    db, module="security", action="content_blocked",
+                    title=f"通道/国家违禁词命中（批量）：{_c_hit}",
+                    target_type="account", target_id=account.id,
+                    detail={
+                        "account_id": account.id, "phone_number": phone_number,
+                        "channel_id": channel.id, "channel_code": channel.channel_code,
+                        "country_code": country_code, "hit": _c_hit, "stage": "channel", "protocol": "batch",
+                    },
+                    status="failed", error_message="CONTENT_BLOCKED",
+                )
+                failed += 1
+                results.append({"phone_number": phone_number, "success": False,
+                                "message_id": None, "error": {"code": "CONTENT_BLOCKED", "message": f"内容包含违禁词: {_c_hit}"}})
                 continue
 
             pricing_engine = PricingEngine(db)
@@ -1251,6 +1359,20 @@ async def submit_sms_approval(
     is_valid_content, content_err, _ = Validator.validate_content(request.message)
     if not is_valid_content:
         raise HTTPException(status_code=400, detail=content_err)
+
+    # 全局违禁词早查（审核提交阶段；通道未定，只做全局检查）
+    from app.utils.banned_words import check_banned_words as _check_bw
+    from app.services.operation_log import log_operation as _log_op
+    _g_hit = await _check_bw(db, request.message)
+    if _g_hit:
+        await _log_op(
+            db, module="security", action="content_blocked",
+            title=f"全局违禁词命中（审核提交）：{_g_hit}",
+            target_type="account", target_id=account.id,
+            detail={"account_id": account.id, "hit": _g_hit, "stage": "approval_submit"},
+            status="failed", error_message="CONTENT_BLOCKED",
+        )
+        raise HTTPException(status_code=400, detail=f"内容包含违禁词: {_g_hit}")
 
     phone_e164 = None
     if request.phone_number:
@@ -1536,6 +1658,24 @@ async def execute_approved_sms(
     is_valid_content, content_err, _ = Validator.validate_content(final_message)
     if not is_valid_content:
         raise HTTPException(status_code=400, detail=content_err or "内容校验失败")
+
+    # 违禁词校验（审核执行路径：通道/国家此处已确定）
+    from app.utils.banned_words import check_banned_words as _check_bw
+    from app.services.operation_log import log_operation as _log_op
+    _bw_hit = await _check_bw(db, final_message, channel_id=channel.id, country_code=phone_info["country_code"])
+    if _bw_hit:
+        await _log_op(
+            db, module="security", action="content_blocked",
+            title=f"违禁词命中（审核后发送）：{_bw_hit}",
+            target_type="account", target_id=account.id,
+            detail={
+                "account_id": account.id, "phone_number": phone_info["e164_format"],
+                "channel_id": channel.id, "country_code": phone_info["country_code"],
+                "hit": _bw_hit, "stage": "approval_exec",
+            },
+            status="failed", error_message="CONTENT_BLOCKED",
+        )
+        raise HTTPException(status_code=400, detail=f"内容包含违禁词: {_bw_hit}")
 
     pricing_engine = PricingEngine(db)
     charge_result = await pricing_engine.calculate_and_charge(

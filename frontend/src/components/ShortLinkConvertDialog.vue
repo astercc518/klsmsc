@@ -45,8 +45,9 @@
           v-model="form.targetUrl"
           placeholder="https://promo.example.com/landing"
           clearable
+          @blur="form.targetUrl = normalizeTargetUrl(form.targetUrl)"
         />
-        <div class="hint">点击后将 302 重定向到此地址；点击量与时间会异步落库</div>
+        <div class="hint">点击后将 302 重定向到此地址；漏写 https:// 会自动补全</div>
       </el-form-item>
 
       <el-form-item label="短信文案">
@@ -124,6 +125,14 @@ const form = ref({
 
 const URL_RE = /https?:\/\/[^\s)\]>]+/i
 
+/** 漏写 https:// 时自动补齐；否则浏览器会把 Location 当相对路径，跳到短链域名下 404 */
+function normalizeTargetUrl(raw: string): string {
+  const u = (raw || '').trim()
+  if (!u) return ''
+  if (/^https?:\/\//i.test(u)) return u
+  return 'https://' + u.replace(/^\/+/, '')
+}
+
 const canConvert = computed(
   () => Boolean(form.value.domainId) && Boolean((form.value.targetUrl || '').trim()),
 )
@@ -133,7 +142,7 @@ const previewMessage = computed(() => {
   const dom = domains.value.find((d) => d.id === form.value.domainId)
   if (!dom) return ''
   const placeholder = buildTrackUrlPlaceholder({
-    targetUrl: form.value.targetUrl.trim(),
+    targetUrl: normalizeTargetUrl(form.value.targetUrl),
     baseUrl: dom.base_url,
   })
   const msg = form.value.message || ''

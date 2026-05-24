@@ -149,19 +149,22 @@ async def register_account(
     existing_account = result.scalar_one_or_none()
     
     if existing_account:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        # 不揭示「邮箱已被注册」（攻击者可借此枚举有效邮箱）。
+        # 统一返回模糊错误；真用户尝试找回密码时会通过另一路径。
+        logger.warning(f"注册冲突（邮箱已存在，对外模糊错误）: email={request.email}")
+        raise HTTPException(status_code=400, detail="该邮箱无法注册，如有问题请联系客服")
     
     # 生成API Key和Secret
     # 注意：accounts.api_key 字段为 VARCHAR(64)，需要保证长度 <= 64
     api_key = f"ak_{secrets.token_hex(30)}"  # 3 + 60 = 63
     api_secret = secrets.token_hex(32)
     
-    # 创建账户（新开短信账户默认赠送 1 USD）
+    # 创建账户（不再自动赠送余额；防 bot 批量注册薅 1U 免费额度 ≈ 1000 条短信）
     new_account = Account(
         account_name=request.account_name,
         email=request.email,
         password_hash=AuthService.hash_password(request.password),
-        balance=1.0,
+        balance=0,
         currency="USD",
         status="active",
         api_key=api_key,
@@ -170,21 +173,10 @@ async def register_account(
         contact_person=request.contact_person,
         contact_phone=request.contact_phone
     )
-    
+
     db.add(new_account)
     await db.commit()
     await db.refresh(new_account)
-
-    # 新开短信账户赠送 1U：记录余额日志
-    from app.modules.common.balance_log import BalanceLog
-    db.add(BalanceLog(
-        account_id=new_account.id,
-        change_type='deposit',
-        amount=1.0,
-        balance_after=1.0,
-        description='新开短信账户赠送',
-    ))
-    await db.commit()
     
     logger.info(f"账户创建成功: id={new_account.id}, email={new_account.email}")
     
@@ -306,8 +298,10 @@ async def account_telegram_send_code(
     from app.services.notification_service import notification_service
 
     identifier = (request.identifier or "").strip()
+    # 用户名枚举防御：所有"无法发送"的失败都用同一错误码，让攻击者无法分辨
+    # 「输入为空 / 账户不存在 / 账户未绑定 TG」三种情况
     if not identifier:
-        return {"success": False, "error": "invalid_username"}
+        return {"success": False, "error": "account_not_bound"}
 
     result = await db.execute(
         select(Account).where(

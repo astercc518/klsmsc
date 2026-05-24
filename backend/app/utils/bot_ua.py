@@ -45,12 +45,15 @@ _SECURITY_SCANNER_TOKENS = (
 _GENERIC_BOT_TOKENS = ("bot", "spider", "crawler", "spy", "monitor")
 
 # 真人签名（覆盖移动端 + 主流桌面浏览器；命中即视为人）
+# 注意：不包含 "x11; linux" —— 短信受众里桌面 Linux 真人占比极低，
+# 而 Google Messages / Gmail 链接预扫描器恰好用这个 UA（带 Google IP 段，
+# 见 bot_ip.classify_client_ip），把它列为真人会让扫描器的双重抓取被误计为人点。
 _HUMAN_TOKENS = (
     "mobile safari", "chrome mobile", "crios/", "fxios/", "edga/",
     "samsungbrowser", "miuibrowser", "huaweibrowser", "ucbrowser",
     "opera mobi", "opr/",
     # 桌面浏览器（运营商扫描器一般不带这些组合签名）
-    "windows nt", "macintosh", "x11; linux",
+    "windows nt", "macintosh",
 )
 
 

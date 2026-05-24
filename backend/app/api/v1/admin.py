@@ -44,6 +44,17 @@ def _gen_api_secret(length: int = 8) -> str:
     return "".join(random.SystemRandom().choices(_UNAMBIGUOUS, k=length))
 
 
+def _mask_secret(s: Optional[str]) -> Optional[str]:
+    """admin 后台返回时把 api_secret 打码，仅保留后 4 位。
+    DB 字段仍是明文（迁移到 hash 单独排期），但 HTTP 出口屏蔽明文，限缩泄漏面。
+    重置/旋转端点 **不**走这里——那些场景明文一次性返回让 admin 复制是预期。"""
+    if not s:
+        return s
+    if len(s) <= 4:
+        return "****"
+    return "****" + s[-4:]
+
+
 # Schemas
 class AdminLoginRequest(BaseModel):
     username: str
@@ -400,12 +411,14 @@ async def admin_login(
     await db.commit()
     
     logger.info(f"管理员登录成功: {admin.username} ({admin.role})")
-    
-    # 生成 access + refresh token 对
+
+    # 生成 access + refresh token 对（refresh 携带 token_version 用于失效检测）
     access_token = AuthService.create_access_token(
         data={"sub": admin.id, "role": admin.role, "username": admin.username},
     )
-    refresh_token = AuthService.create_refresh_token(data={"sub": admin.id})
+    refresh_token = AuthService.create_refresh_token(
+        data={"sub": admin.id, "tv": int(getattr(admin, "token_version", 1) or 1)}
+    )
 
     return AdminLoginResponse(
         success=True,
@@ -442,10 +455,24 @@ async def refresh_admin_token(
     if not admin or admin.status != "active":
         return RefreshTokenResponse(success=False, error="admin_not_active")
 
+    # 旋转版本校验：refresh token 的 tv 必须等于当前 admin.token_version。
+    # 历史 token 没有 tv 字段时按 1 处理；新 token 之后必须严格匹配。
+    current_tv = int(getattr(admin, "token_version", 1) or 1)
+    token_tv = payload.get("tv")
+    if token_tv is None:
+        token_tv = 1  # 向后兼容：未带 tv 的老 refresh 视为 v1
+    if int(token_tv) != current_tv:
+        logger.warning(f"Refresh token 版本已失效: admin={admin.username} tv={token_tv} current={current_tv}")
+        return RefreshTokenResponse(success=False, error="refresh_revoked")
+
+    # 旋转：bump token_version，让本次使用的 refresh 立即失效（下次再发同样的 refresh 会被拒）
+    admin.token_version = current_tv + 1
+    await db.commit()
+
     new_access = AuthService.create_access_token(
         data={"sub": admin.id, "role": admin.role, "username": admin.username},
     )
-    new_refresh = AuthService.create_refresh_token(data={"sub": admin.id})
+    new_refresh = AuthService.create_refresh_token(data={"sub": admin.id, "tv": admin.token_version})
 
     return RefreshTokenResponse(
         success=True,
@@ -1070,9 +1097,9 @@ async def get_account_admin(
             "rate_limit": a.rate_limit,
             "smpp_max_binds": a.smpp_max_binds if a.smpp_max_binds is not None else 5,
             "ip_whitelist": whitelist,
-            # API凭证
+            # API凭证（api_secret 打码——重置接口才会返回明文）
             "api_key": a.api_key,
-            "api_secret": a.api_secret,
+            "api_secret": _mask_secret(a.api_secret),
             # 绑定配置
             "sales_id": a.sales_id,
             "channels": channels,

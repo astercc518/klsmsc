@@ -2106,11 +2106,14 @@ async def my_numbers_upload(
     上传数据到私有库表 private_library_numbers（与公海 data_numbers 分表，按 account_id+phone 唯一）。
     不与公海或其它客户号码冲突；同一账户重复上传则更新批次/备注等。
     """
+    from app.utils.upload_validator import validate_upload_csv_txt, UploadValidationError
     fname = file.filename or ""
-    if not fname.lower().endswith((".csv", ".txt")):
-        raise HTTPException(400, "仅支持 CSV 或 TXT 文件")
-
     content = await file.read()
+    # 后缀 + 大小 + magic number 三重校验（私库单次上传上限 200MB）
+    try:
+        validate_upload_csv_txt(content, filename=fname, max_bytes=200 * 1024 * 1024, label="私库上传文件")
+    except UploadValidationError as ue:
+        raise HTTPException(400, str(ue))
     _assert_private_upload_country_matches_account(account, country_code)
     try:
         result = await run_private_library_upload(
@@ -2252,11 +2255,14 @@ async def create_my_numbers_upload_task(
     需运行消费 data_tasks 队列的 Celery Worker。
     export_password 设置后，该批次号码导出时需提供正确密码（SMS 发送不受影响）。
     """
+    from app.utils.upload_validator import validate_upload_csv_txt, UploadValidationError
     fname = file.filename or ""
-    if not fname.lower().endswith((".csv", ".txt")):
-        raise HTTPException(400, "仅支持 CSV 或 TXT 文件")
-
     content = await file.read()
+    # 后缀 + 大小 + magic number 三重校验（私库单次上传上限 200MB）
+    try:
+        validate_upload_csv_txt(content, filename=fname, max_bytes=200 * 1024 * 1024, label="私库上传文件")
+    except UploadValidationError as ue:
+        raise HTTPException(400, str(ue))
     _assert_private_upload_country_matches_account(account, country_code)
 
     # 密码校验：不允许过短
