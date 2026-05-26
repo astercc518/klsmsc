@@ -167,6 +167,8 @@ app.include_router(_short_link_admin_mod.admin_router, prefix="/api/v1", tags=["
 app.include_router(_short_link_admin_mod.public_router, prefix="/api/v1", tags=["短链域名（公开列表）"])
 app.include_router(_short_link_admin_mod.stats_router, prefix="/api/v1", tags=["短信批次-短链统计"])
 app.include_router(_short_link_admin_mod.click_detail_router, prefix="/api/v1", tags=["短链点击明细"])
+app.include_router(_short_link_admin_mod.csv_code_router, prefix="/api/v1", tags=["短链 CSV 下载码"])
+app.include_router(_short_link_admin_mod.csv_download_router, prefix="/api/v1", tags=["短链 CSV 下载（免登）"])
 
 # 确保 ORM 元数据注册（Alembic autogenerate 依赖）
 # 注意：用 from-import，避免 `import app.modules...` 把 `app` 名遮蔽掉 FastAPI 实例

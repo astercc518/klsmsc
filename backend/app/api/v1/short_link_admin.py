@@ -825,6 +825,45 @@ def _per_token_clicks_subq(batch_id: int):
     )
 
 
+def _per_token_last_human_ua_subq(batch_id: int):
+    """每个 token 最近一次真人点击的 user_agent。
+
+    用 ROW_NUMBER() 窗口函数取 partition by token、order by clicked_at desc 的
+    第一行。MySQL 8 原生支持。仅用于"已点击号码"列表上直观展示设备/浏览器，
+    不影响 bot 判定。
+    """
+    from sqlalchemy import case
+    batch_token_subq = (
+        select(ShortLinkLog.token)
+        .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
+        .where(SMSLog.batch_id == batch_id)
+        .subquery()
+    )
+    ranked = (
+        select(
+            ShortLinkClick.token.label("token"),
+            ShortLinkClick.user_agent.label("user_agent"),
+            func.row_number().over(
+                partition_by=ShortLinkClick.token,
+                order_by=ShortLinkClick.clicked_at.desc(),
+            ).label("rn"),
+        )
+        .where(
+            ShortLinkClick.is_bot == False,  # noqa: E712
+            ShortLinkClick.token.in_(select(batch_token_subq.c.token)),
+        )
+        .subquery()
+    )
+    return (
+        select(
+            ranked.c.token.label("token"),
+            ranked.c.user_agent.label("last_human_ua"),
+        )
+        .where(ranked.c.rn == 1)
+        .subquery()
+    )
+
+
 @stats_router.get("/{batch_id}/click-stats")
 async def batch_click_stats(
     batch_id: int,
@@ -897,6 +936,7 @@ async def list_clicked_phones(
     legacy clicks（无明细行）按真人计入，避免旧批次空白。
     """
     pt = _per_token_clicks_subq(batch_id)
+    ua_sq = _per_token_last_human_ua_subq(batch_id)
     eff_human_expr = (
         func.coalesce(pt.c.detail_human, 0)
         + func.greatest(ShortLinkLog.click_count - func.coalesce(pt.c.detail_total, 0), 0)
@@ -911,10 +951,12 @@ async def list_clicked_phones(
             last_at_expr.label("last_click_at"),
             ShortLinkLog.original_url.label("original_url"),
             ShortLinkLog.token.label("token"),
+            ua_sq.c.last_human_ua.label("last_user_agent"),
         )
         .select_from(ShortLinkLog)
         .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
         .outerjoin(pt, pt.c.token == ShortLinkLog.token)
+        .outerjoin(ua_sq, ua_sq.c.token == ShortLinkLog.token)
         .where(
             SMSLog.batch_id == batch_id,
             SMSLog.account_id == account.id,
@@ -954,6 +996,7 @@ async def list_clicked_phones(
                     "last_click_at": r.last_click_at.isoformat() if r.last_click_at else None,
                     "original_url": r.original_url,
                     "token": r.token,
+                    "last_user_agent": r.last_user_agent,
                 }
                 for r in rows
             ],
@@ -967,7 +1010,14 @@ async def download_clicked_phones_csv(
     db: AsyncSession = Depends(get_db),
     account: Account = Depends(get_current_account),
 ):
-    """CSV 下载（仅真人）：流式遍历，机器扫描自动过滤。"""
+    """CSV 下载（仅真人）：机器扫描自动过滤。
+
+    历史教训：曾用 db.stream + 跨 generator yield 实现"边查边吐"，但
+    Depends(get_db) 在 handler 返回后立即关闭 session，generator 真正被
+    消费时游标已失效 → 客户端拿到的是空 CSV（200 + 仅表头）。
+    现改为先在 handler 内 .execute().all() 把行装入内存，再让 generator
+    序列化（脱离 db session），点击号码量级（百~万）完全可承受。
+    """
     pt = _per_token_clicks_subq(batch_id)
     eff_human_expr = (
         func.coalesce(pt.c.detail_human, 0)
@@ -975,34 +1025,52 @@ async def download_clicked_phones_csv(
     )
     last_at_expr = func.coalesce(pt.c.last_human_at, ShortLinkLog.last_click_at)
 
-    rows_iter = await db.stream(
-        select(
-            SMSLog.phone_number,
-            eff_human_expr.label("human_clicks"),
-            last_at_expr.label("last_click_at"),
-            ShortLinkLog.original_url,
+    ua_sq = _per_token_last_human_ua_subq(batch_id)
+    rows = (
+        await db.execute(
+            select(
+                SMSLog.phone_number,
+                eff_human_expr.label("human_clicks"),
+                last_at_expr.label("last_click_at"),
+                ShortLinkLog.original_url,
+                ShortLinkLog.token,
+                ua_sq.c.last_human_ua,
+            )
+            .select_from(ShortLinkLog)
+            .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
+            .outerjoin(pt, pt.c.token == ShortLinkLog.token)
+            .outerjoin(ua_sq, ua_sq.c.token == ShortLinkLog.token)
+            .where(
+                SMSLog.batch_id == batch_id,
+                SMSLog.account_id == account.id,
+                eff_human_expr > 0,
+            )
+            .order_by(last_at_expr.desc())
         )
-        .select_from(ShortLinkLog)
-        .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
-        .outerjoin(pt, pt.c.token == ShortLinkLog.token)
-        .where(
-            SMSLog.batch_id == batch_id,
-            SMSLog.account_id == account.id,
-            eff_human_expr > 0,
-        )
-        .order_by(last_at_expr.desc())
-    )
+    ).all()
 
-    async def gen():
+    from app.utils.ua_display import format_device_browser
+
+    def gen():
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["phone_number", "human_clicks", "last_click_at", "original_url"])
+        w.writerow([
+            "phone_number", "human_clicks", "last_click_at",
+            "device_browser", "user_agent", "token", "original_url",
+        ])
         yield buf.getvalue()
         buf.seek(0); buf.truncate(0)
-
-        async for r in rows_iter:
+        for r in rows:
             ts = r.last_click_at.isoformat() if r.last_click_at else ""
-            w.writerow([r.phone_number, int(r.human_clicks or 0), ts, r.original_url or ""])
+            w.writerow([
+                r.phone_number,
+                int(r.human_clicks or 0),
+                ts,
+                format_device_browser(r.last_human_ua),
+                r.last_human_ua or "",
+                r.token or "",
+                r.original_url or "",
+            ])
             data = buf.getvalue()
             if data:
                 yield data
@@ -1091,3 +1159,192 @@ async def list_token_clicks(
             ],
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# 短链点击 CSV 一次性下载授权码
+#
+# 用途：管理员代客户生成下载链接，发给非系统用户（线下客户 / 临时合作方）
+# 在不登录系统的前提下拉一次 CSV。
+# 策略：一次性 + 24h 过期（消费即失效；过期自动 Redis TTL 清理）。
+# 安全：code 用 secrets.token_urlsafe(24) 生成，约 192 bit 熵；用 GETDEL
+# 原子消费，避免并发同 code 两次下载。
+# ---------------------------------------------------------------------------
+
+from datetime import timedelta as _td_csv  # noqa: E402
+from secrets import token_urlsafe as _csv_token  # noqa: E402
+
+from app.modules.sms.sms_batch import SmsBatch  # noqa: E402
+from app.utils.cache import get_redis_client as _csv_redis  # noqa: E402
+
+
+csv_code_router = APIRouter(prefix="/admin/short-link-csv-codes", tags=["短链 CSV 下载码"])
+csv_download_router = APIRouter(prefix="/sms/csv-download", tags=["短链 CSV 下载（免登）"])
+
+
+_CSV_CODE_TTL = 24 * 3600   # 24h
+_CSV_CODE_KEY_PREFIX = "slc:csv_code:"
+
+
+class _CsvCodeCreateBody(BaseModel):
+    batch_id: int = Field(..., gt=0, description="要授权下载的批次 ID")
+
+
+@csv_code_router.post("")
+async def create_csv_code(
+    body: _CsvCodeCreateBody,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """管理员生成一次性 CSV 下载授权码（24h 过期）。"""
+    batch = (
+        await db.execute(select(SmsBatch).where(SmsBatch.id == body.batch_id))
+    ).scalar_one_or_none()
+    if not batch:
+        raise HTTPException(404, "batch not found")
+
+    # 顺带把客户名带出来，方便管理员核对
+    acc = (
+        await db.execute(
+            select(Account.account_name, Account.id).where(Account.id == batch.account_id)
+        )
+    ).first()
+
+    code = _csv_token(24)   # 32 字符 URL-safe
+    import json as _json
+    payload = {
+        "batch_id": int(batch.id),
+        "account_id": int(batch.account_id),
+        "admin_id": int(admin.id),
+        "admin_username": admin.username,
+        "created_at": datetime.now().isoformat(),
+    }
+    r = await _csv_redis()
+    await r.set(f"{_CSV_CODE_KEY_PREFIX}{code}", _json.dumps(payload), ex=_CSV_CODE_TTL)
+
+    expires_at = datetime.now() + _td_csv(seconds=_CSV_CODE_TTL)
+
+    try:
+        from app.services.operation_log import log_operation
+        await log_operation(
+            db, admin_id=admin.id, admin_name=admin.username,
+            module="sms", action="short_link_csv_code_create",
+            target_type="sms_batch", target_id=str(batch.id),
+            title=f"为批次 #{batch.id} 生成 CSV 下载码",
+            detail={
+                "batch_id": int(batch.id),
+                "batch_name": getattr(batch, "batch_name", None),
+                "account_id": int(batch.account_id),
+                "account_username": acc.account_name if acc else None,
+                "expires_at": expires_at.isoformat(),
+            },
+        )
+    except Exception as e:
+        logger.warning(f"生成 CSV 下载码审计日志写入失败 batch_id={batch.id}: {e}")
+
+    return {
+        "success": True,
+        "data": {
+            "code": code,
+            "batch_id": int(batch.id),
+            "batch_name": getattr(batch, "batch_name", None),
+            "account_id": int(batch.account_id),
+            "account_username": acc.account_name if acc else None,
+            "expires_at": expires_at.isoformat(),
+            # 前端可拼出"复制即用"的免登 URL
+            "download_path": f"/api/v1/sms/csv-download/by-code/{code}.csv",
+        },
+    }
+
+
+@csv_download_router.get("/by-code/{code}.csv")
+async def download_clicked_phones_csv_by_code(
+    code: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """免登 CSV 下载：用一次性授权码换取该批次的点击号码 CSV。
+
+    code 一旦消费（成功 GETDEL）立即失效，重复点击下载链接会拿到 404。
+    """
+    # 简单合法性：长度 + 字符集（urlsafe 包含 [A-Za-z0-9_-]）
+    if not code or len(code) > 64 or not all(c.isalnum() or c in "_-" for c in code):
+        raise HTTPException(400, "invalid code")
+
+    r = await _csv_redis()
+    key = f"{_CSV_CODE_KEY_PREFIX}{code}"
+    # GETDEL：原子取出并删除，防止并发同 code 两次成功
+    raw = await r.getdel(key)
+    if not raw:
+        raise HTTPException(404, "code invalid or already used")
+
+    import json as _json
+    try:
+        payload = _json.loads(raw)
+        batch_id = int(payload["batch_id"])
+    except Exception:
+        raise HTTPException(500, "corrupted code payload")
+
+    pt = _per_token_clicks_subq(batch_id)
+    eff_human_expr = (
+        func.coalesce(pt.c.detail_human, 0)
+        + func.greatest(ShortLinkLog.click_count - func.coalesce(pt.c.detail_total, 0), 0)
+    )
+    last_at_expr = func.coalesce(pt.c.last_human_at, ShortLinkLog.last_click_at)
+
+    # 同 download_clicked_phones_csv 历史教训：先全表 .all() 拿到内存再 yield
+    ua_sq = _per_token_last_human_ua_subq(batch_id)
+    rows = (
+        await db.execute(
+            select(
+                SMSLog.phone_number,
+                eff_human_expr.label("human_clicks"),
+                last_at_expr.label("last_click_at"),
+                ShortLinkLog.original_url,
+                ShortLinkLog.token,
+                ua_sq.c.last_human_ua,
+            )
+            .select_from(ShortLinkLog)
+            .join(SMSLog, SMSLog.id == ShortLinkLog.sms_log_id)
+            .outerjoin(pt, pt.c.token == ShortLinkLog.token)
+            .outerjoin(ua_sq, ua_sq.c.token == ShortLinkLog.token)
+            .where(
+                SMSLog.batch_id == batch_id,
+                eff_human_expr > 0,
+            )
+            .order_by(last_at_expr.desc())
+        )
+    ).all()
+
+    from app.utils.ua_display import format_device_browser
+
+    def gen():
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow([
+            "phone_number", "human_clicks", "last_click_at",
+            "device_browser", "user_agent", "token", "original_url",
+        ])
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate(0)
+        for r in rows:
+            ts = r.last_click_at.isoformat() if r.last_click_at else ""
+            w.writerow([
+                r.phone_number,
+                int(r.human_clicks or 0),
+                ts,
+                format_device_browser(r.last_human_ua),
+                r.last_human_ua or "",
+                r.token or "",
+                r.original_url or "",
+            ])
+            data = buf.getvalue()
+            if data:
+                yield data
+                buf.seek(0); buf.truncate(0)
+
+    fname = f"clicked_phones_batch_{batch_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv"
+    return StreamingResponse(
+        gen(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )

@@ -469,7 +469,7 @@ phone,name,code<br>
     <el-dialog
       v-model="clickStatsVisible"
       :title="`短链点击 — 批次 #${clickStatsBatch?.id ?? ''}`"
-      width="820px"
+      :width="isMobile ? '95%' : '1080px'"
       destroy-on-close
     >
       <div v-loading="clickStatsLoading">
@@ -510,7 +510,7 @@ phone,name,code<br>
             type="primary"
             size="small"
             :disabled="!clickStats.clicked_links"
-            @click="downloadClickedCsv"
+            @click="openCsvCodeDownloadDialog"
           >
             下载 CSV（{{ clickStats.clicked_links }} 个号码）
           </el-button>
@@ -581,6 +581,26 @@ phone,name,code<br>
             </template>
           </el-table-column>
           <el-table-column prop="phone_number" label="手机号码" width="170" />
+          <el-table-column label="设备 / 浏览器" width="160">
+            <template #default="{ row }">
+              <el-tooltip
+                :content="row.last_user_agent || '点开行查看详细'"
+                :show-after="300"
+                placement="top"
+                :disabled="!row.last_user_agent"
+              >
+                <el-tag
+                  v-if="row.last_user_agent"
+                  :type="parseUserAgent(row.last_user_agent).tagType"
+                  size="small"
+                  effect="plain"
+                >
+                  {{ parseUserAgent(row.last_user_agent).label }}
+                </el-tag>
+                <span v-else class="text-muted">—</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
           <el-table-column prop="click_count" label="点击次数" width="100" align="right" />
           <el-table-column prop="last_click_at" label="最近点击时间" width="190">
             <template #default="{ row }">
@@ -608,6 +628,29 @@ phone,name,code<br>
           description="暂无被点击的号码"
         />
       </div>
+    </el-dialog>
+
+    <!-- ========== 用授权码下载 CSV ========== -->
+    <el-dialog v-model="csvCodeDlgVisible" title="输入下载授权码" width="460px">
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
+        请输入管理员提供的<strong>一次性授权码</strong>（24 小时内有效，使用后立即失效）。
+        如尚未获取，请联系管理员申请。
+      </el-alert>
+      <el-input
+        v-model="csvCodeInput"
+        placeholder="粘贴授权码"
+        clearable
+        @keyup.enter="submitCsvCodeDownload"
+      />
+      <template #footer>
+        <el-button @click="csvCodeDlgVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="csvCodeDlLoading"
+          :disabled="!csvCodeInput.trim()"
+          @click="submitCsvCodeDownload"
+        >下载</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
@@ -638,7 +681,7 @@ import {
   getBatchClickStats,
   listBatchClickedPhones,
   listTokenClickDetails,
-  downloadBatchClickedPhonesCsvUrl,
+  downloadClickedPhonesCsvByCode,
   type ClickStats,
   type ClickedPhoneRow,
   type ClickDetailRow,
@@ -804,11 +847,59 @@ async function loadClickedPhones(page = 1) {
   }
 }
 
-function downloadClickedCsv() {
-  if (!clickStatsBatch.value) return
-  // 直接打开 URL 由浏览器流式下载；带 Cookie / 代理认证由 nginx 透传
-  const url = downloadBatchClickedPhonesCsvUrl(clickStatsBatch.value.id)
-  window.open(url, '_blank')
+function triggerBlobDownload(blob: Blob, fname: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fname
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+// ---------------- 用授权码下载（客户唯一的 CSV 下载入口） ----------------
+const csvCodeDlgVisible = ref(false)
+const csvCodeInput = ref('')
+const csvCodeDlLoading = ref(false)
+
+function openCsvCodeDownloadDialog() {
+  csvCodeInput.value = ''
+  csvCodeDlgVisible.value = true
+}
+
+async function submitCsvCodeDownload() {
+  const code = csvCodeInput.value.trim()
+  if (!code) return
+  csvCodeDlLoading.value = true
+  try {
+    // axios 拦截器已 unwrap，resp 直接就是 Blob（responseType: 'blob'）。
+    // 不要再 resp.data，那会拿到 undefined → 写出空文件。
+    const resp: any = await downloadClickedPhonesCsvByCode(code)
+    const blob: Blob = resp instanceof Blob
+      ? resp
+      : new Blob([resp?.data ?? resp], { type: 'text/csv;charset=utf-8' })
+    const ts = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')
+    triggerBlobDownload(blob, `clicked_phones_by_code_${ts}.csv`)
+    csvCodeDlgVisible.value = false
+    ElMessage.success('下载成功（该授权码已失效）')
+  } catch (e: any) {
+    // 后端 404 = code 无效或已用；blob 响应里的 detail 需要先 text() 出来
+    let msg = '下载失败'
+    const errBlob = e?.response?.data
+    if (errBlob instanceof Blob) {
+      try {
+        const txt = await errBlob.text()
+        const j = JSON.parse(txt)
+        msg = j?.detail || msg
+      } catch { /* 忽略 */ }
+    } else {
+      msg = e?.response?.data?.detail || e?.message || msg
+    }
+    ElMessage.error(`下载失败：${msg}`)
+  } finally {
+    csvCodeDlLoading.value = false
+  }
 }
 
 /** 回执已送达条数（缺省兼容旧后端） */

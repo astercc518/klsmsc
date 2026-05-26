@@ -84,6 +84,7 @@
         </el-select>
         <el-button size="small" @click="loadDomains">刷新</el-button>
         <el-button type="primary" size="small" @click="openCreate">新增域名</el-button>
+        <el-button size="small" @click="openCsvCodeDialog">生成 CSV 下载码</el-button>
       </div>
     </div>
 
@@ -308,6 +309,69 @@
         >下载</el-button>
       </template>
     </el-dialog>
+
+    <!-- ========== 生成 CSV 下载授权码 ========== -->
+    <el-dialog v-model="csvCodeVisible" title="生成短链点击 CSV 下载码" width="520px">
+      <div v-if="!csvCodeResult">
+        <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
+          为指定批次生成<strong>一次性</strong>下载授权码，<strong>24 小时</strong>后自动过期。
+          客户拿到码或链接后无需登录即可拉取该批次 CSV。
+        </el-alert>
+        <el-form label-width="90px">
+          <el-form-item label="批次 ID" required>
+            <el-input-number
+              v-model="csvCodeBatchId"
+              :min="1"
+              :precision="0"
+              :controls="false"
+              placeholder="例如 622"
+              style="width: 200px"
+            />
+            <span class="csv-code-tip">在「发送-批次发送」页找到批次卡片左上角的 #ID</span>
+          </el-form-item>
+        </el-form>
+      </div>
+      <div v-else class="csv-code-result">
+        <el-alert type="success" :closable="false" show-icon style="margin-bottom: 12px">
+          生成成功 — 批次 #{{ csvCodeResult.batch_id }}（客户 {{ csvCodeResult.account_username || '—' }}），过期时间
+          <strong>{{ formatExpire(csvCodeResult.expires_at) }}</strong>
+        </el-alert>
+        <el-form label-width="90px">
+          <el-form-item label="授权码">
+            <el-input :model-value="csvCodeResult.code" readonly>
+              <template #append>
+                <el-button @click="copyText(csvCodeResult.code)">
+                  <el-icon><DocumentCopy /></el-icon>
+                </el-button>
+              </template>
+            </el-input>
+          </el-form-item>
+          <el-form-item label="免登 URL">
+            <el-input :model-value="csvCodeFullUrl" readonly>
+              <template #append>
+                <el-button @click="copyText(csvCodeFullUrl)">
+                  <el-icon><DocumentCopy /></el-icon>
+                </el-button>
+              </template>
+            </el-input>
+          </el-form-item>
+        </el-form>
+        <el-alert type="warning" :closable="false" show-icon>
+          这是<strong>一次性</strong>下载链接 — 任何人打开即消费、消费后立刻失效，请只发给当前客户。
+        </el-alert>
+      </div>
+      <template #footer>
+        <el-button @click="csvCodeVisible = false">关闭</el-button>
+        <el-button v-if="csvCodeResult" @click="csvCodeResult = null">再生成一个</el-button>
+        <el-button
+          v-else
+          type="primary"
+          :loading="csvCodeGenerating"
+          :disabled="!csvCodeBatchId"
+          @click="submitCsvCode"
+        >生成</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -325,9 +389,11 @@ import {
   adminUploadDomainCert,
   listClickedCountries,
   exportShortLinkClickedPhones,
+  createCsvDownloadCode,
   type ShortLinkDomain,
   type DomainCertInfo,
   type ClickedCountryItem,
+  type CsvCodeCreateResp,
 } from '../../api/short-link'
 import { findCountryByIso } from '@/constants/countries'
 
@@ -662,6 +728,48 @@ async function submitDownload() {
   } finally {
     downloading.value = false
   }
+}
+
+// ---------------- CSV 下载授权码 ----------------
+const csvCodeVisible = ref(false)
+const csvCodeBatchId = ref<number | null>(null)
+const csvCodeGenerating = ref(false)
+const csvCodeResult = ref<CsvCodeCreateResp | null>(null)
+
+const csvCodeFullUrl = computed(() => {
+  if (!csvCodeResult.value) return ''
+  const origin = window.location.origin
+  return `${origin}${csvCodeResult.value.download_path}`
+})
+
+function openCsvCodeDialog() {
+  csvCodeBatchId.value = null
+  csvCodeResult.value = null
+  csvCodeVisible.value = true
+}
+
+async function submitCsvCode() {
+  if (!csvCodeBatchId.value || csvCodeBatchId.value <= 0) {
+    ElMessage.warning('请填写批次 ID')
+    return
+  }
+  csvCodeGenerating.value = true
+  try {
+    const resp: any = await createCsvDownloadCode(csvCodeBatchId.value)
+    // axios response 拦截器已 unwrap，resp 即后端 body {success, data}
+    csvCodeResult.value = resp?.data || resp?.data?.data || null
+    if (!csvCodeResult.value) ElMessage.error('生成失败：响应为空')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || `生成失败：${e?.message || e}`)
+  } finally {
+    csvCodeGenerating.value = false
+  }
+}
+
+function formatExpire(iso?: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return d.toLocaleString('zh-CN', { hour12: false })
 }
 </script>
 

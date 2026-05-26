@@ -128,6 +128,8 @@ export interface ClickedPhoneRow {
   last_click_at: string | null
   original_url: string
   token: string
+  /** 该号码最近一次真人点击的 UA（用于在主表上直接展示设备/浏览器） */
+  last_user_agent?: string | null
 }
 
 export interface ClickDetailRow {
@@ -174,6 +176,36 @@ export const downloadBatchClickedPhonesCsvUrl = (batchId: number): string => {
     : '/api/v1'
   return `${baseUrl}/sms/batches/${batchId}/clicked-phones.csv`
 }
+
+/** 下载 CSV：用 axios 走 blob，自动带 Authorization / X-API-Key header，
+ *  避免直接 window.open 丢鉴权（401）。
+ */
+export const downloadBatchClickedPhonesCsv = (batchId: number) =>
+  request.get(`/sms/batches/${batchId}/clicked-phones.csv`, {
+    responseType: 'blob',
+  })
+
+/** 管理员：为指定批次生成一次性 CSV 下载授权码（24h 过期） */
+export interface CsvCodeCreateResp {
+  code: string
+  batch_id: number
+  batch_name: string | null
+  account_id: number
+  account_username: string | null
+  expires_at: string
+  download_path: string
+}
+export const createCsvDownloadCode = (batchId: number) =>
+  request.post<{ data: CsvCodeCreateResp }>(
+    '/admin/short-link-csv-codes',
+    { batch_id: batchId },
+  )
+
+/** 客户/外部：用授权码下载 CSV（免登，axios blob） */
+export const downloadClickedPhonesCsvByCode = (code: string) =>
+  request.get(`/sms/csv-download/by-code/${encodeURIComponent(code)}.csv`, {
+    responseType: 'blob',
+  })
 
 // ---------- 短链域名：导出已点击号码（按国家筛选） ----------
 
