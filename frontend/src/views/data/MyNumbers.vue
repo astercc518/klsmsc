@@ -304,12 +304,12 @@
                 </el-button>
                 <el-dropdown @command="(cmd: string) => handleExport(g, cmd)">
                   <el-button type="primary" size="small">
-                    下载数据 <el-icon style="margin-left:4px"><ArrowDown /></el-icon>
+                    下载数据{{ carrierFilter ? `（${carrierFilter}）` : '' }} <el-icon style="margin-left:4px"><ArrowDown /></el-icon>
                   </el-button>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item command="csv">导出 CSV</el-dropdown-item>
-                      <el-dropdown-item command="txt">导出 TXT（纯号码）</el-dropdown-item>
+                      <el-dropdown-item command="csv">导出 CSV{{ carrierFilter ? `（仅 ${carrierFilter}）` : '' }}</el-dropdown-item>
+                      <el-dropdown-item command="txt">导出 TXT（纯号码{{ carrierFilter ? `，仅 ${carrierFilter}` : '' }}）</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
@@ -818,10 +818,16 @@ async function handleExport(g: NumberGroup, fmt: string) {
     batch_id: g.batch_id || '',
     api_key: apiKey,
   })
+  // 跟随当前的运营商筛选：选了 Viettel 就只导 Viettel 的号码
+  if (carrierFilter.value) params.set('carrier', carrierFilter.value)
   if (exportPassword) params.set('export_password', exportPassword)
 
   window.open(`${baseUrl}${apiPath}?${params.toString()}`, '_blank')
-  ElMessage.success('正在开始下载，请查看浏览器下载管理器')
+  ElMessage.success(
+    carrierFilter.value
+      ? `正在下载 ${carrierFilter.value} 的号码，请查看浏览器下载管理器`
+      : '正在开始下载，请查看浏览器下载管理器'
+  )
 }
 
 function handleSendSms(g: NumberGroup) {

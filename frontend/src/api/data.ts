@@ -150,7 +150,7 @@ export function getMyNumbers(params?: { page?: number; page_size?: number; count
   return request({ url: '/data/my-numbers', method: 'get', params })
 }
 
-export function exportMyNumbers(params?: { fmt?: string; country?: string; source?: string; purpose?: string; batch_id?: string }) {
+export function exportMyNumbers(params?: { fmt?: string; country?: string; source?: string; purpose?: string; batch_id?: string; carrier?: string }) {
   return request({
     url: '/data/my-numbers/export',
     method: 'get',

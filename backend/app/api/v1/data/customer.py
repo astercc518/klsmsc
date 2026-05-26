@@ -281,6 +281,7 @@ def _my_numbers_union_subquery(
     source: Optional[str] = None,
     purpose: Optional[str] = None,
     batch_id: Optional[str] = None,
+    carrier: Optional[str] = None,
 ):
     """私库分表与公海购入绑定行列对齐后的 UNION 子查询"""
     # library_origin：manual=私库分表手工上传；purchased=公海购入后绑定在 data_numbers
@@ -335,6 +336,10 @@ def _my_numbers_union_subquery(
     if batch_id is not None:
         q_pln = q_pln.where(_sql_dim_ci_trim_eq(PrivateLibraryNumber.batch_id, batch_id))
         q_dn = q_dn.where(_sql_dim_ci_trim_eq(DataNumber.batch_id, batch_id))
+    if carrier is not None and carrier != "":
+        # 运营商过滤：精确匹配（运营商名一般是 ASCII 短串如 Viettel/Mobifone）
+        q_pln = q_pln.where(_sql_dim_ci_trim_eq(PrivateLibraryNumber.carrier, carrier))
+        q_dn = q_dn.where(_sql_dim_ci_trim_eq(DataNumber.carrier, carrier))
     return union_all(q_pln, q_dn).subquery()
 
 
@@ -2024,6 +2029,7 @@ async def export_my_numbers(
     source: Optional[str] = None,
     purpose: Optional[str] = None,
     batch_id: Optional[str] = Query(None),
+    carrier: Optional[str] = Query(None, description="按运营商过滤（精确匹配，留空导出全部）"),
     export_password: Optional[str] = Query(None, description="下载密码（若该批次设置了加密则必填）"),
     db: AsyncSession = Depends(get_db),
     account: Account = Depends(get_current_account),
@@ -2051,6 +2057,7 @@ async def export_my_numbers(
         source=source,
         purpose=purpose,
         batch_id=batch_id,
+        carrier=carrier,
     )
     stmt = select(u).order_by(u.c.created_at.asc(), u.c.id.asc())
     result = await db.stream(stmt)
