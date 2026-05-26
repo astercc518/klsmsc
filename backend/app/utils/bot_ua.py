@@ -3,14 +3,26 @@
 返回 (is_bot, reason)。
 reason 取值用 snake_case，便于前端按规则名分类展示。
 
-规则按"先判定机器、再判定真人"的顺序执行：
+判定策略（2026-05 重构）：**默认放行**，只有显式命中黑名单才判 bot。
+
+历史教训：旧版用"已知真人白名单"做兜底（未命中即视为 bot, reason='unknown_ua'），
+随 UA 演进会系统性误杀。例如 iOS 13+ Safari UA 变成
+"Mobile/15E148 Safari/604.1"（中间隔 build 号），白名单里的 "mobile safari"
+连续子串永远命中不到，导致全部 iPhone 被误杀。HarmonyOS NEXT、KaiOS、
+未来 UA Reduction 演进都会以同样方式再次踩雷。
+
+新策略：
+- 显式 bot/CLI/预览器/扫描器关键词 → 判 bot（精确黑名单）
+- 其余一律放行 → 由 IP 段名单（bot_ip.py）+ IP 扇出（webhook_worker.py）
+  这两条机器特征更稳定的线兜底未知扫描器。
+
+判定顺序（先判机器，命中即返回）：
 1. UA 为空/过短         → empty_ua
 2. 含编程库/CLI 关键字   → http_client
 3. 含 IM/链接预览签名    → preview_bot
 4. 含安全扫描器签名      → security_scanner
 5. 含通用 bot/spider     → generic_bot
-6. 命中常见手机浏览器签名 → 真人 (False, "")
-7. 其他                  → unknown_ua（保守：默认机器）
+6. 其他                  → 放行（False, ""）
 """
 from __future__ import annotations
 from typing import Tuple
@@ -25,12 +37,22 @@ _HTTP_CLIENT_TOKENS = (
 )
 
 # IM / 链接预览（短信里的 URL 一旦被聊天 App 转发就会触发）
+# 注意：以下几个 IM 的真人 App 内置浏览器 UA 与预览 bot UA 共享品牌词，
+# 必须只列预览 bot 的特异签名，不能用品牌词裸子串：
+#  - LINE：真人 IAB 形如 "Line/14.2.0/IAB"；预览 bot 形如 "LineBotWebhook"
+#  - Viber：真人形如 "Viber/22.x"；预览 bot 形如 "ViberUrlDownloader" / "Viber URL Crawler"
+#  - 微信：真人是 "MicroMessenger/..."；预览 bot 是 "WeChat-Bot" / "WeChatLink-"
+# 历史教训：旧版列了裸 "line/" / "viber" / "wechat" 会把日/台/泰/菲的 IM
+# 内置浏览器真人点击全部误杀。
 _PREVIEW_BOT_TOKENS = (
     "facebookexternalhit", "facebot", "whatsapp", "telegrambot", "slackbot",
-    "linkedinbot", "twitterbot", "discordbot", "skypeuripreview", "viber",
-    "line/", "wechat", "kakaotalk-scrap", "googlebot", "bingbot",
-    "yahoo! slurp", "duckduckbot", "yandex", "applebot", "embedly",
-    "outbrain", "vkshare", "redditbot", "pinterest",
+    "linkedinbot", "twitterbot", "discordbot", "skypeuripreview",
+    "linebotwebhook", "line-bot", "linepreview",
+    "viberurldownloader", "viber-url-", "viber url crawler", "viberbot",
+    "wechat-bot", "wechatlink-",
+    "kakaotalk-scrap",
+    "googlebot", "bingbot", "yahoo! slurp", "duckduckbot", "yandex", "applebot",
+    "embedly", "outbrain", "vkshare", "redditbot", "pinterest",
     "mattermost", "iframely",
 )
 
@@ -40,28 +62,19 @@ _SECURITY_SCANNER_TOKENS = (
     "proofpoint", "forcepoint", "bluecoat", "mimecast", "barracuda",
     "messagelabs", "fortinet", "kaspersky", "avast", "mcafee",
     "linkpreview", "urlchecker", "phish", "scanner", "scanurl", "fetcher",
+    "antispam",  # 越南运营商反诈扫描器
 )
 
-_GENERIC_BOT_TOKENS = ("bot", "spider", "crawler", "spy", "monitor")
-
-# 真人签名（覆盖移动端 + 主流桌面浏览器；命中即视为人）
-# 注意：不包含 "x11; linux" —— 短信受众里桌面 Linux 真人占比极低，
-# 而 Google Messages / Gmail 链接预扫描器恰好用这个 UA（带 Google IP 段，
-# 见 bot_ip.classify_client_ip），把它列为真人会让扫描器的双重抓取被误计为人点。
-_HUMAN_TOKENS = (
-    "mobile safari", "chrome mobile", "crios/", "fxios/", "edga/",
-    "samsungbrowser", "miuibrowser", "huaweibrowser", "ucbrowser",
-    "opera mobi", "opr/",
-    # 桌面浏览器（运营商扫描器一般不带这些组合签名）
-    "windows nt", "macintosh",
-)
+# 通用 bot/spider/monitor 关键词
+# 注：放在最后，前置类别命中后已 return，不会因 "googlebot" 含 "bot" 导致归类错。
+_GENERIC_BOT_TOKENS = ("bot", "spider", "crawler", "spy", "monitor", "headless")
 
 
 def classify_user_agent(ua: str | None) -> Tuple[bool, str]:
     """判定 UA 是否为机器/扫描器。
 
     Returns:
-        (is_bot, reason)。is_bot=False 时 reason="" 。
+        (is_bot, reason)。命中黑名单时 reason 取规则名；未命中返回 (False, "")。
     """
     if not ua or len(ua.strip()) < 5:
         return True, "empty_ua"
@@ -80,9 +93,4 @@ def classify_user_agent(ua: str | None) -> Tuple[bool, str]:
         if tok in s:
             return True, "generic_bot"
 
-    for tok in _HUMAN_TOKENS:
-        if tok in s:
-            return False, ""
-
-    # 既不像主流浏览器也不像已知 bot，保守视为机器（避免漏判扫描器）
-    return True, "unknown_ua"
+    return False, ""

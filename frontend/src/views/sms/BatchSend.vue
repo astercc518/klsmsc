@@ -515,6 +515,14 @@ phone,name,code<br>
             下载 CSV（{{ clickStats.clicked_links }} 个号码）
           </el-button>
           <el-button size="small" @click="loadClickedPhones(1)">刷新列表</el-button>
+          <el-switch
+            v-model="showBotClicks"
+            inline-prompt
+            active-text="含机器"
+            inactive-text="仅真人"
+            size="small"
+            @change="onToggleShowBots"
+          />
           <span class="cs-tip">点开任意一行可查看每次点击的 IP/UA</span>
         </div>
 
@@ -547,8 +555,23 @@ phone,name,code<br>
                       {{ d.clicked_at ? formatBatchDate(d.clicked_at) : '—' }}
                     </template>
                   </el-table-column>
-                  <el-table-column prop="client_ip" label="IP" width="140" />
-                  <el-table-column label="User-Agent" show-overflow-tooltip>
+                  <el-table-column prop="client_ip" label="IP" width="160" />
+                  <el-table-column label="设备 / 浏览器" width="170">
+                    <template #default="{ row: d }">
+                      <el-tooltip :content="d.user_agent || ''" :show-after="300" placement="top" :disabled="!d.user_agent">
+                        <el-tag :type="parseUserAgent(d.user_agent).tagType" size="small" effect="plain">
+                          {{ parseUserAgent(d.user_agent).label }}
+                        </el-tag>
+                      </el-tooltip>
+                    </template>
+                  </el-table-column>
+                  <el-table-column v-if="showBotClicks" label="识别" width="130">
+                    <template #default="{ row: d }">
+                      <el-tag v-if="d.is_bot" type="danger" size="small">{{ formatBotReason(d.bot_reason) }}</el-tag>
+                      <el-tag v-else type="success" size="small" effect="plain">真人</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="原始 UA" show-overflow-tooltip min-width="200">
                     <template #default="{ row: d }">
                       <span class="ua-text">{{ d.user_agent || '—' }}</span>
                     </template>
@@ -620,6 +643,7 @@ import {
   type ClickedPhoneRow,
   type ClickDetailRow,
 } from '@/api/short-link'
+import { parseUserAgent, formatBotReason } from '@/utils/userAgent'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -684,11 +708,20 @@ const clickedPage = ref(1)
 const clickedPageSize = ref(20)
 const clickedTotal = ref(0)
 
-/** 每个 token 的真人点击明细缓存（展开时按需拉取） */
+/** 每个 token 的点击明细缓存（展开时按需拉取） */
 const clickDetailMap = reactive<Record<string, ClickDetailRow[]>>({})
 const clickDetailLoadingMap = reactive<Record<string, boolean>>({})
 /** 每个 token 的"已过滤机器次数"（与明细一同返回） */
 const clickFilteredBotMap = reactive<Record<string, number>>({})
+
+/** 是否在明细里同时展示机器扫描行（默认仅真人） */
+const showBotClicks = ref(false)
+
+function onToggleShowBots() {
+  // 清空所有缓存，下次展开重新拉
+  for (const k of Object.keys(clickDetailMap)) delete clickDetailMap[k]
+  for (const k of Object.keys(clickFilteredBotMap)) delete clickFilteredBotMap[k]
+}
 
 /** 旧批次：有 legacy_clicks 但完全没有明细行（前端只能猜口径） */
 const hasLegacyClicks = computed(() =>
@@ -710,7 +743,7 @@ async function onClickRowExpand(row: ClickedPhoneRow, expanded: any[]) {
   if (clickDetailMap[row.token]) return  // 已有缓存
   clickDetailLoadingMap[row.token] = true
   try {
-    const resp: any = await listTokenClickDetails(row.token, 100)
+    const resp: any = await listTokenClickDetails(row.token, 100, showBotClicks.value)
     const data = resp?.data?.data || {}
     clickDetailMap[row.token] = data.items || []
     clickFilteredBotMap[row.token] = data.filtered_bot_count || 0

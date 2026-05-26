@@ -346,11 +346,17 @@ def record_link_click_task(token: str, client_ip: str, user_agent: str):
     from app.utils.bot_ip import classify_client_ip
     from app.config import settings as _s
 
-    # 调参：窗口 60 秒，≥3 个不同 token 才视为扇出
-    # 阈值=3 的取舍：宁可放过同 NAT 下两个真人 60s 内各点一条，
-    # 也不误杀；批次 469 那种 1 秒内同 IP 命中 3+ 个 token 仍跑不掉。
+    # 调参（2026-05 强化版）：
+    # - IP_FANOUT_WINDOW: 60s 内同一 IP 收集不同 token 数
+    # - IP_FANOUT_THRESHOLD: 阈值 5（旧版 3）。CGNAT 出口（中国移动 / Viettel /
+    #   学校企业 NAT）真人扇出常见 3-4 个 token，阈值 3 会误伤；扫描器一旦扇出
+    #   多到 5+ 就是确凿信号。
+    # - RETRO_FLIP_WINDOW: 命中扇出后只回写最近 10s 内的同 IP 点击为 bot，而非
+    #   旧版的整个 60s 窗口。原因：扫描器的"扇出 burst"本身就在几秒内完成，
+    #   把窗口缩到 10s 既能抓 burst，又不会把 30s 前点击的早期真人翻成 bot。
     IP_FANOUT_WINDOW = 60
-    IP_FANOUT_THRESHOLD = 3
+    IP_FANOUT_THRESHOLD = 5
+    RETRO_FLIP_WINDOW = 10
 
     ua_is_bot, ua_reason = classify_user_agent(user_agent)
     ip_norm = (client_ip or "").strip()
@@ -425,10 +431,12 @@ def record_link_click_task(token: str, client_ip: str, user_agent: str):
                     bot_reason=(reason or None),
                 ))
 
-                # 回写：把同 IP 在窗口内已落表却被判为人的早期点击，全部翻成 ip_fanout。
+                # 回写：把同 IP 在 RETRO_FLIP_WINDOW（10s）内已落表却被判为人的早期点击，
+                # 翻成 ip_fanout。窗口刻意比 IP_FANOUT_WINDOW(60s) 短得多，只抓扫描器
+                # 在几秒内的扇出 burst，避免把同 NAT 下早 30~60s 点击的真人误翻。
                 # 限定 is_bot=False 才更新（避免覆盖更具体的 UA 原因）。
                 if retro_flip_ip and ip_norm:
-                    cutoff = _dt.now() - _td(seconds=IP_FANOUT_WINDOW)
+                    cutoff = _dt.now() - _td(seconds=RETRO_FLIP_WINDOW)
                     await db.execute(
                         _upd(ShortLinkClick)
                         .where(and_(

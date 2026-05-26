@@ -34,6 +34,18 @@ _GOOGLE_CIDRS_STR = (
 
 _GOOGLE_NETS = tuple(ipaddress.ip_network(c) for c in _GOOGLE_CIDRS_STR)
 
+# Microsoft Outlook Safe Links / Bing / Defender 等链接预扫描出口段
+# 来源：Microsoft 官方 published service tags 中 "Outlook" 与 "Defender" 子集
+# （只取明确的扫描器段，不含 Azure 客户租用段）
+_MICROSOFT_SCANNER_CIDRS_STR = (
+    "40.92.0.0/15",          # Outlook ATP / Safe Links 出口
+    "40.107.0.0/16",         # Office 365 邮件扫描
+    "52.100.0.0/14",         # Office 365 / Defender ATP
+    "104.47.0.0/17",         # Exchange Online Protection
+)
+
+_MICROSOFT_NETS = tuple(ipaddress.ip_network(c) for c in _MICROSOFT_SCANNER_CIDRS_STR)
+
 
 def classify_client_ip(ip: str | None) -> Tuple[bool, str]:
     """判定来源 IP 是否为已知机器/扫描器。
@@ -50,4 +62,7 @@ def classify_client_ip(ip: str | None) -> Tuple[bool, str]:
     for net in _GOOGLE_NETS:
         if addr in net:
             return True, "google_scanner"
+    for net in _MICROSOFT_NETS:
+        if addr in net:
+            return True, "microsoft_scanner"
     return False, ""
