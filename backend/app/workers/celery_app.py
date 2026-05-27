@@ -113,6 +113,7 @@ celery_app.conf.task_routes.update({
 celery_app.conf.task_routes.update({
     'process_batch': {'queue': 'celery'},
     'process_batch_chunk': {'queue': 'celery'},
+    'retry_batch_as_new': {'queue': 'celery'},
     'inspect_batches_task': {'queue': 'celery'},
     'sync_processing_batch_progress_task': {'queue': 'celery'},
     'send_webhook': {'queue': 'webhook_tasks'},

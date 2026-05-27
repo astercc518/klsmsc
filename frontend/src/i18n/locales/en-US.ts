@@ -294,7 +294,7 @@ export default {
     retryFailedMsg: 'Retry failed',
     retrySuccess: 'Retried {count} message(s)',
     retryInProgress: 'Retrying…',
-    retryStarting: 'Starting retry ({count} messages, ~{sec}s)… do not close this page',
+    retryStarting: 'Submitting retry task ({count} messages)…',
     confirmRetryFailed: 'All failed/expired messages in this batch will be re-priced and re-queued. Regular bulk sends are charged again at current rates; data-warehouse batches (purchase-and-send) are not re-charged. Continue?',
     retryPartial: 'Retried {count}; {pending} skipped due to insufficient balance',
     resendUnsent: 'Resend unsent',

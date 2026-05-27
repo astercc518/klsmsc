@@ -1275,24 +1275,17 @@ const retryFailedBatch = (row: SmsBatch & Record<string, unknown>) => {
     type: 'warning'
   }).then(async () => {
     retryingBatchIds.value.add(Number(row.id))
-    // 大批次预估时长提示：每千条估约 3-5 秒
-    const estSec = Math.max(5, Math.ceil(failedCount / 250))
+    // 异步流程：接口秒回，仅创建新批次并派发后台任务，无需等待 / 不必停留页面
     const startMsg = ElMessage({
-      message: t('batchSend.retryStarting', { count: failedCount, sec: estSec }) || `重发起动中（${failedCount} 条，约 ${estSec}s）…请勿关闭页面`,
+      message: t('batchSend.retryStarting', { count: failedCount }) || `正在提交重发任务（${failedCount} 条）…`,
       type: 'info',
       duration: 0,
       showClose: true,
     })
     try {
-      // 自定义 timeout：按预估 × 4 给余量，10000 条 ≥ 160s；最少 90s
-      const res = await retryBatchFailedApi(row.id, { timeout: Math.max(90_000, estSec * 4_000) })
-      // 新流程：返回的 message 已经包含人类可读总结；out_of_balance 用 warning
-      const msg = res.message || t('batchSend.retrySuccess', { count: res.retried })
-      if (res.out_of_balance) {
-        ElMessage.warning({ message: msg, duration: 6000 })
-      } else {
-        ElMessage.success(msg)
-      }
+      const res = await retryBatchFailedApi(row.id)
+      // 新流程：返回的 message 已包含「已生成新批次 #N，后台重发中」的人类可读总结
+      ElMessage.success(res.message || t('batchSend.retrySuccess', { count: res.total_count }))
       loadBatches()
       loadStats()
     } catch (error: any) {
