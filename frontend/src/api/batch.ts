@@ -66,12 +66,8 @@ export const retryBatchFailed = (id: number, opts: { timeout?: number } = {}) =>
     success: boolean
     source_batch_id: number
     new_batch_id: number
-    retried: number
-    enqueued: number
-    skipped: number
-    out_of_balance: boolean
-    charged_amount: number
-    errors: string[]
+    total_count: number
+    async: boolean
     message: string
   }>(`/batches/${id}/retry-as-new-batch`, undefined, opts.timeout ? { timeout: opts.timeout } : undefined)
 }

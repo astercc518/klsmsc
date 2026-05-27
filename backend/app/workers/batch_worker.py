@@ -9,7 +9,7 @@ import asyncio
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from app.workers.celery_app import celery_app
@@ -1242,4 +1242,206 @@ async def _do_process_chunk(
                 )
         raise
     finally:
+        await eng.dispose()
+
+
+# ============ 失败重发（生成新批次，后台异步）============
+
+@celery_app.task(name='retry_batch_as_new', bind=True, max_retries=0,
+                 soft_time_limit=55 * 60, time_limit=60 * 60,
+                 acks_late=True, reject_on_worker_lost=True)
+def retry_batch_as_new(self, new_batch_id: int, src_batch_id: int, account_id: int):
+    """把源批次内 failed/expired 的号码作为「新批次」逐条重发（正常路由+计费+入队）。
+
+    端点已先建好 new_batch(status=PROCESSING) 并 commit，这里只负责填充与入队。
+    与同步老逻辑等价，但分块提交、可处理超大批次，且新批次立刻可见。
+    锁 batch_op_lock:{src_batch_id} 由本任务在结束时释放。
+    """
+    logger.info(f"失败重发任务开始: new_batch={new_batch_id}, src={src_batch_id}, account={account_id}")
+    return _run_async(
+        _do_retry_batch_as_new(new_batch_id, src_batch_id, account_id),
+        timeout=None,  # 大批量，禁用 _run_async 默认 60s 上限，靠 celery soft/hard time limit 兜底
+    )
+
+
+async def _do_retry_batch_as_new(new_batch_id: int, src_batch_id: int, account_id: int):
+    from decimal import Decimal
+    import uuid as _uuid
+    from app.modules.sms.batch_utils import update_batch_progress
+
+    COMMIT_EVERY = 500
+    lock_key = f"batch_op_lock:{src_batch_id}"
+
+    eng, factory = _make_fresh_session()
+    db = factory()
+    try:
+        new_batch = (await db.execute(
+            select(SmsBatch).where(SmsBatch.id == new_batch_id)
+        )).scalar_one_or_none()
+        if not new_batch:
+            logger.error(f"重发任务: 新批次 {new_batch_id} 不存在，放弃")
+            return
+
+        pricing_engine = PricingEngine(db)
+        routing_engine = RoutingEngine(db)
+        _route_cache: dict = {}
+
+        retried = 0
+        skipped = 0
+        out_of_balance = False
+        commit_batch: list = []          # [(message_id, cost)]
+        chunk_deducted = 0.0
+        annotate_ids: list = []
+        chunk_channel = None             # 当前 chunk 的通道（入队按通道协议分流）
+
+        async def _flush(channel):
+            nonlocal commit_batch, chunk_deducted, annotate_ids
+            if not commit_batch or channel is None:
+                return
+            await _flush_commit_chunk(db, new_batch, channel, commit_batch, chunk_deducted)
+            await _queue_commit_batch(db, account_id, channel, commit_batch, new_batch)
+            if annotate_ids:
+                await db.execute(
+                    update(SMSLog).where(SMSLog.id.in_(annotate_ids)).values(
+                        error_message=func.concat(
+                            func.ifnull(SMSLog.error_message, ""),
+                            f" [已转批次 #{new_batch_id} 重发]",
+                        )
+                    )
+                )
+                await db.commit()
+            commit_batch = []
+            chunk_deducted = 0.0
+            annotate_ids = []
+
+        # 分页扫描源批次失败行，避免一次性加载 26k 行进内存
+        last_id = 0
+        PAGE = 2000
+        while not out_of_balance:
+            rows = (await db.execute(
+                select(SMSLog).where(
+                    SMSLog.batch_id == src_batch_id,
+                    SMSLog.account_id == account_id,
+                    or_(SMSLog.status == "failed", SMSLog.status == "expired"),
+                    SMSLog.id > last_id,
+                ).order_by(SMSLog.id.asc()).limit(PAGE)
+            )).scalars().all()
+            if not rows:
+                break
+            last_id = rows[-1].id
+
+            for sms_log in rows:
+                if out_of_balance:
+                    skipped += 1
+                    continue
+                if not sms_log.country_code or not (sms_log.message or "").strip():
+                    skipped += 1
+                    continue
+
+                cc = str(sms_log.country_code)
+                # 失败重发须沿用原消息所走的通道：把原 channel_id 作为 preferred_channel。
+                # 原通道仍可用→返回原通道；已停用/移除账户绑定→select_channel 内部回退到优先级路由。
+                src_ch = sms_log.channel_id
+                ck = (cc, src_ch)
+                try:
+                    if ck not in _route_cache:
+                        _route_cache[ck] = await routing_engine.select_channel(
+                            country_code=cc,
+                            preferred_channel=src_ch,
+                            account_id=account_id,
+                        )
+                    channel = _route_cache[ck]
+                except Exception as e:
+                    skipped += 1
+                    logger.warning(f"重发路由失败 {sms_log.message_id}: {e}")
+                    continue
+                if not channel:
+                    skipped += 1
+                    continue
+
+                # 通道切换时先 flush 上一通道的 chunk（入队按通道分流）
+                if chunk_channel is not None and channel.id != chunk_channel.id:
+                    await _flush(chunk_channel)
+                chunk_channel = channel
+
+                try:
+                    charge_result = await pricing_engine.calculate_and_charge(
+                        account_id=account_id,
+                        channel_id=channel.id,
+                        country_code=cc,
+                        message=str(sms_log.message),
+                        channel=channel,
+                        skip_balance_log=True,
+                    )
+                except InsufficientBalanceError:
+                    out_of_balance = True
+                    skipped += 1
+                    continue
+                except PricingNotFoundError as e:
+                    skipped += 1
+                    logger.warning(f"重发计费失败 {sms_log.message_id}: {e}")
+                    continue
+
+                new_mid = f"msg_{_uuid.uuid4().hex}"
+                db.add(SMSLog(
+                    message_id=new_mid,
+                    account_id=account_id,
+                    channel_id=channel.id,
+                    batch_id=new_batch_id,
+                    phone_number=sms_log.phone_number,
+                    country_code=sms_log.country_code,
+                    message=sms_log.message,
+                    message_count=int(charge_result.get("message_count") or 1),
+                    status="queued",
+                    cost_price=charge_result["total_base_cost"],
+                    selling_price=charge_result["total_cost"],
+                    currency=charge_result.get("currency") or "USD",
+                ))
+                _cost = float(charge_result["total_cost"])
+                commit_batch.append((new_mid, _cost))
+                chunk_deducted += _cost
+                annotate_ids.append(sms_log.id)
+                retried += 1
+
+                if len(commit_batch) >= COMMIT_EVERY:
+                    await _flush(chunk_channel)
+
+        # flush 剩余
+        await _flush(chunk_channel)
+
+        # 终态：实际成功条数以 sms_logs 为准
+        new_batch.total_count = retried
+        await update_batch_progress(db, new_batch_id)
+        await db.refresh(new_batch)
+        if new_batch.status not in (BatchStatus.COMPLETED, BatchStatus.FAILED, BatchStatus.CANCELLED):
+            new_batch.status = BatchStatus.PROCESSING
+            new_batch.completed_at = None
+        if out_of_balance:
+            new_batch.error_message = (
+                f"账户余额不足，已重发 {retried} 条，跳过 {skipped} 条"
+            )[:500]
+        await db.commit()
+
+        logger.info(
+            f"失败重发任务完成: new_batch={new_batch_id}, src={src_batch_id}, "
+            f"重发={retried}, 跳过={skipped}, 余额不足={out_of_balance}"
+        )
+
+    except Exception as e:
+        logger.exception(f"失败重发任务异常: new_batch={new_batch_id}, src={src_batch_id}, {e}")
+        try:
+            nb = (await db.execute(select(SmsBatch).where(SmsBatch.id == new_batch_id))).scalar_one_or_none()
+            if nb and nb.status not in (BatchStatus.COMPLETED, BatchStatus.CANCELLED):
+                nb.error_message = f"重发任务异常: {str(e)[:400]}"
+                await db.commit()
+        except Exception:
+            pass
+    finally:
+        try:
+            from app.utils.cache import get_redis_client
+            rc = await get_redis_client()
+            await rc.delete(lock_key)
+        except Exception as _le:
+            logger.warning(f"释放重发锁失败 {lock_key}: {_le}")
+        await db.close()
         await eng.dispose()
