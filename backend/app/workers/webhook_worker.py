@@ -128,7 +128,20 @@ async def _send_webhook_async(account_id: int, message_id: str, status: str, dat
     """
     异步发送Webhook回调
     """
-    async with AsyncSessionLocal() as db:
+    # Celery 每个任务新建并关闭 event loop（见 send_webhook_task）。不能用全局 AsyncSessionLocal——
+    # 其连接池里的 asyncmy 连接绑定到首次创建它的 loop，跨 loop 复用会触发
+    # "Future attached to a different loop" / "Event loop is closed"。
+    # 在本任务 loop 内自建 NullPool 引擎、用完即弃，与 record_link_click_task 同模式。
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from sqlalchemy.pool import NullPool
+    from app.config import settings as _settings
+
+    _eng = create_async_engine(
+        _settings.SQLALCHEMY_DATABASE_URL, echo=False, poolclass=NullPool,
+    )
+    _factory = async_sessionmaker(_eng, class_=AsyncSession, expire_on_commit=False)
+    try:
+      async with _factory() as db:
         # 查询账户
         result = await db.execute(
             select(Account).where(Account.id == account_id)
@@ -235,6 +248,8 @@ async def _send_webhook_async(account_id: int, message_id: str, status: str, dat
             error_msg = f"Webhook请求异常: {str(e)}"
             logger.error(error_msg, exc_info=e)
             return {"success": False, "error": error_msg}
+    finally:
+        await _eng.dispose()
 
 
 def _generate_signature(secret: str, payload: str) -> str:
