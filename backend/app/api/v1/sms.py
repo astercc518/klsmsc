@@ -1802,7 +1802,7 @@ async def get_sms_records(
     """获取短信发送记录（带通道信息、客户名称、归属员工）"""
     from sqlalchemy import func, and_
     from sqlalchemy.orm import aliased
-    from datetime import datetime
+    from datetime import datetime, timedelta
     from app.modules.sms.channel import Channel
     from app.modules.sms.sms_batch import SmsBatch
     from app.modules.common.account import Account
@@ -1846,22 +1846,78 @@ async def get_sms_records(
     if country_code:
         conditions.append(SMSLog.country_code == country_code)
 
+    parsed_start = None
+    parsed_end = None
     if start_date:
         try:
-            conditions.append(SMSLog.submit_time >= datetime.strptime(start_date, "%Y-%m-%d"))
+            parsed_start = datetime.strptime(start_date, "%Y-%m-%d")
         except ValueError:
             pass
     if end_date:
         try:
-            end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
-            conditions.append(SMSLog.submit_time <= end_dt)
+            parsed_end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
         except ValueError:
             pass
 
+    # 兜底：sms_logs 按月分区，必须有 submit_time 范围才能剪枝/走索引。
+    # 任一端缺失时按 30 天窗口补齐，避免跨分区全表扫和全局排序。
+    if parsed_start is None and parsed_end is None:
+        parsed_end = datetime.now()
+        parsed_start = parsed_end - timedelta(days=30)
+    elif parsed_start is None:
+        parsed_start = parsed_end - timedelta(days=30)
+    elif parsed_end is None:
+        parsed_end = parsed_start + timedelta(days=30)
+
+    conditions.append(SMSLog.submit_time >= parsed_start)
+    conditions.append(SMSLog.submit_time <= parsed_end)
+
     where_clause = and_(*conditions) if conditions else True
 
-    count_result = await db.execute(select(func.count(SMSLog.id)).where(where_clause))
-    total = count_result.scalar() or 0
+    # COUNT 缓存：sms_logs 6M+ 行下 admin 30 天窗口 COUNT 约 6s，是发送记录页加载慢
+    # 的主因。同一查询参数(账户/筛选/时间窗)在 TTL 内复用结果，避免每次翻页/刷新都
+    # 重新扫描 168 万行。TTL=30s 在"翻页流畅"与"新数据可见"间取平衡。
+    # 关键:缓存键含 auth_context 中的账户身份，防止跨账户串数据。
+    import hashlib as _hl
+    import json as _json
+    cache_key_payload = {
+        "_auth": "admin" if auth_context.get("is_admin") else f"acct:{auth_context.get('account_id')}",
+        "account_id": account_id,
+        "batch_id": batch_id,
+        "status": status,
+        "phone_number": phone_number,
+        "message_id": message_id,
+        "channel_id": channel_id,
+        "country_code": country_code,
+        "start": parsed_start.isoformat() if parsed_start else None,
+        "end": parsed_end.isoformat() if parsed_end else None,
+    }
+    cache_key = "sms_records_count:" + _hl.md5(
+        _json.dumps(cache_key_payload, sort_keys=True).encode()
+    ).hexdigest()
+
+    total: Optional[int] = None
+    try:
+        from app.utils.cache import get_redis_client as _get_redis
+        _rc = await _get_redis()
+        _cached = await _rc.get(cache_key)
+        if _cached is not None:
+            try:
+                total = int(_cached)
+            except (TypeError, ValueError):
+                total = None
+    except Exception as _ce:
+        logger.debug(f"records COUNT 缓存读失败(降级直查): {_ce}")
+
+    if total is None:
+        count_result = await db.execute(select(func.count(SMSLog.id)).where(where_clause))
+        total = count_result.scalar() or 0
+        try:
+            from app.utils.cache import get_redis_client as _get_redis
+            _rc = await _get_redis()
+            await _rc.setex(cache_key, 30, str(total))
+        except Exception as _ce:
+            logger.debug(f"records COUNT 缓存写失败(忽略): {_ce}")
 
     offset = (page - 1) * page_size
     query = (
@@ -1876,7 +1932,7 @@ async def get_sms_records(
         .outerjoin(Account, SMSLog.account_id == Account.id)
         .outerjoin(SalesUser, Account.sales_id == SalesUser.id)
         .where(where_clause)
-        .order_by(SMSLog.id.desc())
+        .order_by(SMSLog.submit_time.desc(), SMSLog.id.desc())
         .offset(offset)
         .limit(page_size)
     )
