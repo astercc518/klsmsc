@@ -66,6 +66,20 @@ func startProbeBindServer(listenAddr string) {
 			BindMode:    body.BindMode,
 			SystemType:  body.SystemType,
 		}
+		// Short-circuit：若主连接当前已活(watchdog 视为正常)，直接返回 online，无需另开
+		// 新 bind 占用上游账号 max_connections 配额。部分上游(woId 实测限连接数=1)再开
+		// 新 bind 会被立即 EOF，导致 UI 误以为通道挂了。
+		if manager != nil {
+			if alive, lastPDU := manager.IsChannelHealthyByCode(ref); alive {
+				log.Printf("[SMPP-PROBE] %s 主连接已活(最近 PDU %v 前)，跳过新 bind 探测", ref, time.Since(lastPDU).Round(time.Second))
+				_ = json.NewEncoder(w).Encode(probeBindResponse{
+					Success: true,
+					Status:  "online",
+					Message: "主连接持续在线（依据 PDU 心跳），未发起额外 bind",
+				})
+				return
+			}
+		}
 		if err := smppOneShotBind(cfg); err != nil {
 			log.Printf("[SMPP-PROBE] bind 失败 %s: %v", ref, err)
 			_ = json.NewEncoder(w).Encode(probeBindResponse{

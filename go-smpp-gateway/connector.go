@@ -173,6 +173,41 @@ func smppSeqMapKey(channelID int, seq int32) string {
 
 var manager *SMPPManager
 
+// IsChannelHealthyByCode 判断 channel_code 对应的通道是否当前在用且 watchdog 视为活。
+// 用于管理端「测试连接」按钮 short-circuit：若主连接已活，无需另开新 bind 占用上游账号
+// 配额(部分上游账号 max_connections=1，probe 新 bind 必被 EOF)。
+// 返回 (是否活, 最近一次 PDU 时间)。channel_code 不存在或全部 session 已静默返回 (false, 零值)。
+func (m *SMPPManager) IsChannelHealthyByCode(channelCode string) (bool, time.Time) {
+	m.mu.RLock()
+	var targetID int = -1
+	for id, cfg := range m.configs {
+		if cfg.ChannelCode == channelCode {
+			targetID = id
+			break
+		}
+	}
+	if targetID == -1 {
+		m.mu.RUnlock()
+		return false, time.Time{}
+	}
+	sessions := append([]*gosmpp.Session(nil), m.connections[targetID]...)
+	m.mu.RUnlock()
+	if len(sessions) == 0 {
+		return false, time.Time{}
+	}
+	// 任一 session 的 lastPDUAt 在 livenessSilenceThreshold 内即视为通道整体健康。
+	m.livenessMu.Lock()
+	defer m.livenessMu.Unlock()
+	var newest time.Time
+	for _, s := range sessions {
+		t := m.lastPDUAt[s]
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	return !newest.IsZero() && time.Since(newest) <= livenessSilenceThreshold, newest
+}
+
 // destAddrNoPlus 去掉 E.164 前导 +，与 Python 侧 format_sms_dest_phone(strip=true) 一致
 func destAddrNoPlus(phone string) string {
 	if len(phone) > 0 && phone[0] == '+' {
