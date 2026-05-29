@@ -102,6 +102,48 @@ type SMPPManager struct {
 	sequenceMap sync.Map
 	// tpsLimiters 每通道令牌桶限速器（按 max_tps 配置）
 	tpsLimiters map[int]*tpsBucket
+	// bind 协调：防止同通道多 goroutine 并发 bind 打满上游账号(节点 2026-05-29 反馈：
+	// 毫秒级内多个不同源端口 TCP 连接，超过 10 个账号上限即返 ESME_RBINDFAIL)。
+	// bindMu 每通道一把锁串行所有 bind 入口(初始/OnClosed/stale-monitor)；
+	// lastBindAttempt 与 minBindInterval 共同限制同通道两次 bind 的最小起点间隔。
+	bindCoordMu     sync.Mutex
+	bindMu          map[int]*sync.Mutex
+	lastBindAttempt map[int]time.Time
+}
+
+// minBindInterval 同通道两次 bind 之间的最小起点间隔。
+// 节点账号上限通常 10 并发；500ms 起点间隔 → 单通道最高 2 bind/s，多通道共用账号也能控制。
+// 若未来某通道需要更慢节流（例如某些上游单 IP 限频），改成可配置即可。
+const minBindInterval = 500 * time.Millisecond
+
+// acquireBindSlot 序列化某通道的所有 bind 操作并保证最小起点间隔。
+// 返回 release 函数；调用方拿到 release 后即可调用 bindSession，结束后必须调用 release。
+//
+// 注意：bind 是慢操作(TCP+握手+bind_resp)，持锁等待可能数百毫秒；这是有意为之——
+// 在持锁期间禁止任何重连入口对同一通道并发 bind，避免重连风暴。
+func (m *SMPPManager) acquireBindSlot(channelID int) func() {
+	m.bindCoordMu.Lock()
+	mu, ok := m.bindMu[channelID]
+	if !ok {
+		mu = &sync.Mutex{}
+		m.bindMu[channelID] = mu
+	}
+	m.bindCoordMu.Unlock()
+
+	mu.Lock()
+
+	// 节流：保证两次 bind 起点至少间隔 minBindInterval
+	m.bindCoordMu.Lock()
+	last := m.lastBindAttempt[channelID]
+	m.bindCoordMu.Unlock()
+	if since := time.Since(last); since < minBindInterval {
+		time.Sleep(minBindInterval - since)
+	}
+	m.bindCoordMu.Lock()
+	m.lastBindAttempt[channelID] = time.Now()
+	m.bindCoordMu.Unlock()
+
+	return mu.Unlock
 }
 
 type sequenceData struct {
@@ -241,6 +283,8 @@ func InitSMPPManager() {
 		configs:         make(map[int]ChannelConfig),
 		sessionSubmitMu: make(map[*gosmpp.Session]*sync.Mutex),
 		tpsLimiters:     make(map[int]*tpsBucket),
+		bindMu:          make(map[int]*sync.Mutex),
+		lastBindAttempt: make(map[int]time.Time),
 	}
 }
 
@@ -358,7 +402,9 @@ func (m *SMPPManager) ReloadChannels() error {
 				backoff := 2 * time.Second
 				const maxBackoff = 60 * time.Second
 				for attempt := 1; ; attempt++ {
+					release := m.acquireBindSlot(cfg.ID)
 					session, err := m.bindSession(cfg)
+					release()
 					if err != nil {
 						log.Printf("Failed to bind async session for channel %s (attempt %d): %v; retrying in %v", cfg.ChannelCode, attempt, err, backoff)
 						time.Sleep(backoff)
@@ -561,7 +607,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 					backoff := 2 * time.Second
 					const maxBackoff = 60 * time.Second
 					for attempt := 1; ; attempt++ {
+						release := m.acquireBindSlot(cfg.ID)
 						newSession, err := m.bindSession(cfg)
+						release()
 						if err != nil {
 							log.Printf("[SMPP-WARN] OnClosed rebind channel %s attempt %d: %v; retry in %v", cfg.ChannelCode, attempt, err, backoff)
 							time.Sleep(backoff)
@@ -703,7 +751,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 					if !still2 {
 						return
 					}
+					release := m.acquireBindSlot(cfg.ID)
 					newSession, bindErr := m.bindSession(cfg)
+					release()
 					if bindErr != nil {
 						log.Printf("[SMPP-WARN] stale-monitor rebind channel %s attempt %d: %v; retry in %v",
 							cfg.ChannelCode, attempt, bindErr, backoff)

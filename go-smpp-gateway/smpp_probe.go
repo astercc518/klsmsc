@@ -11,9 +11,16 @@ import (
 )
 
 // smppOneShotBind 执行一次真实 SMPP bind，成功后立即关闭会话；用于管理端「通道检测」。
+//
+// 走与主连接路径同一把 per-channel bind 锁/节流，避免管理端测试与自动重连同时打满上游账号
+// (节点 2026-05-29 反馈：账号上限 10，毫秒级并发 bind 会被全部 RBINDFAIL)。
 func smppOneShotBind(cfg ChannelConfig) error {
 	if strings.TrimSpace(cfg.Host) == "" || cfg.Port <= 0 {
 		return fmt.Errorf("未配置主机或端口")
+	}
+	if manager != nil {
+		release := manager.acquireBindSlot(cfg.ID)
+		defer release()
 	}
 	auth := gosmpp.Auth{
 		SMSC:       fmt.Sprintf("%s:%d", strings.TrimSpace(cfg.Host), cfg.Port),
