@@ -130,6 +130,7 @@ class ChannelCreateRequest(BaseModel):
     smpp_dlr_socket_hold_seconds: Optional[int] = Field(None, ge=60, le=86400)
     dlr_sent_timeout_hours: Optional[int] = Field(None, ge=4, le=720)
     banned_words: Optional[str] = None
+    remark: Optional[str] = None
     virtual_config: Optional[dict] = None
     # 与 channels.config_json 对应：strip_leading_plus、payload_template 等
     gateway_config: Optional[dict] = None
@@ -185,6 +186,7 @@ class ChannelUpdateRequest(BaseModel):
     smpp_dlr_socket_hold_seconds: Optional[int] = Field(None, ge=60, le=86400)
     dlr_sent_timeout_hours: Optional[int] = Field(None, ge=4, le=720)
     banned_words: Optional[str] = None
+    remark: Optional[str] = None
     virtual_config: Optional[dict] = None
     gateway_config: Optional[dict] = None
 
@@ -209,11 +211,13 @@ class PricingCreateRequest(BaseModel):
     mnc: Optional[str] = None
     operator_name: Optional[str] = None
     effective_date: Optional[str] = None
+    remark: Optional[str] = None
 
 
 class PricingUpdateRequest(BaseModel):
     price_per_sms: Optional[float] = None
     currency: Optional[str] = None
+    remark: Optional[str] = None
 
 
 # --- Account Management ---
@@ -1767,6 +1771,7 @@ async def list_channels_admin(
                 "smpp_dlr_socket_hold_seconds": getattr(ch, "smpp_dlr_socket_hold_seconds", None),
                 "dlr_sent_timeout_hours": getattr(ch, "dlr_sent_timeout_hours", None),
                 "banned_words": getattr(ch, "banned_words", None),
+                "remark": getattr(ch, "remark", None),
                 "default_sender_id": ch.default_sender_id,
                 "virtual_config": ch.get_virtual_config() if ch.protocol == "VIRTUAL" else None,
                 "gateway_config": ch.get_gateway_config(),
@@ -1832,6 +1837,7 @@ async def get_channel_admin(
             "smpp_dlr_socket_hold_seconds": getattr(ch, "smpp_dlr_socket_hold_seconds", None),
             "dlr_sent_timeout_hours": getattr(ch, "dlr_sent_timeout_hours", None),
             "banned_words": getattr(ch, "banned_words", None),
+            "remark": getattr(ch, "remark", None),
             "default_sender_id": ch.default_sender_id,
             "virtual_config": ch.get_virtual_config() if ch.protocol == "VIRTUAL" else None,
             "gateway_config": ch.get_gateway_config(),
@@ -1885,6 +1891,7 @@ async def create_channel(
         smpp_dlr_socket_hold_seconds=request.smpp_dlr_socket_hold_seconds,
         dlr_sent_timeout_hours=request.dlr_sent_timeout_hours,
         banned_words=request.banned_words,
+        remark=request.remark,
     )
 
     # 虚拟通道无外部连接，默认可用状态为「正常」
@@ -1995,6 +2002,8 @@ async def update_channel(
         channel.dlr_sent_timeout_hours = request.dlr_sent_timeout_hours
     if "banned_words" in updated_fields:
         channel.banned_words = request.banned_words
+    if "remark" in updated_fields:
+        channel.remark = request.remark
     if "virtual_config" in updated_fields:
         import json
         channel.virtual_config = json.dumps(request.virtual_config, ensure_ascii=False) if request.virtual_config else None
@@ -2945,7 +2954,8 @@ async def list_pricing(
                 "mnc": getattr(p, 'mnc', None),
                 "operator_name": getattr(p, 'operator_name', None),
                 "effective_date": p.effective_date.isoformat() if p.effective_date else None,
-                "expiry_date": getattr(p, 'expiry_date', None).isoformat() if hasattr(p, 'expiry_date') and getattr(p, 'expiry_date', None) else None
+                "expiry_date": getattr(p, 'expiry_date', None).isoformat() if hasattr(p, 'expiry_date') and getattr(p, 'expiry_date', None) else None,
+                "remark": p.remark,
             }
             for p in pricing_list
         ]
@@ -2978,7 +2988,8 @@ async def create_pricing(
         country_name=request.country_name,
         price_per_sms=Decimal(str(request.price_per_sms)),
         currency=request.currency,
-        effective_date=eff_date
+        effective_date=eff_date,
+        remark=request.remark,
     )
     
     db.add(pricing)
@@ -3055,7 +3066,10 @@ async def update_pricing(
         pricing.price_per_sms = Decimal(str(request.price_per_sms))
     if request.currency is not None:
         pricing.currency = request.currency
-    
+    _upd_fields = request.model_dump(exclude_unset=True)
+    if "remark" in _upd_fields:
+        pricing.remark = request.remark
+
     await db.commit()
     
     logger.info(f"费率规则更新成功: {pricing_id}")

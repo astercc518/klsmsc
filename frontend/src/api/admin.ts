@@ -44,6 +44,7 @@ export interface ChannelCreateRequest {
   weight?: number;
   default_sender_id?: string;
   description?: string;
+  remark?: string;
   supplier_id?: number;  // 关联供应商
 }
 
@@ -63,6 +64,7 @@ export interface ChannelUpdateRequest {
   api_url?: string;
   api_key?: string;
   default_sender_id?: string;
+  remark?: string;
   supplier_id?: number;  // 关联供应商
 }
 
@@ -75,6 +77,7 @@ export interface PricingCreateRequest {
   mnc?: string;
   operator_name?: string;
   effective_date?: string;
+  remark?: string;
 }
 
 /**
@@ -256,11 +259,14 @@ export async function createPricing(data: PricingCreateRequest): Promise<any> {
 export async function updatePricing(
   pricingId: number,
   pricePerSms?: number,
-  currency?: string
+  currency?: string,
+  remark?: string | null
 ): Promise<any> {
   const data: any = {};
   if (pricePerSms !== undefined) data.price_per_sms = pricePerSms;
   if (currency) data.currency = currency;
+  // remark 显式传入(包括空字符串)时才发送，null 表示不更新本字段
+  if (remark !== undefined && remark !== null) data.remark = remark;
 
   const response = await request.put(`/admin/pricing/${pricingId}`, data);
   return response;

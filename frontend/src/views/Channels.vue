@@ -154,6 +154,12 @@
             </el-button>
           </template>
         </el-table-column>
+        <el-table-column prop="remark" :label="$t('channels.remark')" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.remark" class="remark-text">{{ row.remark }}</span>
+            <span v-else class="text-muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column :label="$t('common.actions')" min-width="280" fixed="right" align="center">
           <template #default="{ row }">
             <div class="action-btns">
@@ -444,6 +450,16 @@
           </div>
         </el-form-item>
 
+        <el-form-item :label="$t('channels.remark')">
+          <el-input
+            v-model="form.remark"
+            :placeholder="$t('channels.remarkPlaceholder')"
+            maxlength="255"
+            show-word-limit
+            clearable
+          />
+        </el-form-item>
+
         <template v-if="!isEdit">
           <el-divider content-position="left">{{ $t('channels.pricingConfigOptional') }}</el-divider>
           <div class="inline-pricing">
@@ -629,6 +645,12 @@
         <el-table-column prop="mnc" :label="$t('channels.operatorCode')" width="100" />
         <el-table-column prop="operator_name" :label="$t('channels.operator')" min-width="120" />
         <el-table-column prop="effective_date" :label="$t('channels.effectiveDate')" width="120" />
+        <el-table-column prop="remark" :label="$t('channels.remark')" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.remark" class="remark-text">{{ row.remark }}</span>
+            <span v-else class="text-muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column :label="$t('common.actions')" width="150" align="center">
           <template #default="{ row }">
             <el-button type="primary" link size="small" @click="openPricingForm(row)">{{ $t('common.edit') }}</el-button>
@@ -687,6 +709,15 @@
         </el-form-item>
         <el-form-item :label="$t('channels.operatorName')">
           <el-input v-model="pricingForm.operator_name" :disabled="!!pricingEditing" :placeholder="$t('common.optional')" />
+        </el-form-item>
+        <el-form-item :label="$t('channels.remark')">
+          <el-input
+            v-model="pricingForm.remark"
+            :placeholder="$t('channels.remarkPlaceholder')"
+            maxlength="255"
+            show-word-limit
+            clearable
+          />
         </el-form-item>
       </el-form>
 
@@ -961,7 +992,8 @@ const pricingForm = reactive({
   price_per_sms: 0,
   currency: 'USD',
   mnc: '',
-  operator_name: ''
+  operator_name: '',
+  remark: ''
 })
 
 // 国家列表，直接从全局常量派生，避免遗漏国家
@@ -1017,6 +1049,7 @@ const form = reactive({
   rate_control_window: 1000,
   supplier_id: null as number | null,
   banned_words: '',
+  remark: '',
   virtual_config: defaultVirtualConfig(),
 })
 
@@ -1044,6 +1077,7 @@ const mapAdminChannel = (ch: any) => ({
   created_at: ch.created_at,
   updated_at: ch.updated_at,
   banned_words: ch.banned_words ?? '',
+  remark: ch.remark ?? '',
   virtual_config: ch.virtual_config ?? null,
 })
 
@@ -1109,6 +1143,7 @@ const handleCreate = () => {
     rate_control_window: 1000,
     supplier_id: null,
     banned_words: '',
+    remark: '',
     virtual_config: defaultVirtualConfig(),
   })
   formVisible.value = true
@@ -1136,6 +1171,7 @@ const handleEdit = async (row: any) => {
     rate_control_window: row.rate_control_window ?? 1000,
     supplier_id: row.supplier?.id ?? null,
     banned_words: row.banned_words ?? '',
+    remark: row.remark ?? '',
     virtual_config: row.virtual_config ? { ...defaultVirtualConfig(), ...row.virtual_config } : defaultVirtualConfig(),
   })
   formVisible.value = true
@@ -1164,6 +1200,7 @@ const handleEdit = async (row: any) => {
         rate_control_window: ch.rate_control_window ?? 1000,
         supplier_id: ch.supplier_id ?? row.supplier?.id ?? null,
         banned_words: ch.banned_words ?? '',
+        remark: ch.remark ?? '',
         virtual_config: ch.virtual_config ? { ...defaultVirtualConfig(), ...ch.virtual_config } : defaultVirtualConfig(),
       })
     } else {
@@ -1300,7 +1337,8 @@ const openPricingForm = (row?: any) => {
     price_per_sms: row?.price_per_sms ?? 0,
     currency: row?.currency || 'USD',
     mnc: row?.mnc || '',
-    operator_name: row?.operator_name || ''
+    operator_name: row?.operator_name || '',
+    remark: row?.remark || ''
   })
   pricingFormVisible.value = true
 }
@@ -1317,7 +1355,7 @@ const savePricing = async () => {
   pricingSubmitting.value = true
   try {
     if (pricingEditing.value) {
-      await updatePricing(pricingEditing.value.id, pricingForm.price_per_sms, pricingForm.currency)
+      await updatePricing(pricingEditing.value.id, pricingForm.price_per_sms, pricingForm.currency, pricingForm.remark ?? '')
       ElMessage.success(t('channels.pricingUpdateSuccess'))
     } else {
       const res = await createPricing({
@@ -1327,7 +1365,8 @@ const savePricing = async () => {
         price_per_sms: pricingForm.price_per_sms,
         currency: pricingForm.currency,
         mnc: pricingForm.mnc || undefined,
-        operator_name: pricingForm.operator_name || undefined
+        operator_name: pricingForm.operator_name || undefined,
+        remark: pricingForm.remark || undefined
       })
       ElMessage.success(t('channels.pricingCreateSuccess') + (res?.routing_auto_created ? t('channels.routingAutoCreated') : ''))
     }
@@ -1422,6 +1461,7 @@ const submitForm = async () => {
       }
       updatePayload.supplier_id = form.supplier_id ?? null
       updatePayload.banned_words = form.banned_words || null
+      updatePayload.remark = form.remark || null
       if (form.protocol === 'VIRTUAL') {
         updatePayload.virtual_config = form.virtual_config
       }
@@ -1464,6 +1504,9 @@ const submitForm = async () => {
       }
       if (form.banned_words) {
         createPayload.banned_words = form.banned_words
+      }
+      if (form.remark) {
+        createPayload.remark = form.remark
       }
       if (form.protocol === 'VIRTUAL') {
         createPayload.virtual_config = form.virtual_config

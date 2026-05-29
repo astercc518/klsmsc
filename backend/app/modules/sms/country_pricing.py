@@ -17,6 +17,7 @@ class CountryPricing(Base):
     price_per_sms = Column(DECIMAL(10, 4), nullable=False, comment="每条短信价格")
     currency = Column(String(10), nullable=False, default="USD", comment="币种")
     effective_date = Column(Date, nullable=False, server_default=func.current_date(), comment="生效日期")
+    remark = Column(String(255), nullable=True, comment="备注")
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), comment="创建时间")
     updated_at = Column(
         TIMESTAMP,
