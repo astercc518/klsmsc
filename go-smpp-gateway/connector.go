@@ -109,12 +109,27 @@ type SMPPManager struct {
 	bindCoordMu     sync.Mutex
 	bindMu          map[int]*sync.Mutex
 	lastBindAttempt map[int]time.Time
+	// liveness watchdog：gosmpp ReadTimeout 不保证触发 OnClosed (代码注释见 OnClosed 上方)；
+	// 上游静默断开(SocketHalfClose 或硅默限流)时 session 会"假活"——连接池里还在但 TCP 死了，
+	// 无流量则永不发现。每收到一个 PDU(含 gosmpp 自动收的 enquire_link_resp)更新 lastPDUAt，
+	// per-session watchdog 周期检查超过 livenessSilenceThreshold 即主动 Close + 兜底 rebind。
+	livenessMu sync.Mutex
+	lastPDUAt  map[*gosmpp.Session]time.Time
 }
 
 // minBindInterval 同通道两次 bind 之间的最小起点间隔。
 // 节点账号上限通常 10 并发；500ms 起点间隔 → 单通道最高 2 bind/s，多通道共用账号也能控制。
 // 若未来某通道需要更慢节流（例如某些上游单 IP 限频），改成可配置即可。
 const minBindInterval = 500 * time.Millisecond
+
+// liveness watchdog 参数：gosmpp 每 30s 发 enquire_link，正常情况下应在秒级收到 enquire_link_resp；
+// silenceThreshold = 90s 给到 3 个心跳周期容忍网络抖动，超过即认为上游静默死亡。
+// checkInterval 略小于 1/3 silence 即可及时发现。
+const (
+	livenessCheckInterval    = 30 * time.Second
+	livenessSilenceThreshold = 90 * time.Second
+	livenessCloseGracePeriod = 5 * time.Second // 主动 Close 后等多久 OnClosed 还没触发就兜底清理
+)
 
 // acquireBindSlot 序列化某通道的所有 bind 操作并保证最小起点间隔。
 // 返回 release 函数；调用方拿到 release 后即可调用 bindSession，结束后必须调用 release。
@@ -285,6 +300,7 @@ func InitSMPPManager() {
 		tpsLimiters:     make(map[int]*tpsBucket),
 		bindMu:          make(map[int]*sync.Mutex),
 		lastBindAttempt: make(map[int]time.Time),
+		lastPDUAt:       make(map[*gosmpp.Session]time.Time),
 	}
 }
 
@@ -540,6 +556,13 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 			ReadTimeout: 120 * time.Second,
 			EnquireLink: 30 * time.Second,
 			OnPDU: func(p pdu.PDU, responded bool) {
+				// liveness watchdog 心跳：任何到达的 PDU(含 gosmpp 自动收的 enquire_link_resp)
+				// 都视为对端仍存活的证据。sessionPtr 在 NewSession 返回后立即赋值。
+				if sessionPtr != nil {
+					m.livenessMu.Lock()
+					m.lastPDUAt[sessionPtr] = time.Now()
+					m.livenessMu.Unlock()
+				}
 				switch pd := p.(type) {
 				case *pdu.SubmitSMResp:
 					log.Printf("[SMPP-DEBUG] SubmitSMResp reached: channel=%s, msgID=%s, sequence=%d, status=%d", cfg.ChannelCode, pd.MessageID, pd.SequenceNumber, pd.CommandStatus)
@@ -583,6 +606,7 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 				// 1. 从 connections 中移除已关闭的 session，让 ReloadChannels 能检测到缺口并立即重绑。
 				//    不移除会导致 ReloadChannels 认为 concurrency 满足，永远不重建会话。
 				closedSession := sessionPtr
+				removedHere := false
 				m.mu.Lock()
 				if closedSession != nil {
 					conns := m.connections[cfg.ID]
@@ -590,13 +614,22 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 						if s == closedSession {
 							m.connections[cfg.ID] = append(conns[:i], conns[i+1:]...)
 							delete(m.sessionSubmitMu, closedSession)
+							removedHere = true
 							break
 						}
 					}
 				}
 				m.mu.Unlock()
+				// 清理 liveness 状态
+				if closedSession != nil {
+					m.livenessMu.Lock()
+					delete(m.lastPDUAt, closedSession)
+					m.livenessMu.Unlock()
+				}
 
-				// 2. 立即触发异步重绑，不等 5 分钟 ReloadChannels 周期
+				// 2. 立即触发异步重绑（仅当本回调亲手移除了 session 时；否则 watchdog/stale-monitor
+				//    已或将 spawn rebind，本处再 spawn 会导致双重连）。
+				if removedHere {
 				go func() {
 					m.mu.RLock()
 					_, still := m.configs[cfg.ID]
@@ -637,8 +670,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 						return
 					}
 				}()
+				} // end if removedHere
 
-				// 3. 清理该通道所有 in-flight sequenceMap 条目
+				// 3. 清理该通道所有 in-flight sequenceMap 条目（无论谁先移除都要做，避免 orphan）
 				// 标为 sent 而非 failed：PDU 已送达 SMSC 网络层，SMSC 可能已接收（静默限流导致未返回 SubmitSMResp）
 				// 保持 sent 状态使 DLR 仍可匹配更新终态；若 SMSC 确实未收到，DLR 超时检查（72h）会兜底标 expired
 				prefix := fmt.Sprintf("%d:", cfg.ID)
@@ -670,6 +704,119 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 	}
 	// sessionPtr 在此处设置，使 OnClosed 闭包能通过指针找到 session 对象
 	sessionPtr = session
+
+	// liveness watchdog：初始化 lastPDUAt 为 bind 成功时刻，避免 watchdog 启动后立刻
+	// 因为没收到过 PDU 而误判为静默。
+	m.livenessMu.Lock()
+	m.lastPDUAt[session] = time.Now()
+	m.livenessMu.Unlock()
+
+	// liveness watchdog goroutine：周期检查 session 是否仍在收到 PDU。
+	// 触发条件：超过 livenessSilenceThreshold(90s) 没有任何 PDU(包括 enquire_link_resp)，
+	// 视为上游已静默死亡 → 主动 Close → OnClosed 应触发并启动 rebind。
+	// 兜底：gosmpp.Session.Close() 不保证同步触发 OnClosed (代码注释见 OnClosed 上方)，
+	// 等 livenessCloseGracePeriod(5s) 后若 session 仍在 connections 中，watchdog 自行
+	// 完成清理并 spawn rebind goroutine，避免「主动 close 了但既没回调也没重连」的僵局。
+	go func() {
+		ticker := time.NewTicker(livenessCheckInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			m.mu.RLock()
+			_, stillCfg := m.configs[cfg.ID]
+			inPool := false
+			if stillCfg {
+				for _, s := range m.connections[cfg.ID] {
+					if s == session {
+						inPool = true
+						break
+					}
+				}
+			}
+			m.mu.RUnlock()
+			if !inPool {
+				// session 已被其他路径(OnClosed / stale-monitor / Reload 缩容)移除，watchdog 退出。
+				m.livenessMu.Lock()
+				delete(m.lastPDUAt, session)
+				m.livenessMu.Unlock()
+				return
+			}
+
+			m.livenessMu.Lock()
+			last := m.lastPDUAt[session]
+			m.livenessMu.Unlock()
+
+			if time.Since(last) <= livenessSilenceThreshold {
+				continue
+			}
+
+			log.Printf("[SMPP-WATCHDOG] channel %s session silent for %v (last PDU at %v) — force Close + 等 OnClosed 回调",
+				cfg.ChannelCode, time.Since(last).Round(time.Second), last.Format("15:04:05"))
+			_ = session.Close()
+
+			// 给 OnClosed 一段宽限期。若到期 session 仍在 connections，自行清理并 spawn rebind。
+			time.AfterFunc(livenessCloseGracePeriod, func() {
+				m.mu.Lock()
+				stillIn := false
+				conns := m.connections[cfg.ID]
+				for i, s := range conns {
+					if s == session {
+						m.connections[cfg.ID] = append(conns[:i], conns[i+1:]...)
+						delete(m.sessionSubmitMu, session)
+						stillIn = true
+						break
+					}
+				}
+				m.mu.Unlock()
+				m.livenessMu.Lock()
+				delete(m.lastPDUAt, session)
+				m.livenessMu.Unlock()
+				if !stillIn {
+					return // OnClosed 已正常处理
+				}
+
+				log.Printf("[SMPP-WATCHDOG] channel %s OnClosed 未在 %v 内触发，watchdog 兜底重连",
+					cfg.ChannelCode, livenessCloseGracePeriod)
+				// 兜底 spawn rebind：与 OnClosed 内逻辑等价
+				go func() {
+					backoff := 2 * time.Second
+					const maxBackoff = 60 * time.Second
+					for attempt := 1; ; attempt++ {
+						m.mu.RLock()
+						_, still := m.configs[cfg.ID]
+						m.mu.RUnlock()
+						if !still {
+							return
+						}
+						release := m.acquireBindSlot(cfg.ID)
+						newSession, err := m.bindSession(cfg)
+						release()
+						if err != nil {
+							log.Printf("[SMPP-WATCHDOG] rebind channel %s attempt %d: %v; retry in %v",
+								cfg.ChannelCode, attempt, err, backoff)
+							time.Sleep(backoff)
+							backoff *= 2
+							if backoff > maxBackoff {
+								backoff = maxBackoff
+							}
+							continue
+						}
+						m.mu.Lock()
+						if _, exists := m.configs[cfg.ID]; exists {
+							m.connections[cfg.ID] = append(m.connections[cfg.ID], newSession)
+							m.sessionSubmitMu[newSession] = &sync.Mutex{}
+							log.Printf("[SMPP-WATCHDOG] rebind success: channel %s (sessions: %d)",
+								cfg.ChannelCode, len(m.connections[cfg.ID]))
+						} else {
+							_ = newSession.Close()
+						}
+						m.mu.Unlock()
+						return
+					}
+				}()
+			})
+			return // 本 watchdog 退出；新 session 会启动新的 watchdog
+		}
+	}()
 
 	// 后台超时监测：每 5 秒扫描该通道的 sequenceMap，若有条目超过 20 秒未收到 SubmitSMResp，
 	// 直接清理孤儿条目、移除会话、关闭连接并立即重绑。
