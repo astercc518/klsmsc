@@ -642,16 +642,14 @@
             <span class="price-text">{{ row.price_per_sms }} {{ row.currency }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="mnc" :label="$t('channels.operatorCode')" width="100" />
-        <el-table-column prop="operator_name" :label="$t('channels.operator')" min-width="120" />
         <el-table-column prop="effective_date" :label="$t('channels.effectiveDate')" width="120" />
-        <el-table-column prop="remark" :label="$t('channels.remark')" min-width="140" show-overflow-tooltip>
+        <el-table-column prop="remark" :label="$t('channels.remark')" min-width="160" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="row.remark" class="remark-text">{{ row.remark }}</span>
             <span v-else class="text-muted">—</span>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('common.actions')" width="150" align="center">
+        <el-table-column :label="$t('common.actions')" width="140" align="center" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" link size="small" @click="openPricingForm(row)">{{ $t('common.edit') }}</el-button>
             <el-popconfirm :title="$t('common.confirmDelete')" @confirm="handleDeletePricing(row)">
