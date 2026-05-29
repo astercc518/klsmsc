@@ -72,6 +72,7 @@ class Channel(Base):
         comment="更新时间"
     )
     banned_words = Column(Text, nullable=True, comment="违禁词列表，逗号分隔")
+    remark = Column(String(255), nullable=True, comment="备注")
     is_deleted = Column(Boolean, nullable=False, default=False, comment="软删除标记")
 
     virtual_config = Column(

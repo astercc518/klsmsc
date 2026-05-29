@@ -700,6 +700,8 @@ export default {
     operatorCode: '运营商代码',
     operatorName: '运营商名称',
     pageDesc: '管理短信发送通道，配置SMPP/HTTP接入',
+    remark: '备注',
+    remarkPlaceholder: '可选，用于记录供应商、用途、调价原因等',
     password: '密码',
     passwordPlaceholder: '密码',
     pending: '待审核',

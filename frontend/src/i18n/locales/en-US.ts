@@ -700,6 +700,8 @@ export default {
     operatorCode: 'Operator Code',
     operatorName: 'Operator Name',
     pageDesc: 'Manage SMS channels, configure SMPP/HTTP access',
+    remark: 'Remark',
+    remarkPlaceholder: 'Optional. Notes on supplier, purpose, price-change reason, etc.',
     password: 'Password',
     passwordPlaceholder: 'Password',
     pending: 'Pending',
