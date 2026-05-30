@@ -2962,6 +2962,42 @@ async def list_pricing(
     }
 
 
+async def _sync_template_floor_price(db: AsyncSession, channel_id: int, country_code: str, price) -> int:
+    """
+    通道价格（成本价）即时联动开户模板「底价」(account_templates.default_price)。
+
+    匹配维度：通道 + 国家。注意两表 country_code 格式不同——
+    country_pricing 存国际区号(如 63)，account_templates 存 ISO2(如 PH)，
+    故用 get_country_variants() 取同一国家的全部等价写法做 IN 匹配；
+    channel_ids 是整数 JSON 数组(可能为 NULL)，用 json_contains 判断包含。
+    仅同步短信模板(business_type='sms')。返回受影响模板数。
+    """
+    from app.modules.common.account_template import AccountTemplate
+    from app.utils.country_code import get_country_variants
+    from decimal import Decimal
+
+    variants = get_country_variants(country_code)
+    if not variants:
+        return 0
+    result = await db.execute(
+        select(AccountTemplate).where(
+            AccountTemplate.business_type == 'sms',
+            AccountTemplate.country_code.in_(variants),
+            func.json_contains(AccountTemplate.channel_ids, str(int(channel_id))),
+        )
+    )
+    templates = result.scalars().all()
+    new_price = Decimal(str(price))
+    for tpl in templates:
+        tpl.default_price = new_price
+    if templates:
+        logger.info(
+            f"通道价格联动开户模板底价: channel={channel_id} country={country_code} "
+            f"price={new_price} 命中模板 {len(templates)} 个"
+        )
+    return len(templates)
+
+
 @router.post("/pricing", response_model=dict)
 async def create_pricing(
     request: PricingCreateRequest,
@@ -3021,6 +3057,11 @@ async def create_pricing(
         routing_auto_created = True
         logger.info(f"自动创建路由规则: {request.country_code} -> channel {request.channel_id}")
 
+    # 通道价格（成本价）即时联动开户模板底价
+    synced_templates = await _sync_template_floor_price(
+        db, pricing.channel_id, pricing.country_code, pricing.price_per_sms
+    )
+
     await db.commit()
     await db.refresh(pricing)
 
@@ -3039,6 +3080,7 @@ async def create_pricing(
         "success": True,
         "pricing_id": pricing.id,
         "routing_auto_created": routing_auto_created,
+        "synced_templates": synced_templates,
         "message": "Pricing rule created successfully"
     }
 
@@ -3070,8 +3112,15 @@ async def update_pricing(
     if "remark" in _upd_fields:
         pricing.remark = request.remark
 
+    # 通道价格（成本价）即时联动开户模板底价（仅价格变更时）
+    synced_templates = 0
+    if request.price_per_sms is not None:
+        synced_templates = await _sync_template_floor_price(
+            db, pricing.channel_id, pricing.country_code, pricing.price_per_sms
+        )
+
     await db.commit()
-    
+
     logger.info(f"费率规则更新成功: {pricing_id}")
 
     # 失效价格缓存（该通道/国家）
@@ -3084,6 +3133,7 @@ async def update_pricing(
     
     return {
         "success": True,
+        "synced_templates": synced_templates,
         "message": "Pricing rule updated successfully"
     }
 

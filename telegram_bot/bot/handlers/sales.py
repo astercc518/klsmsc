@@ -234,19 +234,24 @@ async def select_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['supplier_group_id'] = tpl.get('supplier_group_id')
     
     # 询问是否使用默认价格
-    default_price = context.user_data['default_price']
+    # default_price 为底价(成本价)；客户单价须 ≥ 底价×1.1，推荐价即此最低合规价
+    floor_price = context.user_data['default_price']
+    recommended_price = round(floor_price * 1.1, 4)
+    context.user_data['floor_price'] = floor_price
+    context.user_data['recommended_price'] = recommended_price
     keyboard = [
-        [InlineKeyboardButton(f"✅ 使用默认价格 ${default_price:.4f}", callback_data="use_default")],
+        [InlineKeyboardButton(f"✅ 使用推荐价 ${recommended_price:.4f}", callback_data="use_default")],
         [InlineKeyboardButton("💰 自定义价格", callback_data="custom_price")],
         [InlineKeyboardButton("⬅️ 返回", callback_data="back_to_template")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     await query.edit_message_text(
         f"💵 **设置价格**\n\n"
         f"模板: {tpl.get('template_name')}\n"
-        f"默认价格: ${default_price:.4f}\n\n"
-        f"请选择价格方案：",
+        f"底价(成本): ${floor_price:.4f}\n"
+        f"推荐价(底价×1.1): ${recommended_price:.4f}\n\n"
+        f"客户单价不得低于推荐价。请选择价格方案：",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
@@ -281,12 +286,19 @@ async def input_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SELECT_TEMPLATE
     
     if data == "use_default":
-        context.user_data['final_price'] = context.user_data['default_price']
+        # 推荐价 = 底价×1.1（最低合规价）
+        context.user_data['final_price'] = context.user_data.get(
+            'recommended_price', round(context.user_data['default_price'] * 1.1, 4)
+        )
         return await confirm_invite(update, context)
-    
+
     if data == "custom_price":
+        floor_price = context.user_data.get('floor_price', context.user_data['default_price'])
+        min_price = round(floor_price * 1.1, 4)
         await query.edit_message_text(
-            "💰 请输入自定义价格（数字，例如 0.05）：\n\n发送 /cancel 取消操作"
+            f"💰 请输入自定义价格（数字，例如 {min_price:.4f}）：\n\n"
+            f"⚠️ 单价不得低于底价×1.1 = ${min_price:.4f}\n\n"
+            f"发送 /cancel 取消操作"
         )
         return CONFIRM
 
@@ -299,6 +311,15 @@ async def receive_custom_price(update: Update, context: ContextTypes.DEFAULT_TYP
         price = float(text)
         if price < 0:
             await update.message.reply_text("❌ 价格不能为负数，请重新输入：")
+            return CONFIRM
+        # 客户单价须 ≥ 底价(成本)×1.1
+        floor_price = context.user_data.get('floor_price', context.user_data.get('default_price', 0))
+        min_price = round(floor_price * 1.1, 4)
+        if price < min_price:
+            await update.message.reply_text(
+                f"❌ 单价不得低于底价×1.1 = ${min_price:.4f}\n"
+                f"（底价/成本 ${floor_price:.4f}），请重新输入："
+            )
             return CONFIRM
         context.user_data['final_price'] = price
     except ValueError:

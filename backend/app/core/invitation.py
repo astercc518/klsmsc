@@ -141,6 +141,22 @@ class InvitationService:
         country_code = config.get('country', 'global')
         template_id = config.get('template_id')
 
+        # 兜底校验：客户单价须 ≥ 模板底价(成本)×1.1，防止绕过 TG bot 直接以低价激活
+        if template_id:
+            floor_result = await self.db.execute(
+                select(AccountTemplate).where(AccountTemplate.id == template_id)
+            )
+            floor_tpl = floor_result.scalar_one_or_none()
+            floor_price = float(floor_tpl.default_price) if floor_tpl and floor_tpl.default_price else 0.0
+            if floor_price > 0:
+                min_price = round(floor_price * 1.1, 4)
+                cfg_price = float(config.get('price', 0.05))
+                # 容差 1e-6 兼容浮点四舍五入（与 bot 推荐价口径一致）
+                if cfg_price < min_price - 1e-6:
+                    raise ValueError(
+                        f"客户单价 {cfg_price} 低于底价×1.1 ({min_price})，不允许开户"
+                    )
+
         # 1. 创建账户（含登录密码）
         api_key_plain = secrets.token_hex(32)
         login_password = secrets.token_urlsafe(10)
