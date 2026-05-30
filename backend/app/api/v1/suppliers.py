@@ -519,6 +519,20 @@ async def import_from_resource_pricing(
             business_type = "data" if typ == "data" else "sms"
             resource_type = (item.get("resource_type") or "card")[:50]
 
+            # 数据源隔离：该供应商+国家+业务已有"通道同步"行(price_source='channel')时，
+            # 该国成本由通道价格当家，Excel 不再插入竞争行
+            channel_owned = await db.execute(
+                select(SupplierRate.id).where(
+                    SupplierRate.supplier_id == supplier_id,
+                    SupplierRate.country_code == country_code,
+                    SupplierRate.business_type == business_type,
+                    SupplierRate.price_source == "channel",
+                ).limit(1)
+            )
+            if channel_owned.scalar_one_or_none():
+                skipped_rates += 1
+                continue
+
             # 避免重复：若该供应商+国家+业务类型+资源类型已存在则跳过
             exist_result = await db.execute(
                 select(SupplierRate.id).where(
@@ -869,7 +883,17 @@ async def get_supplier_rates(
     
     result = await db.execute(query)
     rates = result.scalars().all()
-    
+
+    # 解析 channel_id -> 通道名（仅 price_source=channel 的行会有 channel_id）
+    from app.modules.sms.channel import Channel
+    ch_ids = {r.channel_id for r in rates if getattr(r, 'channel_id', None)}
+    ch_name_map = {}
+    if ch_ids:
+        ch_rows = await db.execute(
+            select(Channel.id, Channel.channel_name).where(Channel.id.in_(ch_ids))
+        )
+        ch_name_map = {cid: name for cid, name in ch_rows.all()}
+
     return {
         "success": True,
         "total": total,
@@ -878,6 +902,8 @@ async def get_supplier_rates(
                 "id": r.id,
                 "business_type": r.business_type or 'sms',
                 "country_code": r.country_code,
+                "channel_id": getattr(r, 'channel_id', None),
+                "channel_name": ch_name_map.get(getattr(r, 'channel_id', None)),
                 "resource_type": r.resource_type or 'card',
                 "business_scope": r.business_scope or 'otp',
                 "billing_model": getattr(r, 'billing_model', None) or '',
@@ -887,6 +913,7 @@ async def get_supplier_rates(
                 "operator_name": r.operator_name,
                 "cost_price": float(r.cost_price) if r.cost_price else 0,
                 "sell_price": float(r.sell_price) if r.sell_price else 0,
+                "price_source": getattr(r, 'price_source', None) or 'excel',
                 "remark": r.remark,
                 "currency": r.currency,
                 "effective_date": r.effective_date.isoformat() if r.effective_date else None,
