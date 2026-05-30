@@ -104,6 +104,7 @@ class SupplierRate(Base):
     
     # 路由条件
     country_code = Column(String(10), nullable=False, comment='国家代码(MCC)')
+    channel_id = Column(Integer, nullable=True, comment='设此成本的通道ID(price_source=channel 时由同步写入；展示用，无FK约束)')
     resource_type = Column(String(50), default='card', comment='资源类型/发送方式')
     business_scope = Column(String(50), default='otp', comment='业务范围：otp/marketing/gambling等')
     mcc = Column(String(10), comment='移动国家代码')
@@ -119,6 +120,13 @@ class SupplierRate(Base):
     sell_price = Column(Numeric(10, 6), default=0, comment='售价(每条/每分钟)')
     remark = Column(String(255), comment='备注')
     currency = Column(String(10), default='USD', comment='币种')
+    price_source = Column(
+        String(20),
+        default='excel',
+        server_default='excel',
+        nullable=False,
+        comment="成本数据来源：excel=人工导入(成本表) channel=通道价格保存自动同步；Excel 导入不覆盖 channel 行",
+    )
     
     # 生效时间
     effective_date = Column(DateTime, server_default=func.now(), comment='生效日期')

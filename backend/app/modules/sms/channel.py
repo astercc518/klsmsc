@@ -1,7 +1,7 @@
 """
 通道数据模型
 """
-from sqlalchemy import Column, Integer, String, DECIMAL, Enum, Boolean, TIMESTAMP, Text
+from sqlalchemy import Column, Integer, String, DECIMAL, Enum, Boolean, TIMESTAMP, Text, ForeignKey
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -9,10 +9,16 @@ from app.database import Base
 class Channel(Base):
     """通道表"""
     __tablename__ = "channels"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True, comment="通道ID")
     channel_code = Column(String(50), unique=True, nullable=False, comment="通道编码")
     channel_name = Column(String(100), nullable=False, comment="通道名称")
+    supplier_id = Column(
+        Integer,
+        ForeignKey("suppliers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="关联供应商ID：通道价格保存时据此同步资源报价(supplier_rates)成本",
+    )
     protocol = Column(
         Enum("SMPP", "HTTP", "VIRTUAL", name="channel_protocol"),
         nullable=False,

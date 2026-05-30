@@ -2991,6 +2991,7 @@ export default {
     selectType: '选择类型',
     selectTypePlaceholder: '选择或输入类型（回车确认）',
     sellPrice: '售价',
+    channel: '通道',
     settlementCycle: '结算周期',
     sms: '短信',
     smsBusiness: '短信业务',

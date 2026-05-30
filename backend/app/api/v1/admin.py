@@ -2962,7 +2962,9 @@ async def list_pricing(
     }
 
 
-async def _sync_template_floor_price(db: AsyncSession, channel_id: int, country_code: str, price) -> int:
+async def _sync_template_floor_price(
+    db: AsyncSession, channel_id: int, country_code: str, price, country_name: str = None
+) -> int:
     """
     通道价格（成本价）即时联动开户模板「底价」(account_templates.default_price)。
 
@@ -2970,15 +2972,25 @@ async def _sync_template_floor_price(db: AsyncSession, channel_id: int, country_
     country_pricing 存国际区号(如 63)，account_templates 存 ISO2(如 PH)，
     故用 get_country_variants() 取同一国家的全部等价写法做 IN 匹配；
     channel_ids 是整数 JSON 数组(可能为 NULL)，用 json_contains 判断包含。
-    仅同步短信模板(business_type='sms')。返回受影响模板数。
+    仅处理短信模板(business_type='sms')。
+
+    行为：
+    - 已有匹配模板 → 更新 default_price。
+    - 无匹配模板 → 自动新建一个（继承同通道其它短信模板的供应商群与命名风格），
+      使新增国家的价格也能贯通到开户模板，无需手工补建。同通道无任何短信模板
+      时无从推断供应商群，跳过新建（返回 0）。
+
+    返回受影响（更新或新建）模板数。
     """
     from app.modules.common.account_template import AccountTemplate
-    from app.utils.country_code import get_country_variants
+    from app.utils.country_code import get_country_variants, normalize_country_code
     from decimal import Decimal
 
     variants = get_country_variants(country_code)
     if not variants:
         return 0
+    new_price = Decimal(str(price))
+
     result = await db.execute(
         select(AccountTemplate).where(
             AccountTemplate.business_type == 'sms',
@@ -2987,15 +2999,155 @@ async def _sync_template_floor_price(db: AsyncSession, channel_id: int, country_
         )
     )
     templates = result.scalars().all()
-    new_price = Decimal(str(price))
-    for tpl in templates:
-        tpl.default_price = new_price
     if templates:
+        for tpl in templates:
+            tpl.default_price = new_price
         logger.info(
             f"通道价格联动开户模板底价: channel={channel_id} country={country_code} "
             f"price={new_price} 命中模板 {len(templates)} 个"
         )
-    return len(templates)
+        return len(templates)
+
+    # 无匹配模板：从同通道任一短信模板继承供应商群与命名风格后自动新建
+    sibling = (await db.execute(
+        select(AccountTemplate).where(
+            AccountTemplate.business_type == 'sms',
+            func.json_contains(AccountTemplate.channel_ids, str(int(channel_id))),
+        ).limit(1)
+    )).scalar_one_or_none()
+    if sibling is None:
+        logger.info(
+            f"通道价格联动开户模板底价: channel={channel_id} country={country_code} "
+            f"无同通道短信模板可推断供应商群，跳过自动新建"
+        )
+        return 0
+
+    from app.api.v1.account_templates import generate_template_code
+    iso2 = normalize_country_code(country_code) or str(country_code).strip().upper()
+    cn_name = country_name or iso2
+    # 沿用 sibling 的命名风格：把其国家名替换为新国家名（如 "KMI通信加纳" -> "KMI通信赞比亚"）
+    if sibling.country_name and sibling.template_name and sibling.country_name in sibling.template_name:
+        new_name = sibling.template_name.replace(sibling.country_name, cn_name)
+    else:
+        new_name = f"{sibling.supplier_group_name or ''}{cn_name}".strip() or cn_name
+
+    # 生成唯一模板编码
+    template_code = None
+    for _ in range(10):
+        candidate = generate_template_code('sms', iso2)
+        exists = await db.execute(
+            select(AccountTemplate).where(AccountTemplate.template_code == candidate)
+        )
+        if exists.scalar_one_or_none() is None:
+            template_code = candidate
+            break
+    if template_code is None:
+        logger.warning(
+            f"通道价格联动开户模板底价: channel={channel_id} country={country_code} "
+            f"无法生成唯一模板编码，跳过自动新建"
+        )
+        return 0
+
+    db.add(AccountTemplate(
+        template_code=template_code,
+        template_name=new_name,
+        business_type='sms',
+        country_code=iso2,
+        country_name=cn_name,
+        supplier_group_id=sibling.supplier_group_id,
+        supplier_group_name=sibling.supplier_group_name,
+        channel_ids=[int(channel_id)],
+        default_price=new_price,
+        status='active',
+    ))
+    logger.info(
+        f"通道价格自动新建开户模板: channel={channel_id} country={country_code} "
+        f"price={new_price} 模板={new_name}({template_code})"
+    )
+    return 1
+
+
+async def _sync_supplier_rate(
+    db: AsyncSession, channel_id: int, country_code: str, price,
+    country_name: str = None, currency: str = "USD",
+) -> int:
+    """
+    通道价格（成本价）即时联动资源报价 supplier_rates.cost_price。
+
+    定位供应商靠 channels.supplier_id 硬主键——未关联供应商则跳过（不做名字模糊匹配）。
+    两表 country_code 格式不同，复用 get_country_variants() 做等价匹配。仅短信。
+
+    - 命中已有报价行（供应商+国家+sms）→ 更新 cost_price 并标记 price_source='channel'，
+      sell_price 不动（人工维护）。
+    - 无 → 新建一行：cost=sell=price，resource_type 取该供应商已有 sms 行众数（缺省 'card'）。
+
+    price_source 标记用于与 Excel 导入隔离：导入逻辑不覆盖 price_source='channel' 的行。
+    返回受影响（更新或新建）行数。
+    """
+    from app.modules.sms.channel import Channel
+    from app.modules.sms.supplier import SupplierRate
+    from app.utils.country_code import get_country_variants, normalize_country_code
+    from collections import Counter
+    from decimal import Decimal
+
+    supplier_id = (await db.execute(
+        select(Channel.supplier_id).where(Channel.id == int(channel_id))
+    )).scalar_one_or_none()
+    if not supplier_id:
+        logger.info(f"资源报价联动跳过: channel={channel_id} 未关联供应商(supplier_id 为空)")
+        return 0
+
+    variants = get_country_variants(country_code)
+    if not variants:
+        return 0
+    new_price = Decimal(str(price))
+
+    rows = (await db.execute(
+        select(SupplierRate).where(
+            SupplierRate.supplier_id == supplier_id,
+            SupplierRate.business_type == 'sms',
+            SupplierRate.country_code.in_(variants),
+        )
+    )).scalars().all()
+    if rows:
+        for r in rows:
+            r.cost_price = new_price
+            r.price_source = 'channel'  # sell_price 保持不动
+            r.channel_id = int(channel_id)  # 记录设此成本的通道
+        logger.info(
+            f"通道价格联动资源报价: channel={channel_id} supplier={supplier_id} "
+            f"country={country_code} cost={new_price} 更新 {len(rows)} 行"
+        )
+        return len(rows)
+
+    iso2 = normalize_country_code(country_code) or str(country_code).strip().upper()
+    rtypes = (await db.execute(
+        select(SupplierRate.resource_type).where(
+            SupplierRate.supplier_id == supplier_id,
+            SupplierRate.business_type == 'sms',
+        )
+    )).scalars().all()
+    rtype_mode = Counter([t for t in rtypes if t]).most_common(1)
+    resource_type = rtype_mode[0][0] if rtype_mode else 'card'
+
+    db.add(SupplierRate(
+        supplier_id=supplier_id,
+        channel_id=int(channel_id),  # 记录设此成本的通道
+        business_type='sms',
+        country_code=iso2,
+        resource_type=resource_type,
+        business_scope='otp',
+        cost_price=new_price,
+        sell_price=new_price,  # 新建行 sell=cost；之后人工维护
+        currency=currency or 'USD',
+        status='active',
+        price_source='channel',
+    ))
+    logger.info(
+        f"通道价格自动新建资源报价: channel={channel_id} supplier={supplier_id} "
+        f"country={country_code} cost={new_price} resource_type={resource_type}"
+    )
+    return 1
 
 
 @router.post("/pricing", response_model=dict)
@@ -3059,7 +3211,13 @@ async def create_pricing(
 
     # 通道价格（成本价）即时联动开户模板底价
     synced_templates = await _sync_template_floor_price(
-        db, pricing.channel_id, pricing.country_code, pricing.price_per_sms
+        db, pricing.channel_id, pricing.country_code, pricing.price_per_sms,
+        country_name=pricing.country_name,
+    )
+    # 通道价格（成本）即时联动资源报价（supplier_rates），靠 channels.supplier_id 定位供应商
+    await _sync_supplier_rate(
+        db, pricing.channel_id, pricing.country_code, pricing.price_per_sms,
+        country_name=pricing.country_name, currency=pricing.currency,
     )
 
     await db.commit()
@@ -3116,7 +3274,12 @@ async def update_pricing(
     synced_templates = 0
     if request.price_per_sms is not None:
         synced_templates = await _sync_template_floor_price(
-            db, pricing.channel_id, pricing.country_code, pricing.price_per_sms
+            db, pricing.channel_id, pricing.country_code, pricing.price_per_sms,
+            country_name=pricing.country_name,
+        )
+        await _sync_supplier_rate(
+            db, pricing.channel_id, pricing.country_code, pricing.price_per_sms,
+            country_name=pricing.country_name, currency=pricing.currency,
         )
 
     await db.commit()

@@ -2985,6 +2985,7 @@ export default {
     selectType: 'Select type',
     selectTypePlaceholder: 'Select or enter type (press Enter)',
     sellPrice: 'Sell Price',
+    channel: 'Channel',
     settlementCycle: 'Settlement Cycle',
     sms: 'SMS',
     smsBusiness: 'SMS Business',

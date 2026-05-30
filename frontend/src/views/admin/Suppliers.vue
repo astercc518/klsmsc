@@ -376,18 +376,12 @@
             <span v-else class="no-rate">-</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="currentSupplier?.business_type !== 'voice'" prop="resource_type" :label="$t('suppliers.resourceType')" width="100">
+        <el-table-column v-if="currentSupplier?.business_type !== 'voice'" prop="channel_name" :label="$t('suppliers.channel')" min-width="130">
           <template #default="{ row }">
-            <el-tag size="small" :type="resourceTypeTagMap[row.resource_type] || ''">
-              {{ getResourceTypeLabel(row.resource_type) }}
+            <el-tag v-if="row.channel_name" size="small" type="success" effect="plain">
+              {{ row.channel_name }}
             </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column v-if="currentSupplier?.business_type !== 'voice'" prop="business_scope" :label="$t('suppliers.businessScope')" width="90">
-          <template #default="{ row }">
-            <el-tag size="small" type="info">
-              {{ getBusinessScopeLabel(row.business_scope) }}
-            </el-tag>
+            <span v-else class="no-rate">-</span>
           </template>
         </el-table-column>
         <el-table-column prop="cost_price" :label="$t('suppliers.cost')" width="130" align="right">
