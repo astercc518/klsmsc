@@ -162,6 +162,16 @@ class Settings(BaseSettings):
     # 生成客户模拟登录链接用的前端基址（无尾斜杠）
     PUBLIC_WEB_BASE_URL: str = "https://www.kaolach.com"
 
+    # 软件授权(License)：公钥内嵌于 core/license.py，此处仅供 env 覆盖
+    LICENSE_PUBLIC_KEY: Optional[str] = None
+    # 机器指纹来源(docker 建议挂宿主 /etc/machine-id 到此路径)
+    LICENSE_MACHINE_ID_FILE: str = "/etc/host-machine-id"
+    # 可选:首次安装前从该 .lic 文件路径读取授权(后台上传后以 DB 为准)
+    LICENSE_FILE: Optional[str] = None
+    # 是否强制要求已安装授权:False(默认)未装证=宽松放行+横幅提醒,避免未发证即自锁;
+    # 客户私有/OEM 分发版应设 True,使"未安装/被删除授权"也全停(防盗用裸跑)。
+    LICENSE_REQUIRE: bool = False
+
     # 短链追踪配置
     # SHORT_LINK_BASE_URL：短链对外访问前缀，如 https://www.kaolach.com/s 或 https://go.kaolach.com/s
     SHORT_LINK_BASE_URL: str = "https://www.kaolach.com/s"

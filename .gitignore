@@ -72,3 +72,6 @@ htmlcov/
 # PDF 生成用中文字体（约 8MB，运行 backend/scripts/md2pdf.py 时自动下载）
 backend/scripts/fonts/*.otf
 backend/scripts/fonts/*.ttf
+
+# License 私钥等敏感文件,严禁入库
+.secrets/

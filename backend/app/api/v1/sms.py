@@ -16,6 +16,7 @@ from app.core.auth import AuthService, api_key_header, optional_basic
 from app.utils.validator import Validator
 from app.utils.sms_template import render_sms_variables, sms_template_has_variables
 from app.core.router import RoutingEngine
+from app.core.license import require_valid_license
 from app.core.pricing import PricingEngine
 from app.schemas.sms import (
     SMSSendRequest,
@@ -473,7 +474,8 @@ async def submit_sms_core(
 async def send_sms(
     request: SMSSendRequest,
     account: Account = Depends(get_current_account_or_admin),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _license=Depends(require_valid_license),
 ):
     """
     发送单条短信
@@ -689,7 +691,8 @@ async def get_sms_status(
 async def send_batch_sms(
     request: BatchSMSRequest,
     account: Account = Depends(get_current_account_or_admin),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _license=Depends(require_valid_license),
 ):
     """
     批量发送短信（异步入队模式）

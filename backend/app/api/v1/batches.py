@@ -28,6 +28,7 @@ from app.utils.queue import QueueManager
 from app.utils.cache import get_cache_manager
 from app.utils.errors import InsufficientBalanceError, PricingNotFoundError
 from app.core.auth import get_current_account
+from app.core.license import require_valid_license
 from app.modules.common.account import Account
 from app.utils.logger import get_logger
 
@@ -171,7 +172,8 @@ async def upload_batch_file(
     template_id: Optional[int] = Form(None),
     sender_id: Optional[str] = Form(None),
     current_account: Account = Depends(get_current_account),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _license=Depends(require_valid_license),
 ):
     """
     上传CSV文件进行批量发送
