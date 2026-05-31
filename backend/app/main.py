@@ -185,6 +185,7 @@ from app.api.v1 import (
     account_templates, ai, admin_logs,
     water,
     _internal_smpp,
+    license as license_mod,
 )
 from app.api.v1.data import (
     admin_numbers_router, admin_products_router, admin_orders_router,
@@ -202,6 +203,7 @@ app.include_router(_internal_smpp.router, prefix="/api/v1/_internal", tags=["Int
 app.include_router(system_config.router, prefix="/api/v1/admin", tags=["System Config"])
 app.include_router(templates.router, prefix="/api/v1", tags=["Templates"])
 app.include_router(api_keys.router, prefix="/api/v1", tags=["API Keys"])
+app.include_router(license_mod.router, prefix="/api/v1", tags=["License 授权"])
 app.include_router(batches.router, prefix="/api/v1", tags=["Batch Send"])
 app.include_router(scheduled_tasks.router, prefix="/api/v1", tags=["Scheduled Tasks"])
 app.include_router(sub_accounts.router, prefix="/api/v1", tags=["Sub Accounts"])

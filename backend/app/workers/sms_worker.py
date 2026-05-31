@@ -329,6 +329,22 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
                 logger.error(f"短信记录不存在: {message_id}")
                 return {"success": False, "error": "Message not found"}
 
+            # 软件授权门禁(全停):无效授权下不外发,直接置失败,避免绕过 API 直推队列
+            try:
+                from app.core.license import get_license_status
+                _lic = await get_license_status(db)
+                if not _lic.get("valid_for_send"):
+                    sms_log.status = "failed"
+                    sms_log.error_message = f"软件授权无效:{_lic.get('message') or _lic.get('state')}"
+                    await db.commit()
+                    if sms_log.batch_id:
+                        await update_batch_progress(db, sms_log.batch_id)
+                    logger.warning(f"授权无效拦截发送: {message_id} state={_lic.get('state')}")
+                    return {"success": False, "license_blocked": True, "state": _lic.get("state")}
+            except Exception as _le:
+                # 授权检查异常不应阻断业务(fail-open 仅限检查本身报错,验签失败仍是 invalid 走上面)
+                logger.error(f"授权检查异常,放行本条: {message_id}, {_le}")
+
             # 批次已取消：不再入队 SMPP / 不再发 HTTP，待发记录直接失败（避免队列残留任务仍打到通道）
             if sms_log.batch_id:
                 _bs = (

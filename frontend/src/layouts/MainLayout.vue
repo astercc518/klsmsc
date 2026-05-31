@@ -1,5 +1,9 @@
 <template>
   <div class="app-layout" :class="{ 'light-mode': theme === 'light' }">
+    <!-- 软件授权告警横幅 -->
+    <div v-if="licenseBanner" class="license-banner" :class="licenseBanner.type">
+      <span class="lic-ico">⚠</span> {{ licenseBanner.msg }}
+    </div>
     <!-- 背景装饰 -->
     <div class="bg-decoration">
       <div class="orb orb-1"></div>
@@ -20,10 +24,10 @@
         <div class="logo-area">
           <div class="logo-wrapper" @click="toggleSidebar">
             <div class="logo-icon">
-              <img src="/favicon.svg?v=koala2" alt="考拉出海" width="30" height="30" />
+              <img :src="brandLogo || '/favicon.svg?v=koala2'" :alt="brandName || '考拉出海'" width="30" height="30" />
             </div>
             <transition name="fade">
-              <span class="logo-text" v-if="!sidebarCollapsed">{{ $t('brand.name') }}</span>
+              <span class="logo-text" v-if="!sidebarCollapsed">{{ brandName || $t('brand.name') }}</span>
             </transition>
           </div>
         </div>
@@ -720,12 +724,39 @@ import { ElMessage } from 'element-plus'
 import { getAccountInfo } from '@/api/account'
 import { setLocale, getLocale } from '@/i18n'
 import { CUSTOMER_SMS_NAV } from '@/config/customerSmsNav'
+import { useAuthStore } from '@/stores/auth'
+import { getLicenseStatus, getBrand } from '@/api/license'
 
 const customerSmsNavItems = CUSTOMER_SMS_NAV
 
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
+const authStore = useAuthStore()
+
+// 软件授权:横幅 + OEM 白标
+const lic = ref<{ state: string; valid_for_send: boolean; days_left: number | null; message: string }>(
+  { state: '', valid_for_send: true, days_left: null, message: '' }
+)
+const brandName = ref('')
+const brandLogo = ref('')
+const licenseBanner = computed(() => {
+  const st = lic.value.state
+  if (st && st !== 'missing' && !lic.value.valid_for_send) return { type: 'error', msg: lic.value.message }
+  if (st === 'grace' || st === 'missing') return { type: 'warning', msg: lic.value.message }
+  const d = lic.value.days_left
+  if (d !== null && d !== undefined && d >= 0 && d < 15) return { type: 'warning', msg: t('license.expiringSoon', { d }) }
+  return null
+})
+async function loadLicenseAndBrand() {
+  try {
+    const b: any = await getBrand()
+    if (b?.brand) { brandName.value = b.brand.name || ''; brandLogo.value = b.brand.logo || '' }
+  } catch { /* 公开接口失败不影响 */ }
+  if (authStore.isAdmin) {
+    try { const r: any = await getLicenseStatus(); Object.assign(lic.value, r.license || {}) } catch { /* 非超管或无权限忽略 */ }
+  }
+}
 
 const sidebarCollapsed = ref(false)
 const isMobile = ref(false)
@@ -938,6 +969,7 @@ onMounted(() => {
   checkMobile()
   refreshUserInfo()
   loadCustomerServices()
+  loadLicenseAndBrand()
   window.addEventListener('resize', checkMobile)
   
   // 监听 storage 变化（其他标签页登录/登出）
@@ -965,6 +997,20 @@ watch([sidebarCollapsed, () => isMobile.value], () => {
 </script>
 
 <style scoped>
+.license-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 3000;
+  text-align: center;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+.license-banner.error { background: #f56c6c; }
+.license-banner.warning { background: #e6a23c; }
+.license-banner .lic-ico { margin-right: 6px; }
+
 .app-layout {
   min-height: 100vh;
   background: var(--bg-primary);

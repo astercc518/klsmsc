@@ -19,6 +19,9 @@
       <el-tab-pane label="短链域名" name="short_link_domains">
         <ShortLinkDomains />
       </el-tab-pane>
+      <el-tab-pane :label="$t('license.tab')" name="license">
+        <SystemLicense />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -30,6 +33,7 @@ import SystemLogs from './Logs.vue'
 import SystemServices from './Services.vue'
 import SystemSecurity from './Security.vue'
 import ShortLinkDomains from './ShortLinkDomains.vue'
+import SystemLicense from './License.vue'
 
 const activeTab = ref('config')
 </script>
