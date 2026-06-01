@@ -1911,9 +1911,10 @@ async def create_channel(
     await db.commit()
     await db.refresh(channel)
 
-    # 关联供应商
+    # 关联供应商：同时写 channels.supplier_id 硬主键（价格联动据此定位供应商）与 supplier_channels 关联表
     if request.supplier_id:
         from app.modules.sms.supplier import SupplierChannel
+        channel.supplier_id = request.supplier_id
         sc = SupplierChannel(
             supplier_id=request.supplier_id,
             channel_id=channel.id,
@@ -2012,8 +2013,10 @@ async def update_channel(
         channel.config_json = json.dumps(request.gateway_config, ensure_ascii=False) if request.gateway_config else None
 
     # 更新供应商关联（仅当请求中显式包含 supplier_id 时处理，传 null 表示清除）
+    # 同时维护 channels.supplier_id 硬主键与 supplier_channels 关联表，二者保持一致
     if 'supplier_id' in updated_fields:
         from app.modules.sms.supplier import SupplierChannel
+        channel.supplier_id = request.supplier_id or None
         await db.execute(
             SupplierChannel.__table__.delete().where(SupplierChannel.channel_id == channel_id)
         )
@@ -2962,6 +2965,34 @@ async def list_pricing(
     }
 
 
+async def _resolve_channel_supplier_id(db: AsyncSession, channel_id: int):
+    """
+    解析通道归属的供应商 id。
+
+    优先取 channels.supplier_id 硬主键；历史通道该列可能为空（早期保存只写了
+    supplier_channels 关联表），故回退取 supplier_channels 中最新的有效关联行。
+    两条价格联动（开户模板底价、资源报价）都靠它定位供应商，统一从这里取，
+    既覆盖新数据也兼容旧数据，无需手工重存通道。返回 None 表示通道未关联任何供应商。
+    """
+    from app.modules.sms.channel import Channel
+    from app.modules.sms.supplier import SupplierChannel
+
+    supplier_id = (await db.execute(
+        select(Channel.supplier_id).where(Channel.id == int(channel_id))
+    )).scalar_one_or_none()
+    if supplier_id:
+        return supplier_id
+    return (await db.execute(
+        select(SupplierChannel.supplier_id)
+        .where(
+            SupplierChannel.channel_id == int(channel_id),
+            SupplierChannel.status == 'active',
+        )
+        .order_by(SupplierChannel.id.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+
+
 async def _sync_template_floor_price(
     db: AsyncSession, channel_id: int, country_code: str, price, country_name: str = None
 ) -> int:
@@ -2976,9 +3007,10 @@ async def _sync_template_floor_price(
 
     行为：
     - 已有匹配模板 → 更新 default_price。
-    - 无匹配模板 → 自动新建一个（继承同通道其它短信模板的供应商群与命名风格），
-      使新增国家的价格也能贯通到开户模板，无需手工补建。同通道无任何短信模板
-      时无从推断供应商群，跳过新建（返回 0）。
+    - 无匹配模板 → 自动新建一个，供应商群与命名风格优先继承同通道其它短信模板；
+      同通道尚无任何短信模板时（全新供应商/通道首次配价），回退用 channels.supplier_id
+      → suppliers 推断供应商群，仍自动建出首个开户模板。仅当通道也未关联供应商时
+      才跳过新建（返回 0）。
 
     返回受影响（更新或新建）模板数。
     """
@@ -3008,28 +3040,49 @@ async def _sync_template_floor_price(
         )
         return len(templates)
 
-    # 无匹配模板：从同通道任一短信模板继承供应商群与命名风格后自动新建
+    # 无匹配模板：自动新建一个。供应商群与命名风格的推断有两条来源——
+    # 1) 优先继承同通道任一短信模板(sibling)，沿用其供应商群与命名风格；
+    # 2) 全新通道尚无任何短信模板时，回退用 channels.supplier_id → suppliers 推断，
+    #    使全新供应商/通道首次配价也能自动建出首个开户模板（无需先手工补建）。
+    from app.api.v1.account_templates import generate_template_code
+    iso2 = normalize_country_code(country_code) or str(country_code).strip().upper()
+    cn_name = country_name or iso2
+
     sibling = (await db.execute(
         select(AccountTemplate).where(
             AccountTemplate.business_type == 'sms',
             func.json_contains(AccountTemplate.channel_ids, str(int(channel_id))),
         ).limit(1)
     )).scalar_one_or_none()
-    if sibling is None:
-        logger.info(
-            f"通道价格联动开户模板底价: channel={channel_id} country={country_code} "
-            f"无同通道短信模板可推断供应商群，跳过自动新建"
-        )
-        return 0
 
-    from app.api.v1.account_templates import generate_template_code
-    iso2 = normalize_country_code(country_code) or str(country_code).strip().upper()
-    cn_name = country_name or iso2
-    # 沿用 sibling 的命名风格：把其国家名替换为新国家名（如 "KMI通信加纳" -> "KMI通信赞比亚"）
-    if sibling.country_name and sibling.template_name and sibling.country_name in sibling.template_name:
-        new_name = sibling.template_name.replace(sibling.country_name, cn_name)
+    if sibling is not None:
+        group_id = sibling.supplier_group_id
+        group_name = sibling.supplier_group_name
+        # 沿用 sibling 的命名风格：把其国家名替换为新国家名（如 "KMI通信加纳" -> "KMI通信赞比亚"）
+        if sibling.country_name and sibling.template_name and sibling.country_name in sibling.template_name:
+            new_name = sibling.template_name.replace(sibling.country_name, cn_name)
+        else:
+            new_name = f"{group_name or ''}{cn_name}".strip() or cn_name
     else:
-        new_name = f"{sibling.supplier_group_name or ''}{cn_name}".strip() or cn_name
+        # 回退：从通道关联的供应商推断供应商群（兼容 channels.supplier_id 与 supplier_channels）
+        from app.modules.sms.supplier import Supplier
+        supplier_id = await _resolve_channel_supplier_id(db, channel_id)
+        supplier = (await db.execute(
+            select(Supplier).where(Supplier.id == int(supplier_id))
+        )).scalar_one_or_none() if supplier_id else None
+        if supplier is None:
+            logger.info(
+                f"通道价格联动开户模板底价: channel={channel_id} country={country_code} "
+                f"无同通道短信模板且通道未关联供应商，跳过自动新建"
+            )
+            return 0
+        group_name = supplier.supplier_group or supplier.supplier_name
+        # 模板 supplier_group_id 语义为供应商TG群ID(BigInteger)；仅当 telegram_group_id 为纯数字时填入
+        group_id = None
+        tg = (supplier.telegram_group_id or '').strip()
+        if tg.lstrip('-').isdigit():
+            group_id = int(tg)
+        new_name = f"{group_name or ''}{cn_name}".strip() or cn_name
 
     # 生成唯一模板编码
     template_code = None
@@ -3054,8 +3107,8 @@ async def _sync_template_floor_price(
         business_type='sms',
         country_code=iso2,
         country_name=cn_name,
-        supplier_group_id=sibling.supplier_group_id,
-        supplier_group_name=sibling.supplier_group_name,
+        supplier_group_id=group_id,
+        supplier_group_name=group_name,
         channel_ids=[int(channel_id)],
         default_price=new_price,
         status='active',
@@ -3084,15 +3137,12 @@ async def _sync_supplier_rate(
     price_source 标记用于与 Excel 导入隔离：导入逻辑不覆盖 price_source='channel' 的行。
     返回受影响（更新或新建）行数。
     """
-    from app.modules.sms.channel import Channel
     from app.modules.sms.supplier import SupplierRate
     from app.utils.country_code import get_country_variants, normalize_country_code
     from collections import Counter
     from decimal import Decimal
 
-    supplier_id = (await db.execute(
-        select(Channel.supplier_id).where(Channel.id == int(channel_id))
-    )).scalar_one_or_none()
+    supplier_id = await _resolve_channel_supplier_id(db, channel_id)
     if not supplier_id:
         logger.info(f"资源报价联动跳过: channel={channel_id} 未关联供应商(supplier_id 为空)")
         return 0
