@@ -436,6 +436,29 @@
           {{ $t('channels.rateControlTip') }}
         </div>
 
+        <template v-if="form.protocol !== 'VIRTUAL'">
+          <el-row :gutter="24">
+            <el-col :span="8">
+              <el-form-item label="回执超时">
+                <el-input-number
+                  v-model="form.dlr_sent_timeout_hours"
+                  :min="4"
+                  :max="720"
+                  :value-on-clear="null"
+                  placeholder="默认"
+                  controls-position="right"
+                  style="width: 100%"
+                >
+                  <template #suffix>小时</template>
+                </el-input-number>
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <div class="form-tip">
+            提交上游后超过该时长仍未收到回执，自动标记为「已过期」并按未送达处理。留空使用系统默认；范围 4–720 小时。
+          </div>
+        </template>
+
         <el-divider content-position="left">违禁词管理</el-divider>
         <el-form-item label="全局违禁词">
           <el-input
@@ -1048,6 +1071,7 @@ const form = reactive({
   supplier_id: null as number | null,
   banned_words: '',
   remark: '',
+  dlr_sent_timeout_hours: null as number | null,
   virtual_config: defaultVirtualConfig(),
 })
 
@@ -1142,6 +1166,7 @@ const handleCreate = () => {
     supplier_id: null,
     banned_words: '',
     remark: '',
+    dlr_sent_timeout_hours: null,
     virtual_config: defaultVirtualConfig(),
   })
   formVisible.value = true
@@ -1170,6 +1195,7 @@ const handleEdit = async (row: any) => {
     supplier_id: row.supplier?.id ?? null,
     banned_words: row.banned_words ?? '',
     remark: row.remark ?? '',
+    dlr_sent_timeout_hours: null,
     virtual_config: row.virtual_config ? { ...defaultVirtualConfig(), ...row.virtual_config } : defaultVirtualConfig(),
   })
   formVisible.value = true
@@ -1199,6 +1225,7 @@ const handleEdit = async (row: any) => {
         supplier_id: ch.supplier_id ?? row.supplier?.id ?? null,
         banned_words: ch.banned_words ?? '',
         remark: ch.remark ?? '',
+        dlr_sent_timeout_hours: ch.dlr_sent_timeout_hours ?? null,
         virtual_config: ch.virtual_config ? { ...defaultVirtualConfig(), ...ch.virtual_config } : defaultVirtualConfig(),
       })
     } else {
@@ -1460,6 +1487,9 @@ const submitForm = async () => {
       updatePayload.supplier_id = form.supplier_id ?? null
       updatePayload.banned_words = form.banned_words || null
       updatePayload.remark = form.remark || null
+      if (form.protocol !== 'VIRTUAL') {
+        updatePayload.dlr_sent_timeout_hours = form.dlr_sent_timeout_hours ?? null
+      }
       if (form.protocol === 'VIRTUAL') {
         updatePayload.virtual_config = form.virtual_config
       }
@@ -1505,6 +1535,9 @@ const submitForm = async () => {
       }
       if (form.remark) {
         createPayload.remark = form.remark
+      }
+      if (form.protocol !== 'VIRTUAL' && form.dlr_sent_timeout_hours != null) {
+        createPayload.dlr_sent_timeout_hours = form.dlr_sent_timeout_hours
       }
       if (form.protocol === 'VIRTUAL') {
         createPayload.virtual_config = form.virtual_config

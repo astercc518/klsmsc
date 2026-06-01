@@ -968,6 +968,18 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 
 func (m *SMPPManager) handleDeliverSM(deliver *pdu.DeliverSM, cfg ChannelConfig) {
 	msg, _ := deliver.Message.GetMessage()
+
+	// 兼容上游回执的非标准 data_coding：部分上游（如 YZ_kafa/一正卡发）把 deliver_sm 回执的
+	// data_coding 置为 0x04(8-bit binary)，gosmpp 的编码感知 GetMessage() 对该 DCS 解不出文本（返回空），
+	// 导致回执串 "id:.. stat:DELIVRD" 丢失、消息永远卡在 sent。回执正文按 SMPP 规范恒为 ASCII，
+	// 故 GetMessage() 取不到标准回执串时，回退用原始字节按 ASCII 解析。
+	if !strings.Contains(msg, "id:") || !strings.Contains(msg, "stat:") {
+		if raw, err := deliver.Message.GetMessageData(); err == nil && len(raw) > 0 {
+			if rawStr := string(raw); strings.Contains(rawStr, "id:") || strings.Contains(rawStr, "stat:") {
+				msg = rawStr
+			}
+		}
+	}
 	log.Printf("Received DeliverSM: %s", msg)
 
 	// Extract id and stat from DLR text
