@@ -66,6 +66,10 @@ def _make_fresh_session():
         pool_pre_ping=True,
         pool_recycle=600,
         connect_args=_DB_CONNECT_ARGS,
+        # READ COMMITTED：去掉 REPEATABLE-READ 的 gap/next-key 锁，根除多分片并发
+        # INSERT 同一 batch_id 到 sms_logs 热点二级索引时互相成环的 1213 死锁
+        # （batch 813 事故：offset 114000/116000/118000 三片 INSERT 死锁整片丢失 6000 条）。
+        isolation_level="READ COMMITTED",
     )
     factory = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
     return eng, factory
@@ -512,7 +516,7 @@ async def _queue_commit_batch(
 
 # ============ 大批量分片处理 ============
 
-@celery_app.task(name='process_batch_chunk', bind=True, max_retries=1,
+@celery_app.task(name='process_batch_chunk', bind=True, max_retries=3,
                  soft_time_limit=15 * 60, time_limit=20 * 60,
                  acks_late=True, reject_on_worker_lost=True)
 def process_batch_chunk(
@@ -528,10 +532,30 @@ def process_batch_chunk(
 ):
     """处理一个分片（规模由 API 的 CHUNK_SIZE 决定，通常 ≤5000）：校验 → 计费 → 写库 → 入队"""
     logger.info(f"分片处理开始: batch={batch_id}, offset={start_offset}, count={len(phone_numbers)}")
-    return _run_async(_do_process_chunk(
-        batch_id, account_id, phone_numbers, message,
-        rot_messages, start_offset, channel_id, sender_id,
-    ))
+    # 默认 60s 不够：1000~5000 行 INSERT + 短链替换 + commit + 入队，MySQL 略有负载就会超时
+    # （线上事故：批次 638 被 60s 超时杀掉，已扣费但消息未发）。改为 10 分钟，靠 Celery soft/hard limit 兜底。
+    try:
+        return _run_async(_do_process_chunk(
+            batch_id, account_id, phone_numbers, message,
+            rot_messages, start_offset, channel_id, sender_id,
+        ), timeout=float(os.getenv("WORKER_CHUNK_TASK_TIMEOUT_SEC", "600")))
+    except Exception as e:
+        # 兜底：内层 1205/1213 重试耗尽、或扣费 commit 阶段撞锁，整片异常上抛到此。
+        # 此时 _do_process_chunk 已对 succeeded==0 的分片退款，整片任务级重跑是干净的
+        # （重跑顶部 already_done 幂等去重已落库的号码，退款后重新扣费，账目一致）。
+        # 绝不让分片静默丢失（batch 813 事故：3 片 INSERT 死锁直接 raise，6000 条蒸发）。
+        import random as _rnd
+        from sqlalchemy.exc import OperationalError as _OpErr
+        _is_lock_err = isinstance(e, _OpErr) and (
+            (getattr(e.orig, 'args', None) or [None])[0] in (1205, 1213)
+        )
+        if _is_lock_err and self.request.retries < self.max_retries:
+            logger.warning(
+                f"分片整体撞锁，任务级重试 {self.request.retries + 1}/{self.max_retries}: "
+                f"batch={batch_id}, offset={start_offset}, err={e}"
+            )
+            raise self.retry(exc=e, countdown=2 + _rnd.uniform(0, 3))
+        raise
 
 
 async def _do_process_chunk(
@@ -922,61 +946,91 @@ async def _do_process_chunk(
                         _t3 = time.time()
                         from app.utils.smpp_payload import smpp_payload_public_dict
 
+                        from sqlalchemy.exc import OperationalError as _OpErr
                         for _c0 in range(0, len(valid_items), _db_log_chunk):
                             sub_items = valid_items[_c0 : _c0 + _db_log_chunk]
-                            chunk_logs: List[SMSLog] = []
-                            smpp_logs_batch = []
+
+                            # 写库阶段同样会撞 1205/1213：多分片并发 INSERT 同一 batch_id 到
+                            # sms_logs 热点二级索引时互相成环（batch 813 死锁丢片正是发生在此处，
+                            # 而非扣费）。与扣费同款重试退避：撞锁则回滚、重建对象重试，绝不让整片丢失。
+                            _vmids_mark = len(virtual_message_ids)
+                            _write_attempts = 5
+                            smpp_payloads = []
                             http_mids = []
-                            _batch_channel = None
+                            for _w_atmpt in range(_write_attempts):
+                                # 重试前回退本子块上次尝试已追加的虚拟ID，避免重复
+                                del virtual_message_ids[_vmids_mark:]
+                                chunk_logs: List[SMSLog] = []
+                                smpp_logs_batch = []
+                                http_mids = []
+                                _batch_channel = None
 
-                            for phone_info, cc, final_msg, msg_count, batch_index, ch in sub_items:
-                                sell_pp, currency, cost_pp = price_cache[(ch.id, cc)]
-                                mid = f"msg_{uuid.uuid4().hex}"
-                                _batch_channel = ch
+                                for phone_info, cc, final_msg, msg_count, batch_index, ch in sub_items:
+                                    sell_pp, currency, cost_pp = price_cache[(ch.id, cc)]
+                                    mid = f"msg_{uuid.uuid4().hex}"
+                                    _batch_channel = ch
 
-                                if ch.protocol == 'VIRTUAL':
-                                    is_virtual_channel = True
-                                    virtual_channel_id = ch.id
-                                    init_status = 'pending'
-                                elif 'SMPP' in str(ch.protocol).upper():
-                                    # SMPP：写库用 pending，Go 网关取到消息后再改 queued 并写 submit_time。
-                                    init_status = 'pending'
-                                else:
-                                    init_status = 'queued'
+                                    if ch.protocol == 'VIRTUAL':
+                                        is_virtual_channel = True
+                                        virtual_channel_id = ch.id
+                                        init_status = 'pending'
+                                    elif 'SMPP' in str(ch.protocol).upper():
+                                        # SMPP：写库用 pending，Go 网关取到消息后再改 queued 并写 submit_time。
+                                        init_status = 'pending'
+                                    else:
+                                        init_status = 'queued'
 
-                                sms_log = SMSLog(
-                                    message_id=mid, account_id=account_id, channel_id=ch.id,
-                                    phone_number=phone_info['e164_format'], country_code=cc,
-                                    message=final_msg, message_count=msg_count,
-                                    status=init_status, cost_price=float(cost_pp * msg_count),
-                                    selling_price=float(sell_pp * msg_count), currency=currency,
-                                    submit_time=now, batch_id=batch_id,
-                                )
-                                if ch.protocol == 'VIRTUAL':
-                                    sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
-                                    virtual_message_ids.append(mid)
-                                chunk_logs.append(sms_log)
+                                    sms_log = SMSLog(
+                                        message_id=mid, account_id=account_id, channel_id=ch.id,
+                                        phone_number=phone_info['e164_format'], country_code=cc,
+                                        message=final_msg, message_count=msg_count,
+                                        status=init_status, cost_price=float(cost_pp * msg_count),
+                                        selling_price=float(sell_pp * msg_count), currency=currency,
+                                        submit_time=now, batch_id=batch_id,
+                                    )
+                                    if ch.protocol == 'VIRTUAL':
+                                        sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
+                                        virtual_message_ids.append(mid)
+                                    chunk_logs.append(sms_log)
 
-                                _proto = str(ch.protocol).upper()
-                                if 'SMPP' in _proto:
-                                    smpp_logs_batch.append(sms_log)
-                                elif ch.protocol != 'VIRTUAL':
-                                    http_mids.append(mid)
+                                    _proto = str(ch.protocol).upper()
+                                    if 'SMPP' in _proto:
+                                        smpp_logs_batch.append(sms_log)
+                                    elif ch.protocol != 'VIRTUAL':
+                                        http_mids.append(mid)
 
-                            if chunk_logs:
-                                db.add_all(chunk_logs)
-                                await db.flush()
+                                try:
+                                    if chunk_logs:
+                                        db.add_all(chunk_logs)
+                                        await db.flush()
 
-                            # batch_worker 直接组装 SMPP 负载丢给 Go 网关、绕过 sms_worker._send_sms_async，
-                            # 所以短链占位符必须在这里替换。否则 SMS 发出去仍是 {{TRACK_URL=...}}（线上事故）。
-                            await _replace_track_urls_for_logs(db, chunk_logs)
+                                    # batch_worker 直接组装 SMPP 负载丢给 Go 网关、绕过 sms_worker._send_sms_async，
+                                    # 所以短链占位符必须在这里替换。否则 SMS 发出去仍是 {{TRACK_URL=...}}（线上事故）。
+                                    await _replace_track_urls_for_logs(db, chunk_logs)
 
-                            smpp_payloads = [
-                                smpp_payload_public_dict(sl, _batch_status_str)
-                                for sl in smpp_logs_batch
-                            ]
-                            await db.commit()
+                                    smpp_payloads = [
+                                        smpp_payload_public_dict(sl, _batch_status_str)
+                                        for sl in smpp_logs_batch
+                                    ]
+                                    await db.commit()
+                                    break
+                                except _OpErr as _werr:
+                                    _wo = getattr(_werr, 'orig', None)
+                                    _wc = (_wo.args[0] if _wo and getattr(_wo, 'args', None) else None)
+                                    if _wc in (1205, 1213) and _w_atmpt < _write_attempts - 1:
+                                        logger.warning(
+                                            f"分片写库行锁冲突({_wc}) retry={_w_atmpt+1}: "
+                                            f"batch={batch_id}, offset={start_offset}"
+                                        )
+                                        try:
+                                            await db.rollback()
+                                        except Exception:
+                                            pass
+                                        await asyncio.sleep(0.5 + _w_atmpt * 0.5)
+                                        continue
+                                    raise
 
+                            # commit 成功后再入队 + 计数（撞锁重试期间不会误计）
                             if smpp_payloads:
                                 if QueueManager.queue_sms_batch_smpp(smpp_payloads):
                                     succeeded += len(smpp_payloads)
