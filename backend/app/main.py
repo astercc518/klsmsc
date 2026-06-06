@@ -96,9 +96,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     errors = exc.errors()
     # P2-FIX: 不记录请求体，防止泄露密码/Token
     logger.error(f"Pydantic验证错误: path={request.url.path}, errors={errors}")
+    # jsonable_encoder: Pydantic v2 的 errors() 在自定义校验器抛 ValueError 时，
+    # ctx 里含不可 JSON 序列化的 ValueError 对象；不转换会导致 500，转成字符串后正常返回 422。
+    from fastapi.encoders import jsonable_encoder
     return JSONResponse(
         status_code=422,
-        content={"detail": errors}
+        content={"detail": jsonable_encoder(errors)}
     )
 
 @app.exception_handler(SMSGatewayException)
