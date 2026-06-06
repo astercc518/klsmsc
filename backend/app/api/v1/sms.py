@@ -262,6 +262,7 @@ async def submit_sms_core(
     channel_id: Optional[int] = None,
     http_credentials: Optional[dict] = None,
     message_id_hint: Optional[str] = None,
+    defer_balance_log: bool = False,
 ) -> SMSSendResponse:
     """
     SMS 提交核心逻辑。供 HTTP /sms/send 与 SMPP 入站内部端点共享。
@@ -377,7 +378,10 @@ async def submit_sms_core(
             account_id=account.id,
             channel_id=channel.id,
             country_code=country_code,
-            message=final_message
+            message=final_message,
+            # 入站 SMPP：跳过锁窗口内的"二次查余额+逐条BalanceLog+flush",仅做原子扣减，
+            # 计费流水改到 commit 后补写，缩短账户余额行锁持有时间、提升入站吞吐。
+            skip_balance_log=defer_balance_log,
         )
 
         if not charge_result['success']:
@@ -415,6 +419,27 @@ async def submit_sms_core(
 
         # Worker 使用独立 DB 连接，须先提交本事务，否则可能读不到未提交的 SMSLog（Message not found → 永久 queued）
         await db.commit()
+
+        # 入站(defer)模式：计费流水移出账户行锁窗口，commit 后单独写一条 BalanceLog。
+        # 余额已在上面的原子 UPDATE 中扣减（随本次 commit 落库），此处仅补审计流水；
+        # 即使补写失败也不影响计费正确性，只是少一行审计记录。balance_after 在并发下为近似值。
+        if defer_balance_log and charge_result.get('success'):
+            try:
+                from decimal import Decimal as _Dec
+                _bal_after = (await db.execute(
+                    select(Account.balance).where(Account.id == account.id)
+                )).scalar()
+                db.add(BalanceLog(
+                    account_id=account.id,
+                    change_type='charge',
+                    amount=-_Dec(str(charge_result['total_cost'])),
+                    balance_after=_bal_after,
+                    description=f"SMS charge: {charge_result['message_count']} parts to {country_code} ({charge_result['currency']})",
+                ))
+                await db.commit()
+            except Exception as _ble:
+                logger.warning(f"入站计费流水补写失败(余额已扣,计费无误): {message_id}, {_ble}")
+                await db.rollback()
 
         # 8. 发送到消息队列（后台任务）
         from app.utils.queue import QueueManager

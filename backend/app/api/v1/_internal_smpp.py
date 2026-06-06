@@ -85,4 +85,5 @@ async def smpp_submit(
         channel_id=None,
         http_credentials=None,
         message_id_hint=body.message_id,
+        defer_balance_log=True,  # 入站高并发：计费流水移出账户行锁窗口，提升落库吞吐
     )
