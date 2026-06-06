@@ -598,7 +598,8 @@ async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: di
     try:
         logger.info(f"通过HTTP发送短信: {sms_log.message_id} via {channel.channel_code}")
 
-        extno = channel.default_sender_id or ""
+        # 发送方ID(SID)：优先本条自选(客户按通道+国家选,已白名单校验)，空则回退通道默认
+        extno = (getattr(sms_log, "sender_id", None) or channel.default_sender_id or "")
 
         if not channel.api_url:
             logger.info(f"HTTP通道未配置api_url，使用模拟模式: {sms_log.message_id}")

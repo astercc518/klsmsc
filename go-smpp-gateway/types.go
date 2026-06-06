@@ -55,6 +55,8 @@ type SMSLogData struct {
 	BatchStatus  string `json:"batch_status"`
 	RecordStatus string `json:"record_status"`
 	BatchID      int64  `json:"batch_id"` // 关联 sms_batches.id；0 表示单发非批次
+	// SenderID 本条实际使用的发送方ID(SID)；客户发送时按通道+国家自选。空则回退 cfg.DefaultSenderID。
+	SenderID     string `json:"sender_id,omitempty"`
 	// ThrottleRetry 上游 ESME_RTHROTTLED(88) 限流重投计数。Python 投递时不带此字段(默认 0)，
 	// 由网关在每次限流重投时自增，达到上限后落 failed，防止持续限流导致无限重投。
 	ThrottleRetry int `json:"throttle_retry,omitempty"`

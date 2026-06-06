@@ -12,10 +12,13 @@ def smpp_payload_public_dict_from_row(
     record_status: str,
     batch_status: str = "",
     batch_id: int = 0,
+    sender_id: str = "",
 ) -> dict:
     """
     将 Core 查询行 / 原生字段转为投递 sms_send_smpp 的 JSON（与 Go 侧 SMSLogData 对齐）。
     避免 Worker 侧构造 SMSLog ORM 仅用于组负载。
+
+    sender_id — 本条实际使用的发送方ID(SID)；空则由网关回退 channel.default_sender_id。
     """
     bs = getattr(batch_status, "value", batch_status) if batch_status is not None else ""
     st = getattr(record_status, "value", record_status) or ""
@@ -28,6 +31,7 @@ def smpp_payload_public_dict_from_row(
         "batch_status": str(bs or ""),
         "record_status": str(st),
         "batch_id": int(batch_id or 0),
+        "sender_id": str(sender_id or ""),
     }
 
 
@@ -50,4 +54,5 @@ def smpp_payload_public_dict(sms_log, batch_status: str = "") -> dict:
         st,
         bs,
         int(sms_log.batch_id or 0),
+        getattr(sms_log, "sender_id", "") or "",
     )

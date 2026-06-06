@@ -391,7 +391,24 @@
                   {{ $t('smsSend.senderId') }}
                   <span class="optional">{{ $t('common.optional') }}</span>
                 </label>
+                <!-- 该通道+目的国家已配置可选 SID 时显示下拉；否则回退自由输入 -->
+                <el-select
+                  v-if="availableSids.length > 0"
+                  v-model="form.sender_id"
+                  :placeholder="$t('smsSend.senderIdPlaceholder')"
+                  size="default"
+                  class="custom-select"
+                  clearable
+                >
+                  <el-option
+                    v-for="s in availableSids"
+                    :key="s.sender_id"
+                    :value="s.sender_id"
+                    :label="s.is_default ? (s.sender_id + ' (默认)') : s.sender_id"
+                  />
+                </el-select>
                 <el-input
+                  v-else
                   v-model="form.sender_id"
                   :placeholder="$t('smsSend.senderIdPlaceholder')"
                   size="default"
@@ -982,7 +999,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick, Link } from '@element-plus/icons-vue'
 import ShortLinkConvertDialog from '../../components/ShortLinkConvertDialog.vue'
-import { sendBatchSMS, submitSmsApproval } from '@/api/sms'
+import { sendBatchSMS, submitSmsApproval, getChannelSenderIds } from '@/api/sms'
 import { getChannels } from '@/api/channel'
 import { getChannelBannedWords } from '@/api/sms'
 import { getBatchDetail } from '@/api/batch'
@@ -2103,6 +2120,33 @@ const parseNumbers = () => {
   if (!form.value.phone_numbers_text) return []
   return form.value.phone_numbers_text.split(/[\n,;\s]+/).map(n => n.trim()).filter(n => n.length >= 5)
 }
+
+// ===== 发送者ID(SID)下拉：按"通道 + 目的国家(取首个收件号码)"拉取已审批的可用 SID =====
+const availableSids = ref<{ sender_id: string; sid_type?: string; is_default?: boolean }[]>([])
+/** 首个收件号码推断的目的国家 ISO2（决定可用 SID 集合） */
+const sidTargetCountry = computed(() => {
+  const nums = parseNumbers()
+  return nums.length ? inferCountryIsoFromPhone(nums[0]) : ''
+})
+async function loadSenderIds() {
+  const chId = form.value.channel_id
+  const cc = sidTargetCountry.value
+  if (!chId || !cc) { availableSids.value = []; return }
+  try {
+    const res: any = await getChannelSenderIds(chId, cc)
+    availableSids.value = res?.items || []
+    // 当前已选 SID 不在新列表中则清空，避免发送时被白名单拒绝；有默认则自动选默认
+    const cur = form.value.sender_id
+    if (cur && !availableSids.value.some(s => s.sender_id === cur)) form.value.sender_id = ''
+    if (!form.value.sender_id) {
+      const def = availableSids.value.find(s => s.is_default)
+      if (def) form.value.sender_id = def.sender_id
+    }
+  } catch (e) {
+    availableSids.value = []
+  }
+}
+watch([() => form.value.channel_id, sidTargetCountry], loadSenderIds, { immediate: false })
 
 /** 模板智能生成：根据短信内容框识别语言 */
 function applyTplLangFromText() {

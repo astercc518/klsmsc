@@ -16,6 +16,19 @@ from app.workers.celery_app import celery_app
 from app.config import settings
 from app.modules.sms.sms_batch import SmsBatch, BatchStatus
 from app.modules.sms.sms_log import SMSLog
+
+
+async def _resolve_batch_sid(db, channel_id, cc, requested, cache: dict):
+    """批量发送解析本条 SID：仅当 requested 在该(通道,国家)已审批(active)时使用，否则返回 None
+    （回退 channel.default_sender_id）。按 (channel_id, cc) 缓存，避免逐条查库。"""
+    if not requested or not channel_id or not cc:
+        return None
+    key = (channel_id, cc)
+    if key not in cache:
+        from app.utils.sender_id_resolver import resolve_sender_id
+        sid, err = await resolve_sender_id(db, channel_id, cc, requested)
+        cache[key] = None if err else sid
+    return cache[key]
 from app.modules.sms.sms_template import SmsTemplate
 from app.modules.common.account import Account
 from app.core.pricing import PricingEngine
@@ -577,6 +590,7 @@ async def _do_process_chunk(
     succeeded = 0
     failed = 0
     use_rotate = len(rot_messages) > 0
+    _sid_cache: dict = {}  # (channel_id, cc) -> 解析后的 sender_id；批次自选 SID 的按国家白名单结果缓存
     _charged_amount = Decimal('0')  # 扣费已提交但未完成分片写库时的回滚金额
 
     try:
@@ -743,6 +757,7 @@ async def _do_process_chunk(
                                     submit_time=now, batch_id=batch_id,
                                 )
                                 sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
+                                sms_log.sender_id = await _resolve_batch_sid(db, _pre_channel.id, cc, sender_id, _sid_cache)
                                 _rows.append(sms_log)
                                 virtual_message_ids.append(mid)
                                 succeeded += 1
@@ -988,6 +1003,7 @@ async def _do_process_chunk(
                                         selling_price=float(sell_pp * msg_count), currency=currency,
                                         submit_time=now, batch_id=batch_id,
                                     )
+                                    sms_log.sender_id = await _resolve_batch_sid(db, ch.id, cc, sender_id, _sid_cache)
                                     if ch.protocol == 'VIRTUAL':
                                         sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
                                         virtual_message_ids.append(mid)
@@ -1080,6 +1096,7 @@ async def _do_process_chunk(
                                     currency=charge_result.get('currency', 'USD'),
                                     submit_time=datetime.now(), batch_id=batch_id,
                                 )
+                                sms_log.sender_id = await _resolve_batch_sid(db, ch.id, cc, sender_id, _sid_cache)
                                 if ch.protocol == 'VIRTUAL':
                                     sms_log.upstream_message_id = f"VIRT-{uuid.uuid4().hex[:12]}"
                                     virtual_message_ids.append(mid)

@@ -1182,9 +1182,15 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 		defer subMu.Unlock()
 	}
 
+	// 发送方ID(SID)：优先用本条 payload 指定的(客户按通道+国家自选,后端已白名单校验);空则回退通道默认
+	srcSID := cfg.DefaultSenderID
+	if payload.SenderID != "" {
+		srcSID = payload.SenderID
+	}
+
 	s := pdu.NewSubmitSM().(*pdu.SubmitSM)
 	s.SourceAddr = pdu.NewAddress()
-	s.SourceAddr.SetAddress(cfg.DefaultSenderID)
+	s.SourceAddr.SetAddress(srcSID)
 	s.DestAddr = pdu.NewAddress()
 	destDigits := phoneNumber
 	if stripLeadingPlusFromConfigJSON(cfg.ConfigJSON) {
@@ -1234,7 +1240,7 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 			} else {
 				psm = pdu.NewSubmitSM().(*pdu.SubmitSM)
 				psm.SourceAddr = pdu.NewAddress()
-				psm.SourceAddr.SetAddress(cfg.DefaultSenderID)
+				psm.SourceAddr.SetAddress(srcSID)
 				psm.DestAddr = pdu.NewAddress()
 				psm.DestAddr.SetAddress(destDigits)
 				psm.RegisteredDelivery = s.RegisteredDelivery

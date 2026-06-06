@@ -18,6 +18,11 @@ export const getSMSStatus = (messageId: string) => {
   return request.get(`/sms/status/${messageId}`)
 }
 
+// 发送页「发送者ID」下拉数据源：该通道在目的国家(ISO2)已审批(active)的可用 SID
+export const getChannelSenderIds = (channelId: number, countryCode: string) => {
+  return request.get(`/sms/channels/${channelId}/sender-ids`, { params: { country_code: countryCode } })
+}
+
 // 批量发送短信（会创建发送任务 batch，可在「发送任务」页查看进度）
 export const sendBatchSMS = (data: {
   phone_numbers?: string[]

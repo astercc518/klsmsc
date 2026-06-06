@@ -263,6 +263,7 @@ async def submit_sms_core(
     http_credentials: Optional[dict] = None,
     message_id_hint: Optional[str] = None,
     defer_balance_log: bool = False,
+    sender_id: Optional[str] = None,
 ) -> SMSSendResponse:
     """
     SMS 提交核心逻辑。供 HTTP /sms/send 与 SMPP 入站内部端点共享。
@@ -369,8 +370,15 @@ async def submit_sms_core(
 
         logger.info(f"选择通道: {channel.channel_code}")
 
-        # 4. 获取发送方ID (从通道获取默认SID)
-        sender_id = channel.default_sender_id
+        # 4. 解析发送方ID(SID)：白名单校验——客户自选的 SID 必须是该通道+目的国家已审批(active)的。
+        #    未指定则取该国家默认SID；无国家级配置则留空(resolved_sid=None)，由 worker 回退 channel.default_sender_id。
+        from app.utils.sender_id_resolver import resolve_sender_id
+        resolved_sid, _sid_err = await resolve_sender_id(db, channel.id, country_code, sender_id)
+        if _sid_err:
+            return SMSSendResponse(
+                success=False,
+                error={"code": "INVALID_SENDER_ID", "message": _sid_err},
+            )
 
         # 5. 计费 (Cost + Sell)
         pricing_engine = PricingEngine(db)
@@ -400,6 +408,7 @@ async def submit_sms_core(
             channel_id=channel.id,
             phone_number=phone_info['e164_format'],
             country_code=country_code,
+            sender_id=resolved_sid,
             message=final_message,
             message_count=charge_result['message_count'],
             status='queued',
@@ -507,7 +516,7 @@ async def send_sms(
 
     - **phone_number**: 目标电话号码（E.164格式）
     - **message**: 短信内容
-    - **sender_id**: (废弃字段，自动使用通道默认SID)
+    - **sender_id**: 发送方ID(SID)，可选；若指定必须是该通道+目的国家已审批(active)的 SID（白名单校验），不指定则用该国家默认SID/通道默认
     - **channel_id**: 指定通道ID（可选）
     - **callback_url**: 状态回调URL（可选）
     """
@@ -524,7 +533,25 @@ async def send_sms(
         message=request.message,
         channel_id=request.channel_id,
         http_credentials=http_credentials,
+        sender_id=request.sender_id,
     )
+
+
+@router.get("/channels/{channel_id}/sender-ids")
+async def list_available_sender_ids(
+    channel_id: int,
+    country_code: str,
+    account: Account = Depends(get_current_account_or_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """发送页「发送者ID」下拉数据源：列出该通道在指定目的国家已审批(active)的可用 SID。
+
+    country_code 用 ISO2（如 BR），与发送时号码解析出的国家、admin 配置的 country_code 一致。
+    """
+    from app.utils.sender_id_resolver import list_active_sender_ids
+    cc = (country_code or "").strip().upper()
+    items = await list_active_sender_ids(db, channel_id, cc)
+    return {"success": True, "channel_id": channel_id, "country_code": cc, "items": items}
 
 
 @router.get("/send")
@@ -1105,6 +1132,15 @@ async def send_batch_sms(
                                 "message_id": None, "error": {"code": "NO_CHANNEL", "message": "No available channel"}})
                 continue
 
+            # 发送方ID(SID) 解析+白名单校验（在计费前，避免非法SID白扣费）
+            from app.utils.sender_id_resolver import resolve_sender_id
+            _resolved_sid, _sid_err = await resolve_sender_id(db, channel.id, country_code, request.sender_id)
+            if _sid_err:
+                failed += 1
+                results.append({"phone_number": phone_number, "success": False,
+                                "message_id": None, "error": {"code": "INVALID_SENDER_ID", "message": _sid_err}})
+                continue
+
             # 通道 × 国家违禁词
             _c_hit = await _check_bw(db, final_message, channel_id=channel.id, country_code=country_code)
             if _c_hit:
@@ -1139,6 +1175,7 @@ async def send_batch_sms(
             sms_log = SMSLog(
                 message_id=message_id, account_id=account.id, channel_id=channel.id,
                 phone_number=phone_info['e164_format'], country_code=country_code,
+                sender_id=_resolved_sid,
                 message=final_message, message_count=charge_result['message_count'],
                 status='queued', cost_price=charge_result.get('total_base_cost', 0),
                 selling_price=charge_result.get('total_cost', 0), currency=charge_result.get('currency', 'USD'),

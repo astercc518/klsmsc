@@ -29,6 +29,7 @@ class SMSLog(Base):
     batch_id = Column(Integer, comment="关联批次ID")
     phone_number = Column(String(20), nullable=False, comment="目标号码")
     country_code = Column(String(3), comment="国家代码")
+    sender_id = Column(String(32), comment="本条实际使用的发送方ID(SID);空则用通道默认")
     message = Column(Text, comment="短信内容")
     message_count = Column(Integer, default=1, comment="短信条数")
     status = Column(
