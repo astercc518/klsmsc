@@ -166,6 +166,7 @@
               <el-button type="primary" link size="small" @click="handleViewDetail(row)">{{ $t('common.details') }}</el-button>
               <el-button type="warning" link size="small" @click="handleEdit(row)">{{ $t('common.edit') }}</el-button>
               <el-button type="info" link size="small" @click="openRouting(row)">{{ $t('channels.routing') }}</el-button>
+              <el-button type="warning" link size="small" @click="openSids(row)">SID</el-button>
               <el-button type="success" link size="small" @click="openPricing(row)">{{ $t('channels.pricing') }}</el-button>
               <el-button link size="small" @click="openTestSend(row)">{{ $t('channels.test') }}</el-button>
               <el-button link size="small" @click="handleCheckStatus(row)">{{ $t('channels.checkStatus') }}</el-button>
@@ -851,6 +852,67 @@
         <el-button type="primary" :loading="linkingSupplier" @click="handleLinkSupplier">{{ $t('channels.confirmLink') }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- 发送方ID(SID) 管理：按"通道 + 国家"配置可用 SID，客户发送页据此下拉选择 -->
+    <el-dialog v-model="sidsVisible" :title="`发送方ID(SID)管理${sidChannel ? ' - ' + (sidChannel.name || sidChannel.code) : ''}`" width="820px" destroy-on-close>
+      <div style="display:flex; gap:12px; align-items:center; margin-bottom:12px; flex-wrap:wrap;">
+        <span style="color:var(--el-text-color-secondary)">国家：</span>
+        <el-select v-model="sidCountry" filterable placeholder="选择目的国家" style="width:260px" @change="loadSids">
+          <el-option v-for="c in sidCountryOptions" :key="c.iso" :value="c.iso" :label="`${c.name} (${c.iso})`" />
+        </el-select>
+        <el-button type="primary" :disabled="!sidCountry" @click="openSidForm()">添加SID</el-button>
+        <span style="color:var(--el-text-color-secondary); font-size:12px;">仅"启用(active)"的SID会出现在客户发送页下拉</span>
+      </div>
+      <el-table :data="sidList" v-loading="sidLoading" size="small">
+        <el-table-column prop="sender_id" label="发送方ID" min-width="160" />
+        <el-table-column prop="sid_type" label="类型" width="110" />
+        <el-table-column label="状态" width="100" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.status==='active' ? 'success' : 'info'" size="small">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="默认" width="70" align="center">
+          <template #default="{ row }"><el-tag v-if="row.is_default" type="success" size="small">是</el-tag><span v-else>-</span></template>
+        </el-table-column>
+        <el-table-column label="操作" width="150" align="center">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openSidForm(row)">编辑</el-button>
+            <el-popconfirm title="确认删除该SID?" @confirm="deleteSid(row)">
+              <template #reference><el-button link type="danger" size="small">删除</el-button></template>
+            </el-popconfirm>
+          </template>
+        </el-table-column>
+        <template #empty>{{ sidCountry ? '该国家暂无SID，点"添加SID"' : '请先选择国家' }}</template>
+      </el-table>
+
+      <el-dialog v-model="sidFormVisible" :title="sidEditing ? '编辑SID' : '添加SID'" width="430px" append-to-body>
+        <el-form :model="sidForm" label-width="92px">
+          <el-form-item label="发送方ID" required>
+            <el-input v-model="sidForm.sender_id" :disabled="!!sidEditing" placeholder="如 TS01 / 10690 / 短码" />
+          </el-form-item>
+          <el-form-item label="类型">
+            <el-select v-model="sidForm.sid_type" style="width:100%">
+              <el-option label="字母 alpha" value="alpha" />
+              <el-option label="数字 numeric" value="numeric" />
+              <el-option label="短码 shortcode" value="shortcode" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="状态">
+            <el-select v-model="sidForm.status" style="width:100%">
+              <el-option label="启用 active" value="active" />
+              <el-option label="停用 inactive" value="inactive" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="设为默认">
+            <el-switch v-model="sidForm.is_default" />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="sidFormVisible=false">取消</el-button>
+          <el-button type="primary" @click="saveSid">保存</el-button>
+        </template>
+      </el-dialog>
+    </el-dialog>
   </div>
 </template>
 
@@ -858,6 +920,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
+import request from '@/api/index'
 import { Plus, Refresh, Search, Connection, CircleCheck, Promotion, Link, CircleClose, Loading, Clock, Position, User, Edit, Money, Monitor, More, View, Guide, Delete, ChatDotSquare, ArrowDown, InfoFilled } from '@element-plus/icons-vue'
 import CountrySelect from '@/components/CountrySelect.vue'
 import { COUNTRY_LIST, findCountryByDial, findCountryByIso } from '@/constants/countries'
@@ -1747,6 +1810,63 @@ const handleLinkSupplier = async () => {
   } finally {
     linkingSupplier.value = false
   }
+}
+
+// ===== 发送方ID(SID) 管理:按通道+国家配置 channel_country_sender_ids =====
+const sidsVisible = ref(false)
+const sidChannel = ref<any>(null)
+const sidCountry = ref('')
+const sidList = ref<any[]>([])
+const sidLoading = ref(false)
+const sidFormVisible = ref(false)
+const sidEditing = ref<any>(null)
+const sidForm = reactive({ sender_id: '', sid_type: 'alpha', status: 'active', is_default: false })
+const sidCountryOptions = COUNTRY_LIST.map((c: any) => ({ iso: c.iso, name: c.name }))
+
+const openSids = (row: any) => {
+  sidChannel.value = row
+  sidCountry.value = ''
+  sidList.value = []
+  sidsVisible.value = true
+}
+const loadSids = async () => {
+  if (!sidChannel.value || !sidCountry.value) { sidList.value = []; return }
+  sidLoading.value = true
+  try {
+    const res: any = await request.get(`/admin/channel-relations/channels/${sidChannel.value.id}/countries/${sidCountry.value}/sids`)
+    sidList.value = res.items || []
+  } catch (e) { sidList.value = [] } finally { sidLoading.value = false }
+}
+const openSidForm = (row?: any) => {
+  if (row) {
+    sidEditing.value = row
+    Object.assign(sidForm, { sender_id: row.sender_id, sid_type: row.sid_type || 'alpha', status: row.status || 'active', is_default: !!row.is_default })
+  } else {
+    sidEditing.value = null
+    Object.assign(sidForm, { sender_id: '', sid_type: 'alpha', status: 'active', is_default: false })
+  }
+  sidFormVisible.value = true
+}
+const saveSid = async () => {
+  if (!sidForm.sender_id.trim()) { ElMessage.warning('请填写发送方ID'); return }
+  const base = `/admin/channel-relations/channels/${sidChannel.value.id}/countries/${sidCountry.value}/sids`
+  try {
+    if (sidEditing.value) {
+      await request.put(`${base}/${sidEditing.value.id}`, { sid_type: sidForm.sid_type, status: sidForm.status, is_default: sidForm.is_default })
+    } else {
+      await request.post(base, { channel_id: sidChannel.value.id, country_code: sidCountry.value, sender_id: sidForm.sender_id.trim(), sid_type: sidForm.sid_type, status: sidForm.status, is_default: sidForm.is_default })
+    }
+    ElMessage.success('已保存')
+    sidFormVisible.value = false
+    await loadSids()
+  } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '保存失败') }
+}
+const deleteSid = async (row: any) => {
+  try {
+    await request.delete(`/admin/channel-relations/channels/${sidChannel.value.id}/countries/${sidCountry.value}/sids/${row.id}`)
+    ElMessage.success('已删除')
+    await loadSids()
+  } catch (e: any) { ElMessage.error('删除失败') }
 }
 
 onMounted(() => {
