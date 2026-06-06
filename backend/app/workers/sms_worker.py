@@ -1818,6 +1818,35 @@ async def _do_virtual_dlr(message_id: str, channel_id: int):
             except Exception as e:
                 logger.warning(f"虚拟DLR触发Webhook失败: {e}")
 
+            # SMPP 入站代理商：虚拟通道回执也通过 SMPP 原生回送（deliver_sm）。
+            # 单条路径(virtual_dlr_generate)与批量路径同处理，避免 SMPP 绑定的代理商收不到回执。
+            if new_status in ("delivered", "failed", "expired"):
+                try:
+                    from app.modules.common.account import Account as _Account
+                    from app.utils.queue import QueueManager as _QM
+                    _acct = await db.get(_Account, sms_log.account_id)
+                    if _acct and getattr(_acct, "protocol", None) == "SMPP" and _acct.smpp_system_id:
+                        if new_status == "delivered":
+                            _stat, _err = "DELIVRD", "000"
+                        elif new_status == "expired":
+                            _stat, _err = "EXPIRED", "001"
+                        else:
+                            _stat, _err = "UNDELIV", "001"
+                        _now = datetime.now()
+                        _QM.queue_inbound_dlr({
+                            "system_id":    _acct.smpp_system_id,
+                            "message_id":   sms_log.message_id,
+                            "source_addr":  "",
+                            "dest_addr":    sms_log.phone_number or "",
+                            "stat":         _stat,
+                            "err":          _err,
+                            "submit_date":  (sms_log.submit_time or _now).strftime("%y%m%d%H%M"),
+                            "done_date":    (sms_log.delivery_time or _now).strftime("%y%m%d%H%M"),
+                            "text_preview": (sms_log.message or "")[:20],
+                        })
+                except Exception as _e2:
+                    logger.warning(f"虚拟DLR(单条) SMPP回送入队失败: {sms_log.message_id}, {_e2}")
+
             return {"success": True, "message_id": message_id, "status": new_status}
     except Exception as e:
         logger.error(f"虚拟DLR异常: {message_id}, {e}")
