@@ -16,8 +16,9 @@ import (
 
 const (
 	bindReadTimeout      = 30 * time.Second
-	idleReadTimeout      = 120 * time.Second
+	idleReadTimeout      = 90 * time.Second
 	enquireLinkInterval  = 30 * time.Second
+	writeTimeout         = 10 * time.Second // 写 PDU 超时：半开/死连接的写会超时失败，据此快速判死
 	gwSystemID           = "kaolach"
 	defaultMaxBinds      = 5
 )
@@ -83,7 +84,11 @@ func newInboundSession(conn net.Conn, ip string) *inboundSession {
 func (s *inboundSession) writePDUSafe(cmdID, status, seq uint32, body []byte) error {
 	s.writeMu <- struct{}{}
 	defer func() { <-s.writeMu }()
-	return writePDU(s.conn, cmdID, status, seq, body)
+	// 写超时：半开/死连接上的写不会永久阻塞，超时即报错，供上层据此关闭会话、及时释放注册表槽位
+	_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	err := writePDU(s.conn, cmdID, status, seq, body)
+	_ = s.conn.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func (s *inboundSession) close() {
@@ -247,6 +252,10 @@ func (s *inboundSession) enquireLinkLoop() {
 			return
 		}
 		if err := s.writePDUSafe(cmdEnquireLink, statusOK, nextSeq(), nil); err != nil {
+			// 写 enquire_link 失败 = 对端已死/半开。主动关闭连接，使 readLoop 立即返回、
+			// handleSession 的 defer inboundReg.Remove(s) 立刻执行，释放该 system_id 的绑定槽位，
+			// 避免死会话占槽到 idleReadTimeout 致 CountBySystem 虚高、新绑定被误拒（绑定计数泄漏）。
+			s.close()
 			return
 		}
 	}

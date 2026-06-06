@@ -126,6 +126,11 @@ type SMPPManager struct {
 // 若未来某通道需要更慢节流（例如某些上游单 IP 限频），改成可配置即可。
 const minBindInterval = 500 * time.Millisecond
 
+// minSessionLifetime 判定"短命会话"的阈值。bind 成功但很快被对端关闭（如对端绑定计数已满、
+// 把刚接受的会话又丢弃）时，OnClosed 会立即重连，形成"绑成功即掉"的紧重连循环（重连风暴）。
+// 对存活时间 < 此阈值的会话，重连起步退避加大，避免对端尚未恢复就反复重试。
+const minSessionLifetime = 20 * time.Second
+
 // liveness watchdog 参数：gosmpp 每 30s 发 enquire_link，正常情况下应在秒级收到 enquire_link_resp；
 // silenceThreshold = 90s 给到 3 个心跳周期容忍网络抖动，超过即认为上游静默死亡。
 // checkInterval 略小于 1/3 silence 即可及时发现。
@@ -609,6 +614,8 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 	// gosmpp.NewSession 返回前 OnClosed 闭包已注册，但 session 变量尚未赋值，
 	// 故用指针间接引用，NewSession 返回后立即设置。
 	var sessionPtr *gosmpp.Session
+	// bindStart 记录本次会话建立时刻，供 OnClosed 判定"短命会话"以加大重连退避（防重连风暴）。
+	bindStart := time.Now()
 
 	// Initialize session with handlers
 	session, err := gosmpp.NewSession(
@@ -726,6 +733,17 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 						}
 						backoff := 2 * time.Second
 						const maxBackoff = 60 * time.Second
+						// 短命会话（绑成功即被对端丢弃）：先退避再重连，打破"绑成功即掉"的紧重连循环。
+						if lifetime := time.Since(bindStart); lifetime < minSessionLifetime {
+							backoff = 10 * time.Second
+							log.Printf("[SMPP-WARN] channel %s 会话仅存活 %v(<%v),疑似对端绑定满/拒收;重连起步退避 %v",
+								cfg.ChannelCode, lifetime.Truncate(time.Second), minSessionLifetime, backoff)
+							time.Sleep(backoff)
+							backoff *= 2
+							if backoff > maxBackoff {
+								backoff = maxBackoff
+							}
+						}
 						for attempt := 1; ; attempt++ {
 							release := m.acquireBindSlot(cfg.ID)
 							newSession, err := m.bindSession(cfg)
