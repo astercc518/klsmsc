@@ -20,7 +20,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
-    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --character-set-client-handshake=FALSE --default-time-zone=+08:00 --max-connections=500 --range-optimizer-max-mem-size=67108864 --innodb-buffer-pool-size=${INNODB_BUFFER_POOL_SIZE:-4G} --innodb-buffer-pool-instances=${INNODB_BUFFER_POOL_INSTANCES:-4} --innodb-log-buffer-size=${INNODB_LOG_BUFFER_SIZE:-64M}
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --character-set-client-handshake=FALSE --default-time-zone=+08:00 --max-connections=500 --range-optimizer-max-mem-size=67108864 --innodb-buffer-pool-size=${INNODB_BUFFER_POOL_SIZE:-4G} --innodb-buffer-pool-instances=${INNODB_BUFFER_POOL_INSTANCES:-4} --innodb-log-buffer-size=${INNODB_LOG_BUFFER_SIZE:-64M} --innodb-flush-log-at-trx-commit=${INNODB_FLUSH_LOG_AT_TRX_COMMIT:-2} --sync-binlog=${SYNC_BINLOG:-1000}
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpass123}"]
       interval: 10s
