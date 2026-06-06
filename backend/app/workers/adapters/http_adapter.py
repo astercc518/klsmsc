@@ -12,6 +12,59 @@ from app.utils.phone_utils import format_sms_dest_phone, strip_leading_plus_enab
 logger = get_logger(__name__)
 
 
+# 上游错误码 → 对下游安全的中性提示（不暴露上游成本/余额等内部信息）
+_NEUTRAL_ERROR = {
+    "INSUFFICIENT_BALANCE": "通道余额不足，请联系客服",
+    "RATE_LIMIT_EXCEEDED": "发送过于频繁，请稍后重试",
+    "CHANNEL_NOT_AVAILABLE": "通道暂时不可用",
+    "NO_CHANNEL": "通道暂时不可用",
+    "AUTHENTICATION_ERROR": "通道鉴权异常，请联系客服",
+    "COUNTRY_NOT_ALLOWED": "该国家/地区暂不支持",
+    "CONTENT_BLOCKED": "内容包含违禁词",
+    "INVALID_PHONE": "号码格式不正确",
+}
+
+
+def _redact_amounts(text) -> str:
+    """抹掉日志里"金额上下文"的数字（上游成本/余额/单价等），避免内部价格出现在任何地方。
+    cost/price/required/available/balance/余额/成本/单价 后面的数字 → ***。
+    """
+    import re
+    s = str(text)
+    s = re.sub(
+        r'(?i)("?(?:required|available|balance|cost|price|amount|fee|unit_price)"?\s*[:：=]\s*)"?\$?\s*[\d][\d.]*"?',
+        r'\1***', s,
+    )
+    s = re.sub(
+        r'(?i)((?:required|available|balance|cost|price|余额|成本|单价|价格)\s*[:：]?\s*)\$?\s*[\d][\d.]*',
+        r'\1***', s,
+    )
+    return s
+
+
+def _sanitize_upstream_error(result, status_code=None) -> str:
+    """把上游错误转成对下游安全、干净的提示。
+
+    原始细节（含成本/余额，如 Required:0.03 Available:0.02）只进日志，落库/回执绝不透传，
+    避免向下游客户暴露上游进货价/余额等内部信息。
+    """
+    code = ""
+    if isinstance(result, dict):
+        err = result.get("error")
+        if isinstance(err, dict):
+            code = str(err.get("code") or "").upper()
+    if code in _NEUTRAL_ERROR:
+        return _NEUTRAL_ERROR[code]
+    if code:
+        return f"发送失败（{code}）"
+    try:
+        if status_code and int(status_code) >= 500:
+            return "通道暂时不可用，请稍后重试"
+    except Exception:
+        pass
+    return "发送失败"
+
+
 class HTTPAdapter:
     """HTTP通道适配器"""
     
@@ -82,7 +135,7 @@ class HTTPAdapter:
                 )
                 
                 logger.info(f"HTTP响应: {response.status_code}")
-                logger.info(f"响应内容: {response.text[:500] if response.text else 'empty'}")
+                logger.info(f"响应内容: {_redact_amounts(response.text[:500]) if response.text else 'empty'}")
                 
                 if response.status_code in [200, 201]:
                     try:
@@ -93,17 +146,15 @@ class HTTPAdapter:
                     # 检查业务层面是否成功
                     if self._check_response_success(result):
                         channel_message_id = self._extract_message_id(result)
-                        logger.info(f"发送成功: {sms_log.message_id}, 通道消息ID: {channel_message_id}, 响应: {result}")
+                        logger.info(f"发送成功: {sms_log.message_id}, 通道消息ID: {channel_message_id}, 响应: {_redact_amounts(json.dumps(result, ensure_ascii=False))}")
                         return True, channel_message_id, None
                     else:
-                        # HTTP 200 但业务失败
-                        error_msg = f"业务错误: {json.dumps(result, ensure_ascii=False)}"
-                        logger.error(f"发送失败: {error_msg}")
-                        return False, None, error_msg
+                        # 落库错误脱敏；日志也抹掉金额，避免上游成本/余额出现在任何地方
+                        logger.error(f"发送失败: {sms_log.message_id}, {_redact_amounts(json.dumps(result, ensure_ascii=False))}")
+                        return False, None, _sanitize_upstream_error(result)
                 else:
-                    error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
-                    logger.error(f"发送失败: {error_msg}")
-                    return False, None, error_msg
+                    logger.error(f"发送失败(HTTP {response.status_code}): {sms_log.message_id}, {_redact_amounts(response.text[:300])}")
+                    return False, None, _sanitize_upstream_error(response.text, response.status_code)
                     
         except httpx.TimeoutException:
             error_msg = "Request timeout"

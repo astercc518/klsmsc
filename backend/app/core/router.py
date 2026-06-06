@@ -11,6 +11,7 @@ from app.utils.errors import ChannelNotAvailableError
 from app.utils.logger import get_logger
 from app.utils.cache import get_cache_manager
 from app.utils.phone_utils import country_to_dial_code, dial_to_country_code
+from app.utils.country_code import normalize_country_code
 import random
 
 logger = get_logger(__name__)
@@ -59,12 +60,16 @@ class RoutingEngine:
         if not channels:
             raise ChannelNotAvailableError(f"No available channel for country {country_code}")
         
-        # 2.5 若账户已绑定通道，仅在其绑定通道中筛选
+        # 2.5 账户+国家二维通道过滤：专国绑定优先 > 全国默认绑定 > 已配置但无此国则拦截
         if account_id:
-            bound_ids, channels = await self._filter_by_account_channels(channels, account_id)
-            if bound_ids and not channels:
+            restriction, channels = await self._filter_by_account_channels(
+                channels, account_id, country_code
+            )
+            # restriction=None → 该账户无任何通道绑定，不限制
+            # restriction=set → 账户已绑定；过滤后为空说明该国家无可用绑定通道
+            if restriction is not None and not channels:
                 raise ChannelNotAvailableError(
-                    f"账户 {account_id} 绑定的通道不支持国家 {country_code}，请检查路由规则或账户通道绑定"
+                    f"账户 {account_id} 在国家 {country_code} 未配置可用通道，请在账户「国家路由」中配置"
                 )
         
         logger.debug(f"找到 {len(channels)} 个可用通道")
@@ -97,32 +102,49 @@ class RoutingEngine:
         if not channel:
             return None
         if account_id:
-            _, bound = await self._filter_by_account_channels([channel], account_id)
+            _, bound = await self._filter_by_account_channels(
+                [channel], account_id, country_code
+            )
             return bound[0] if bound else None
         return channel
-    
+
     async def _filter_by_account_channels(
-        self, channels: List[Channel], account_id: int
+        self, channels: List[Channel], account_id: int, country_code: Optional[str] = None
     ) -> tuple:
         """
-        仅保留账户绑定的通道
+        账户+国家二维通道过滤。
+
         Returns:
-            (bound_ids, filtered_channels)
-            当 bound_ids 为空时表示未绑定，返回全部 channels
+            (restriction, filtered_channels)
+            - restriction=None: 该账户无任何通道绑定 → 不限制，返回全部 channels
+            - restriction=set(channel_ids): 账户已绑定；filtered 为该账户在该国家可用的通道。
+              选取优先级：该国家专属绑定(country_code=ISO2) 优先；无专属则用全国默认绑定
+              (country_code 为空)；两者都没有则 filtered 为空，调用方据此拦截。
         """
         result = await self.db.execute(
-            select(AccountChannel.channel_id).where(
+            select(AccountChannel.channel_id, AccountChannel.country_code).where(
                 AccountChannel.account_id == account_id
             )
         )
-        bound_ids = {r[0] for r in result.all()}
-        if not bound_ids:
-            return set(), channels  # 未绑定通道，不限制
+        rows = result.all()
+        if not rows:
+            return None, channels  # 未绑定任何通道，不限制（向后兼容）
+
+        cc_norm = normalize_country_code(country_code) if country_code else None
+        specific: set = set()
+        default: set = set()
+        for ch_id, cc in rows:
+            if cc is None or str(cc).strip() == "":
+                default.add(ch_id)
+            elif cc_norm and (normalize_country_code(cc) == cc_norm or cc == country_code):
+                specific.add(ch_id)
+        bound_ids = specific if specific else default
         filtered = [ch for ch in channels if ch.id in bound_ids]
-        if filtered != channels:
+        if not filtered:
             logger.info(
-                f"账户 {account_id} 通道过滤: 绑定={list(bound_ids)}, "
-                f"路由候选={[c.channel_code for c in channels]}, 筛选后={[c.channel_code for c in filtered]}"
+                f"账户 {account_id} 国家 {country_code} 无匹配绑定通道: "
+                f"专国={list(specific)}, 全国默认={list(default)}, "
+                f"路由候选={[c.channel_code for c in channels]}"
             )
         return bound_ids, filtered
     

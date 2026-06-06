@@ -142,6 +142,70 @@ def extract_phone_numbers_from_upload_text(
     return numbers_to_add
 
 
+# 多国共用的国际区号（一个 calling code 对应多个真实 ISO 国家），如 +1(NANP: US/CA/PR/...)、+7(RU/KZ)、+44 等
+_SHARED_CC_CACHE = None
+
+
+def _shared_calling_codes():
+    global _SHARED_CC_CACHE
+    if _SHARED_CC_CACHE is None:
+        from phonenumbers import COUNTRY_CODE_TO_REGION_CODE
+        _SHARED_CC_CACHE = frozenset(
+            cc for cc, regs in COUNTRY_CODE_TO_REGION_CODE.items()
+            if len([r for r in regs if r and r != "ZZ"]) > 1
+        )
+    return _SHARED_CC_CACHE
+
+
+def _calling_code_of(digits: str) -> Optional[int]:
+    """从 E.164 去 + 后的数字串取国际区号（最长前缀匹配，1~3 位）。"""
+    from phonenumbers import COUNTRY_CODE_TO_REGION_CODE
+    for L in (3, 2, 1):
+        if len(digits) >= L and digits[:L].isdigit():
+            cc = int(digits[:L])
+            if cc in COUNTRY_CODE_TO_REGION_CODE:
+                return cc
+    return None
+
+
+def filter_numbers_by_real_country(e164_list: List[str], acc_iso: Optional[str]):
+    """按账户国家剔除"区号相同但真实国家不同"的号码。
+
+    仅对"共用区号"(如 +1/+7/+44)的号码用 phonenumbers 精确识别真实 ISO 国家（按前缀 memo 加速）；
+    唯一区号的号码真实国家必等于上传国家，直接保留、不调用 phonenumbers，保证百万级上传性能。
+
+    Returns: (kept_list, dropped_by_country)  dropped_by_country: {ISO: count}
+    """
+    acc = (acc_iso or "").strip().upper()
+    if not acc:
+        return e164_list, {}
+    import phonenumbers
+    shared = _shared_calling_codes()
+    memo: dict = {}
+    kept: List[str] = []
+    dropped: dict = {}
+    for e in e164_list:
+        s = e if e.startswith("+") else "+" + e
+        cc = _calling_code_of(s[1:])
+        if cc is None or cc not in shared:
+            kept.append(e)
+            continue
+        key = s[:6]
+        iso = memo.get(key, False)
+        if iso is False:
+            try:
+                pn = phonenumbers.parse(s, None)
+                iso = phonenumbers.region_code_for_number(pn)
+            except Exception:
+                iso = None
+            memo[key] = iso
+        if (iso or acc) == acc:
+            kept.append(e)
+        else:
+            dropped[iso or "UNKNOWN"] = dropped.get(iso or "UNKNOWN", 0) + 1
+    return kept, dropped
+
+
 def phone_db_lookup_keys(e164: str) -> List[str]:
     """库中可能存 +66… 或 66…，查询时一并匹配"""
     s = (e164 or "").strip()

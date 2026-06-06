@@ -2434,7 +2434,11 @@ const handleSend = async () => {
 
     if (isAsyncBatch) {
       result.value = { success: true, successCount: 0, failCount: 0, batchId: res?.batch_id }
-      ElMessage.success(`已提交 ${totalQueued.toLocaleString()} 条，后台异步处理中，可在「发送任务」页查看进度`)
+      if (form.value.isScheduled && form.value.scheduledTime) {
+        ElMessage.success(`已创建定时任务 ${totalQueued.toLocaleString()} 条，将于 ${form.value.scheduledTime} 自动发送，可在「发送任务」页查看`)
+      } else {
+        ElMessage.success(`已提交 ${totalQueued.toLocaleString()} 条，后台异步处理中，可在「发送任务」页查看进度`)
+      }
       if (res?.batch_id) startBatchPolling(res.batch_id, totalQueued)
       if (form.value.resetOnlyNumbers) form.value.phone_numbers_text = ''
       else handleReset()

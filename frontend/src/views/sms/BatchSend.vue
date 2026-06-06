@@ -57,9 +57,26 @@
           <h3 class="panel-title">{{ $t('batchSend.taskList') }}</h3>
           <p class="panel-desc">{{ $t('batchSend.taskSourceHint') }}</p>
         </div>
-        <el-tooltip :content="$t('batchSend.listPollHint')" placement="top">
-          <el-button :icon="Refresh" size="small" @click="onManualRefresh">{{ $t('common.refresh') }}</el-button>
-        </el-tooltip>
+        <div class="panel-toolbar">
+          <el-tooltip :content="$t('batchSend.listPollHint')" placement="top">
+            <el-button :icon="Refresh" size="small" @click="onManualRefresh">{{ $t('common.refresh') }}</el-button>
+          </el-tooltip>
+          <el-popover placement="bottom-end" :width="220" trigger="click" popper-class="col-picker-pop">
+            <template #reference>
+              <el-button :icon="Setting" size="small">{{ $t('batchSend.columns') }}</el-button>
+            </template>
+            <div class="col-picker">
+              <div class="col-picker-head">
+                <span>{{ $t('batchSend.visibleColumns') }}</span>
+                <el-button link size="small" @click="resetColumns">{{ $t('common.reset') }}</el-button>
+              </div>
+              <el-checkbox-group v-model="visibleColumns" class="col-picker-list">
+                <el-checkbox v-for="c in COLUMN_DEFS" :key="c.key" :value="c.key">{{ c.label }}</el-checkbox>
+              </el-checkbox-group>
+              <div class="col-picker-foot">{{ $t('batchSend.columnsFixedHint') }}</div>
+            </div>
+          </el-popover>
+        </div>
       </div>
 
       <el-alert type="info" :closable="false" show-icon class="batch-metric-hint">
@@ -146,7 +163,7 @@
       <div v-else class="table-scroll-wrapper">
       <el-table :data="batches" v-loading="loading" stripe class="task-table-inner" :table-layout="'auto'">
         <el-table-column prop="id" :label="$t('batchSend.batchIdCol')" width="72" />
-        <el-table-column prop="message_preview" :label="$t('batchSend.messagePreview')" min-width="280">
+        <el-table-column v-if="isColVisible('message')" prop="message_preview" :label="$t('batchSend.messagePreview')" min-width="280">
           <template #default="{ row }">
             <el-tooltip
               v-if="row.message_preview"
@@ -161,14 +178,14 @@
             <span v-else style="color:var(--text-quaternary)">—</span>
           </template>
         </el-table-column>
-        <el-table-column prop="channel_code" :label="$t('smsSend.channel')" width="120" show-overflow-tooltip>
+        <el-table-column v-if="isColVisible('channel')" prop="channel_code" :label="$t('smsSend.channel')" width="120" show-overflow-tooltip>
           <template #default="{ row }">
             <el-tag v-if="row.channel_code" size="small" effect="plain" type="info">{{ row.channel_code }}</el-tag>
             <span v-else style="color:var(--text-quaternary)">—</span>
           </template>
         </el-table-column>
-        <el-table-column prop="total_count" :label="$t('batchSend.totalCount')" width="96" align="right" />
-        <el-table-column prop="success_count" width="116">
+        <el-table-column v-if="isColVisible('total')" prop="total_count" :label="$t('batchSend.totalCount')" width="96" align="right" />
+        <el-table-column v-if="isColVisible('success')" prop="success_count" width="116">
           <template #header>
             <el-tooltip :content="$t('batchSend.channelAcceptedTooltip')" placement="top" :show-after="400">
               <span class="batch-col-header">{{ $t('batchSend.successCount') }}</span>
@@ -178,7 +195,7 @@
             <span style="color: #409eff; font-weight: bold">{{ row.success_count }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="delivered_count" width="128" align="center">
+        <el-table-column v-if="isColVisible('delivered')" prop="delivered_count" width="128" align="center">
           <template #header>
             <el-tooltip :content="$t('batchSend.deliveredReceiptTooltip')" placement="top" :show-after="400">
               <span class="batch-col-header">{{ $t('batchSend.deliveredReceiptCount') }}</span>
@@ -188,7 +205,7 @@
             <span style="color: #67c23a; font-weight: bold">{{ batchDeliveredCount(row) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="sent_awaiting_receipt_count" width="116" align="center">
+        <el-table-column v-if="isColVisible('awaiting')" prop="sent_awaiting_receipt_count" width="116" align="center">
           <template #header>
             <el-tooltip :content="$t('batchSend.awaitingReceiptTooltip')" placement="top" :show-after="400">
               <span class="batch-col-header">{{ $t('batchSend.awaitingReceiptCount') }}</span>
@@ -198,18 +215,18 @@
             <span :class="batchSentAwaitingCount(row) > 0 ? 'awaiting-receipt' : ''">{{ batchSentAwaitingCount(row) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="failed_count" :label="$t('batchSend.failedCount')" width="88">
+        <el-table-column v-if="isColVisible('failed')" prop="failed_count" :label="$t('batchSend.failedCount')" width="88">
           <template #default="{ row }">
             <span v-if="row.failed_count > 0" style="color: #f56c6c; font-weight: bold">{{ row.failed_count }}</span>
             <span v-else>0</span>
           </template>
         </el-table-column>
-        <el-table-column prop="progress" :label="$t('batchSend.progress')" width="150">
+        <el-table-column v-if="isColVisible('progress')" prop="progress" :label="$t('batchSend.progress')" width="150">
           <template #default="{ row }">
             <el-progress :percentage="row.progress" :status="row.status === 'completed' ? 'success' : undefined" />
           </template>
         </el-table-column>
-        <el-table-column width="160" align="center">
+        <el-table-column v-if="isColVisible('success_rate')" width="160" align="center">
           <template #header>
             <el-tooltip :content="$t('batchSend.successRateTooltip')" placement="top" :show-after="400">
               <span class="batch-rate-header">{{ $t('batchSend.successRate') }}</span>
@@ -222,7 +239,7 @@
             <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
-        <el-table-column prop="status" :label="$t('batchSend.status')" width="100">
+        <el-table-column v-if="isColVisible('status')" prop="status" :label="$t('batchSend.status')" width="100">
           <template #default="{ row }">
             <el-tag v-if="row.status === 'pending'" type="info">{{ $t('batchSend.pending') }}</el-tag>
             <el-tooltip v-else-if="row.status === 'processing'" :content="$t('batchSend.processingTooltip')" placement="top" :show-after="200">
@@ -233,12 +250,12 @@
             <el-tag v-else type="warning">{{ $t('batchSend.cancelled') }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column :label="$t('batchSend.createdAtLocal')" width="148">
+        <el-table-column v-if="isColVisible('created_at')" :label="$t('batchSend.createdAtLocal')" width="148">
           <template #default="{ row }">
             {{ formatBatchDate(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column :label="$t('batchSend.completedAt')" width="148">
+        <el-table-column v-if="isColVisible('completed_at')" :label="$t('batchSend.completedAt')" width="148">
           <template #default="{ row }">
             <span v-if="row.completed_at" class="time-text">{{ formatBatchDate(row.completed_at) }}</span>
             <span v-else class="text-muted">-</span>
@@ -656,14 +673,14 @@ phone,name,code<br>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 
 const { isMobile } = useBreakpoint()
-import { Upload, Refresh, Filter } from '@element-plus/icons-vue'
+import { Upload, Refresh, Filter, Setting } from '@element-plus/icons-vue'
 import {
   getBatches,
   getBatchStats,
@@ -692,6 +709,45 @@ const { t } = useI18n()
 const router = useRouter()
 const loading = ref(false)
 const batches = ref<SmsBatch[]>([])
+
+// 可见列配置：ID / 操作列固定显示；其余支持用户勾选并持久化到 localStorage。
+const COLUMN_DEFS = computed(() => [
+  { key: 'message', label: t('batchSend.messagePreview') },
+  { key: 'channel', label: t('smsSend.channel') },
+  { key: 'total', label: t('batchSend.totalCount') },
+  { key: 'success', label: t('batchSend.successCount') },
+  { key: 'delivered', label: t('batchSend.deliveredReceiptCount') },
+  { key: 'awaiting', label: t('batchSend.awaitingReceiptCount') },
+  { key: 'failed', label: t('batchSend.failedCount') },
+  { key: 'progress', label: t('batchSend.progress') },
+  { key: 'success_rate', label: t('batchSend.successRate') },
+  { key: 'status', label: t('batchSend.status') },
+  { key: 'created_at', label: t('batchSend.createdAtLocal') },
+  { key: 'completed_at', label: t('batchSend.completedAt') },
+])
+const DEFAULT_COLS = ['message','channel','total','success','delivered','awaiting','failed','progress','success_rate','status','created_at','completed_at']
+const COL_STORAGE_KEY = 'sms.batchSend.visibleColumns.v1'
+
+const visibleColumns = ref<string[]>([...DEFAULT_COLS])
+try {
+  const raw = localStorage.getItem(COL_STORAGE_KEY)
+  if (raw) {
+    const arr = JSON.parse(raw)
+    if (Array.isArray(arr)) {
+      visibleColumns.value = arr.filter((k: string) => DEFAULT_COLS.includes(k))
+    }
+  }
+} catch {}
+watch(visibleColumns, (v) => {
+  try { localStorage.setItem(COL_STORAGE_KEY, JSON.stringify(v)) } catch {}
+}, { deep: true })
+function isColVisible(key: string) {
+  return visibleColumns.value.includes(key)
+}
+function resetColumns() {
+  visibleColumns.value = [...DEFAULT_COLS]
+}
+
 const stats = reactive({
   total_batches: 0,
   pending_batches: 0,
@@ -1859,6 +1915,25 @@ code {
 }
 .bc-actions :deep(.el-button) {
   margin-left: 0 !important;
+}
+
+/* 工具栏（刷新 + 列选择） */
+.panel-toolbar { display: flex; gap: 8px; align-items: center; }
+/* 列选择面板 */
+.col-picker { padding: 4px 0; }
+.col-picker-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 13px; color: var(--el-text-color-primary); font-weight: 600;
+  padding: 0 4px 8px; border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.col-picker-list {
+  display: flex; flex-direction: column; gap: 4px; padding: 8px 4px 4px;
+  max-height: 320px; overflow-y: auto;
+}
+.col-picker-list :deep(.el-checkbox) { margin-right: 0; height: 26px; }
+.col-picker-foot {
+  margin-top: 4px; padding: 6px 4px 0; font-size: 12px; color: var(--el-text-color-secondary);
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 </style>
 

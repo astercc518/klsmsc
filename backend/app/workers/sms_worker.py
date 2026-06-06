@@ -840,6 +840,40 @@ async def _process_dlr_async(dlr_data: dict):
             except Exception as e:
                 logger.warning(f"Webhook 入队失败: {e}")
 
+            # SMPP 入站代理商：虚拟/HTTP 上游通道的回执也通过 SMPP 原生回送（deliver_sm）。
+            # 此前该段仅存在于 _process_smpp_dlr_async（SMPP 上游路径），导致虚拟通道(如 KL_888_GJ)
+            # 发出的消息，其 DLR 走本函数时不会回送给以 SMPP 绑定的代理商账户 → 代理商收不到回执。
+            if status in ("delivered", "failed"):
+                try:
+                    from app.modules.common.account import Account
+                    from app.utils.queue import QueueManager
+                    _acct = await db.get(Account, sms_log.account_id)
+                    if _acct and getattr(_acct, "protocol", None) == "SMPP" and _acct.smpp_system_id:
+                        _stat = "DELIVRD" if status == "delivered" else "UNDELIV"
+                        _err = "000" if status == "delivered" else "001"
+
+                        def _fmt_dlr_date(dt):
+                            from datetime import datetime as _dt
+                            return (dt or _dt.now()).strftime("%y%m%d%H%M")
+
+                        QueueManager.queue_inbound_dlr({
+                            "system_id":    _acct.smpp_system_id,
+                            "message_id":   sms_log.message_id,
+                            "source_addr":  "",
+                            "dest_addr":    sms_log.phone_number or "",
+                            "stat":         _stat,
+                            "err":          _err,
+                            "submit_date":  _fmt_dlr_date(sms_log.submit_time),
+                            "done_date":    _fmt_dlr_date(sms_log.delivery_time),
+                            "text_preview": (sms_log.message or "")[:20],
+                        })
+                        logger.info(
+                            f"虚拟/HTTP 通道 DLR 已转发 SMPP 回送: {sms_log.message_id} "
+                            f"stat={_stat} -> system_id={_acct.smpp_system_id}"
+                        )
+                except Exception as _dlr_fwd_err:
+                    logger.warning(f"虚拟/HTTP 通道 SMPP 入站 DLR 转发入队失败: {_dlr_fwd_err}")
+
             if status == "delivered" and sms_log.account_id:
                 try:
                     celery_app.send_task(
@@ -997,13 +1031,13 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
             # SMPP 入站账户：将 DLR 转发给在线客户端（或落库等待补发）
             try:
                 from app.modules.common.account import Account
-                from app.utils.queue import queue_inbound_dlr
+                from app.utils.queue import QueueManager
                 _acct = await db.get(Account, sms_log.account_id)
                 if _acct and getattr(_acct, "protocol", None) == "SMPP" and _acct.smpp_system_id:
                     def _fmt_dlr_date(dt):
                         from datetime import datetime as _dt
                         return (dt or _dt.now()).strftime("%y%m%d%H%M")
-                    queue_inbound_dlr({
+                    QueueManager.queue_inbound_dlr({
                         "system_id":    _acct.smpp_system_id,
                         "message_id":   sms_log.message_id,
                         "source_addr":  source_addr or "",
@@ -1596,6 +1630,7 @@ async def _do_virtual_dlr_batch(message_ids: list, channel_id: int, batch_id: in
             now = datetime.now()
 
             delivered_items = []
+            _acct_cache: dict = {}  # account_id -> Account，供 SMPP 入站回送复用，避免逐条查库
 
             for chunk_start in range(0, len(message_ids), 100):
                 chunk_ids = message_ids[chunk_start:chunk_start + 100]
@@ -1647,6 +1682,37 @@ async def _do_virtual_dlr_batch(message_ids: list, channel_id: int, batch_id: in
                         )
                     except Exception as _e:
                         logger.warning(f"虚拟DLR批量Webhook失败: {_log.message_id}, {_e}")
+
+                    # SMPP 入站代理商：虚拟通道回执也通过 SMPP 原生回送（deliver_sm）。
+                    # 虚拟通道无真实上游 DLR，故回送逻辑必须在此（生成虚拟回执处）补，
+                    # 否则以 SMPP 绑定的代理商（如账户 SMSCPRO/SM6036D0）收不到回执。
+                    try:
+                        from app.modules.common.account import Account as _Account
+                        from app.utils.queue import QueueManager as _QM
+                        _aid = _log.account_id
+                        if _aid not in _acct_cache:
+                            _acct_cache[_aid] = await db.get(_Account, _aid)
+                        _acct = _acct_cache[_aid]
+                        if _acct and getattr(_acct, "protocol", None) == "SMPP" and _acct.smpp_system_id:
+                            if _log.status == "delivered":
+                                _stat, _err = "DELIVRD", "000"
+                            elif _log.status == "expired":
+                                _stat, _err = "EXPIRED", "001"
+                            else:
+                                _stat, _err = "UNDELIV", "001"
+                            _QM.queue_inbound_dlr({
+                                "system_id":    _acct.smpp_system_id,
+                                "message_id":   _log.message_id,
+                                "source_addr":  "",
+                                "dest_addr":    _log.phone_number or "",
+                                "stat":         _stat,
+                                "err":          _err,
+                                "submit_date":  (_log.submit_time or now).strftime("%y%m%d%H%M"),
+                                "done_date":    (_log.delivery_time or now).strftime("%y%m%d%H%M"),
+                                "text_preview": (_log.message or "")[:20],
+                            })
+                    except Exception as _e2:
+                        logger.warning(f"虚拟DLR SMPP回送入队失败: {_log.message_id}, {_e2}")
 
             if batch_id:
                 await update_batch_progress(db, batch_id)

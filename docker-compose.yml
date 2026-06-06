@@ -225,7 +225,7 @@ services:
         condition: service_started
       smpp-gateway:
         condition: service_started
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -578,7 +578,9 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork --concurrency=4 --max-tasks-per-child=${WEB_WORKER_MAX_TASKS_PER_CHILD:-500} -Q web_automation
+    # 注水点击/注册走 Playwright 真浏览器，单 context 数百 MB；prefork 下每子进程持一个
+    # Chromium 单例 → concurrency 即最大并行浏览器数。收敛并发 + 勤回收子进程释放泄漏内存。
+    command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork --concurrency=${WEB_WORKER_CONCURRENCY:-2} --prefetch-multiplier=${WEB_WORKER_PREFETCH:-1} --max-tasks-per-child=${WEB_WORKER_MAX_TASKS_PER_CHILD:-200} -Q web_automation
     restart: unless-stopped
     logging: *default-logging
     networks:

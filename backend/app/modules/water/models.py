@@ -127,6 +127,8 @@ class WaterInjectionLog(Base):
     proxy_id = Column(Integer, nullable=True, comment="使用的代理 ID")
     proxy_ip = Column(String(50), nullable=True, comment="代理出口 IP")
     proxy_country = Column(String(5), nullable=True, comment="代理国家代码")
+    device_info = Column(String(255), nullable=True, comment="点击设备信息(友好摘要,如 移动端·iPhone·390×844)")
+    user_agent = Column(String(512), nullable=True, comment="实际使用的 User-Agent 全文")
     duration_ms = Column(Integer, nullable=True, comment="耗时(毫秒)")
     error_message = Column(Text, nullable=True, comment="错误信息")
     screenshot_path = Column(String(500), nullable=True, comment="截图存储路径")

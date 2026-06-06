@@ -844,6 +844,8 @@ async def list_logs(
                 "proxy_id": l.proxy_id,
                 "proxy_ip": l.proxy_ip,
                 "proxy_country": l.proxy_country,
+                "device_info": l.device_info,
+                "user_agent": l.user_agent,
                 "duration_ms": l.duration_ms,
                 "error_message": l.error_message,
                 "has_screenshot": bool(l.screenshot_path),

@@ -115,6 +115,10 @@ type SMPPManager struct {
 	// per-session watchdog 周期检查超过 livenessSilenceThreshold 即主动 Close + 兜底 rebind。
 	livenessMu sync.Mutex
 	lastPDUAt  map[*gosmpp.Session]time.Time
+	// throttleGuardMu 保护 throttleCoolUntil。上游 ESME_RTHROTTLED(88) 在限流期间每秒可回数十次，
+	// 用冷却窗口去重，确保一个限流周期内只真正降速一次，避免反复重置限速器并泄漏恢复 goroutine。
+	throttleGuardMu   sync.Mutex
+	throttleCoolUntil map[int]time.Time
 }
 
 // minBindInterval 同通道两次 bind 之间的最小起点间隔。
@@ -164,7 +168,8 @@ func (m *SMPPManager) acquireBindSlot(channelID int) func() {
 type sequenceData struct {
 	messageID  string
 	logID      int64
-	submitTime time.Time // SubmitSM 写入 TCP 的时刻，用于超时检测
+	submitTime time.Time  // SubmitSM 写入 TCP 的时刻，用于超时检测
+	payload    SMSLogData // 原始负载，供 ESME_RTHROTTLED(88) 限流重投回 sms_send_smpp 使用
 }
 
 func smppSeqMapKey(channelID int, seq int32) string {
@@ -329,13 +334,14 @@ func nextConcatRef() byte {
 
 func InitSMPPManager() {
 	manager = &SMPPManager{
-		connections:     make(map[int][]*gosmpp.Session),
-		configs:         make(map[int]ChannelConfig),
-		sessionSubmitMu: make(map[*gosmpp.Session]*sync.Mutex),
-		tpsLimiters:     make(map[int]*tpsBucket),
-		bindMu:          make(map[int]*sync.Mutex),
-		lastBindAttempt: make(map[int]time.Time),
-		lastPDUAt:       make(map[*gosmpp.Session]time.Time),
+		connections:       make(map[int][]*gosmpp.Session),
+		configs:           make(map[int]ChannelConfig),
+		sessionSubmitMu:   make(map[*gosmpp.Session]*sync.Mutex),
+		tpsLimiters:       make(map[int]*tpsBucket),
+		bindMu:            make(map[int]*sync.Mutex),
+		lastBindAttempt:   make(map[int]time.Time),
+		lastPDUAt:         make(map[*gosmpp.Session]time.Time),
+		throttleCoolUntil: make(map[int]time.Time),
 	}
 }
 
@@ -559,6 +565,26 @@ func (m *SMPPManager) throttleChannel(channelID int, cfg ChannelConfig) {
 	}()
 }
 
+// throttleChannelDedup 在一个限流冷却窗口内对重复触发去重，仅首次真正调用 throttleChannel 降速。
+// 上游 ESME_RTHROTTLED(88) 在限流期间每秒可回数十次；若每条都降速会反复重置限速器、
+// 泄漏恢复 goroutine。冷却时长与 throttleChannel 的恢复时长(throttle_duration_s，默认 120s)对齐。
+func (m *SMPPManager) throttleChannelDedup(channelID int, cfg ChannelConfig) {
+	dur := time.Duration(parseConfigJSONInt(cfg.ConfigJSON, "throttle_duration_s", 120)) * time.Second
+	m.throttleGuardMu.Lock()
+	if until, ok := m.throttleCoolUntil[channelID]; ok && time.Now().Before(until) {
+		m.throttleGuardMu.Unlock()
+		return
+	}
+	m.throttleCoolUntil[channelID] = time.Now().Add(dur)
+	m.throttleGuardMu.Unlock()
+	m.throttleChannel(channelID, cfg)
+}
+
+// throttleMaxRetry 限流重投的最大次数；超过后落 failed，防止上游持续限流时无限重投。
+func throttleMaxRetry() int {
+	return envInt("SMPP_THROTTLE_MAX_RETRY", 3)
+}
+
 func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 	auth := gosmpp.Auth{
 		SMSC:       fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -614,6 +640,32 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 							} else {
 								log.Printf("[SMPP-DEBUG] Successfully mapped upstream ID: %s => %s", seqData.messageID, pd.MessageID)
 							}
+						} else if pd.CommandStatus == data.ESME_RTHROTTLED {
+							// ESME_RTHROTTLED(0x58=88)：上游限速，非永久失败。降速 + 重投回 sms_send_smpp 重发，
+							// 避免把「慢点发就能成」的消息直接判 failed 丢弃。超过重投上限才落 failed。
+							// 此时原 RabbitMQ delivery 早已 ACK（SubmitSM 写 socket 成功即 ACK），只能重投新消息而非 NACK。
+							go m.throttleChannelDedup(cfg.ID, cfg)
+							pl := seqData.payload
+							if pl.LogID != 0 && pl.ThrottleRetry < throttleMaxRetry() {
+								pl.ThrottleRetry++
+								pl.RecordStatus = "queued" // DB 仍为 queued，重投时幂等检查放行
+								if err := republishSmppPayloads([]SMSLogData{pl}); err != nil {
+									log.Printf("[SMPP-THROTTLE] channel %s msg %s 限流重投失败(第%d次)，回退 failed: %v",
+										cfg.ChannelCode, seqData.messageID, pl.ThrottleRetry, err)
+									if perr := publishSmsSubmitResult(seqData.logID, seqData.messageID, "", "failed", fmt.Sprintf("SMPP Error: %d", pd.CommandStatus)); perr != nil {
+										log.Printf("[SMPP-ERROR] Failed to publish SMPP error for %s: %v", seqData.messageID, perr)
+									}
+								} else {
+									log.Printf("[SMPP-THROTTLE] channel %s msg %s 被上游限流(88)，降速并重投重试(第%d/%d次)",
+										cfg.ChannelCode, seqData.messageID, pl.ThrottleRetry, throttleMaxRetry())
+								}
+							} else {
+								log.Printf("[SMPP-THROTTLE] channel %s msg %s 限流重投已达上限(%d)，标记 failed",
+									cfg.ChannelCode, seqData.messageID, throttleMaxRetry())
+								if err := publishSmsSubmitResult(seqData.logID, seqData.messageID, "", "failed", fmt.Sprintf("SMPP Error: %d (throttled, retries exhausted)", pd.CommandStatus)); err != nil {
+									log.Printf("[SMPP-ERROR] Failed to publish SMPP error for %s: %v", seqData.messageID, err)
+								}
+							}
 						} else {
 							log.Printf("[SMPP-ERROR] SubmitSM failed with status %d for msg %s", pd.CommandStatus, seqData.messageID)
 							if err := publishSmsSubmitResult(seqData.logID, seqData.messageID, "", "failed", fmt.Sprintf("SMPP Error: %d", pd.CommandStatus)); err != nil {
@@ -665,46 +717,46 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 				// 2. 立即触发异步重绑（仅当本回调亲手移除了 session 时；否则 watchdog/stale-monitor
 				//    已或将 spawn rebind，本处再 spawn 会导致双重连）。
 				if removedHere {
-				go func() {
-					m.mu.RLock()
-					_, still := m.configs[cfg.ID]
-					m.mu.RUnlock()
-					if !still {
-						return
-					}
-					backoff := 2 * time.Second
-					const maxBackoff = 60 * time.Second
-					for attempt := 1; ; attempt++ {
-						release := m.acquireBindSlot(cfg.ID)
-						newSession, err := m.bindSession(cfg)
-						release()
-						if err != nil {
-							log.Printf("[SMPP-WARN] OnClosed rebind channel %s attempt %d: %v; retry in %v", cfg.ChannelCode, attempt, err, backoff)
-							time.Sleep(backoff)
-							backoff *= 2
-							if backoff > maxBackoff {
-								backoff = maxBackoff
-							}
-							m.mu.RLock()
-							_, still = m.configs[cfg.ID]
-							m.mu.RUnlock()
-							if !still {
-								return
-							}
-							continue
+					go func() {
+						m.mu.RLock()
+						_, still := m.configs[cfg.ID]
+						m.mu.RUnlock()
+						if !still {
+							return
 						}
-						m.mu.Lock()
-						if _, exists := m.configs[cfg.ID]; exists {
-							m.connections[cfg.ID] = append(m.connections[cfg.ID], newSession)
-							m.sessionSubmitMu[newSession] = &sync.Mutex{}
-							log.Printf("[SMPP-INFO] OnClosed rebind success: channel %s (total sessions: %d)", cfg.ChannelCode, len(m.connections[cfg.ID]))
-						} else {
-							_ = newSession.Close()
+						backoff := 2 * time.Second
+						const maxBackoff = 60 * time.Second
+						for attempt := 1; ; attempt++ {
+							release := m.acquireBindSlot(cfg.ID)
+							newSession, err := m.bindSession(cfg)
+							release()
+							if err != nil {
+								log.Printf("[SMPP-WARN] OnClosed rebind channel %s attempt %d: %v; retry in %v", cfg.ChannelCode, attempt, err, backoff)
+								time.Sleep(backoff)
+								backoff *= 2
+								if backoff > maxBackoff {
+									backoff = maxBackoff
+								}
+								m.mu.RLock()
+								_, still = m.configs[cfg.ID]
+								m.mu.RUnlock()
+								if !still {
+									return
+								}
+								continue
+							}
+							m.mu.Lock()
+							if _, exists := m.configs[cfg.ID]; exists {
+								m.connections[cfg.ID] = append(m.connections[cfg.ID], newSession)
+								m.sessionSubmitMu[newSession] = &sync.Mutex{}
+								log.Printf("[SMPP-INFO] OnClosed rebind success: channel %s (total sessions: %d)", cfg.ChannelCode, len(m.connections[cfg.ID]))
+							} else {
+								_ = newSession.Close()
+							}
+							m.mu.Unlock()
+							return
 						}
-						m.mu.Unlock()
-						return
-					}
-				}()
+					}()
 				} // end if removedHere
 
 				// 3. 清理该通道所有 in-flight sequenceMap 条目（无论谁先移除都要做，避免 orphan）
@@ -1028,7 +1080,12 @@ func (m *SMPPManager) handleDeliverSM(deliver *pdu.DeliverSM, cfg ChannelConfig)
 }
 
 // SendSMS picks a session and sends the message
-func (m *SMPPManager) SendSMS(logID int64, messageID string, phoneNumber string, message string, channelID int) error {
+func (m *SMPPManager) SendSMS(payload SMSLogData) error {
+	logID := payload.LogID
+	messageID := payload.MessageID
+	phoneNumber := payload.PhoneNumber
+	message := payload.Message
+	channelID := payload.ChannelID
 	// 若当前无活跃连接（stale monitor 正在重绑中），阻塞等待最多 30 秒。
 	// 避免重绑空窗口期间（通常 1-3 秒）所有并发消息立即失败。
 	const noConnWaitMax = 30 * time.Second
@@ -1135,7 +1192,7 @@ func (m *SMPPManager) SendSMS(logID int64, messageID string, phoneNumber string,
 			return fmt.Errorf("short_message: %w", err)
 		}
 		s.RegisteredDelivery = 1
-		return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0)
+		return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
 	}
 
 	// 长消息：按通道配置选择 message_payload TLV 或 UDH 多段分段
@@ -1179,7 +1236,7 @@ func (m *SMPPManager) SendSMS(logID int64, messageID string, phoneNumber string,
 
 			if i == 0 {
 				psm.RegisteredDelivery = 1
-				if err := m.submitOneAndTrack(psm, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), true, ref, total, part); err != nil {
+				if err := m.submitOneAndTrack(psm, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), true, ref, total, part, payload); err != nil {
 					return err
 				}
 			} else {
@@ -1210,11 +1267,11 @@ func (m *SMPPManager) SendSMS(logID int64, messageID string, phoneNumber string,
 		log.Printf("[SMPP-ERROR] clear short_message failed: channel=%s, msg=%s err=%v", cfg.ChannelCode, messageID, err)
 		return fmt.Errorf("empty short_message: %w", err)
 	}
-	payload := make([]byte, len(encoded))
-	copy(payload, encoded)
-	s.RegisterOptionalParam(pdu.Field{Tag: pdu.TagMessagePayload, Data: payload})
+	mpData := make([]byte, len(encoded))
+	copy(mpData, encoded)
+	s.RegisterOptionalParam(pdu.Field{Tag: pdu.TagMessagePayload, Data: mpData})
 	s.RegisteredDelivery = 1
-	return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0)
+	return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
 }
 
 // submitOneAndTrack 注册 sequenceMap 后 Submit，统一处理 closing/closed 临时错误。
@@ -1225,11 +1282,13 @@ func (m *SMPPManager) submitOneAndTrack(
 	destDigits string, cfg ChannelConfig,
 	utf16Len int,
 	udh bool, udhRef byte, udhTotal byte, udhPart byte,
+	payload SMSLogData,
 ) error {
 	m.sequenceMap.Store(smppSeqMapKey(channelID, s.SequenceNumber), sequenceData{
 		messageID:  messageID,
 		logID:      logID,
 		submitTime: time.Now(),
+		payload:    payload,
 	})
 
 	if udh {

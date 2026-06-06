@@ -53,6 +53,15 @@
           <el-tag v-if="row.proxy_country" size="small" type="info" style="margin-left: 6px">{{ countryName(row.proxy_country) }}</el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="设备" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }">
+          <el-tooltip v-if="row.user_agent" :content="row.user_agent" placement="top" effect="dark">
+            <span>{{ row.device_info || row.user_agent }}</span>
+          </el-tooltip>
+          <span v-else-if="row.device_info">{{ row.device_info }}</span>
+          <span v-else style="color: #909399">-</span>
+        </template>
+      </el-table-column>
       <el-table-column label="耗时" width="80" align="center">
         <template #default="{ row }">{{ row.duration_ms ? `${row.duration_ms}ms` : '-' }}</template>
       </el-table-column>

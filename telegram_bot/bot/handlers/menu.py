@@ -11,6 +11,7 @@ from bot.utils import (
     send_and_log,
     dedupe_country_codes_from_templates,
     get_group_ids,
+    COUNTRY_NAMES,
 )
 from bot.services.api_client import APIClient
 from datetime import datetime, timedelta, date
@@ -93,25 +94,7 @@ def _take_sms_approval_session(
     return pack["approval_id"], pack["approved"]
 
 
-# 国家名称映射（避免编码问题，用于报价查询等展示）
-COUNTRY_NAMES = {
-    'CN': '中国', 'US': '美国', 'GB': '英国', 'SG': '新加坡', 'JP': '日本', 'KR': '韩国',
-    'TH': '泰国', 'VN': '越南', 'MY': '马来西亚', 'ID': '印尼', 'PH': '菲律宾', 'IN': '印度',
-    'AU': '澳大利亚', 'CA': '加拿大', 'DE': '德国', 'FR': '法国', 'IT': '意大利', 'ES': '西班牙',
-    'RU': '俄罗斯', 'BR': '巴西', 'MX': '墨西哥', 'HK': '香港', 'TW': '台湾', 'AE': '阿联酋',
-    'SA': '沙特', 'BD': '孟加拉', 'PK': '巴基斯坦', 'EG': '埃及', 'ZA': '南非', 'KE': '肯尼亚',
-    'NG': '尼日利亚', 'CL': '智利', 'CO': '哥伦比亚', 'PE': '秘鲁', 'AR': '阿根廷', 'TR': '土耳其',
-    'IL': '以色列', 'QA': '卡塔尔', 'KW': '科威特', 'OM': '阿曼', 'BH': '巴林', 'LB': '黎巴嫩',
-    'DK': '丹麦', 'SE': '瑞典', 'NO': '挪威', 'FI': '芬兰', 'NL': '荷兰', 'BE': '比利时',
-    'CH': '瑞士', 'AT': '奥地利', 'PL': '波兰', 'CZ': '捷克', 'RO': '罗马尼亚', 'HU': '匈牙利',
-    'GR': '希腊', 'PT': '葡萄牙', 'IE': '爱尔兰', 'NZ': '新西兰', 'VE': '委内瑞拉', 'EC': '厄瓜多尔',
-    'BO': '玻利维亚', 'KH': '柬埔寨', 'LA': '老挝', 'MM': '缅甸', 'BN': '文莱', 'LK': '斯里兰卡',
-    'KZ': '哈萨克斯坦', 'LT': '立陶宛', 'GH': '加纳', 'MA': '摩洛哥', 'DZ': '阿尔及利亚',
-    'TN': '突尼斯', 'UG': '乌干达', 'TZ': '坦桑尼亚', 'ET': '埃塞俄比亚', 'SN': '塞内加尔',
-    'CM': '喀麦隆', 'CI': '科特迪瓦', 'ZM': '赞比亚', 'JO': '约旦',
-    'BJ': '贝宁',
-}
-
+# 国家名称映射统一收敛到 bot.utils.COUNTRY_NAMES（此处仅 re-export 以兼容 from bot.handlers.menu import COUNTRY_NAMES）
 # 反向映射：国家名称 → 国家代码
 NAME_TO_COUNTRY = {name: code for code, name in COUNTRY_NAMES.items()}
 

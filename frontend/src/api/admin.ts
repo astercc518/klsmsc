@@ -621,3 +621,23 @@ export async function unlinkSupplierChannel(
 ): Promise<any> {
   return request.delete(`/admin/suppliers/${supplierId}/channels/${channelId}`);
 }
+
+// ==================== 账户「国家路由与报价」（每账户每国家：通道 + 销售价） ====================
+export interface AccountCountryRoute {
+  country_code: string;
+  channel_id: number;
+  channel_code?: string;
+  channel_name?: string;
+  price?: number | null;
+}
+
+export async function getAccountCountryRoutes(accountId: number): Promise<{ success: boolean; routes: AccountCountryRoute[] }> {
+  return request.get(`/admin/accounts/${accountId}/country-routes`);
+}
+
+export async function setAccountCountryRoutes(
+  accountId: number,
+  routes: Array<{ country_code: string; channel_id: number; price?: number | null }>
+): Promise<{ success: boolean; message: string; count: number }> {
+  return request.put(`/admin/accounts/${accountId}/country-routes`, { routes });
+}

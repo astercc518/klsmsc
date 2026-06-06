@@ -14,7 +14,7 @@ from telegram.ext import (
     ContextTypes, CallbackQueryHandler,
     ConversationHandler, MessageHandler, filters
 )
-from bot.utils import logger, dedupe_country_codes_from_templates
+from bot.utils import logger, dedupe_country_codes_from_templates, COUNTRY_NAMES
 from bot.services.api_client import APIClient
 
 from bot.utils import get_group_ids
@@ -28,19 +28,7 @@ from bot.utils import get_group_ids
     OPEN_WAIT_REMARK,
 ) = range(5)
 
-COUNTRY_NAMES = {
-    'CN': '中国', 'US': '美国', 'GB': '英国', 'SG': '新加坡', 'JP': '日本', 'KR': '韩国',
-    'TH': '泰国', 'VN': '越南', 'MY': '马来西亚', 'ID': '印尼', 'PH': '菲律宾', 'IN': '印度',
-    'AU': '澳大利亚', 'CA': '加拿大', 'DE': '德国', 'FR': '法国', 'IT': '意大利', 'ES': '西班牙',
-    'RU': '俄罗斯', 'BR': '巴西', 'MX': '墨西哥', 'HK': '香港', 'TW': '台湾', 'AE': '阿联酋',
-    'SA': '沙特', 'BD': '孟加拉', 'PK': '巴基斯坦', 'EG': '埃及', 'ZA': '南非',
-    'KE': '肯尼亚', 'NG': '尼日利亚', 'TR': '土耳其', 'IL': '以色列',
-    'NL': '荷兰', 'NZ': '新西兰', 'SE': '瑞典', 'FI': '芬兰', 'PT': '葡萄牙',
-    'RO': '罗马尼亚', 'PL': '波兰', 'CZ': '捷克', 'LT': '立陶宛', 'KW': '科威特',
-    'MM': '缅甸', 'MX': '墨西哥', 'PE': '秘鲁', 'CO': '哥伦比亚', 'ET': '埃塞俄比亚',
-    'IE': '爱尔兰',
-    'BJ': '贝宁',
-}
+# COUNTRY_NAMES 统一从 bot.utils 引入（此前本地副本不全，缺 ZM 赞比亚等）
 
 BIZ_LABELS = {"voice": "📞 语音", "data": "📊 数据", "sms": "📱 短信"}
 

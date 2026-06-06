@@ -84,6 +84,21 @@
             @change="onDateChange"
           />
           <el-button :icon="Refresh" @click="loadList">刷新</el-button>
+          <el-popover placement="bottom-end" :width="220" trigger="click" popper-class="col-picker-pop">
+            <template #reference>
+              <el-button :icon="Setting">列</el-button>
+            </template>
+            <div class="col-picker">
+              <div class="col-picker-head">
+                <span>显示列</span>
+                <el-button link size="small" @click="resetColumns">重置</el-button>
+              </div>
+              <el-checkbox-group v-model="visibleColumns" class="col-picker-list">
+                <el-checkbox v-for="c in COLUMN_DEFS" :key="c.key" :value="c.key">{{ c.label }}</el-checkbox>
+              </el-checkbox-group>
+              <div class="col-picker-foot">ID / 操作列固定显示</div>
+            </div>
+          </el-popover>
         </div>
       </div>
 
@@ -92,7 +107,7 @@
 
           <el-table-column prop="id" label="批次ID" width="72" />
 
-          <el-table-column label="账户" width="150">
+          <el-table-column v-if="isColVisible('account')" label="账户" width="150">
             <template #default="{ row }">
               <div class="acct-cell">
                 <span class="acct-name">{{ row.account_name || `账户` }}</span>
@@ -101,11 +116,11 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="batch_name" label="批次名" min-width="160" show-overflow-tooltip />
+          <el-table-column v-if="isColVisible('batch_name')" prop="batch_name" label="批次名" min-width="160" show-overflow-tooltip />
 
-          <el-table-column prop="total_count" label="总数" width="80" align="right" />
+          <el-table-column v-if="isColVisible('total')" prop="total_count" label="总数" width="80" align="right" />
 
-          <el-table-column width="90" align="right">
+          <el-table-column v-if="isColVisible('success')" width="90" align="right">
             <template #header>
               <el-tooltip content="通道已受理条数（sent / delivered）" placement="top" :show-after="400">
                 <span class="col-hint">成功</span>
@@ -116,7 +131,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column width="90" align="right">
+          <el-table-column v-if="isColVisible('delivered')" width="90" align="right">
             <template #header>
               <el-tooltip content="已收到终态送达回执" placement="top" :show-after="400">
                 <span class="col-hint">送达</span>
@@ -127,7 +142,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column width="96" align="right">
+          <el-table-column v-if="isColVisible('awaiting')" width="96" align="right">
             <template #header>
               <el-tooltip content="已发出、等待终态回执" placement="top" :show-after="400">
                 <span class="col-hint">等待回执</span>
@@ -138,20 +153,20 @@
             </template>
           </el-table-column>
 
-          <el-table-column label="失败" width="72" align="right">
+          <el-table-column v-if="isColVisible('failed')" label="失败" width="72" align="right">
             <template #default="{ row }">
               <span v-if="row.failed_count > 0" class="count-fail">{{ row.failed_count }}</span>
               <span v-else>0</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="进度" width="140">
+          <el-table-column v-if="isColVisible('progress')" label="进度" width="140">
             <template #default="{ row }">
               <el-progress :percentage="row.progress || 0" :status="progressStatus(row)" :stroke-width="5" />
             </template>
           </el-table-column>
 
-          <el-table-column width="84" align="right">
+          <el-table-column v-if="isColVisible('delivery_rate')" width="84" align="right">
             <template #header>
               <el-tooltip content="终态送达率 = 送达 / 总数" placement="top" :show-after="400">
                 <span class="col-hint">送达率</span>
@@ -163,19 +178,19 @@
             </template>
           </el-table-column>
 
-          <el-table-column label="状态" width="90">
+          <el-table-column v-if="isColVisible('status')" label="状态" width="90">
             <template #default="{ row }">
               <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
             </template>
           </el-table-column>
 
-          <el-table-column label="创建时间" width="148">
+          <el-table-column v-if="isColVisible('created_at')" label="创建时间" width="148">
             <template #default="{ row }">
               <span class="time-text">{{ fmtTime(row.created_at) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="完成时间" width="148">
+          <el-table-column v-if="isColVisible('completed_at')" label="完成时间" width="148">
             <template #default="{ row }">
               <span v-if="row.completed_at" class="time-text">{{ fmtTime(row.completed_at) }}</span>
               <span v-else class="text-muted">-</span>
@@ -324,10 +339,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, WarningFilled, ArrowDown } from '@element-plus/icons-vue'
+import { Refresh, WarningFilled, ArrowDown, Setting } from '@element-plus/icons-vue'
 import {
   listAdminBatches, getAdminBatch, pauseBatch, resumeBatch,
   clearBatchQueue, previewSwitchChannel, exportBatchPhones,
@@ -344,6 +359,44 @@ const filters = reactive<{ keyword?: string; status?: string; account_id?: numbe
 const dateRange = ref<[string, string] | null>(null)
 
 const stats = reactive({ processing: 0, paused: 0, completed: 0 })
+
+// 可见列配置：固定列（ID、操作）不在此清单内；其余支持用户勾选并持久化到 localStorage。
+const COLUMN_DEFS = [
+  { key: 'account', label: '账户' },
+  { key: 'batch_name', label: '批次名' },
+  { key: 'total', label: '总数' },
+  { key: 'success', label: '成功（通道已接受）' },
+  { key: 'delivered', label: '送达（终态回执）' },
+  { key: 'awaiting', label: '等待回执' },
+  { key: 'failed', label: '失败' },
+  { key: 'progress', label: '进度' },
+  { key: 'delivery_rate', label: '终态送达率' },
+  { key: 'status', label: '状态' },
+  { key: 'created_at', label: '创建时间' },
+  { key: 'completed_at', label: '完成时间' },
+] as const
+const DEFAULT_COLS = COLUMN_DEFS.map(c => c.key)
+const COL_STORAGE_KEY = 'admin.sms.tasks.visibleColumns.v1'
+
+const visibleColumns = ref<string[]>([...DEFAULT_COLS])
+try {
+  const raw = localStorage.getItem(COL_STORAGE_KEY)
+  if (raw) {
+    const arr = JSON.parse(raw)
+    if (Array.isArray(arr)) {
+      visibleColumns.value = arr.filter((k: string) => DEFAULT_COLS.includes(k as any))
+    }
+  }
+} catch {}
+watch(visibleColumns, (v) => {
+  try { localStorage.setItem(COL_STORAGE_KEY, JSON.stringify(v)) } catch {}
+}, { deep: true })
+function isColVisible(key: string) {
+  return visibleColumns.value.includes(key)
+}
+function resetColumns() {
+  visibleColumns.value = [...DEFAULT_COLS]
+}
 
 const detailVisible = ref(false)
 const detail = ref<AdminBatchDetail | null>(null)
@@ -719,4 +772,21 @@ onMounted(() => { loadList() })
 .dialog-hint { color: var(--el-text-color-secondary); margin: 0 0 12px 0; font-size: 13px; }
 .preview-box { margin-top: 12px; }
 .preview-error { color: var(--el-color-danger); display: flex; gap: 6px; align-items: center; }
+
+/* 列选择面板 */
+.col-picker { padding: 4px 0; }
+.col-picker-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 13px; color: var(--el-text-color-primary); font-weight: 600;
+  padding: 0 4px 8px; border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.col-picker-list {
+  display: flex; flex-direction: column; gap: 4px; padding: 8px 4px 4px;
+  max-height: 320px; overflow-y: auto;
+}
+.col-picker-list :deep(.el-checkbox) { margin-right: 0; height: 26px; }
+.col-picker-foot {
+  margin-top: 4px; padding: 6px 4px 0; font-size: 12px; color: var(--el-text-color-secondary);
+  border-top: 1px solid var(--el-border-color-lighter);
+}
 </style>

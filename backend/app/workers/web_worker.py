@@ -4,6 +4,7 @@
 import asyncio
 import os
 import random
+import re
 import threading
 import time
 from typing import Optional, Dict
@@ -164,6 +165,38 @@ def _pick_user_agent(ua_type: str = "mobile") -> str:
     return random.choice(_MOBILE_UAS)
 
 
+def _describe_device(ua: str, is_mobile: bool, viewport: dict = None) -> str:
+    """从 UA + viewport 生成友好设备摘要，写入注水记录供前端展示。
+    例：'移动端 · iPhone · iOS 17 · 390×844' / '桌面端 · Windows · Chrome'
+    """
+    ua = ua or ""
+    parts = ["移动端" if is_mobile else "桌面端"]
+    # 机型/系统
+    if "iPhone" in ua:
+        m = re.search(r"iPhone OS (\d+)", ua)
+        parts.append("iPhone" + (f" · iOS {m.group(1)}" if m else ""))
+    elif "iPad" in ua:
+        parts.append("iPad")
+    elif "Android" in ua:
+        m = re.search(r"Android (\d+)", ua)
+        dev = re.search(r";\s*([^;)]+?)\s*\)", ua)
+        model = dev.group(1).strip() if dev else "Android"
+        parts.append(model + (f" · Android {m.group(1)}" if m else ""))
+    elif "Windows" in ua:
+        parts.append("Windows")
+    elif "Macintosh" in ua or "Mac OS X" in ua:
+        parts.append("Mac")
+    # 浏览器内核
+    if "Chrome" in ua and "Edg" not in ua:
+        parts.append("Chrome")
+    elif "Version/" in ua and "Safari" in ua:
+        parts.append("Safari")
+    # 分辨率
+    if viewport and viewport.get("width"):
+        parts.append(f"{viewport['width']}×{viewport['height']}")
+    return " · ".join(parts)
+
+
 _COUNTRY_LOCALE_MAP = {
     "TH": ("th-TH", "Asia/Bangkok"),
     "BR": ("pt-BR", "America/Sao_Paulo"),
@@ -268,7 +301,8 @@ async def _create_register_log(factory, sms_log_id, account_id, channel_id, task
 
 async def _update_log_status(factory, log_id: int, status: str, duration_ms: int = 0,
                               error_message: str = None, proxy_ip: str = None,
-                              screenshot_path: str = None):
+                              screenshot_path: str = None,
+                              device_info: str = None, user_agent: str = None):
     """更新注水日志状态"""
     from sqlalchemy import update as sa_update
     from app.modules.water.models import WaterInjectionLog
@@ -280,6 +314,10 @@ async def _update_log_status(factory, log_id: int, status: str, duration_ms: int
         values["proxy_ip"] = proxy_ip
     if screenshot_path:
         values["screenshot_path"] = screenshot_path
+    if device_info:
+        values["device_info"] = device_info
+    if user_agent:
+        values["user_agent"] = user_agent
 
     async with factory() as db:
         await db.execute(
@@ -429,33 +467,54 @@ def cleanup_stuck_water_logs_task():
 # ========== 同步实现（Playwright sync API） ==========
 
 def _db_sync(coro):
-    """独立的事件循环执行数据库异步操作"""
+    """在独立线程的独立事件循环中执行异步 DB 操作。
+
+    必须用独立线程：Playwright 同步 API 会在 worker 主线程常驻一个处于 running
+    状态的事件循环（driver greenlet 挂起在 run_forever 上）。同一线程再
+    run_until_complete 会抛 'Cannot run the event loop while another loop is
+    running'。点击/注册在 Playwright 之后仍要写 DB，故所有 DB 操作放到独立线程。
+    """
     import asyncio
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _runner():
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(coro)
+        finally:
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            asyncio.set_event_loop(None)
+            loop.close()
+
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(_runner).result()
 
 
 def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, country_code,
                    proxy_id, ua_type, register_enabled, register_rate_min, register_rate_max,
                    batch_id=None):
-    """使用 httpx 执行点击：发起带真实 UA 的 GET 经代理访问目标 URL，跟随重定向。
+    """使用 Playwright 真浏览器 + 设备模拟执行点击。
 
-    上游 URL shortener (cutt.ly 等) 与营销落地页基本通过「服务端访问日志」计数，
-    httpx 走完整 redirect 链 → 等价于浏览器点击。相比 Playwright 没有浏览器开销，
-    也不会卡在 context.close()，单次 <10s 几乎不会卡死。
-    JS-only 像素打点的场景仍可能少计，但本系统注水主流场景由短链/落地服务端记录。
+    相比旧版 httpx（纯 HTTP GET，不执行 JS），本实现用共享 Chromium 单例打开
+    移动设备 context（is_mobile / has_touch / device_scale_factor / 真实 viewport），
+    等页面 load + 网络空闲让 GA / Facebook Pixel 等 JS 打点真正触发，再做真实
+    滚动 + 触摸 tap 模拟设备浏览行为 → 覆盖「纯 JS 像素计数」的落地页。
+
+    代价：单次耗时数秒、每 context 数百 MB，明显重于 httpx。高并发批量注水时
+    web_automation 队列资源压力会上升，必要时下调 worker 并发/prefetch。
     """
-    import httpx
-    from urllib.parse import quote as _q
     eng, factory = _make_session()
     start_time = time.time()
     log_id = None
     trigger_register = False
     detected_ip = None
     final_url = url
+    ua = None
+    device_desc = None
 
     try:
         log_id, proxy_config = _db_sync(
@@ -465,68 +524,77 @@ def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, coun
         )
         _db_sync(eng.dispose())
 
-        # 构造 httpx 代理 URL（拼回 user:pass@host:port 格式）
-        proxy_url = None
-        if proxy_config and proxy_config.get("server"):
-            scheme, host_port = proxy_config["server"].split("://", 1)
-            user = proxy_config.get("username", "")
-            pwd = proxy_config.get("password", "")
-            auth = f"{_q(user, safe='')}:{_q(pwd, safe='')}@" if user else ""
-            proxy_url = f"{scheme}://{auth}{host_port}"
-
+        # Playwright 浏览器（共享 Chromium 单例）+ 设备模拟 context
+        browser = _get_browser()
         ua = _pick_user_agent(ua_type)
         is_mobile = "mobile" in ua_type or "Mobile" in ua
-        headers = {
-            "User-Agent": ua,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Sec-Ch-Ua-Mobile": "?1" if is_mobile else "?0",
-        }
+        locale, tz = _get_locale_timezone(country_code)
 
-        client_kwargs = {
-            "headers": headers,
-            "timeout": httpx.Timeout(30.0, connect=15.0),
-            "follow_redirects": True,
-            "max_redirects": 10,
-            "verify": True,
-        }
-        if proxy_url:
-            # httpx 0.25.x 仍使用 proxies= 参数（0.27 起改名为 proxy=）
-            client_kwargs["proxies"] = proxy_url
+        viewport = {"width": 390, "height": 844} if is_mobile else {"width": 1440, "height": 900}
+        device_desc = _describe_device(ua, is_mobile, viewport)
+        ctx_kwargs = {"user_agent": ua, "viewport": viewport, "locale": locale, "timezone_id": tz}
+        if is_mobile:
+            # 真实移动设备指纹：触摸能力 + 高 DPR + 竖屏 viewport
+            ctx_kwargs.update({
+                "screen": dict(viewport),
+                "device_scale_factor": 3,
+                "is_mobile": True,
+                "has_touch": True,
+            })
+        if proxy_config:
+            ctx_kwargs["proxy"] = proxy_config
 
-        with httpx.Client(**client_kwargs) as client:
+        context = browser.new_context(**ctx_kwargs)
+        try:
             # 出口 IP 探测（best-effort，不影响主流程）
             try:
-                ip_resp = client.get("https://api.ipify.org?format=text", timeout=8.0)
-                import re
-                m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", ip_resp.text or "")
+                ip_page = context.new_page()
+                _apply_stealth(ip_page)
+                ip_page.goto("https://api.ipify.org?format=text", timeout=8000)
+                m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", ip_page.content() or "")
                 detected_ip = m.group(1) if m else None
+                ip_page.close()
             except Exception:
                 detected_ip = None
 
-            resp = client.get(url)
-            final_url = str(resp.url)
-            if resp.status_code >= 400:
-                raise RuntimeError(f"HTTP {resp.status_code} at final URL {final_url[:120]}")
+            page = context.new_page()
+            _apply_stealth(page)
+            resp = page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            _wait_through_cf(page)
+            # 等 JS 打点信标（GA/Pixel）发出；networkidle 拿不到时不阻断主流程
+            try:
+                page.wait_for_load_state("networkidle", timeout=12000)
+            except Exception:
+                pass
+            if resp is not None and resp.status >= 400:
+                raise RuntimeError(f"HTTP {resp.status} at final URL {page.url[:120]}")
+            final_url = page.url
 
-            # 模拟阅读停留 1-4s（避免落地服务端把同源高频请求标为机器）
-            time.sleep(random.uniform(1.0, 4.0))
+            # 模拟真实设备浏览：滚动 + 触摸 tap + 阅读停留
+            try:
+                for _ in range(random.randint(1, 3)):
+                    page.mouse.wheel(0, random.randint(400, 1200))
+                    page.wait_for_timeout(random.randint(500, 1500))
+                if is_mobile:
+                    page.touchscreen.tap(random.randint(80, 300), random.randint(200, 600))
+            except Exception:
+                pass
+            page.wait_for_timeout(random.randint(1500, 4000))
 
             if register_enabled:
                 rate = random.uniform(register_rate_min, register_rate_max)
                 if random.random() * 100 < rate:
                     trigger_register = True
+        finally:
+            try:
+                context.close()
+            except Exception:
+                pass
 
         duration = int((time.time() - start_time) * 1000)
         eng2, factory2 = _make_session()
-        _db_sync(_update_log_status(factory2, log_id, 'success', duration, proxy_ip=detected_ip))
+        _db_sync(_update_log_status(factory2, log_id, 'success', duration, proxy_ip=detected_ip,
+                                    device_info=device_desc, user_agent=ua))
         _db_sync(eng2.dispose())
         logger.info(f"注水点击成功: log={log_id}, duration={duration}ms, ip={detected_ip}, final={final_url[:80]}")
 
@@ -560,7 +628,7 @@ def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, coun
             try:
                 eng3, factory3 = _make_session()
                 _db_sync(_update_log_status(factory3, log_id, 'failed', duration, str(e)[:500],
-                                            proxy_ip=detected_ip))
+                                            proxy_ip=detected_ip, device_info=device_desc, user_agent=ua))
                 _db_sync(eng3.dispose())
             except Exception:
                 pass
@@ -575,6 +643,8 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
     log_id = None
     reg_success = False
     detected_ip = None
+    ua = None
+    device_desc = None
 
     try:
         # 阶段1：数据库
@@ -588,7 +658,9 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
         # 阶段2：Playwright 浏览器（共享 Chromium 单例）
         browser = _get_browser()
         ua = _pick_user_agent(ua_type)
-        viewport = {"width": 375, "height": 812} if "mobile" in ua_type or "Mobile" in ua else {"width": 1440, "height": 900}
+        is_mobile = "mobile" in ua_type or "Mobile" in ua
+        viewport = {"width": 375, "height": 812} if is_mobile else {"width": 1440, "height": 900}
+        device_desc = _describe_device(ua, is_mobile, viewport)
         locale, tz = _get_locale_timezone(country_code)
 
         ctx_kwargs = {"user_agent": ua, "viewport": viewport, "locale": locale, "timezone_id": tz}
@@ -615,10 +687,15 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
             _wait_through_cf(page)
             page.wait_for_timeout(random.randint(2000, 4000))
 
-            if script_data and script_data.get("steps"):
-                reg_success = _execute_script_steps(page, script_data["steps"])
+            steps = script_data.get("steps") if script_data else None
+            has_script = (isinstance(steps, dict) and steps.get("fields")) or (isinstance(steps, list) and steps)
+            if has_script:
+                # 配了脚本(精准模式)
+                reg_success = _execute_script_steps(page, steps)
+                reg_reason = "ok" if reg_success else "脚本注册未完成"
             else:
-                reg_success = _heuristic_register(page)
+                # 零配置自动注册/引流转化(只需域名)
+                reg_success, reg_reason = _auto_register(page, url, country_code)
         finally:
             try:
                 context.close()
@@ -628,10 +705,11 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
         # 阶段3：数据库更新（Playwright 之后）
         duration = int((time.time() - start_time) * 1000)
         status = "success" if reg_success else "failed"
-        error_msg = None if reg_success else "注册流程未完成"
+        error_msg = None if reg_success else (reg_reason or "注册流程未完成")
 
         eng2, factory2 = _make_session()
-        _db_sync(_update_log_status(factory2, log_id, status, duration, error_msg, proxy_ip=detected_ip))
+        _db_sync(_update_log_status(factory2, log_id, status, duration, error_msg, proxy_ip=detected_ip,
+                                    device_info=device_desc, user_agent=ua))
         if script_data and script_data.get("id"):
             _db_sync(_increment_script_counter(factory2, script_data["id"], reg_success))
         _db_sync(eng2.dispose())
@@ -645,111 +723,496 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
         if log_id:
             try:
                 eng3, factory3 = _make_session()
-                _db_sync(_update_log_status(factory3, log_id, 'failed', duration, str(e)[:500]))
+                _db_sync(_update_log_status(factory3, log_id, 'failed', duration, str(e)[:500],
+                                            device_info=device_desc, user_agent=ua))
                 _db_sync(eng3.dispose())
             except Exception:
                 pass
         return {"success": False, "error": str(e)}
 
 
-def _execute_script_steps(page, steps: list) -> bool:
-    """按脚本步骤执行注册表单填写"""
+def _field_value(fake, ftype: str, faker_method: str = "") -> str:
+    """按字段类型(或自定义 Faker 方法)生成填充值"""
+    if faker_method:
+        try:
+            return str(getattr(fake, faker_method)())
+        except AttributeError:
+            pass
+    ftype = (ftype or "text").lower()
+    if ftype == "phone":
+        return fake.phone_number()
+    if ftype == "email":
+        return fake.email()
+    if ftype == "password":
+        return fake.password(length=12)
+    return fake.user_name()
+
+
+def _execute_script_steps(page, steps) -> bool:
+    """按脚本步骤执行注册表单填写。
+
+    支持两种格式：
+    1. 前端 Scripts.vue 的结构化字典(主用)：
+       {entry_selector, fields:[{selector,type,faker_method}], submit_selector,
+        success_indicator(逗号分隔的 URL 片段或元素选择器), captcha_handler}
+    2. 旧版扁平列表 [{selector, action, value, faker_method}]（向后兼容）。
+
+    注意：需要短信验证码(OTP)的注册无法纯自动化——注水方收不到真实验证码，
+    captcha_handler 仅作占位；这类页面建议把 success_indicator 留空并接受尽力而为。
+    """
     from faker import Faker
     fake = Faker()
 
-    try:
-        for step in steps:
-            selector = step.get("selector", "")
-            action = step.get("action", "fill")
-            value = step.get("value", "")
-            faker_method = step.get("faker_method", "")
+    # ---- 格式 2：旧扁平列表 ----
+    if isinstance(steps, list):
+        try:
+            for step in steps:
+                selector = step.get("selector", "")
+                action = step.get("action", "fill")
+                value = step.get("value", "")
+                faker_method = step.get("faker_method", "")
+                if faker_method:
+                    try:
+                        value = getattr(fake, faker_method)()
+                    except AttributeError:
+                        pass
+                if action == "fill":
+                    page.fill(selector, str(value))
+                elif action == "click":
+                    page.click(selector)
+                elif action == "select":
+                    page.select_option(selector, value)
+                elif action == "check":
+                    page.check(selector)
+                elif action == "wait":
+                    page.wait_for_timeout(int(value) if value else 1000)
+                page.wait_for_timeout(random.randint(300, 800))
+            return True
+        except Exception as e:
+            logger.warning(f"脚本执行失败(列表格式): {e}")
+            return False
 
-            if faker_method:
-                try:
-                    value = getattr(fake, faker_method)()
-                except AttributeError:
-                    pass
-
-            if action == "fill":
-                page.fill(selector, str(value))
-            elif action == "click":
-                page.click(selector)
-            elif action == "select":
-                page.select_option(selector, value)
-            elif action == "check":
-                page.check(selector)
-            elif action == "wait":
-                page.wait_for_timeout(int(value) if value else 1000)
-
-            page.wait_for_timeout(random.randint(300, 800))
-
-        return True
-    except Exception as e:
-        logger.warning(f"脚本执行失败: {e}")
+    # ---- 格式 1：前端结构化字典 ----
+    if not isinstance(steps, dict):
         return False
-
-
-def _heuristic_register(page) -> bool:
-    """启发式注册：自动检测表单并填写"""
-    from faker import Faker
-    fake = Faker()
-
     try:
-        email_selectors = [
-            'input[type="email"]', 'input[name*="email"]', 'input[id*="email"]',
-            'input[placeholder*="email" i]', 'input[placeholder*="Email"]',
-        ]
-        for sel in email_selectors:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                el.fill(fake.email())
-                page.wait_for_timeout(random.randint(300, 600))
-                break
+        # 1) 注册入口：可选，先点开表单
+        entry = (steps.get("entry_selector") or "").strip()
+        if entry:
+            try:
+                page.click(entry, timeout=8000)
+                page.wait_for_timeout(random.randint(800, 1500))
+            except Exception as e:
+                logger.warning(f"注册入口点击失败({entry}): {e}")
 
-        password_selectors = [
-            'input[type="password"]', 'input[name*="password"]', 'input[id*="password"]',
-        ]
-        for sel in password_selectors:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                el.fill(fake.password(length=12))
-                page.wait_for_timeout(random.randint(300, 600))
-                break
+        # 2) 逐字段填写
+        filled = 0
+        for field in (steps.get("fields") or []):
+            selector = (field.get("selector") or "").strip()
+            if not selector:
+                continue
+            value = _field_value(fake, field.get("type"), field.get("faker_method"))
+            try:
+                el = page.query_selector(selector)
+                if el and el.is_visible():
+                    el.fill(value)
+                    filled += 1
+                    page.wait_for_timeout(random.randint(300, 700))
+            except Exception as e:
+                logger.warning(f"字段填写失败({selector}): {e}")
+        if filled == 0:
+            logger.warning("脚本未填写任何字段(选择器都没命中)")
+            return False
 
-        name_selectors = [
-            'input[name*="name"]', 'input[id*="name"]',
-            'input[placeholder*="name" i]', 'input[placeholder*="Name"]',
-        ]
-        for sel in name_selectors:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                el.fill(fake.name())
-                page.wait_for_timeout(random.randint(200, 500))
-                break
+        # 3) 提交
+        submit = (steps.get("submit_selector") or "").strip()
+        if submit:
+            try:
+                page.click(submit, timeout=8000)
+            except Exception as e:
+                logger.warning(f"提交按钮点击失败({submit}): {e}")
+                return False
+            page.wait_for_timeout(random.randint(2500, 5000))
 
-        phone_selectors = [
-            'input[type="tel"]', 'input[name*="phone"]', 'input[name*="mobile"]',
-        ]
-        for sel in phone_selectors:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                el.fill(fake.phone_number())
-                page.wait_for_timeout(random.randint(200, 500))
-                break
-
-        submit_selectors = [
-            'button[type="submit"]', 'input[type="submit"]',
-            'button:has-text("Sign Up")', 'button:has-text("Register")',
-            'button:has-text("注册")', 'button:has-text("Create")',
-        ]
-        for sel in submit_selectors:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                el.click()
-                page.wait_for_timeout(random.randint(3000, 6000))
+        # 4) 成功判断：success_indicator 逗号分隔，URL 含子串 或 元素存在即算成功
+        indicators = [s.strip() for s in (steps.get("success_indicator") or "").split(",") if s.strip()]
+        if not indicators:
+            return True  # 未配判定条件 → 提交即视为尽力而为成功
+        cur_url = ""
+        try:
+            cur_url = page.url or ""
+        except Exception:
+            pass
+        for ind in indicators:
+            if ind in cur_url:
                 return True
-
+            try:
+                if page.query_selector(ind):
+                    return True
+            except Exception:
+                pass
+        logger.info(f"注册提交后未命中成功标志: {indicators}")
         return False
     except Exception as e:
-        logger.warning(f"启发式注册异常: {e}")
+        logger.warning(f"脚本执行失败(字典格式): {e}")
         return False
+
+
+# ========== 零配置自动注册引擎（只需域名，自动发现并填写注册表单） ==========
+
+_REGISTER_ENTRY_TEXTS = ["立即注册", "免费注册", "注册", "Sign up", "Sign Up", "Signup",
+                         "Register", "Create account", "Create Account", "Join", "Get started"]
+_SUBMIT_TEXTS = ["立即注册", "注册", "Sign up", "Sign Up", "Register", "Create account",
+                 "Create Account", "Join now", "Join", "Continue", "Next", "提交", "确定", "下一步",
+                 # lead-gen / 引流落地页常见行动按钮
+                 "Play now", "PLAY NOW", "Play Now", "立即游戏", "开始游戏", "马上玩",
+                 "立即领取", "领取", "Claim", "Get Bonus", "Download", "下载", "Start"]
+_REGISTER_PATHS = ["/register", "/signup", "/sign-up", "/account/register", "/user/register",
+                   "/auth/register", "/reg"]
+_SUCCESS_HINTS = ["welcome", "dashboard", "success", "logout", "log out", "sign out", "my account",
+                  "我的", "退出", "欢迎", "注册成功", "登录成功", "个人中心"]
+_ERROR_HINTS = ["already", "已存在", "已被注册", "已注册", "invalid", "error", "失败", "错误",
+                "incorrect", "required", "必填"]
+_OTP_HINTS = ["验证码", "verification code", "verify your", "otp", "确认码", "短信验证",
+              "code sent", "enter the code", "邮箱验证", "verification"]
+
+
+def _gen_phone(country_code: str = "") -> str:
+    """按国家生成一个貌似真实的本地手机号(国家选择器通常已带区号，填本地号即可)。"""
+    cc = (country_code or "").upper()
+    d = lambda n: "".join(str(random.randint(0, 9)) for _ in range(n))
+    if cc == "IN":          # 印度：10 位，首位 6-9
+        return str(random.choice([6, 7, 8, 9])) + d(9)
+    if cc == "ID":          # 印尼：8 开头
+        return "8" + d(random.choice([9, 10]))
+    if cc == "PH":          # 菲律宾：9 开头共 10 位
+        return "9" + d(9)
+    if cc == "BR":          # 巴西：2位区号 + 9 + 8位
+        return d(2) + "9" + d(8)
+    if cc == "VN":          # 越南：9 位
+        return "9" + d(8)
+    if cc == "TH":          # 泰国：8/9 开头共 9 位
+        return str(random.choice([8, 9])) + d(8)
+    if cc in ("US", "GB"):
+        return d(10)
+    return d(10)
+
+
+def _gen_identity(url: str = "", country_code: str = "") -> dict:
+    """生成一套自洽的虚拟注册身份；邀请码从 URL ?code=/ref= 提取。"""
+    from faker import Faker
+    fake = Faker()
+    uname = (fake.user_name() + str(fake.random_int(10, 9999))).lower()
+    ident = {
+        "email": f"{uname}@{fake.free_email_domain()}",
+        "username": uname,
+        "password": "Aa1!" + fake.password(length=8, special_chars=False, digits=True),
+        "name": fake.name(),
+        "first_name": fake.first_name(),
+        "last_name": fake.last_name(),
+        "phone": _gen_phone(country_code),
+        "invite_code": "",
+    }
+    try:
+        from urllib.parse import urlparse, parse_qs
+        qs = parse_qs(urlparse(url).query)
+        for k in ("code", "invite", "invite_code", "referral", "ref", "inviteCode", "c", "r"):
+            if qs.get(k):
+                ident["invite_code"] = qs[k][0]
+                break
+    except Exception:
+        pass
+    return ident
+
+
+def _classify_input(meta: dict):
+    """按字段元数据（type/name/id/placeholder/autocomplete/aria/label）判定语义类别。"""
+    t = (meta.get("type") or "").lower()
+    if t in ("hidden", "submit", "button", "image", "file", "reset", "search", "range", "color"):
+        return None
+    if t == "radio":
+        return None
+    if t == "checkbox":
+        return "checkbox"
+    blob = " ".join([meta.get("name", ""), meta.get("id", ""), meta.get("placeholder", ""),
+                     meta.get("autocomplete", ""), meta.get("aria", ""), meta.get("label", "")]).lower()
+    if any(k in blob for k in ("captcha", "verif", "otp", "验证码", "确认码")):
+        return "otp"
+    if t == "email" or "email" in blob or "e-mail" in blob or "mail" in blob or "邮箱" in blob:
+        return "email"
+    if t == "password" or "password" in blob or "passwd" in blob or "密码" in blob:
+        return "password"
+    if t == "tel" or any(k in blob for k in ("phone", "mobile", "tel", "手机", "电话")):
+        return "phone"
+    if any(k in blob for k in ("invite", "referr", "referral", "promo", "推荐码", "邀请")):
+        return "invite_code"
+    if any(k in blob for k in ("firstname", "first_name", "first name", "given")):
+        return "first_name"
+    if any(k in blob for k in ("lastname", "last_name", "last name", "surname", "family")):
+        return "last_name"
+    if any(k in blob for k in ("username", "user_name", "login", "account", "账号", "用户名", "昵称", "nick")):
+        return "username"
+    if any(k in blob for k in ("name", "姓名", "real name")):
+        return "name"
+    return "text"
+
+
+def _read_meta(el) -> dict:
+    """读取单个输入元素的元数据（含关联 label 文本）。"""
+    meta = {
+        "type": (el.get_attribute("type") or "").lower(),
+        "name": el.get_attribute("name") or "",
+        "id": el.get_attribute("id") or "",
+        "placeholder": el.get_attribute("placeholder") or "",
+        "autocomplete": el.get_attribute("autocomplete") or "",
+        "aria": el.get_attribute("aria-label") or "",
+    }
+    try:
+        meta["label"] = el.evaluate(
+            "e => { try { const l = e.id && document.querySelector('label[for=\"'+e.id+'\"]');"
+            " return l ? l.innerText : (e.closest('label') ? e.closest('label').innerText : ''); }"
+            " catch(_) { return ''; } }"
+        ) or ""
+    except Exception:
+        meta["label"] = ""
+    return meta
+
+
+def _goto_register_form(page, url: str):
+    """当前页没有密码框时，尝试点击「注册」入口，或跳转常见注册路径，把表单找出来。"""
+    # 1) 点击页面上的注册入口
+    for txt in _REGISTER_ENTRY_TEXTS:
+        try:
+            loc = page.locator(f"a:has-text('{txt}'), button:has-text('{txt}')").first
+            if loc.count() > 0 and loc.is_visible():
+                loc.click(timeout=5000)
+                page.wait_for_timeout(random.randint(1200, 2200))
+                if page.query_selector("input[type=password]"):
+                    return
+        except Exception:
+            continue
+    # 2) 尝试常见注册路径
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(page.url)
+        base = f"{p.scheme}://{p.netloc}"
+    except Exception:
+        base = url.rstrip("/")
+    for path in _REGISTER_PATHS:
+        try:
+            page.goto(base + path, wait_until="domcontentloaded", timeout=20000)
+            _wait_through_cf(page)
+            page.wait_for_timeout(random.randint(800, 1500))
+            if page.query_selector("input[type=password]"):
+                return
+        except Exception:
+            continue
+
+
+def _fill_form_once(page, ident: dict) -> dict:
+    """扫描当前页可见输入框并按语义填写；返回命中情况 {类别: True}。"""
+    result = {}
+    try:
+        handles = page.query_selector_all("input, select, textarea")
+    except Exception:
+        return result
+    pwd_filled = False
+    for el in handles:
+        try:
+            if not el.is_visible() or not el.is_enabled():
+                continue
+        except Exception:
+            continue
+        cat = _classify_input(_read_meta(el))
+        if not cat:
+            continue
+        try:
+            if cat == "checkbox":
+                # 勾选同意条款/年龄确认等
+                if not el.is_checked():
+                    el.check(timeout=2000)
+                result["checkbox"] = True
+                continue
+            if cat == "otp":
+                result["otp"] = True  # 验证码字段：无法自动
+                continue
+            if cat == "password":
+                el.fill(ident["password"])
+                result["password" if not pwd_filled else "password2"] = True
+                pwd_filled = True
+            elif cat == "invite_code":
+                if ident.get("invite_code"):
+                    el.fill(ident["invite_code"])
+                    result["invite_code"] = True
+                continue
+            else:
+                val = ident.get(cat) or ident["username"]
+                el.fill(str(val))
+                result[cat] = True
+            page.wait_for_timeout(random.randint(150, 400))
+        except Exception:
+            continue
+    return result
+
+
+def _click_submit(page) -> bool:
+    """智能定位并点击提交/注册按钮。"""
+    # 优先语义化提交按钮
+    for sel in ("button[type=submit]", "input[type=submit]"):
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible() and el.is_enabled():
+                el.click(timeout=5000)
+                return True
+        except Exception:
+            pass
+    # 再按按钮文案
+    for txt in _SUBMIT_TEXTS:
+        try:
+            loc = page.locator(
+                f"button:has-text('{txt}'), a:has-text('{txt}'), input[value='{txt}'], [role=button]:has-text('{txt}')"
+            ).first
+            if loc.count() > 0 and loc.is_visible():
+                loc.click(timeout=5000)
+                return True
+        except Exception:
+            pass
+        # 文本兜底：样式化按钮(div/span 等)，点中含该文案的最内层元素也能触发
+        try:
+            loc = page.get_by_text(txt, exact=False).first
+            if loc.count() > 0 and loc.is_visible():
+                loc.click(timeout=5000)
+                return True
+        except Exception:
+            continue
+    # 最后兜底：无文字的样式化/图片按钮(引流落地页常见，如 <div class=btn><img src=btn.png>)
+    # 按 class / 图片命名定位，尺寸过滤掉图标和整页容器，命中即点。
+    for sel in (".btn", ".button", "[class*=submit]", "[class*='play']",
+                "img[src*=btn]", "img[src*=play]", "img[src*=submit]", "img[src*=register]",
+                "img[alt*='play' i]"):
+        try:
+            for el in page.query_selector_all(sel):
+                if not el.is_visible():
+                    continue
+                box = el.bounding_box()
+                if not box or box["width"] < 80 or box["height"] < 24 or box["height"] > 160:
+                    continue
+                el.click(timeout=5000)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _page_asks_otp(page) -> bool:
+    """提交后页面是否在索要验证码（短信/邮箱 OTP、图形验证码）。"""
+    try:
+        body = (page.inner_text("body") or "").lower()
+    except Exception:
+        body = ""
+    return any(h.lower() in body for h in _OTP_HINTS)
+
+
+def _check_register_success(page, url_before: str) -> bool:
+    """多信号判定注册是否成功：URL 跳转 / 成功文案 / 无密码框且无错误。"""
+    try:
+        url_now = page.url or ""
+    except Exception:
+        url_now = ""
+    try:
+        body = (page.inner_text("body") or "").lower()
+    except Exception:
+        body = ""
+    if any(h.lower() in body for h in _SUCCESS_HINTS):
+        return True
+    has_error = any(h.lower() in body for h in _ERROR_HINTS)
+    # URL 明显跳转(离开注册页)且无报错 → 视为成功
+    if url_now and url_now != url_before and not has_error:
+        if not page.query_selector("input[type=password]"):
+            return True
+    return False
+
+
+def _has_fillable_input(page) -> bool:
+    """当前页是否有可见可填的输入框(排除 hidden/按钮/复选/单选)。"""
+    try:
+        handles = page.query_selector_all("input, textarea")
+    except Exception:
+        return False
+    for el in handles:
+        try:
+            if not (el.is_visible() and el.is_enabled()):
+                continue
+            t = (el.get_attribute("type") or "text").lower()
+            if t in ("hidden", "submit", "button", "checkbox", "radio", "image", "file", "reset"):
+                continue
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _auto_register(page, url: str = "", country_code: str = ""):
+    """零配置自动注册/引流转化：只需域名，自动发现表单 → 填写 → 提交 → 判定。
+
+    覆盖两类落地页：
+    - 账号注册页(邮箱/密码/用户名 等)。
+    - 引流转化页(lead-gen)：填手机号(+邀请码)点「Play now/立即领取」触发 APK 下载——
+      广告主统计的转化就是这一步，故「触发下载 / 页面跳转」即视为成功。
+
+    返回 (success: bool, reason: str)。
+    """
+    ident = _gen_identity(url, country_code)
+    dl = {"hit": False}
+    try:
+        page.on("download", lambda d: dl.__setitem__("hit", True))
+    except Exception:
+        pass
+    try:
+        # 1) 当前页没有任何可填输入框时，才去找注册页(避免把已有表单导航走)
+        if not _has_fillable_input(page):
+            _goto_register_form(page, url)
+
+        reason = ""
+        # 2) 多步表单：最多 2 轮（填写→提交→若仍是表单再来一轮）
+        for round_i in range(2):
+            filled = _fill_form_once(page, ident)
+            meaningful = any(k in filled for k in ("email", "username", "phone", "password"))
+            if not meaningful:
+                reason = reason or "未发现可填写的注册/引流表单"
+                break
+            url_before = page.url
+            if not _click_submit(page):
+                reason = "未找到提交/行动按钮"
+                break
+            page.wait_for_timeout(random.randint(2500, 5000))
+            _wait_through_cf(page)
+
+            # 引流页成功信号：触发了 APK/文件下载
+            if dl["hit"]:
+                return True, "ok(已提交手机号并触发下载)"
+            if _check_register_success(page, url_before):
+                return True, "ok"
+            if _page_asks_otp(page):
+                return False, "需要验证码(OTP)，无法自动完成"
+
+            # 纯引流页(无密码框)：再等一下下载/跳转，否则判失败
+            if not page.query_selector("input[type=password]"):
+                page.wait_for_timeout(1800)
+                if dl["hit"]:
+                    return True, "ok(已提交手机号并触发下载)"
+                cur = ""
+                try:
+                    cur = page.url
+                except Exception:
+                    pass
+                if cur and cur != url_before:
+                    return True, "ok(已提交并跳转)"
+                reason = "已填写并点击，但未检测到下载/跳转"
+                break
+            reason = "提交后未确认注册成功"
+
+        return False, reason or "提交后未确认成功"
+    except Exception as e:
+        logger.warning(f"自动注册异常: {e}")
+        return False, f"自动注册异常: {str(e)[:120]}"

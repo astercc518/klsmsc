@@ -38,6 +38,28 @@ celery_app.conf.update(
     worker_max_tasks_per_child=1000,  # 每个worker处理1000个任务后重启
 )
 
+# ============ 全局兜底：统一定时 eta 时区 ============
+# 时间统一：容器/MySQL/datetime.now() 全是北京时间(UTC+8)，唯独 Celery 序列化 eta 时
+# 会把 naive datetime 一律当 UTC（无视上面 timezone='Asia/Shanghai' / enable_utc=False），
+# 使定时任务被推迟 8 小时（线上事故：batch 712 选 17:30 实排次日 01:30）。
+# apply_async 与 send_task 最终都汇入 celery_app.send_task —— 在此统一把任何 naive 的
+# eta 标成应用时区，杜绝该类 bug 在未来任何调用点复发（无需每处手动 localize）。
+from datetime import datetime as _dt  # noqa: E402
+from zoneinfo import ZoneInfo as _ZoneInfo  # noqa: E402
+
+_APP_TZ = _ZoneInfo(celery_app.conf.timezone or "Asia/Shanghai")
+_orig_send_task = celery_app.send_task
+
+
+def _send_task_tz_safe(name, args=None, kwargs=None, **options):
+    _eta = options.get("eta")
+    if isinstance(_eta, _dt) and _eta.tzinfo is None:
+        options["eta"] = _eta.replace(tzinfo=_APP_TZ)
+    return _orig_send_task(name, args, kwargs, **options)
+
+
+celery_app.send_task = _send_task_tz_safe
+
 # 任务路由
 # 发送（sms_send / sms_send_smpp）与回执（sms_dlr）队列隔离：大批量 send 不会占满消费 DLR 的 worker。
 celery_app.conf.task_routes = {

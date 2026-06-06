@@ -1,7 +1,7 @@
 """
 短信记录数据模型
 """
-from sqlalchemy import Column, Integer, String, DECIMAL, Enum, TIMESTAMP, Text, BigInteger, Computed
+from sqlalchemy import Column, Integer, String, DECIMAL, Enum, TIMESTAMP, Text, BigInteger, Computed, Index
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -9,7 +9,18 @@ from app.database import Base
 class SMSLog(Base):
     """短信记录表"""
     __tablename__ = "sms_logs"
-    
+
+    # 性能索引：与 KLSMSC 生产库对齐。全新 create_all 部署若缺这些索引，批次进度统计
+    # (WHERE batch_id GROUP BY status) 会全表扫描，并发发送时拖垮 MySQL。务必随表创建。
+    __table_args__ = (
+        Index("idx_sms_logs_batch_status", "batch_id", "status"),
+        Index("idx_sms_logs_batch_id", "batch_id"),
+        Index("idx_status", "status"),
+        Index("idx_account_time", "account_id", "submit_time"),
+        Index("idx_channel_id_submit", "channel_id", "submit_time"),
+        Index("idx_country_code_submit", "country_code", "submit_time"),
+    )
+
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="记录ID")
     message_id = Column(String(64), nullable=False, unique=True, comment="消息ID")
     upstream_message_id = Column(String(64), index=True, comment="上游消息ID(用于状态报告匹配)")

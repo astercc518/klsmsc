@@ -25,6 +25,23 @@ logger = get_logger(__name__)
 # webhook 整体超时：HTTP 调用本身已限制 30s，留点余量给 DB 查询
 _WEBHOOK_TASK_TIMEOUT = float(os.getenv("WORKER_WEBHOOK_TASK_TIMEOUT_SEC", "60"))
 
+# 只发终态回调（默认开）：sent/accepted 等中间态对下游 DLR 是冗余，且会让回调量翻倍、
+# 大批量时打爆 webhook_tasks 队列。开启后仅发终态(delivered/failed/undeliv/...)。
+# 设 WEBHOOK_TERMINAL_ONLY=0 可恢复"每个状态都发"的旧行为。
+_WEBHOOK_TERMINAL_ONLY = os.getenv("WEBHOOK_TERMINAL_ONLY", "1").strip().lower() in ("1", "true", "yes", "on")
+# 已受理但未到终态的中间状态——开启"只发终态"时跳过这些；其余(含未知状态)一律放行，避免误丢真回执
+_NON_TERMINAL_WEBHOOK_STATUSES = frozenset({
+    "sent", "submitted", "accepted", "queued", "enroute", "en_route",
+    "processing", "pending", "buffered", "scheduled", "in_progress",
+})
+
+
+def _webhook_status_worth_sending(status) -> bool:
+    """开启"只发终态"时，过滤掉 sent/accepted 等中间态回调。"""
+    if not _WEBHOOK_TERMINAL_ONLY:
+        return True
+    return str(status or "").strip().lower() not in _NON_TERMINAL_WEBHOOK_STATUSES
+
 
 def validate_webhook_url(url: str) -> Tuple[bool, str]:
     """
@@ -99,6 +116,9 @@ def send_webhook_task(self, account_id: int, message_id: str, status: str, data:
         status: 状态 (sent/delivered/failed)
         data: 额外数据
     """
+    # 只发终态：跳过 sent/accepted 等中间态（兜底拦截绕过 trigger_webhook 的直连 apply_async 调用）
+    if not _webhook_status_worth_sending(status):
+        return {"success": True, "skipped": True, "reason": f"non-terminal status: {status}"}
     try:
         loop = asyncio.new_event_loop()
         try:
@@ -291,6 +311,10 @@ async def trigger_webhook(
         data: 额外数据
         account_id: 若调用方已持有账户 ID（如 worker 内已有 sms_log），应传入以避免打开全局引擎会话
     """
+    # 只发终态：在入队前就拦掉中间态(如发送路径的 'sent')，避免无谓占用 webhook_tasks 队列
+    if not _webhook_status_worth_sending(status):
+        logger.debug(f"跳过非终态Webhook(只发终态): {message_id} status={status}")
+        return
     if account_id is not _ACCOUNT_ID_ARG_UNSET:
         if not account_id:
             logger.warning(f"无法触发Webhook: 无账户ID: {message_id}")

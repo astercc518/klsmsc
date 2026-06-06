@@ -24,6 +24,7 @@ from app.modules.data.private_upload_parse import (
     batch_lookup_carriers,
     decode_my_numbers_upload_bytes,
     extract_phone_numbers_from_upload_text,
+    filter_numbers_by_real_country,
     phone_db_lookup_keys,
 )
 from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache
@@ -72,6 +73,18 @@ async def run_private_library_upload(
         raise ValueError(
             "未检测到有效手机号码。请确认国家/地区与文件编码；TXT/CSV 中号码可被识别。"
         )
+
+    # 按账户国家剔除"区号相同但真实国家不同"的号码（如 US 账户上传 +1 里的 PR/CA 等共用区号号码）
+    dropped_by_country: Dict[str, int] = {}
+    if region_iso:
+        numbers_to_add, dropped_by_country = filter_numbers_by_real_country(numbers_to_add, region_iso)
+        if dropped_by_country:
+            await _p(stage="country_filtered", progress_percent=12)
+        if not numbers_to_add:
+            raise ValueError(
+                f"上传的号码经识别均不属于账户国家 {region_iso}（已剔除：{dropped_by_country}）。"
+                f"请确认上传的是 {region_iso} 号码。"
+            )
 
     unique_numbers = sorted(list(set(numbers_to_add)))
     total_u = len(unique_numbers)
@@ -243,13 +256,20 @@ async def run_private_library_upload(
         batch_id=batch_id,
     )
 
+    n_dropped = sum(dropped_by_country.values()) if dropped_by_country else 0
+    _drop_msg = ""
+    if n_dropped:
+        _detail = "、".join(f"{k}:{v}" for k, v in sorted(dropped_by_country.items(), key=lambda x: -x[1]))
+        _drop_msg = f"，剔除 {n_dropped} 条非 {region_iso} 国家号码（{_detail}）"
     return {
         "success": True,
-        "message": f"成功上传 {n_ins} 条新数据，更新 {n_upd} 条已有私库记录" + (f"，跳过 {n_dup} 条重复" if n_dup else ""),
+        "message": f"成功上传 {n_ins} 条新数据，更新 {n_upd} 条已有私库记录" + (f"，跳过 {n_dup} 条重复" if n_dup else "") + _drop_msg,
         "total": total_u,
         "added": n_ins + n_upd,
         "inserted": n_ins,
         "updated": n_upd,
+        "dropped_non_country": n_dropped,
+        "dropped_by_country": dropped_by_country,
         "batch_id": batch_id,
         "skipped_other_account": 0,
         "duplicates": n_dup,

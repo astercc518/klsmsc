@@ -848,7 +848,7 @@ async def list_accounts_admin(
                 "protocol": getattr(a, 'protocol', None) or "HTTP",
                 # 计费配置
                 "payment_type": a.payment_type or "prepaid",
-                "unit_price": float(a.unit_price) if a.unit_price is not None else 0.05,
+                "unit_price": float(a.unit_price) if a.unit_price is not None else None,
                 "status": a.status,
                 "balance": float(a.balance or 0),
                 "currency": a.currency,
@@ -865,10 +865,12 @@ async def list_accounts_admin(
                     "email": a.sales.email if a.sales else None
                 } if a.sales else None,
                 "sales_id": a.sales_id,
+                # 仅"全国默认"绑定(country_code 为空)进入通道列；按国家专属绑定在「国家路由」里单独管理。
+                # 默认绑定为空 = 可用全部通道(走全局路由)，前端显示为 *
                 "channels": [
                     {"id": ac.channel.id, "channel_code": ac.channel.channel_code}
                     for ac in (a.account_channels or [])
-                    if ac.channel
+                    if ac.channel and ac.country_code is None
                 ] if a.account_channels else [],
                 "supplier_url": a.supplier_url,
                 "supplier_credentials": a.supplier_credentials if a.supplier_credentials else None,
@@ -1055,11 +1057,11 @@ async def get_account_admin(
     except Exception:
         whitelist = []
 
-    # 获取绑定的通道
+    # 获取绑定的通道（仅"全国默认"绑定 country_code 为空；按国家专属绑定由「国家路由」管理，不进编辑表单的通道多选）
     channel_result = await db.execute(
         select(AccountChannel, Channel)
         .join(Channel, AccountChannel.channel_id == Channel.id)
-        .where(AccountChannel.account_id == account_id)
+        .where(AccountChannel.account_id == account_id, AccountChannel.country_code.is_(None))
         .order_by(AccountChannel.priority)
     )
     channel_rows = channel_result.all()
@@ -1092,7 +1094,7 @@ async def get_account_admin(
             "smpp_password": getattr(a, 'smpp_password', None),
             # 计费配置
             "payment_type": a.payment_type or "prepaid",
-            "unit_price": float(a.unit_price) if a.unit_price is not None else 0.05,
+            "unit_price": float(a.unit_price) if a.unit_price is not None else None,
             "status": a.status,
             "balance": float(a.balance or 0),
             "currency": a.currency,
@@ -1101,9 +1103,10 @@ async def get_account_admin(
             "rate_limit": a.rate_limit,
             "smpp_max_binds": a.smpp_max_binds if a.smpp_max_binds is not None else 5,
             "ip_whitelist": whitelist,
-            # API凭证（api_secret 打码——重置接口才会返回明文）
+            # API凭证：账号摘要需把接口密码原文给管理员转交客户（与 api_key 一致全显）；
+            # 接口为管理员鉴权，客户做 Basic Auth 必须用完整 api_secret，打码会导致无法使用
             "api_key": a.api_key,
-            "api_secret": _mask_secret(a.api_secret),
+            "api_secret": a.api_secret,
             # 绑定配置
             "sales_id": a.sales_id,
             "channels": channels,
@@ -1135,6 +1138,9 @@ async def update_account_admin(
     if not a:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    # 显式提供的字段集合（区分"传了 null=清空" 与 "未传=不变"）
+    provided = request.model_dump(exclude_unset=True)
+
     # 销售人员：仅可修改名下客户的在用/已暂停状态（停用/启用），不可改其他信息
     if is_sales_scoped(admin):
         if a.sales_id != admin.id:
@@ -1156,7 +1162,8 @@ async def update_account_admin(
     if request.tg_username is not None:
         a.tg_username = request.tg_username
     if request.country_code is not None:
-        a.country_code = request.country_code
+        # 空串视为"清空国家限制"（改为多国/不限），统一存 NULL
+        a.country_code = request.country_code or None
     if request.business_type is not None:
         a.business_type = request.business_type
     if request.services is not None:
@@ -1173,7 +1180,8 @@ async def update_account_admin(
     # 计费配置
     if request.payment_type is not None:
         a.payment_type = request.payment_type
-    if request.unit_price is not None:
+    # 统一单价：显式提供即生效；传 null 表示"清空统一单价"→ 回退到账户国家定价/全局价
+    if 'unit_price' in provided:
         a.unit_price = request.unit_price
     if request.status is not None:
         a.status = request.status
@@ -1193,17 +1201,21 @@ async def update_account_admin(
     if request.sales_id is not None:
         a.sales_id = request.sales_id if request.sales_id > 0 else None
     
-    # 更新绑定通道
+    # 更新绑定通道（仅管理"全国默认"绑定：country_code 为空；按国家专属绑定由「国家路由」端点单独管理，勿在此误删）
     if request.channel_ids is not None:
-        # 删除旧的绑定
+        # 删除旧的默认绑定
         await db.execute(
-            AccountChannel.__table__.delete().where(AccountChannel.account_id == account_id)
+            AccountChannel.__table__.delete().where(
+                AccountChannel.account_id == account_id,
+                AccountChannel.country_code.is_(None),
+            )
         )
-        # 添加新的绑定
+        # 添加新的默认绑定
         for idx, channel_id in enumerate(request.channel_ids):
             account_channel = AccountChannel(
                 account_id=account_id,
                 channel_id=channel_id,
+                country_code=None,
                 is_default=(idx == 0),
                 priority=idx
             )
@@ -1231,6 +1243,157 @@ async def update_account_admin(
             pass
 
     return {"success": True, "message": "Account updated successfully"}
+
+
+# ==================== 账户「国家路由与报价」（代理商批发：每账户每国家指定通道+销售价） ====================
+
+class CountryRouteItem(BaseModel):
+    country_code: str = Field(..., min_length=2, max_length=10, description="国家代码(ISO2，如 US)")
+    channel_id: int = Field(..., description="该国家路由到的上游通道ID")
+    price: Optional[float] = Field(None, ge=0, description="该国家销售单价(USD/条)；留空=不覆盖，回退通道/全局价")
+
+
+class CountryRoutesRequest(BaseModel):
+    routes: List[CountryRouteItem] = Field(default_factory=list)
+
+
+@router.get("/accounts/{account_id}/country-routes", response_model=dict)
+async def get_account_country_routes(
+    account_id: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取账户的「国家路由与报价」：每个国家 → 通道 + 销售价。"""
+    from app.modules.common.account import Account, AccountChannel
+    from app.modules.common.account_pricing import AccountPricing
+    from app.modules.sms.channel import Channel
+    from app.utils.country_code import normalize_country_code
+
+    result = await db.execute(select(Account).where(Account.id == account_id, Account.is_deleted == False))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    rows = await db.execute(
+        select(
+            AccountChannel.country_code, AccountChannel.channel_id,
+            Channel.channel_code, Channel.channel_name,
+        )
+        .join(Channel, Channel.id == AccountChannel.channel_id)
+        .where(AccountChannel.account_id == account_id, AccountChannel.country_code.isnot(None))
+        .order_by(AccountChannel.country_code)
+    )
+    price_rows = await db.execute(
+        select(AccountPricing.country_code, AccountPricing.price).where(
+            AccountPricing.account_id == account_id,
+            AccountPricing.business_type == 'sms',
+        )
+    )
+    price_map = {normalize_country_code(cc): float(p) for cc, p in price_rows.all()}
+
+    routes = []
+    for cc, ch_id, ch_code, ch_name in rows.all():
+        iso = normalize_country_code(cc)
+        routes.append({
+            "country_code": iso,
+            "channel_id": ch_id,
+            "channel_code": ch_code,
+            "channel_name": ch_name,
+            "price": price_map.get(iso),
+        })
+    return {"success": True, "routes": routes}
+
+
+@router.put("/accounts/{account_id}/country-routes", response_model=dict)
+async def set_account_country_routes(
+    account_id: int,
+    request: CountryRoutesRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """整表替换账户「国家路由与报价」（每条 = 国家 + 通道 + 可选销售价）。
+
+    - account_channels：替换该账户所有 country_code 非空（按国家）的绑定
+    - account_pricing：替换该账户 business_type='sms' 的国家定价（仅写入提供了 price 的条目）
+    - 不影响该账户的「全国默认」通道绑定(country_code 为空) 与账户统一单价
+    """
+    from app.modules.common.account import Account, AccountChannel
+    from app.modules.common.account_pricing import AccountPricing
+    from app.modules.sms.channel import Channel
+    from app.utils.country_code import normalize_country_code
+
+    if is_sales_scoped(admin):
+        raise HTTPException(status_code=403, detail="销售人员无权配置账户路由")
+
+    result = await db.execute(select(Account).where(Account.id == account_id, Account.is_deleted == False))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    # 规范化 + 去重
+    norm_routes = []
+    seen = set()
+    for it in request.routes:
+        iso = normalize_country_code(it.country_code)
+        if not iso:
+            raise HTTPException(status_code=400, detail=f"无效国家代码: {it.country_code}")
+        if iso in seen:
+            raise HTTPException(status_code=400, detail=f"国家重复配置: {iso}")
+        seen.add(iso)
+        norm_routes.append((iso, it.channel_id, it.price))
+
+    # 校验通道存在
+    if norm_routes:
+        ch_ids = {r[1] for r in norm_routes}
+        ch_res = await db.execute(
+            select(Channel.id).where(Channel.id.in_(ch_ids), Channel.is_deleted == False)
+        )
+        valid = {r[0] for r in ch_res.all()}
+        missing = ch_ids - valid
+        if missing:
+            raise HTTPException(status_code=400, detail=f"通道不存在或已删除: {sorted(missing)}")
+
+    # 替换按国家通道绑定（仅 country_code 非空）
+    await db.execute(
+        AccountChannel.__table__.delete().where(
+            AccountChannel.account_id == account_id,
+            AccountChannel.country_code.isnot(None),
+        )
+    )
+    # 替换账户国家定价（business_type='sms'）
+    await db.execute(
+        AccountPricing.__table__.delete().where(
+            AccountPricing.account_id == account_id,
+            AccountPricing.business_type == 'sms',
+        )
+    )
+    for iso, ch_id, price in norm_routes:
+        db.add(AccountChannel(
+            account_id=account_id, channel_id=ch_id, country_code=iso,
+            is_default=False, priority=0,
+        ))
+        if price is not None:
+            db.add(AccountPricing(
+                account_id=account_id, country_code=iso,
+                business_type='sms', price=price,
+            ))
+
+    await db.commit()
+
+    try:
+        from app.utils.cache import get_cache_manager
+        cm = await get_cache_manager()
+        await cm.invalidate_price_cache_for_account(account_id)
+    except Exception:
+        pass
+
+    from app.services.operation_log import log_operation as _log_op
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="account", action="update", target_type="account",
+        target_id=str(account_id),
+        title=f"配置账户国家路由 #{account_id}",
+        detail=f"{len(norm_routes)} 国: " + ",".join(r[0] for r in norm_routes),
+    )
+    return {"success": True, "message": f"已保存 {len(norm_routes)} 个国家路由", "count": len(norm_routes)}
 
 
 @router.post("/accounts/{account_id}/generate-password", response_model=dict)

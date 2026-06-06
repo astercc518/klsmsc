@@ -1080,7 +1080,9 @@ async def buy_and_send(
     def _publish_buy_send() -> None:
         _send_kw: dict = {"kwargs": _kw}
         if _scheduled_at:
-            _send_kw["eta"] = _scheduled_at
+            # localize 到应用时区：否则 Celery 把 naive eta 当 UTC，定时被推迟 8 小时
+            from app.utils.scheduling import localize_eta
+            _send_kw["eta"] = localize_eta(_scheduled_at)
         _celery.send_task("data_buy_send_async", **_send_kw)
 
     await asyncio.to_thread(_publish_buy_send)

@@ -946,8 +946,11 @@ async def send_batch_sms(
     # （已有 5 次重试退避兜底，但平滑入队可显著降低 1205 lock_wait_timeout 的尾延迟）
     CHUNK_DISPATCH_INTERVAL_MS = 100
 
-    if total_numbers > ASYNC_THRESHOLD:
-        # ========== 大批量：异步分片处理 ==========
+    # 定时发送必须走异步分片路径：只有 process_batch_chunk.apply_async(eta=...) 能真正延迟到
+    # 计划时间才计费+入队。极小批量（≤10）同步路径会立刻直推队列/Go 网关，无法延迟——
+    # 否则「设了定时却立即发出」（任务 #710）。
+    if total_numbers > ASYNC_THRESHOLD or _scheduled_at:
+        # ========== 大批量 / 定时发送：异步分片处理 ==========
         from app.workers.batch_worker import process_batch_chunk
         from datetime import timedelta
 
@@ -972,7 +975,9 @@ async def send_batch_sms(
                     ),
                 )
                 if _scheduled_at:
-                    _kw["eta"] = _scheduled_at + timedelta(milliseconds=n * CHUNK_DISPATCH_INTERVAL_MS)
+                    # localize 到应用时区：否则 Celery 把 naive eta 当 UTC，定时被推迟 8 小时
+                    from app.utils.scheduling import localize_eta
+                    _kw["eta"] = localize_eta(_scheduled_at) + timedelta(milliseconds=n * CHUNK_DISPATCH_INTERVAL_MS)
                 else:
                     _kw["countdown"] = (n * CHUNK_DISPATCH_INTERVAL_MS) // 1000
                 process_batch_chunk.apply_async(**_kw)

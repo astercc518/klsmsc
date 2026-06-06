@@ -576,7 +576,7 @@ func processSingleSMSData(data SMSLogData) (smsFailureKind, error) {
 		}
 	}
 
-	err := manager.SendSMS(data.LogID, data.MessageID, data.PhoneNumber, data.Message, data.ChannelID)
+	err := manager.SendSMS(data)
 	if err != nil {
 		errStr := err.Error()
 		if len(errStr) >= 13 && errStr[:13] == "_window_full:" {

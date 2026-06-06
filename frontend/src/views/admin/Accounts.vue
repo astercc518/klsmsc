@@ -192,7 +192,7 @@
                 {{ ch.channel_code }}
               </el-tag>
             </template>
-            <span v-else class="text-muted">-</span>
+            <span v-else class="text-muted" title="未指定默认通道，可用全部通道（走全局路由）">*</span>
           </template>
         </el-table-column>
         <el-table-column v-if="!isVoiceTab" :label="$t('customers.payment')" min-width="60" align="center">
@@ -229,7 +229,8 @@
         <!-- 通用列：单价 -->
         <el-table-column :label="$t('customers.unitPrice')" min-width="80" align="right">
           <template #default="{ row }">
-            <span class="unit-price">{{ row.currency === 'CNY' ? '¥' : '$' }}{{ (row.unit_price ?? 0.01).toFixed(4) }}</span>
+            <span v-if="row.unit_price === null || row.unit_price === undefined" class="unit-price" title="未设统一价，按账户国家路由与报价计价">*</span>
+            <span v-else class="unit-price">{{ row.currency === 'CNY' ? '¥' : '$' }}{{ Number(row.unit_price).toFixed(4) }}</span>
           </template>
         </el-table-column>
 
@@ -322,6 +323,7 @@
                     <el-dropdown-menu>
                       <el-dropdown-item @click="openSummary(row)">{{ $t('customers.accountSummary') }}</el-dropdown-item>
                       <el-dropdown-item @click="bindSales(row)">{{ $t('customers.assignedSales') }}</el-dropdown-item>
+                      <el-dropdown-item @click="openCountryRoutes(row)">国家路由与报价</el-dropdown-item>
                       <el-dropdown-item @click="openLogs(row)">{{ $t('customers.balance') }}</el-dropdown-item>
                       <el-dropdown-item @click="handleResetKey(row)">{{ $t('dashboard.apiKey') }}</el-dropdown-item>
                       <el-dropdown-item divided @click="handleDelete(row)" style="color: #f56c6c">{{ $t('common.delete') }}</el-dropdown-item>
@@ -377,8 +379,10 @@
         </el-form-item>
         <el-form-item :label="$t('customers.country')">
           <el-select v-model="form.country_code" :placeholder="$t('customers.selectCountry')" filterable clearable style="width: 100%">
+            <el-option label="* 全部国家（不限）" value="" />
             <el-option v-for="c in countryList" :key="c.code" :label="`${c.name} (${c.code})`" :value="c.code" />
           </el-select>
+          <div class="hint">选「* 全部国家」=不限国家（按账户国家路由控制可发国家）</div>
         </el-form-item>
         <el-form-item :label="$t('customers.tgAccount')">
           <el-input v-model="form.tg_username" :placeholder="$t('customers.tgPlaceholder')" />
@@ -403,8 +407,10 @@
             </el-select>
           </el-form-item>
           <el-form-item :label="$t('customers.smsUnitPrice')">
-            <el-input-number v-model="form.unit_price" :min="0" :max="10" :precision="4" :step="0.01" style="width: 150px" />
+            <el-input-number v-model="form.unit_price" :min="0" :max="10" :precision="4" :step="0.01" :value-on-clear="null" style="width: 150px" />
             <span style="margin-left: 8px; color: #909399">{{ form.currency }}/{{ $t('customers.perMessage') }}</span>
+            <el-button link type="primary" size="small" style="margin-left: 8px" @click="form.unit_price = null">清空</el-button>
+            <span v-if="form.unit_price === null || form.unit_price === undefined" style="margin-left: 6px; color: #67c23a; font-size: 12px">已清空 · 将按账户「国家路由与报价」计价</span>
           </el-form-item>
           
           <!-- 风控限制 -->
@@ -443,13 +449,15 @@
           </el-select>
         </el-form-item>
         <el-form-item v-if="form.business_type === 'sms' || !form.business_type" :label="$t('customers.assignChannel')">
-          <el-select v-model="form.channel_ids" :placeholder="$t('customers.selectChannel')" multiple clearable filterable style="width: 100%" :loading="channelLoading">
+          <el-switch v-model="useAllChannels" active-text="全部通道 (*)" inline-prompt style="margin-bottom: 6px" />
+          <el-select v-if="!useAllChannels" v-model="form.channel_ids" :placeholder="$t('customers.selectChannel')" multiple clearable filterable style="width: 100%" :loading="channelLoading">
             <el-option v-for="ch in channelList" :key="ch.id" :label="`${ch.channel_name} (${ch.channel_code})`" :value="ch.id">
               <span>{{ ch.channel_name }}</span>
               <span style="color: #8492a6; font-size: 12px; margin-left: 8px">{{ ch.protocol }}</span>
             </el-option>
           </el-select>
-          <div class="hint">{{ $t('customers.channelPriorityHint') }}</div>
+          <div v-if="useAllChannels" class="hint" style="color:#67c23a">可用全部通道（走全局路由），列表显示 *；按国家专属通道仍在「国家路由与报价」单独配置</div>
+          <div v-else class="hint">{{ $t('customers.channelPriorityHint') }}</div>
         </el-form-item>
 
         <!-- HTTP API 凭证 -->
@@ -567,6 +575,58 @@
       </el-table>
       <template #footer>
         <el-button @click="logsVisible=false">{{ $t('common.close') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 国家路由与报价（每账户每国家：通道 + 销售价） -->
+    <el-dialog v-model="crVisible" :title="`国家路由与报价 · ${crAccount?.account_name || ''}`" width="760px" :close-on-click-modal="false">
+      <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
+        <template #title>
+          为该账户按目的国家分别指定「上游通道」与「销售单价」。未在此配置的国家将回退到账户的全国默认通道与统一/全局价格；若该账户只配置了部分国家且无全国默认通道，则未配置国家会被拒绝发送。
+        </template>
+      </el-alert>
+      <div v-loading="crLoading">
+        <el-table :data="crList" size="small" border>
+          <el-table-column label="国家" min-width="220">
+            <template #default="{ row }">
+              <el-select v-model="row.country_code" filterable placeholder="选择国家" style="width: 100%">
+                <el-option
+                  v-for="c in COUNTRY_LIST"
+                  :key="c.iso"
+                  :label="`${c.name || c.en} (${c.iso} +${c.dial})`"
+                  :value="c.iso"
+                />
+              </el-select>
+            </template>
+          </el-table-column>
+          <el-table-column label="路由通道" min-width="240">
+            <template #default="{ row }">
+              <el-select v-model="row.channel_id" filterable placeholder="选择通道" style="width: 100%" :loading="channelLoading">
+                <el-option
+                  v-for="ch in channelList"
+                  :key="ch.id"
+                  :label="`${ch.channel_name} (${ch.channel_code})`"
+                  :value="ch.id"
+                />
+              </el-select>
+            </template>
+          </el-table-column>
+          <el-table-column label="销售单价(USD/条)" width="170">
+            <template #default="{ row }">
+              <el-input-number v-model="row.price" :min="0" :precision="4" :step="0.001" controls-position="right" placeholder="可留空" style="width: 100%" />
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="70" align="center">
+            <template #default="{ $index }">
+              <el-button link type="danger" size="small" @click="crList.splice($index, 1)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-button text type="primary" :icon="Plus" style="margin-top: 10px" @click="addCrRow">添加国家</el-button>
+      </div>
+      <template #footer>
+        <el-button @click="crVisible=false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="crSaving" @click="saveCountryRoutes">{{ $t('common.save') }}</el-button>
       </template>
     </el-dialog>
 
@@ -917,6 +977,8 @@ import {
   generateAccountPassword,
   getAccountBalanceLogs,
   syncOkccBalances,
+  getAccountCountryRoutes,
+  setAccountCountryRoutes,
   type AdminAccount,
 } from '@/api/admin'
 import request from '@/api/index'
@@ -1111,7 +1173,8 @@ const countryList = computed(() => {
 
 /** 列表中国家列：支持 ISO 代码和电话区号，按当前语言显示国家名称 */
 function formatAccountCountry(code: string | null | undefined): string {
-  if (!code) return '-'
+  // 空/通配 = 不限国家，显示 *
+  if (!code || String(code).trim() === '*') return '*'
   const raw = String(code).trim()
   const iso = raw.toUpperCase()
   let c = findCountryByIso(iso)
@@ -1157,6 +1220,7 @@ const form = reactive<any>({
 const openCreate = () => {
   isEdit.value = false
   current.value = null
+  useAllChannels.value = false
   // 重置凭证显示
   Object.assign(createdCreds, { protocol: 'HTTP', api_key: '', api_secret: '', smpp_system_id: '', smpp_password: '' })
   whitelistText.value = ''
@@ -1219,7 +1283,8 @@ const openEdit = async (row: AdminAccount) => {
     country_code: (row as any).country_code || accountDetail.country_code || '',
     business_type: (row as any).business_type || 'sms',
     payment_type: (row as any).payment_type || accountDetail.payment_type || 'prepaid',
-    unit_price: (row as any).unit_price ?? accountDetail.unit_price ?? 0.01,
+    // 账户无统一单价(NULL)时保持为空，避免误回填 0.01 又存回去；空=走账户国家定价/全局价
+    unit_price: (row as any).unit_price ?? accountDetail.unit_price ?? undefined,
     status: row.status,
     currency: row.currency,
     rate_limit: row.rate_limit ?? 1000,
@@ -1228,6 +1293,8 @@ const openEdit = async (row: AdminAccount) => {
     sales_id: (row as any).sales_id || accountDetail.sales_id || null,
     channel_ids: accountDetail.channel_ids || [],
   })
+  // 无"全国默认"通道绑定 = 全部通道(*)
+  useAllChannels.value = !(accountDetail.channel_ids && accountDetail.channel_ids.length)
   formVisible.value = true
 }
 
@@ -1253,14 +1320,16 @@ const submitForm = async () => {
     const payload: any = {
       account_name: form.account_name,
       tg_username: form.tg_username || undefined,
-      country_code: form.country_code || undefined,
+      // 显式发送（含空串），以便编辑时可"清空国家限制"=改为多国/不限；否则 undefined 会被后端跳过无法清空
+      country_code: form.country_code || '',
       business_type: form.business_type,
       // 接入协议
       protocol: form.protocol,
       smpp_password: form.protocol === 'SMPP' ? (form.smpp_password || undefined) : undefined,
       // 计费配置
       payment_type: form.payment_type,
-      unit_price: form.unit_price,
+      // 显式发送（含 null）：清空统一单价=回退到账户国家定价；undefined 会被后端忽略无法清空
+      unit_price: form.unit_price ?? null,
       status: form.status,
       currency: form.currency,
       // 风控配置
@@ -1270,7 +1339,8 @@ const submitForm = async () => {
       ip_whitelist: normalizeWhitelist(),
       // 绑定配置
       sales_id: form.sales_id || undefined,
-      channel_ids: form.channel_ids?.length ? form.channel_ids : undefined,
+      // 全部通道(*)=发空数组让后端清空"全国默认"绑定；否则发所选；未选则不改动
+      channel_ids: useAllChannels.value ? [] : (form.channel_ids?.length ? form.channel_ids : undefined),
     }
     if (!isEdit.value) {
       payload.password = form.password
@@ -1582,6 +1652,8 @@ const openLogs = async (row: AdminAccount) => {
 // 通道列表
 const channelList = ref<any[]>([])
 const channelLoading = ref(false)
+// 通道「全部(*)」开关：ON=可用全部通道(清空全国默认绑定，走全局路由)
+const useAllChannels = ref(false)
 
 const loadChannelList = async () => {
   channelLoading.value = true
@@ -1592,6 +1664,68 @@ const loadChannelList = async () => {
     console.error('Failed to load channel list:', e)
   } finally {
     channelLoading.value = false
+  }
+}
+
+// 国家路由与报价（每账户每国家：通道 + 销售价）
+interface CrRow { country_code: string; channel_id: number | null; price: number | null }
+const crVisible = ref(false)
+const crLoading = ref(false)
+const crSaving = ref(false)
+const crAccount = ref<AdminAccount | null>(null)
+const crList = ref<CrRow[]>([])
+
+const openCountryRoutes = async (row: AdminAccount) => {
+  crAccount.value = row
+  crVisible.value = true
+  crList.value = []
+  crLoading.value = true
+  try {
+    if (!channelList.value.length) await loadChannelList()
+    const res = await getAccountCountryRoutes(row.id)
+    crList.value = (res.routes || []).map((r: any) => ({
+      country_code: r.country_code,
+      channel_id: r.channel_id,
+      price: r.price ?? null,
+    }))
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '加载失败')
+  } finally {
+    crLoading.value = false
+  }
+}
+
+const addCrRow = () => {
+  crList.value.push({ country_code: '', channel_id: null, price: null })
+}
+
+const saveCountryRoutes = async () => {
+  if (!crAccount.value) return
+  const seen = new Set<string>()
+  for (const r of crList.value) {
+    if (!r.country_code || !r.channel_id) {
+      ElMessage.warning('每行都需选择国家和通道')
+      return
+    }
+    if (seen.has(r.country_code)) {
+      ElMessage.warning(`国家重复：${r.country_code}`)
+      return
+    }
+    seen.add(r.country_code)
+  }
+  crSaving.value = true
+  try {
+    const res = await setAccountCountryRoutes(
+      crAccount.value.id,
+      crList.value.map(r => ({ country_code: r.country_code, channel_id: r.channel_id as number, price: r.price })),
+    )
+    ElMessage.success(res.message || '已保存')
+    crVisible.value = false
+    loadAccounts()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || e?.message || '保存失败')
+  } finally {
+    crSaving.value = false
   }
 }
 

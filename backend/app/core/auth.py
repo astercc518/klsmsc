@@ -124,6 +124,8 @@ class AuthService:
             raise AuthenticationError("Invalid API Key")
         
         # 缓存账户限流配置（5分钟TTL）
+        # account.rate_limit 语义为 TPS（条/秒），而限流中间件按"每分钟"窗口计数，
+        # 故缓存为每分钟上限 = TPS * 60，避免把 1000/秒 误限成 1000/分钟（严 60 倍）。
         try:
             redis_client = await get_redis_client()
             cache_key = f"account:limit:{api_key}"
@@ -131,7 +133,7 @@ class AuthService:
                 await redis_client.setex(
                     cache_key.encode(),
                     300,  # 5分钟
-                    str(account.rate_limit).encode()
+                    str(int(account.rate_limit) * 60).encode()
                 )
         except Exception as e:
             logger.debug(f"缓存账户限流配置失败: {str(e)}")

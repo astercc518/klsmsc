@@ -14,6 +14,9 @@ class AccountChannel(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, comment="账户ID")
     channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False, comment="通道ID")
+    # country_code 为空(NULL/'')=该账户全国家默认通道（向后兼容旧绑定）；
+    # 指定 ISO2(如 US)=仅该国家走此通道，实现"每账户每国家独立选通道"
+    country_code = Column(String(10), nullable=True, comment="国家代码(ISO2)；空=全国默认，指定=该国家专用通道")
     is_default = Column(Boolean, default=False, comment="是否默认通道")
     priority = Column(Integer, default=0, comment="优先级")
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), comment="创建时间")
