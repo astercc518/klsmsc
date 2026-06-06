@@ -1786,5 +1786,13 @@ async def _do_sync_used(account_id: int, phone_numbers: list):
                 await pls_apply_deltas_bulk(db, account_id, pls_deltas)
                 await db.commit()
                 logger.info(f"私库汇总同步完成: account={account_id}, deltas={len(pls_deltas)}")
+                # commit 后再失效一次汇总缓存：关闭「发送时删缓存 → 卡片加载在本任务回填
+                # used_count 之前命中空缓存 → 把 used=0 重新缓存 1h」的竞态，否则卡片会卡在
+                # 「0 已用」直到 TTL 过期（见账户296 任务827 现象）。
+                try:
+                    from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache
+                    await invalidate_my_numbers_summary_cache(account_id)
+                except Exception as e:
+                    logger.warning(f"私库汇总同步后缓存失效失败 account={account_id}: {e}")
     finally:
         await eng.dispose()
