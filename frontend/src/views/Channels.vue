@@ -166,7 +166,6 @@
               <el-button type="primary" link size="small" @click="handleViewDetail(row)">{{ $t('common.details') }}</el-button>
               <el-button type="warning" link size="small" @click="handleEdit(row)">{{ $t('common.edit') }}</el-button>
               <el-button type="info" link size="small" @click="openRouting(row)">{{ $t('channels.routing') }}</el-button>
-              <el-button type="warning" link size="small" @click="openSids(row)">SID</el-button>
               <el-button type="success" link size="small" @click="openPricing(row)">{{ $t('channels.pricing') }}</el-button>
               <el-button link size="small" @click="openTestSend(row)">{{ $t('channels.test') }}</el-button>
               <el-button link size="small" @click="handleCheckStatus(row)">{{ $t('channels.checkStatus') }}</el-button>
@@ -585,6 +584,7 @@
         <el-table-column :label="$t('common.actions')" width="150" align="center">
           <template #default="{ row }">
             <el-button type="primary" link size="small" @click="openRoutingForm(row)">{{ $t('common.edit') }}</el-button>
+            <el-button type="warning" link size="small" @click="openSids(routingChannel, row.country_code)">SID</el-button>
             <el-popconfirm :title="$t('common.confirmDelete')" @confirm="handleDeleteRouting(row)">
               <template #reference>
                 <el-button type="danger" link size="small">{{ $t('common.delete') }}</el-button>
@@ -1823,11 +1823,12 @@ const sidEditing = ref<any>(null)
 const sidForm = reactive({ sender_id: '', sid_type: 'alpha', status: 'active', is_default: false })
 const sidCountryOptions = COUNTRY_LIST.map((c: any) => ({ iso: c.iso, name: c.name }))
 
-const openSids = (row: any) => {
-  sidChannel.value = row
-  sidCountry.value = ''
+const openSids = (channel: any, country?: string) => {
+  sidChannel.value = channel
+  sidCountry.value = country || ''
   sidList.value = []
   sidsVisible.value = true
+  if (sidCountry.value) loadSids()
 }
 const loadSids = async () => {
   if (!sidChannel.value || !sidCountry.value) { sidList.value = []; return }
