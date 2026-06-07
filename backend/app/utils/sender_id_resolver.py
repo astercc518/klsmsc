@@ -10,14 +10,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.sms.channel_relations import ChannelCountrySenderId
+from app.utils.country_code import get_country_variants
 
 
 async def list_active_sender_ids(
     db: AsyncSession, channel_id: int, country_code: str
 ) -> List[dict]:
-    """返回该通道+国家下 active 的 SID 列表（默认SID优先、再按字母序），供前端下拉。"""
+    """返回该通道+国家下 active 的 SID 列表（默认SID优先、再按字母序），供前端下拉。
+
+    country_code 可能是 ISO2(发送侧,如 BR) 或区号(routing/SID存储侧,如 55)，两表格式不一，
+    故用 get_country_variants 取等价写法做 IN 匹配，跨格式命中。
+    """
     if not channel_id or not country_code:
         return []
+    variants = get_country_variants(country_code) or [country_code]
     rows = (
         await db.execute(
             select(
@@ -27,7 +33,7 @@ async def list_active_sender_ids(
             )
             .where(
                 ChannelCountrySenderId.channel_id == channel_id,
-                ChannelCountrySenderId.country_code == country_code,
+                ChannelCountrySenderId.country_code.in_(variants),
                 ChannelCountrySenderId.status == "active",
             )
             .order_by(
