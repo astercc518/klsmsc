@@ -1931,13 +1931,17 @@ async def get_sms_records(
 
     # 兜底：sms_logs 按月分区，必须有 submit_time 范围才能剪枝/走索引。
     # 任一端缺失时按 30 天窗口补齐，避免跨分区全表扫和全局排序。
+    # 关键：窗口必须锚定到自然日边界（无微秒），否则 datetime.now() 的微秒级时间戳
+    # 会让下方 COUNT 缓存键每次请求都不同 → 缓存永远 miss → "重置"后每次都全表
+    # COUNT 约 6s。整日边界使同一天内缓存键稳定，TTL 才真正生效。
     if parsed_start is None and parsed_end is None:
-        parsed_end = datetime.now()
-        parsed_start = parsed_end - timedelta(days=30)
+        _today = datetime.now()
+        parsed_end = _today.replace(hour=23, minute=59, second=59, microsecond=0)
+        parsed_start = (_today - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
     elif parsed_start is None:
-        parsed_start = parsed_end - timedelta(days=30)
+        parsed_start = (parsed_end - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
     elif parsed_end is None:
-        parsed_end = parsed_start + timedelta(days=30)
+        parsed_end = (parsed_start + timedelta(days=30)).replace(hour=23, minute=59, second=59, microsecond=0)
 
     conditions.append(SMSLog.submit_time >= parsed_start)
     conditions.append(SMSLog.submit_time <= parsed_end)
@@ -1982,10 +1986,17 @@ async def get_sms_records(
     if total is None:
         count_result = await db.execute(select(func.count(SMSLog.id)).where(where_clause))
         total = count_result.scalar() or 0
+        # 自适应 TTL：无任何行筛选的"全量浏览"是最贵场景(admin 30天约 480 万行,
+        # 冷查 ~8.5s),其总数无需 30s 级新鲜度 → 缓存 180s，大幅减少冷查频次；
+        # 带筛选(状态/号码/通道/账户/批次等)的查询较轻且更需新鲜 → 保持 30s。
+        _heavy_browse = not any([
+            account_id, batch_id, status, phone_number, message_id, channel_id, country_code,
+        ])
+        _ttl = 180 if _heavy_browse else 30
         try:
             from app.utils.cache import get_redis_client as _get_redis
             _rc = await _get_redis()
-            await _rc.setex(cache_key, 30, str(total))
+            await _rc.setex(cache_key, _ttl, str(total))
         except Exception as _ce:
             logger.debug(f"records COUNT 缓存写失败(忽略): {_ce}")
 
