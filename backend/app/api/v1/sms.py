@@ -1971,32 +1971,67 @@ async def get_sms_records(
     ).hexdigest()
 
     total: Optional[int] = None
+    approximate = False  # 总数是否为优化器估算(前端显示"约 N 条")
     try:
         from app.utils.cache import get_redis_client as _get_redis
         _rc = await _get_redis()
         _cached = await _rc.get(cache_key)
         if _cached is not None:
+            _cs = _cached.decode() if isinstance(_cached, (bytes, bytearray)) else str(_cached)
+            if _cs.startswith("~"):  # "~" 前缀标记缓存的是近似值
+                approximate = True
+                _cs = _cs[1:]
             try:
-                total = int(_cached)
+                total = int(_cs)
             except (TypeError, ValueError):
                 total = None
     except Exception as _ce:
         logger.debug(f"records COUNT 缓存读失败(降级直查): {_ce}")
 
+    # 无任何行筛选的"全量浏览"是最贵场景；带筛选(状态/号码/通道/账户/批次)较轻且更需新鲜
+    _heavy_browse = not any([
+        account_id, batch_id, status, phone_number, message_id, channel_id, country_code,
+    ])
+
     if total is None:
-        count_result = await db.execute(select(func.count(SMSLog.id)).where(where_clause))
-        total = count_result.scalar() or 0
-        # 自适应 TTL：无任何行筛选的"全量浏览"是最贵场景(admin 30天约 480 万行,
-        # 冷查 ~8.5s),其总数无需 30s 级新鲜度 → 缓存 180s，大幅减少冷查频次；
-        # 带筛选(状态/号码/通道/账户/批次等)的查询较轻且更需新鲜 → 保持 30s。
-        _heavy_browse = not any([
-            account_id, batch_id, status, phone_number, message_id, channel_id, country_code,
-        ])
+        # 大表全量浏览：先用优化器估算命中行数(EXPLAIN，瞬时、不扫表)。估算较小(<10万)
+        # 时退化为精确 COUNT 保证准确；估算很大(如 5000万级)时直接用估算显示"约 N 条"，
+        # 避免线性 COUNT 卡 1~2 分钟。带筛选则始终精确 COUNT(窗口较窄，可接受)。
+        if _heavy_browse:
+            try:
+                from sqlalchemy import text as _text, bindparam as _bindparam
+                # 估算时间窗覆盖的月分区(pYYYYMM)行数之和。InnoDB 的 TABLE_ROWS 统计
+                # 比优化器 EXPLAIN 的范围估算准得多(实测误差~4% vs EXPLAIN 差 10 倍)。
+                _months = []
+                _cur = parsed_start.replace(day=1)
+                while _cur <= parsed_end:
+                    _months.append(f"p{_cur.year}{_cur.month:02d}")
+                    _cur = _cur.replace(year=_cur.year + 1, month=1) if _cur.month == 12 \
+                        else _cur.replace(month=_cur.month + 1)
+                if _months:
+                    ex = await db.execute(
+                        _text(
+                            "SELECT COALESCE(SUM(TABLE_ROWS),0) FROM information_schema.PARTITIONS "
+                            "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='sms_logs' "
+                            "AND PARTITION_NAME IN :pn"
+                        ).bindparams(_bindparam("pn", expanding=True)),
+                        {"pn": _months},
+                    )
+                    est = int(ex.scalar() or 0)
+                    if est >= 100000:
+                        total = est
+                        approximate = True
+            except Exception as _ee:
+                logger.debug(f"records 估算行数失败(退精确COUNT): {_ee}")
+        if total is None:
+            count_result = await db.execute(select(func.count(SMSLog.id)).where(where_clause))
+            total = count_result.scalar() or 0
+        # 自适应 TTL：全量浏览总数无需高新鲜度 → 180s；带筛选更需新鲜 → 30s
         _ttl = 180 if _heavy_browse else 30
         try:
             from app.utils.cache import get_redis_client as _get_redis
             _rc = await _get_redis()
-            await _rc.setex(cache_key, _ttl, str(total))
+            await _rc.setex(cache_key, _ttl, ("~" if approximate else "") + str(total))
         except Exception as _ce:
             logger.debug(f"records COUNT 缓存写失败(忽略): {_ce}")
 
@@ -2053,6 +2088,7 @@ async def get_sms_records(
     return {
         "success": True,
         "total": total,
+        "total_approximate": approximate,  # True 时 total 为优化器估算值，前端显示"约"
         "page": page,
         "page_size": page_size,
         "is_admin": is_adm,

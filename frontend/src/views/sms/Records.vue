@@ -19,7 +19,7 @@
     <div class="stats-row">
       <div class="stat-chip">
         <span class="stat-chip-label">{{ $t('smsRecords.totalRecords') }}</span>
-        <span class="stat-chip-value">{{ pagination.total }}</span>
+        <span class="stat-chip-value">{{ totalApproximate ? '约 ' + pagination.total.toLocaleString() : pagination.total.toLocaleString() }}</span>
       </div>
       <div class="stat-chip sent">
         <span class="stat-chip-dot"></span>
@@ -490,6 +490,8 @@ const searchForm = ref({
 })
 
 const pagination = ref({ page: 1, pageSize: 20, total: 0 })
+// 全量浏览(无筛选)时后端返回优化器估算的近似总数，展示"约 N 条"
+const totalApproximate = ref(false)
 const records = ref<any[]>([])
 
 /** 已生效的筛选项个数 — 用于移动端「筛选」按钮上的徽标 */
@@ -590,6 +592,7 @@ const loadRecords = async () => {
     if (res?.success) {
       records.value = res.records || []
       pagination.value.total = res.total || 0
+      totalApproximate.value = !!res.total_approximate
     }
   } catch (error: any) {
     ElMessage.error('加载记录失败')
