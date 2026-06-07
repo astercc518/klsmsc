@@ -261,16 +261,17 @@ async def add_channel_country_sid(
     admin = Depends(get_current_admin)
 ):
     """为通道在指定国家添加SID"""
-    # 验证通道-国家关系存在
+    # 验证通道支持该国家：权威源是 routing_rules（与 list_channel_countries / add_channel_country 一致）。
+    # 原先误查 ChannelCountry（与实际"添加国家=写 routing_rules"不一致，导致总报"未支持该国家"）。
     country_result = await db.execute(
-        select(ChannelCountry).where(
-            ChannelCountry.channel_id == channel_id,
-            ChannelCountry.country_code == country_code,
-            ChannelCountry.status == 'active'
+        select(RoutingRule).where(
+            RoutingRule.channel_id == channel_id,
+            RoutingRule.country_code == country_code,
+            RoutingRule.is_active == True,
         )
     )
     if not country_result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="通道未支持该国家，请先添加国家支持")
+        raise HTTPException(status_code=400, detail="通道未支持该国家，请先在路由配置为该国家添加路由")
     
     # 检查SID是否已存在
     existing = await db.execute(
