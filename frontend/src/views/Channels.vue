@@ -857,9 +857,7 @@
     <el-dialog v-model="sidsVisible" :title="`发送方ID(SID)管理${sidChannel ? ' - ' + (sidChannel.name || sidChannel.code) : ''}`" width="820px" destroy-on-close>
       <div style="display:flex; gap:12px; align-items:center; margin-bottom:12px; flex-wrap:wrap;">
         <span style="color:var(--el-text-color-secondary)">国家：</span>
-        <el-select v-model="sidCountry" filterable placeholder="选择目的国家" style="width:260px" @change="loadSids">
-          <el-option v-for="c in sidCountryOptions" :key="c.iso" :value="c.iso" :label="`${c.name} (${c.iso})`" />
-        </el-select>
+        <el-tag size="large" effect="plain">{{ sidCountryLabel }}</el-tag>
         <el-button type="primary" :disabled="!sidCountry" @click="openSidForm()">添加SID</el-button>
         <span style="color:var(--el-text-color-secondary); font-size:12px;">仅"启用(active)"的SID会出现在客户发送页下拉</span>
       </div>
@@ -1821,7 +1819,16 @@ const sidLoading = ref(false)
 const sidFormVisible = ref(false)
 const sidEditing = ref<any>(null)
 const sidForm = reactive({ sender_id: '', sid_type: 'alpha', status: 'active', is_default: false })
-const sidCountryOptions = COUNTRY_LIST.map((c: any) => ({ iso: c.iso, name: c.name }))
+// 国家显示名:sidCountry 可能是 ISO2(BR) 或区号(55,来自路由行),都转成"名称(ISO2)"
+const sidCountryLabel = computed(() => {
+  const cc = String(sidCountry.value || '')
+  if (!cc) return '-'
+  const byIso = findCountryByIso(cc)
+  if (byIso) return `${byIso.name} (${byIso.iso})`
+  const byDial = findCountryByDial(cc)
+  if (byDial) return `${byDial.name} (${byDial.iso})`
+  return cc
+})
 
 const openSids = (channel: any, country?: string) => {
   sidChannel.value = channel

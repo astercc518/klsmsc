@@ -2125,6 +2125,10 @@ const parseNumbers = () => {
 const availableSids = ref<{ sender_id: string; sid_type?: string; is_default?: boolean }[]>([])
 /** 首个收件号码推断的目的国家 ISO2（决定可用 SID 集合） */
 const sidTargetCountry = computed(() => {
+  // 目的国家：手输→取首个号码识别；私库→所选库分组国家；数据源→所选产品国家。
+  // 后端用 get_country_variants 跨 ISO2/区号/中文名 匹配，故此处给原值即可。
+  if (numberSource.value === 'private') return selectedPrivateGroup.value?.country_code || ''
+  if (numberSource.value === 'store') return (selectedProduct.value as any)?.country_code || ''
   const nums = parseNumbers()
   return nums.length ? inferCountryIsoFromPhone(nums[0]) : ''
 })
