@@ -12,7 +12,8 @@ class TelegramBinding(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     tg_id = Column(BigInteger, nullable=False, index=True, comment="Telegram User ID")
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False, comment="账户ID")
-    is_active = Column(Boolean, default=False, comment="是否当前活跃账户")
+    is_active = Column(Boolean, default=False, comment="是否当前活跃账户(多账户时标记当前选中)")
+    is_closed = Column(Boolean, nullable=False, default=False, comment="是否已解绑/失效(解绑或换绑后置True;解析时只取False)")
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now())
     
     def __repr__(self):

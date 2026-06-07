@@ -2769,10 +2769,14 @@ async def get_user_bindings_internal(tg_id: int, db: AsyncSession = Depends(get_
         from app.modules.common.telegram_binding import TelegramBinding
         from app.modules.common.account import Account
         
+        # 只取未解绑(is_closed=False)的绑定：解绑/换绑后旧绑定置 is_closed=True，不再返回
         query = select(TelegramBinding, Account).join(
             Account, TelegramBinding.account_id == Account.id
-        ).where(TelegramBinding.tg_id == tg_id)
-        
+        ).where(
+            TelegramBinding.tg_id == tg_id,
+            TelegramBinding.is_closed == False,
+        )
+
         result = await db.execute(query)
         bindings = []
         for b, acc in result.all():
@@ -2850,13 +2854,24 @@ async def bind_account_by_code_internal(data: dict, db: AsyncSession = Depends(g
         acc.tg_id = tg_id
         acc.tg_username = username
 
-        # 处理绑定
+        # 换绑：该账户绑定到新 TG 时，关闭其它 TG 对本账户的旧绑定（否则旧 TG 仍能看到本账户）
+        await db.execute(
+            update(TelegramBinding)
+            .where(
+                TelegramBinding.account_id == account_id,
+                TelegramBinding.tg_id != tg_id,
+            )
+            .values(is_closed=True, is_active=False)
+        )
+
+        # 处理新 TG 的绑定（重新激活并取消关闭）
         res = await db.execute(select(TelegramBinding).where(TelegramBinding.tg_id == tg_id, TelegramBinding.account_id == account_id))
         binding = res.scalar_one_or_none()
         if binding:
             binding.is_active = True
+            binding.is_closed = False
         else:
-            db.add(TelegramBinding(tg_id=tg_id, account_id=account_id, is_active=True))
+            db.add(TelegramBinding(tg_id=tg_id, account_id=account_id, is_active=True, is_closed=False))
 
         # 处理 TelegramUser
         stmt = mysql_insert(TelegramUser).values(tg_id=tg_id, username=username, account_id=account_id)

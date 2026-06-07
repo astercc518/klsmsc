@@ -462,16 +462,17 @@ async def unbind_account_telegram(
         account.tg_id = None
         account.tg_username = None
 
-    # 停用 TelegramBinding 记录
+    # 解绑：关闭本账户所有未关闭绑定(is_closed=True)。bot 解析只取 is_closed=False，故旧 TG 立即看不到本账户
     bind_result = await db.execute(
         select(TelegramBinding).where(
             TelegramBinding.account_id == account.id,
-            TelegramBinding.is_active == True
+            TelegramBinding.is_closed == False
         )
     )
     bindings = bind_result.scalars().all()
     for b in bindings:
         b.is_active = False
+        b.is_closed = True
 
     await db.commit()
     logger.info(f"客户解绑 TG: account_id={account.id}")
