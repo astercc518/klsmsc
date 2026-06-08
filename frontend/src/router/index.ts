@@ -104,4 +104,32 @@ router.beforeEach(async (to, from, next) => {
   }
 })
 
+// 跨部署自愈：发版后 chunk 哈希变化，旧标签页仍引用已删除的旧 chunk，动态 import 会
+// 失败(浏览器报 "Failed to fetch dynamically imported module" / MIME text/html)。
+// 此时整页重载一次即可拿到 no-cache 的新 index.html → 加载新 chunk。用 sessionStorage
+// 限一次,避免新 chunk 真不存在时无限刷新。导航成功后清标记,使后续发版仍可自愈。
+const CHUNK_RELOAD_KEY = 'chunk-reload-once'
+function isChunkLoadError(err: any): boolean {
+  const msg = String(err?.message || err || '')
+  return /dynamically imported module|Failed to fetch dynamically|Importing a module script failed|Loading chunk \d|error loading dynamically imported module|Failed to load module script/i.test(msg)
+}
+function reloadOnceForChunk() {
+  if (!sessionStorage.getItem(CHUNK_RELOAD_KEY)) {
+    sessionStorage.setItem(CHUNK_RELOAD_KEY, '1')
+    window.location.reload()
+  }
+}
+router.onError((error) => {
+  if (isChunkLoadError(error)) reloadOnceForChunk()
+})
+router.afterEach(() => {
+  // 成功完成一次导航说明 chunk 体系正常，清掉一次性标记
+  sessionStorage.removeItem(CHUNK_RELOAD_KEY)
+})
+// Vite 预加载失败(modulepreload / 路由预取)也走自愈
+window.addEventListener('vite:preloadError', (e: any) => {
+  try { e?.preventDefault?.() } catch {}
+  reloadOnceForChunk()
+})
+
 export default router
