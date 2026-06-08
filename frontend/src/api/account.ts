@@ -83,6 +83,26 @@ export const getAccountInfo = (): Promise<AccountInfo> => {
   return request.get('/account/info')
 }
 
+/** 余额变动流水（仅资金事件：充值/退款/调整等，不含逐条 SMS 扣费） */
+export interface BalanceTransaction {
+  id: number
+  type: string
+  amount: number
+  balance_after: number
+  description: string
+  created_at: string | null
+}
+
+// 近期交易（/account/transactions）
+// 管理员非 impersonate 模式无真实账户上下文，返回空列表
+export const getTransactions = (limit = 20): Promise<{ items: BalanceTransaction[] }> => {
+  const isImpersonate = sessionStorage.getItem('impersonate_mode') === '1'
+  if (!isImpersonate && localStorage.getItem('admin_token')) {
+    return Promise.resolve({ items: [] })
+  }
+  return request.get('/account/transactions', { params: { limit } })
+}
+
 // 修改客户登录密码
 export const changeAccountPassword = (data: { old_password: string; new_password: string }) => {
   return request.post('/account/change-password', data)
