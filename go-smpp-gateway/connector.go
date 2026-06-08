@@ -1320,7 +1320,7 @@ func (m *SMPPManager) submitOneAndTrack(
 			udhPart, udhTotal, cfg.ChannelCode, s.SequenceNumber, destDigits, udhRef, utf16Len)
 	} else {
 		log.Printf("[SMPP-DEBUG] Submitting SM: channel=%s, sequence=%d, dest=%s, sender=%s, utf16_len=%d message_payload=%v",
-			cfg.ChannelCode, s.SequenceNumber, destDigits, cfg.DefaultSenderID, utf16Len, utf16Len > data.SM_MSG_LEN)
+			cfg.ChannelCode, s.SequenceNumber, destDigits, s.SourceAddr.Address(), utf16Len, utf16Len > data.SM_MSG_LEN)
 	}
 
 	err := trans.Submit(s)
