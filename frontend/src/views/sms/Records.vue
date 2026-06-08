@@ -215,6 +215,13 @@
             </template>
           </el-table-column>
 
+          <el-table-column prop="sender_id" label="发送ID(SID)" width="120" align="center">
+            <template #default="{ row }">
+              <span v-if="row.sender_id">{{ row.sender_id }}</span>
+              <span v-else class="text-muted">默认</span>
+            </template>
+          </el-table-column>
+
           <el-table-column prop="message" label="内容" min-width="200">
             <template #default="{ row }">
               <el-tooltip :content="row.message" placement="top" :show-after="500">
@@ -342,6 +349,10 @@
           <div class="detail-card" v-if="currentRecord.channel_code">
             <span class="dc-label">发送通道</span>
             <el-tag size="small" effect="plain">{{ currentRecord.channel_code }}</el-tag>
+          </div>
+          <div class="detail-card">
+            <span class="dc-label">发送ID(SID)</span>
+            <span class="dc-value mono">{{ currentRecord.sender_id || '默认' }}</span>
           </div>
           <div class="detail-card">
             <span class="dc-label">{{ $t('smsRecords.upstreamHandoffLabel') }}</span>

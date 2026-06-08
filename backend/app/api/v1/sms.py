@@ -2128,6 +2128,7 @@ async def get_sms_records(
             "message": r.message,
             "message_count": r.message_count,
             "status": r.status,
+            "sender_id": getattr(r, "sender_id", None),
             "cost_price": float(r.cost_price) if r.cost_price else 0,
             "selling_price": float(r.selling_price) if r.selling_price else 0,
             "profit": float(r.profit) if r.profit else 0,

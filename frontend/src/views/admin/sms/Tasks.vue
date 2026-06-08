@@ -118,6 +118,13 @@
 
           <el-table-column v-if="isColVisible('batch_name')" prop="batch_name" label="批次名" min-width="160" show-overflow-tooltip />
 
+          <el-table-column v-if="isColVisible('sid')" prop="sender_id" label="发送ID(SID)" width="120" align="center">
+            <template #default="{ row }">
+              <span v-if="row.sender_id">{{ row.sender_id }}</span>
+              <span v-else class="text-muted">默认</span>
+            </template>
+          </el-table-column>
+
           <el-table-column v-if="isColVisible('total')" prop="total_count" label="总数" width="80" align="right" />
 
           <el-table-column v-if="isColVisible('success')" width="90" align="right">
@@ -364,6 +371,7 @@ const stats = reactive({ processing: 0, paused: 0, completed: 0 })
 const COLUMN_DEFS = [
   { key: 'account', label: '账户' },
   { key: 'batch_name', label: '批次名' },
+  { key: 'sid', label: '发送ID(SID)' },
   { key: 'total', label: '总数' },
   { key: 'success', label: '成功（通道已接受）' },
   { key: 'delivered', label: '送达（终态回执）' },
@@ -376,7 +384,7 @@ const COLUMN_DEFS = [
   { key: 'completed_at', label: '完成时间' },
 ] as const
 const DEFAULT_COLS = COLUMN_DEFS.map(c => c.key)
-const COL_STORAGE_KEY = 'admin.sms.tasks.visibleColumns.v1'
+const COL_STORAGE_KEY = 'admin.sms.tasks.visibleColumns.v2'
 
 const visibleColumns = ref<string[]>([...DEFAULT_COLS])
 try {
