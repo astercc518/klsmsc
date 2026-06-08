@@ -46,7 +46,19 @@ async def lifespan(app: FastAPI):
         logger.info("✅ Redis连接初始化完成")
     except Exception as e:
         logger.warning(f"⚠️  Redis连接失败，将使用数据库直连: {str(e)}")
-    
+
+    # JWT access token 有效期读自系统配置（jwt_token_expire_hours，单位小时）。
+    # 该项 meta 标注「需重启 api 生效」，故仅在启动时读取一次并覆盖运行期设置。
+    try:
+        from app.database import AsyncSessionLocal
+        from app.core.security_policy import get_int_policy
+        async with AsyncSessionLocal() as _db:
+            _jwt_hours = await get_int_policy("jwt_token_expire_hours", _db)
+        settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES = _jwt_hours * 60
+        logger.info(f"✅ JWT access token 有效期：{_jwt_hours} 小时（来自系统配置）")
+    except Exception as e:
+        logger.warning(f"⚠️  读取 jwt_token_expire_hours 失败，沿用默认 {settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES} 分钟: {e}")
+
     yield
     
     # 关闭

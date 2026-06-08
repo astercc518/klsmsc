@@ -370,23 +370,27 @@ async def admin_login(
 
     # 验证密码
     if not AuthService.verify_password(request.password, admin.password_hash):
+        # 锁定策略读自系统配置（max_login_attempts / login_lock_minutes），带下限保护
+        from app.core.security_policy import get_int_policy
+        max_attempts = await get_int_policy("max_login_attempts", db)
+        lock_minutes = await get_int_policy("login_lock_minutes", db)
         admin.login_failed_count += 1
-        remaining = 5 - admin.login_failed_count
-        if admin.login_failed_count >= 5:
-            # 改为时限锁 15 分钟（之前是 status='locked' 永久锁，要 super_admin 手动解）
-            admin.locked_until = datetime.now() + timedelta(minutes=15)
+        remaining = max_attempts - admin.login_failed_count
+        if admin.login_failed_count >= max_attempts:
+            # 时限锁（之前是 status='locked' 永久锁，要 super_admin 手动解）
+            admin.locked_until = datetime.now() + timedelta(minutes=lock_minutes)
             admin.login_failed_count = 0
             await log_operation(
                 db, admin_id=admin.id, admin_name=admin.username,
                 module="login", action="login",
-                title=f"管理员 {admin.username} 登录失败：5 次错密 → 临时锁 15 分钟",
+                title=f"管理员 {admin.username} 登录失败：{max_attempts} 次错密 → 临时锁 {lock_minutes} 分钟",
                 ip_address=client_ip, status="failed",
-                error_message="临时锁定 15 分钟",
+                error_message=f"临时锁定 {lock_minutes} 分钟",
             )
             await db.commit()
             return AdminLoginResponse(
                 success=False,
-                error="temporarily_locked:15",
+                error=f"temporarily_locked:{lock_minutes}",
             )
         await log_operation(
             db, admin_id=admin.id, admin_name=admin.username,
@@ -654,8 +658,10 @@ async def change_own_password(
     if not AuthService.verify_password(request.old_password, admin.password_hash):
         return {"success": False, "error": "old_password_wrong"}
 
-    if len(request.new_password) < 6:
-        return {"success": False, "error": "password_too_short"}
+    from app.core.security_policy import get_int_policy
+    _min_len = await get_int_policy("password_min_length", db)
+    if len(request.new_password) < _min_len:
+        return {"success": False, "error": "password_too_short", "min_length": _min_len}
 
     admin.password_hash = AuthService.hash_password(request.new_password)
     
@@ -899,8 +905,10 @@ async def create_account_admin(
     if is_sales_scoped(admin):
         raise HTTPException(status_code=403, detail="销售人员无权新建客户账户")
 
-    if len(request.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    from app.core.security_policy import get_int_policy
+    _min_len = await get_int_policy("password_min_length", db)
+    if len(request.password) < _min_len:
+        raise HTTPException(status_code=400, detail=f"密码长度至少 {_min_len} 位")
 
     # 检查账户名是否已被未删除的账户使用
     _dup = await db.execute(
@@ -1589,9 +1597,11 @@ async def reset_account_password(
 ):
     """管理员：重置账户密码"""
     from app.modules.common.account import Account
+    from app.core.security_policy import get_int_policy
 
-    if len(request.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    _min_len = await get_int_policy("password_min_length", db)
+    if len(request.password) < _min_len:
+        raise HTTPException(status_code=400, detail=f"密码长度至少 {_min_len} 位")
 
     result = await db.execute(select(Account).where(Account.id == account_id, Account.is_deleted == False))
     a = result.scalar_one_or_none()

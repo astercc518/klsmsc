@@ -422,8 +422,10 @@ async def change_account_password(
     ):
         raise HTTPException(status_code=400, detail="原密码不正确")
 
-    if len(request.new_password) < 8:
-        raise HTTPException(status_code=400, detail="新密码至少 8 位")
+    from app.core.security_policy import get_int_policy
+    _min_len = await get_int_policy("password_min_length", db)
+    if len(request.new_password) < _min_len:
+        raise HTTPException(status_code=400, detail=f"新密码至少 {_min_len} 位")
 
     account.password_hash = AuthService.hash_password(request.new_password)
     await db.commit()

@@ -20,6 +20,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, default_limit: int = None):
         super().__init__(app)
         self.default_limit = default_limit or settings.RATE_LIMIT_PER_MINUTE
+        # 配置化默认限额（system_config.api_rate_limit_per_minute）的进程内缓存，30s 刷新
+        self._cfg_limit: Optional[int] = None
+        self._cfg_limit_ts: float = 0.0
         self.skip_paths = {
             "/health",
             "/docs",
@@ -27,6 +30,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             "/openapi.json",
             "/"
         }
+
+    async def _resolve_default_limit(self) -> int:
+        """全局默认限额读自 system_config（带 30s 进程内缓存）；失败回退构造时的默认。"""
+        now = time.time()
+        if self._cfg_limit is not None and (now - self._cfg_limit_ts) < 30:
+            return self._cfg_limit
+        try:
+            from app.database import AsyncSessionLocal
+            from app.core.security_policy import get_int_policy
+            async with AsyncSessionLocal() as db:
+                v = await get_int_policy("api_rate_limit_per_minute", db)
+            self._cfg_limit = v
+            self._cfg_limit_ts = now
+            return v
+        except Exception as e:
+            logger.warning(f"读取 api_rate_limit_per_minute 失败，回退默认 {self.default_limit}: {e}")
+            return self.default_limit
     
     async def dispatch(self, request: Request, call_next):
         # 跳过不需要限流的路径
@@ -72,7 +92,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 await redis_client.expire(limit_key.encode(), 60)
             account_limit = await self._get_account_limit(api_key, redis_client)
             if account_limit is None:
-                account_limit = self.default_limit
+                account_limit = await self._resolve_default_limit()
 
             rate_headers = {
                 "X-RateLimit-Limit": str(account_limit),
