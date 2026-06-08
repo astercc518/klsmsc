@@ -1866,10 +1866,19 @@ async def get_sms_records(
     end_date: Optional[str] = None,
     account_id: Optional[int] = None,
     batch_id: Optional[int] = None,
+    cursor_time: Optional[str] = None,
+    cursor_id: Optional[int] = None,
+    direction: str = "next",
     auth_context: dict = Depends(get_auth_context),
     db: AsyncSession = Depends(get_db)
 ):
-    """获取短信发送记录（带通道信息、客户名称、归属员工）"""
+    """获取短信发送记录（带通道信息、客户名称、归属员工）
+
+    翻页两种模式：
+    - 键集翻页(keyset)：传 cursor_time + cursor_id(+direction=next/prev)，按 (submit_time,id)
+      游标定位，每页恒定 O(page_size)，深翻页不退化。用于上一页/下一页。
+    - 偏移翻页(offset)：不传 cursor 时按 page/page_size，用于首屏/筛选重置(page=1)。
+    """
     from sqlalchemy import func, and_
     from sqlalchemy.orm import aliased
     from datetime import datetime, timedelta
@@ -2035,8 +2044,10 @@ async def get_sms_records(
         except Exception as _ce:
             logger.debug(f"records COUNT 缓存写失败(忽略): {_ce}")
 
-    offset = (page - 1) * page_size
-    query = (
+    from sqlalchemy import or_ as _or
+    from datetime import datetime as _dt
+
+    base_select = (
         select(
             SMSLog,
             Channel.channel_code,
@@ -2047,13 +2058,60 @@ async def get_sms_records(
         .outerjoin(Channel, SMSLog.channel_id == Channel.id)
         .outerjoin(Account, SMSLog.account_id == Account.id)
         .outerjoin(SalesUser, Account.sales_id == SalesUser.id)
-        .where(where_clause)
-        .order_by(SMSLog.submit_time.desc(), SMSLog.id.desc())
-        .offset(offset)
-        .limit(page_size)
     )
+
+    # 解析游标（仅当 cursor_time 与 cursor_id 都给出时启用键集翻页）
+    _cur_dt = None
+    if cursor_time and cursor_id is not None:
+        try:
+            _cur_dt = _dt.fromisoformat(cursor_time)
+        except (TypeError, ValueError):
+            _cur_dt = None
+    use_keyset = _cur_dt is not None
+
+    fetched_reversed = False  # prev 方向需反转回展示用的 DESC 序
+    if use_keyset:
+        # 列表展示恒为 submit_time DESC, id DESC（新→旧）
+        # next(更旧)：(submit_time,id) < 游标，DESC 取；prev(更新)：> 游标，ASC 取后反转
+        # 用 OR 展开式而非行值比较 (a,b)<(x,y)：本 MySQL 版本对行值比较退化为全索引扫描
+        # (type=index)，而 OR 展开式能走索引区间 seek (type=range)，深翻页恒定 ~4ms。
+        if direction == "prev":
+            keyset_cond = _or(
+                SMSLog.submit_time > _cur_dt,
+                and_(SMSLog.submit_time == _cur_dt, SMSLog.id > cursor_id),
+            )
+            order_by = (SMSLog.submit_time.asc(), SMSLog.id.asc())
+            fetched_reversed = True
+        else:
+            keyset_cond = _or(
+                SMSLog.submit_time < _cur_dt,
+                and_(SMSLog.submit_time == _cur_dt, SMSLog.id < cursor_id),
+            )
+            order_by = (SMSLog.submit_time.desc(), SMSLog.id.desc())
+        # 多取 1 条用于判断该方向是否还有更多
+        query = (
+            base_select.where(and_(where_clause, keyset_cond))
+            .order_by(*order_by)
+            .limit(page_size + 1)
+        )
+    else:
+        offset = (page - 1) * page_size
+        query = (
+            base_select.where(where_clause)
+            .order_by(SMSLog.submit_time.desc(), SMSLog.id.desc())
+            .offset(offset)
+            .limit(page_size + 1)
+        )
+
     result = await db.execute(query)
     rows = result.all()
+
+    # 该翻页方向是否还有更多数据（多取的第 1 条存在即说明有）
+    has_more_in_dir = len(rows) > page_size
+    if has_more_in_dir:
+        rows = rows[:page_size]
+    if fetched_reversed:
+        rows = list(reversed(rows))
 
     is_adm = auth_context["is_admin"]
     out_records = []
@@ -2085,6 +2143,25 @@ async def get_sms_records(
         rec["channel_name"] = ch_name
         out_records.append(rec)
 
+    # 计算键集游标：展示序为 DESC(新→旧)，首行最新、末行最旧
+    next_cursor = prev_cursor = None
+    if out_records:
+        _newest, _oldest = out_records[0], out_records[-1]
+        next_cursor = {"time": _oldest["submit_time"], "id": _oldest["id"]}  # 下一页(更旧)
+        prev_cursor = {"time": _newest["submit_time"], "id": _newest["id"]}  # 上一页(更新)
+
+    # 是否还有上/下页
+    if use_keyset:
+        if direction == "prev":
+            has_prev = has_more_in_dir   # 还有更新的行 → 可继续上一页
+            has_next = True              # 来自更旧的页，下一页必然存在
+        else:
+            has_next = has_more_in_dir
+            has_prev = True
+    else:
+        has_prev = page > 1
+        has_next = has_more_in_dir
+
     return {
         "success": True,
         "total": total,
@@ -2093,6 +2170,10 @@ async def get_sms_records(
         "page_size": page_size,
         "is_admin": is_adm,
         "records": out_records,
+        "next_cursor": next_cursor,
+        "prev_cursor": prev_cursor,
+        "has_next": has_next,
+        "has_prev": has_prev,
     }
 
 

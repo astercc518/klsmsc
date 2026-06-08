@@ -281,17 +281,19 @@
         </el-table>
       </div>
 
-      <!-- 分页 -->
-      <div class="pagination-wrapper" v-if="pagination.total > 0">
-        <el-pagination
-          v-model:current-page="pagination.page"
-          v-model:page-size="pagination.pageSize"
-          :total="pagination.total"
-          :page-sizes="[20, 50, 100, 200]"
-          layout="total, sizes, prev, pager, next, jumper"
-          @size-change="loadRecords"
-          @current-change="loadRecords"
-        />
+      <!-- 分页（键集翻页：上一页/下一页恒定 O(page_size)，深翻页不退化） -->
+      <div class="pagination-wrapper keyset" v-if="records.length > 0 || pagination.page > 1">
+        <span class="pg-total">
+          {{ totalApproximate ? '约 ' + pagination.total.toLocaleString() + ' 条' : '共 ' + pagination.total.toLocaleString() + ' 条' }}
+        </span>
+        <el-select v-model="pagination.pageSize" size="small" class="pg-size" @change="handleSizeChange">
+          <el-option v-for="s in [20, 50, 100, 200]" :key="s" :label="s + ' 条/页'" :value="s" />
+        </el-select>
+        <el-button-group class="pg-nav">
+          <el-button size="small" :disabled="!pageCursors.has_prev || loading" @click="goPrev">上一页</el-button>
+          <el-button size="small" disabled>第 {{ pagination.page }} 页</el-button>
+          <el-button size="small" :disabled="!pageCursors.has_next || loading" @click="goNext">下一页</el-button>
+        </el-button-group>
       </div>
     </div>
 
@@ -492,6 +494,11 @@ const searchForm = ref({
 const pagination = ref({ page: 1, pageSize: 20, total: 0 })
 // 全量浏览(无筛选)时后端返回优化器估算的近似总数，展示"约 N 条"
 const totalApproximate = ref(false)
+// 键集翻页游标：来自上次响应。pendingCursor 为本次请求要带的游标(消费一次即清空)
+const pageCursors = ref<{ next_cursor: any; prev_cursor: any; has_next: boolean; has_prev: boolean }>(
+  { next_cursor: null, prev_cursor: null, has_next: false, has_prev: false }
+)
+let pendingCursor: { time: string; id: number; direction: 'next' | 'prev' } | null = null
 const records = ref<any[]>([])
 
 /** 已生效的筛选项个数 — 用于移动端「筛选」按钮上的徽标 */
@@ -570,7 +577,15 @@ const tableRowClassName = ({ row }: { row: any }) => {
 }
 
 const buildParams = () => {
-  const params: any = { page: pagination.value.page, page_size: pagination.value.pageSize }
+  const params: any = { page_size: pagination.value.pageSize }
+  // 有待消费游标 → 键集翻页；否则按 page 偏移(首屏/筛选重置 page=1)
+  if (pendingCursor) {
+    params.cursor_time = pendingCursor.time
+    params.cursor_id = pendingCursor.id
+    params.direction = pendingCursor.direction
+  } else {
+    params.page = pagination.value.page
+  }
   if (searchForm.value.status) params.status = searchForm.value.status
   if (searchForm.value.phone_number) params.phone_number = searchForm.value.phone_number
   if (searchForm.value.message_id) params.message_id = searchForm.value.message_id
@@ -593,17 +608,52 @@ const loadRecords = async () => {
       records.value = res.records || []
       pagination.value.total = res.total || 0
       totalApproximate.value = !!res.total_approximate
+      pageCursors.value = {
+        next_cursor: res.next_cursor || null,
+        prev_cursor: res.prev_cursor || null,
+        has_next: !!res.has_next,
+        has_prev: !!res.has_prev,
+      }
     }
   } catch (error: any) {
     ElMessage.error('加载记录失败')
     records.value = []
   } finally {
+    pendingCursor = null  // 游标消费完毕(无论成败)，避免卡死在某页
     loading.value = false
   }
 }
 
+// 筛选/重置/改每页数：回到首屏(偏移 page=1)，清空游标
 const handleSearch = () => {
+  pendingCursor = null
   pagination.value.page = 1
+  loadRecords()
+}
+
+const handleSizeChange = () => {
+  pendingCursor = null
+  pagination.value.page = 1
+  loadRecords()
+}
+
+const goNext = () => {
+  if (!pageCursors.value.has_next || !pageCursors.value.next_cursor) return
+  pendingCursor = { ...pageCursors.value.next_cursor, direction: 'next' }
+  pagination.value.page += 1
+  loadRecords()
+}
+
+const goPrev = () => {
+  if (pagination.value.page <= 1) return
+  if (pagination.value.page === 2) {
+    // 回到第 1 页直接用偏移，保证与首屏完全一致
+    handleSearch()
+    return
+  }
+  if (!pageCursors.value.has_prev || !pageCursors.value.prev_cursor) return
+  pendingCursor = { ...pageCursors.value.prev_cursor, direction: 'prev' }
+  pagination.value.page -= 1
   loadRecords()
 }
 
@@ -1009,6 +1059,15 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
 }
+.pagination-wrapper.keyset {
+  align-items: center;
+  gap: 14px;
+}
+.pagination-wrapper.keyset .pg-total {
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+.pagination-wrapper.keyset .pg-size { width: 110px; }
 
 /* 详情弹窗 */
 .detail-content { padding: 0 4px; }
