@@ -108,6 +108,12 @@ func parseSMSLogData(m map[string]interface{}) (SMSLogData, error) {
 			d.BatchID = int64(x)
 		}
 	}
+	// 发送方ID(SID)：客户按通道+国家自选，后端已白名单校验并写入 payload。
+	// 此前漏映射导致 d.SenderID 恒空 → connector 回退 cfg.DefaultSenderID（默认SID），
+	// 表现为「选了非默认SID 实际仍发默认」。补上映射使自选 SID 真正生效。
+	if v, ok := m["sender_id"].(string); ok {
+		d.SenderID = v
+	}
 	return d, nil
 }
 
