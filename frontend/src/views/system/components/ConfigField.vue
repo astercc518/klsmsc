@@ -158,8 +158,19 @@ defineExpose({
   transition: background 0.3s;
 }
 .config-field:last-child { border-bottom: none; }
-.config-field.is-dirty { background: var(--el-color-primary-light-9); padding-left: 12px; padding-right: 12px; margin-left: -12px; margin-right: -12px; border-radius: 4px; }
-.config-field.is-highlight { background: var(--el-color-warning-light-9); animation: pulse 1.5s ease-out 1; }
+/* 脏/高亮底色用半透明叠加 + 左侧色条：本应用为深色主题但未启用 Element 官方 dark mode，
+   原 --el-color-primary-light-9 近白底叠浅字不可读。color-mix 半透明在深浅主题都清晰。 */
+.config-field.is-dirty {
+  background: color-mix(in srgb, var(--el-color-primary) 14%, transparent);
+  border-left: 3px solid var(--el-color-primary);
+  padding-left: 9px; padding-right: 12px; margin-left: -12px; margin-right: -12px; border-radius: 4px;
+}
+.config-field.is-highlight {
+  background: color-mix(in srgb, var(--el-color-warning) 16%, transparent);
+  border-left: 3px solid var(--el-color-warning);
+  padding-left: 9px; padding-right: 12px; margin-left: -12px; margin-right: -12px; border-radius: 4px;
+  animation: pulse 1.5s ease-out 1;
+}
 
 @keyframes pulse {
   0% { box-shadow: 0 0 0 4px var(--el-color-warning-light-7); }

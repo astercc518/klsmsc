@@ -123,7 +123,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter, onBeforeRouteLeave } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -240,6 +240,15 @@ async function loadAll() {
           time: c.updated_at || '',
         }
       }
+    })
+    dirtyKeys.value = new Set()
+    // 子控件(如 el-input-number)挂载时会把越界的存量值(例如后端存 0、而字段 min>0)
+    // 钳到 min 并 emit update，触发「加载即未保存」误判。等规范化完成后，以当前规范化
+    // 值为基线重置 originalValues 并清空 dirty，避免一进页面就显示 N 项未保存。
+    await nextTick()
+    await nextTick()
+    Object.keys(values).forEach(k => {
+      originalValues[k] = serializeValue(values[k], resolveMeta(k).uiType)
     })
     dirtyKeys.value = new Set()
   } catch (e: any) {
