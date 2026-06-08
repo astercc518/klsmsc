@@ -210,6 +210,13 @@ const searchHitsByGroup = computed<Record<string, number>>(() => {
 /** 用于导出对比的「key -> 字符串值」映射（取后端原始值） */
 const rawValuesForExport = computed<Record<string, string>>(() => ({ ...originalValues }))
 
+// 由独立子系统管理、不在通用系统配置页展示/编辑的内部键前缀
+// brand.*：白标品牌（独立品牌设置）；license.*：软件授权（独立「软件授权」标签页）
+const HIDDEN_CONFIG_PREFIXES = ['brand.', 'license.']
+function isHiddenConfigKey(key: string): boolean {
+  return HIDDEN_CONFIG_PREFIXES.some(p => key.startsWith(p))
+}
+
 // ---- 加载 ----
 
 async function loadAll() {
@@ -221,6 +228,9 @@ async function loadAll() {
     Object.keys(auditMap).forEach(k => delete auditMap[k])
 
     Object.values(res.groups).flat().forEach((c: GroupedConfigItem) => {
+      // 跳过由独立子系统管理的内部键（白标品牌、软件授权），它们不应在通用系统配置页
+      // 当字符串编辑，否则只会触发「缺失 meta 定义」兜底渲染 + 控制台告警。
+      if (isHiddenConfigKey(c.config_key)) return
       const meta = resolveMeta(c.config_key)
       values[c.config_key] = parseValue(c.config_value, meta.uiType)
       originalValues[c.config_key] = c.config_value ?? ''
