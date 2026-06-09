@@ -282,29 +282,36 @@ func stripLeadingPlusFromConfigJSON(raw string) bool {
 
 // longMessageModeFromConfigJSON 解析 channels.config_json 中 long_message_mode；
 // 取值：
-//   "message_payload"（默认）   — UCS-2 编码 > 254 字节时用 message_payload TLV 旁路（兼容多数现代上游）
-//   "udh_segmentation"           — 改用标准 UDH 8-bit ref 多段 SMS 分段，每段 ≤ 140 字节
-// 在 wold_kafa 这类上游不实现 message_payload TLV、对 PDU 返 ESME_RINVCMDLEN (2) 的场景必须用 udh。
+//   "udh_segmentation"（默认）   — 标准 UDH 8-bit ref 多段 SMS 分段，每段 ≤ 140 字节；
+//                                   真实运营商/手机通用重组，避免「不读 message_payload TLV
+//                                   的上游」把长信发成空白。KLSMSC 通道均直连运营商，故默认 udh。
+//   "message_payload"            — UCS-2 > 254 字节用 message_payload TLV 旁路；仅适用于
+//                                   「读 TLV、但不重组 UDH」的下游(如中继到另一套读 TLV 的平台)，
+//                                   需在该通道 config_json 显式 {"long_message_mode":"message_payload"} 选回。
 func longMessageModeFromConfigJSON(raw string) string {
+	const def = "udh_segmentation"
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "message_payload"
+		return def
 	}
 	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return "message_payload"
+		return def
 	}
 	v, ok := m["long_message_mode"]
 	if !ok || v == nil {
-		return "message_payload"
+		return def
 	}
 	if s, ok := v.(string); ok {
 		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "message_payload" || s == "payload" {
+			return "message_payload"
+		}
 		if s == "udh_segmentation" || s == "udh" {
 			return "udh_segmentation"
 		}
 	}
-	return "message_payload"
+	return def
 }
 
 // gsm7EnabledFromConfigJSON：仅当通道 config_json 显式 {"gsm7_enabled":true} 才启用
