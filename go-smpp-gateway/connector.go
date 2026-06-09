@@ -282,15 +282,15 @@ func stripLeadingPlusFromConfigJSON(raw string) bool {
 }
 
 // longMessageModeFromConfigJSON 解析 channels.config_json 中 long_message_mode；
-// 取值：
-//   "udh_segmentation"（默认）   — 标准 UDH 8-bit ref 多段 SMS 分段，每段 ≤ 140 字节；
-//                                   真实运营商/手机通用重组，避免「不读 message_payload TLV
-//                                   的上游」把长信发成空白。KLSMSC 通道均直连运营商，故默认 udh。
-//   "message_payload"            — UCS-2 > 254 字节用 message_payload TLV 旁路；仅适用于
-//                                   「读 TLV、但不重组 UDH」的下游(如中继到另一套读 TLV 的平台)，
-//                                   需在该通道 config_json 显式 {"long_message_mode":"message_payload"} 选回。
+// 取值（默认 message_payload）：
+//   "message_payload"（默认）    — UCS-2 > 254 字节走 message_payload TLV 单 PDU。实测部分
+//                                   中国直连(如 TS_zhilian)不重组 UDH、把多段当独立消息且按
+//                                   GBK 误解 UCS-2 → 收到多条 CJK 乱码;故默认不分段、整条交上游。
+//   "udh_segmentation"           — 标准 UDH 多段(16-bit ref);仅给「不读 TLV、但能重组 UDH」
+//                                   的上游(如 woId_kafa)用,需该通道 config_json 显式
+//                                   {"long_message_mode":"udh_segmentation"} 开启。
 func longMessageModeFromConfigJSON(raw string) string {
-	const def = "udh_segmentation"
+	const def = "message_payload"
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return def
