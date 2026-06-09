@@ -51,6 +51,7 @@ func main() {
         getEnvInt("INBOUND_SUBMIT_WORKERS", 8),
         getEnvInt("INBOUND_QUEUE_CAP", 10000),
     )
+    startReassemblyReaper() // 入站 UDH 多段重组的超时清理
     go startInboundServer(inboundListen)
     go RunInboundDLRConsumerForever(rabbitURL)
 

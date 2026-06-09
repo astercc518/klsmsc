@@ -325,6 +325,41 @@ func (s *inboundSession) handleSubmitSM(hdr pduHeader, body []byte) {
 	if v, ok := sm.tlvs[0x0424]; ok && len(v) > 0 {
 		rawMsg = v
 	}
+
+	// UDH 多段重组：esm_class 含 UDHI 位(0x40)时 short_message 前缀是 UDH 头。
+	// 剥头取拼接信息(ref/total/part)，按 (account,src,dst,ref,total) 缓冲，集齐后合并成一条转发。
+	// 仅在 UDHI 置位且走 short_message 时介入(message_payload 与 UDH 互斥)；普通短信路径不变。
+	if sm.esmClass&udhiBit != 0 && len(sm.shortMessage) > 0 {
+		ci, payload := parseUDH(sm.shortMessage)
+		segText := decodeShortMessage(payload, sm.dataCoding)
+		if sm.dataCoding == 0 {
+			log.Printf("[INBOUND-UDH] WARN dc=0(packed GSM7)+UDHI system_id=%s：fill-bit 解码暂不支持，中继通道请发 UCS-2", s.systemID)
+		}
+		if ci.hasConcat && ci.total > 1 && ci.part >= 1 && ci.part <= ci.total {
+			tmpl := submitJob{
+				AccountID:          s.account.ID,
+				SystemID:           s.systemID,
+				SourceAddr:         sm.sourceAddr,
+				DestAddr:           normalizeDestAddr(sm.destAddr),
+				IP:                 s.remoteIP,
+				RegisteredDelivery: int(sm.registeredDelivery & 0x01),
+			}
+			key := reassemblyKey(s.account.ID, sm.sourceAddr, sm.destAddr, ci.ref, ci.total)
+			ready, respMsgID := udhStore.addSegment(key, ci, segText, tmpl)
+			_ = InsertInboundSubmission(respMsgID, s.account.ID, s.systemID, sm.sourceAddr, tmpl.DestAddr)
+			if ready != nil {
+				if queued, _ := trySubmit(*ready); !queued {
+					// 集齐却入不了队(高水位)：整条发 REJECTD DLR，不阻塞客户后续段
+					publishRejectDLR(*ready, "reassembly enqueue: queue full")
+				}
+			}
+			_ = s.writePDUSafe(cmdSubmitSMResp, statusOK, hdr.sequenceNumber, buildSubmitSMResp(respMsgID))
+			return
+		}
+		// 非拼接 UDH 或单段 UDH：剥头后按普通单条继续
+		rawMsg = payload
+	}
+
 	text := decodeShortMessage(rawMsg, sm.dataCoding)
 
 	msgID := generateMessageID()

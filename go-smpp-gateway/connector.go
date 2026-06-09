@@ -335,6 +335,54 @@ func gsm7EnabledFromConfigJSON(raw string) bool {
 	return false
 }
 
+// latin1SingleFromConfigJSON：通道 config_json {"latin1_single":true} 时启用「拉丁文单 PDU
+// Latin1」模式(实验,逐通道 opt-in,默认关)。
+func latin1SingleFromConfigJSON(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return false
+	}
+	if v, ok := m["latin1_single"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+// isLatin1 判断文本是否可全部用 ISO-8859-1(Latin1)表示(每码点 ≤ 0xFF)。
+func isLatin1(text string) bool {
+	for _, r := range text {
+		if r > 0xFF {
+			return false
+		}
+	}
+	return true
+}
+
+// forceUCS2FromConfigJSON：通道 config_json {"force_ucs2":true} 时,禁用 GSM-7/Latin1 自动
+// 编码、一律走 UCS2(用于个别不认 DCS=0/DCS=3 的上游做逃生回退)。
+func forceUCS2FromConfigJSON(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return false
+	}
+	if v, ok := m["force_ucs2"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
 // splitUCS2ForUDH 把 UCS-2 编码后的字节流拆为多段，每段 ≤ 134 字节
 // （UCS-2 字符是 2 字节宽，按 67 字符 = 134 字节切，避免拆中一个字符）。
 // 调用方需自己加 6 字节 UDH 头到每段前面。
@@ -1267,6 +1315,22 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 		return fmt.Errorf("session has no transmitter")
 	}
 
+	// 实验(a) latin1_single：给「能处理 UCS2 单 PDU,但不读 message_payload TLV、也不重组
+	// UDH 的上游(如 TS_zhilian)」用。Latin1 可表示且编码后 ≤254 字节的文案,用单个
+	// short_message 以 Latin1(DataCoding=3,1 字节/字符)发出,绕开长信 TLV/UDH 两个失败点。
+	// 逐通道 config_json {"latin1_single":true} opt-in;非拉丁文/超长则落到下方原逻辑。
+	if latin1SingleFromConfigJSON(cfg.ConfigJSON) && isLatin1(message) {
+		if enc, lErr := data.LATIN1.Encode(message); lErr == nil && len(enc) <= data.SM_MSG_LEN {
+			if err := s.Message.SetMessageDataWithEncoding(enc, data.LATIN1); err != nil {
+				return fmt.Errorf("latin1 short_message: %w", err)
+			}
+			s.RegisteredDelivery = 1
+			log.Printf("[SMPP-DEBUG] Submitting SM(Latin1单PDU): channel=%s dest=%s chars=%d bytes=%d",
+				cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
+			return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
+		}
+	}
+
 	// 方案A：GSM-7 可表示的文案优先用 GSM-7(DataCoding 0，最通用的标准编码)。纯拉丁文
 	// 绝大多数 ≤160 字符即单段短信，不进长信/message_payload TLV 路径——既避免「不读
 	// TLV 的上游」收到空白，又比 UCS2 省一半以上分段成本。个别上游若不兼容 packed GSM-7，
@@ -1308,6 +1372,9 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 						}
 						continue
 					}
+					// 关键：显式置 esm_class UDHI 位(0x40)。gosmpp trans.Submit→Marshal 不自动置位
+					// (仅 .Split() 会)，漏置则收端把 UDH 头当正文 → 乱码且无法拼接(多条独立乱码)。
+					psm.EsmClass = data.SM_UDH_GSM
 					psm.Message.SetUDH(pdu.UDH{pdu.InfoElement{ID: 0x00, Data: []byte{ref, total, part}}})
 					if i == 0 {
 						psm.RegisteredDelivery = 1
@@ -1351,6 +1418,22 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 		return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
 	}
 
+	// 自动适配:长信若纯拉丁文(含葡文重音,码点≤0xFF)且 Latin1 编码 ≤254 字节 → 用 Latin1
+	// 单 PDU(DCS=3,1字节/字符,不分段不 TLV)。绕开「不读 message_payload TLV(空白)」与
+	// 「不保留 UDH 拼接(多条)」两个上游死穴,TS_zhilian/飞渡等 CN 直连/中转上游都兼容。
+	// 免逐通道配置;个别不认 DCS=3 的上游用 config_json {"force_ucs2":true} 关闭回落 UCS2。
+	if !forceUCS2FromConfigJSON(cfg.ConfigJSON) && isLatin1(message) {
+		if enc, lErr := data.LATIN1.Encode(message); lErr == nil && len(enc) <= data.SM_MSG_LEN {
+			if err := s.Message.SetMessageDataWithEncoding(enc, data.LATIN1); err != nil {
+				return fmt.Errorf("latin1 short_message: %w", err)
+			}
+			s.RegisteredDelivery = 1
+			log.Printf("[SMPP-DEBUG] Submitting SM(Latin1单PDU/auto): channel=%s dest=%s chars=%d bytes=%d",
+				cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
+			return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
+		}
+	}
+
 	// 长消息：按通道配置选择 message_payload TLV 或 UDH 多段分段
 	mode := longMessageModeFromConfigJSON(cfg.ConfigJSON)
 
@@ -1388,6 +1471,8 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 				}
 				continue
 			}
+			// 关键：显式置 esm_class UDHI 位(0x40)，否则收端把 UDH 头当正文 → 多条乱码。
+			psm.EsmClass = data.SM_UDH_GSM
 			// 标准 16-bit ref concat UDH：UDHL=0x06, IEI=0x08, IEDL=0x04, [refHi, refLo, total, part]
 			psm.Message.SetUDH(pdu.UDH{pdu.InfoElement{ID: 0x08, Data: []byte{byte(ref >> 8), byte(ref), total, part}}})
 
