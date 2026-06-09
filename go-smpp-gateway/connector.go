@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
 
 	"github.com/linxGnu/gosmpp"
 	"github.com/linxGnu/gosmpp/data"
@@ -362,6 +363,42 @@ var concatRefCounter uint32
 func nextConcatRef() byte {
 	v := atomic.AddUint32(&concatRefCounter, 1)
 	return byte(v & 0xFF)
+}
+
+// nextConcatRef16 生成 16-bit CSMS 引用号(IEI 0x08)。空间 65536，相比 8-bit(256)
+// 把「同号大流量下 ref 回绕 → 手机错误归并不同消息分段」的碰撞概率降几个数量级。
+// 原子单调递增，高并发线程安全。
+func nextConcatRef16() uint16 {
+	v := atomic.AddUint32(&concatRefCounter, 1)
+	return uint16(v & 0xFFFF)
+}
+
+// segmentUCS2Text 把文本按「整码点」编码为 UTF-16BE 并切成每段 ≤maxOctets 字节。
+// 防御核心:以 rune(完整 Unicode 码点)为最小单位累加——Emoji 等 astral 码点 = 2 个
+// UTF-16 码元 = 4 字节,作为整体放入,**永不在代理对(surrogate pair)中间截断**,
+// 杜绝旧 splitUCS2ForUDH 仅做 2 字节对齐时把 4 字节 Emoji 劈成两半导致末字符乱码。
+func segmentUCS2Text(text string, maxOctets int) [][]byte {
+	var segs [][]byte
+	var cur []byte
+	for _, r := range text {
+		units := utf16.Encode([]rune{r}) // BMP→1 码元(2字节);astral→2 码元(4字节,代理对)
+		rb := make([]byte, 0, len(units)*2)
+		for _, cu := range units {
+			rb = append(rb, byte(cu>>8), byte(cu)) // 大端 UTF-16BE
+		}
+		if len(cur)+len(rb) > maxOctets && len(cur) > 0 {
+			segs = append(segs, cur)
+			cur = nil
+		}
+		cur = append(cur, rb...)
+	}
+	if len(cur) > 0 {
+		segs = append(segs, cur)
+	}
+	if len(segs) == 0 {
+		segs = append(segs, []byte{})
+	}
+	return segs
 }
 
 func InitSMPPManager() {
@@ -1318,14 +1355,15 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 	mode := longMessageModeFromConfigJSON(cfg.ConfigJSON)
 
 	if mode == "udh_segmentation" {
-		// UDH 8-bit ref 多段 SMS：每段 6 字节 UDH 头 + 134 字节 UCS-2 payload = 140 字节
+		// UDH 16-bit ref 多段 SMS：每段 7 字节 UDH 头(IEI 0x08) + 132 字节 UCS-2 payload = 139 字节
+		// 分段用 segmentUCS2Text(按整码点切,代理对/Emoji 不被截断);ref 用 16-bit 防回绕碰撞。
 		// 第一段持有 sequenceMap 条目（决定整条消息的 sent/failed/DLR 归属），
 		// 其它段静默 Submit；其 SubmitSMResp 命中 OnPDU 的「无匹配映射」分支被忽略。
 		// 折中：若第一段 sent 而后续段 failed，只能查日志发现；多数运营商对同一 concat 组
 		// 全段同状态，跨段 status 分裂极少见。换全段联动跟踪需要在 Python 端引入「分段表」
 		// 与 DLR 汇总逻辑，工程量大；当前最小可用方案优先解决发不出去的问题。
-		segments := splitUCS2ForUDH(encoded)
-		ref := nextConcatRef()
+		segments := segmentUCS2Text(message, 132)
+		ref := nextConcatRef16()
 		total := byte(len(segments))
 		for i, seg := range segments {
 			part := byte(i + 1)
@@ -1350,12 +1388,12 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 				}
 				continue
 			}
-			// 标准 1-byte ref concat UDH：IEI=0x00, IEDL=0x03, [ref, total, part]
-			psm.Message.SetUDH(pdu.UDH{pdu.InfoElement{ID: 0x00, Data: []byte{ref, total, part}}})
+			// 标准 16-bit ref concat UDH：UDHL=0x06, IEI=0x08, IEDL=0x04, [refHi, refLo, total, part]
+			psm.Message.SetUDH(pdu.UDH{pdu.InfoElement{ID: 0x08, Data: []byte{byte(ref >> 8), byte(ref), total, part}}})
 
 			if i == 0 {
 				psm.RegisteredDelivery = 1
-				if err := m.submitOneAndTrack(psm, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), true, ref, total, part, payload); err != nil {
+				if err := m.submitOneAndTrack(psm, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), true, byte(ref), total, part, payload); err != nil {
 					return err
 				}
 			} else {
