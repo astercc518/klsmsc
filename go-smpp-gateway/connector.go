@@ -307,9 +307,10 @@ func longMessageModeFromConfigJSON(raw string) string {
 	return "message_payload"
 }
 
-// forceUCS2FromConfigJSON 解析 channels.config_json 中 force_ucs2；为 true 时该通道
-// 跳过 GSM-7 自动编码、一律走 UCS2（用于个别不兼容 packed GSM-7 的上游做逃生回退）。
-func forceUCS2FromConfigJSON(raw string) bool {
+// gsm7EnabledFromConfigJSON：仅当通道 config_json 显式 {"gsm7_enabled":true} 才启用
+// GSM-7 自动编码。**默认关闭(走 UCS2)**——packed GSM-7(DataCoding 0)与部分直连上游
+// 不兼容会导致收到乱码(已在 TS_zhilian 实测复现),故改为「逐通道实测通过后再 opt-in」。
+func gsm7EnabledFromConfigJSON(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return false
@@ -318,7 +319,7 @@ func forceUCS2FromConfigJSON(raw string) bool {
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		return false
 	}
-	if v, ok := m["force_ucs2"]; ok {
+	if v, ok := m["gsm7_enabled"]; ok {
 		if b, ok := v.(bool); ok {
 			return b
 		}
@@ -1225,8 +1226,8 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 	// 方案A：GSM-7 可表示的文案优先用 GSM-7(DataCoding 0，最通用的标准编码)。纯拉丁文
 	// 绝大多数 ≤160 字符即单段短信，不进长信/message_payload TLV 路径——既避免「不读
 	// TLV 的上游」收到空白，又比 UCS2 省一半以上分段成本。个别上游若不兼容 packed GSM-7，
-	// 在该通道 config_json 设 {"force_ucs2":true} 即逐通道回退 UCS2。
-	if !forceUCS2FromConfigJSON(cfg.ConfigJSON) && len(data.ValidateGSM7String(message)) == 0 {
+	// 默认 UCS2;通道 config_json 设 {"gsm7_enabled":true} 才逐通道启用 GSM-7(须先实测不乱码)。
+	if gsm7EnabledFromConfigJSON(cfg.ConfigJSON) && len(data.ValidateGSM7String(message)) == 0 {
 		gsm7 := data.GSM7BITPACKED
 		if sp, ok := gsm7.(data.Splitter); ok {
 			if !sp.ShouldSplit(message, data.SM_GSM_MSG_LEN) {
