@@ -307,6 +307,25 @@ func longMessageModeFromConfigJSON(raw string) string {
 	return "message_payload"
 }
 
+// forceUCS2FromConfigJSON 解析 channels.config_json 中 force_ucs2；为 true 时该通道
+// 跳过 GSM-7 自动编码、一律走 UCS2（用于个别不兼容 packed GSM-7 的上游做逃生回退）。
+func forceUCS2FromConfigJSON(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return false
+	}
+	if v, ok := m["force_ucs2"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
 // splitUCS2ForUDH 把 UCS-2 编码后的字节流拆为多段，每段 ≤ 134 字节
 // （UCS-2 字符是 2 字节宽，按 67 字符 = 134 字节切，避免拆中一个字符）。
 // 调用方需自己加 6 字节 UDH 头到每段前面。
@@ -1197,15 +1216,83 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 		destDigits = destAddrNoPlus(phoneNumber)
 	}
 	s.DestAddr.SetAddress(destDigits)
-	encoded, encErr := data.UCS2.Encode(message)
-	if encErr != nil {
-		log.Printf("[SMPP-ERROR] UCS2 Encode failed: channel=%s, msg=%s err=%v", cfg.ChannelCode, messageID, encErr)
-		return fmt.Errorf("ucs2 encode: %w", encErr)
-	}
 
 	trans := session.Transmitter()
 	if trans == nil {
 		return fmt.Errorf("session has no transmitter")
+	}
+
+	// 方案A：GSM-7 可表示的文案优先用 GSM-7(DataCoding 0，最通用的标准编码)。纯拉丁文
+	// 绝大多数 ≤160 字符即单段短信，不进长信/message_payload TLV 路径——既避免「不读
+	// TLV 的上游」收到空白，又比 UCS2 省一半以上分段成本。个别上游若不兼容 packed GSM-7，
+	// 在该通道 config_json 设 {"force_ucs2":true} 即逐通道回退 UCS2。
+	if !forceUCS2FromConfigJSON(cfg.ConfigJSON) && len(data.ValidateGSM7String(message)) == 0 {
+		gsm7 := data.GSM7BITPACKED
+		if sp, ok := gsm7.(data.Splitter); ok {
+			if !sp.ShouldSplit(message, data.SM_GSM_MSG_LEN) {
+				// 单段 GSM-7（≤160 字符 → 打包 ≤140 字节）
+				if enc, gErr := gsm7.Encode(message); gErr == nil {
+					if err := s.Message.SetMessageDataWithEncoding(enc, gsm7); err != nil {
+						return fmt.Errorf("gsm7 short_message: %w", err)
+					}
+					s.RegisteredDelivery = 1
+					log.Printf("[SMPP-DEBUG] Submitting SM(GSM7): channel=%s dest=%s chars=%d bytes=%d",
+						cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
+					return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
+				}
+				// Encode 失败：落到下方 UCS2 兜底
+			} else if segs, sErr := sp.EncodeSplit(message, 153); sErr == nil && len(segs) > 0 {
+				// 多段 GSM-7：每段 ≤153 字符(打包 ≤134 字节) + 6 字节 concat UDH = ≤140
+				ref := nextConcatRef()
+				total := byte(len(segs))
+				for i, seg := range segs {
+					part := byte(i + 1)
+					var psm *pdu.SubmitSM
+					if i == 0 {
+						psm = s
+					} else {
+						psm = pdu.NewSubmitSM().(*pdu.SubmitSM)
+						psm.SourceAddr = pdu.NewAddress()
+						psm.SourceAddr.SetAddress(srcSID)
+						psm.DestAddr = pdu.NewAddress()
+						psm.DestAddr.SetAddress(destDigits)
+					}
+					if err := psm.Message.SetMessageDataWithEncoding(seg, gsm7); err != nil {
+						if i == 0 {
+							return fmt.Errorf("gsm7 udh seg1: %w", err)
+						}
+						continue
+					}
+					psm.Message.SetUDH(pdu.UDH{pdu.InfoElement{ID: 0x00, Data: []byte{ref, total, part}}})
+					if i == 0 {
+						psm.RegisteredDelivery = 1
+						if err := m.submitOneAndTrack(psm, trans, channelID, messageID, logID, destDigits, cfg, len(seg), true, ref, total, part, payload); err != nil {
+							return err
+						}
+					} else {
+						psm.RegisteredDelivery = 0
+						if err := trans.Submit(psm); err != nil {
+							if strings.Contains(err.Error(), "clos") {
+								return nil
+							}
+							log.Printf("[SMPP-ERROR] GSM7 UDH part %d/%d submit failed: channel=%s msg=%s %v",
+								part, total, cfg.ChannelCode, messageID, err)
+						} else {
+							log.Printf("[SMPP-DEBUG] Submitting SM(GSM7 UDH %d/%d): channel=%s seq=%d dest=%s ref=%d",
+								part, total, cfg.ChannelCode, psm.SequenceNumber, destDigits, ref)
+						}
+					}
+				}
+				return nil
+			}
+			// EncodeSplit 失败：落到下方 UCS2 兜底
+		}
+	}
+
+	encoded, encErr := data.UCS2.Encode(message)
+	if encErr != nil {
+		log.Printf("[SMPP-ERROR] UCS2 Encode failed: channel=%s, msg=%s err=%v", cfg.ChannelCode, messageID, encErr)
+		return fmt.Errorf("ucs2 encode: %w", encErr)
 	}
 
 	// 短消息：直接 short_message 字段，与历史行为一致
