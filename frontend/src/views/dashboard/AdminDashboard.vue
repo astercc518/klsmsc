@@ -23,6 +23,121 @@
     </div>
 
     <!-- ========== 管理员/员工视图 ========== -->
+      <!-- 核心指标 hero 卡（新版仪表盘） -->
+      <div class="hero-grid">
+        <div class="hero-card soft-card animate-scale" v-if="permissions.view_finance" style="animation-delay: 0.05s">
+          <div class="hero-icon balance">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <rect x="2.5" y="5" width="19" height="14" rx="2.5" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M2.5 9.5H21.5" stroke="currentColor" stroke-width="1.8"/>
+              <circle cx="17" cy="14.5" r="1.2" fill="currentColor"/>
+            </svg>
+          </div>
+          <div class="hero-meta">
+            <span class="hero-label">{{ $t('dashboard.systemBalance') }}</span>
+            <span class="hero-value"><span class="hero-cur">$</span>{{ formatNumber(totalBalance) }}</span>
+          </div>
+        </div>
+        <div class="hero-card soft-card animate-scale" v-if="permissions.view_finance" style="animation-delay: 0.1s">
+          <div class="hero-icon cost">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M14.5 9.2C14.5 8 13.3 7.2 12 7.2C10.7 7.2 9.5 8 9.5 9.3C9.5 12 14.5 11 14.5 14C14.5 15.3 13.3 16.2 12 16.2C10.7 16.2 9.5 15.3 9.5 14M12 6V7.2M12 16.2V18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="hero-meta">
+            <span class="hero-label">{{ $t('dashboard.todayCost') }}</span>
+            <span class="hero-value"><span class="hero-cur">$</span>{{ formatNumber(todayCost) }}</span>
+          </div>
+        </div>
+        <div class="hero-card soft-card animate-scale" v-if="permissions.view_channels" style="animation-delay: 0.15s">
+          <div class="hero-icon channels">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <circle cx="6" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/>
+              <circle cx="18" cy="6" r="3" stroke="currentColor" stroke-width="1.8"/>
+              <circle cx="18" cy="18" r="3" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M9 12H15M15 6L9 12M15 18L9 12" stroke="currentColor" stroke-width="1.8"/>
+            </svg>
+          </div>
+          <div class="hero-meta">
+            <span class="hero-label">{{ $t('dashboard.activeChannels') }}</span>
+            <span class="hero-value">{{ formatNumber(availableChannels) }}</span>
+          </div>
+        </div>
+        <div class="hero-card soft-card animate-scale" v-if="permissions.view_customers" style="animation-delay: 0.2s">
+          <div class="hero-icon customers">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="8" r="3.4" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M5 19C5 15.7 8.1 13.4 12 13.4C15.9 13.4 19 15.7 19 19" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="hero-meta">
+            <span class="hero-label">{{ isSales ? $t('dashboard.myCustomers') : $t('dashboard.activeCustomers') }}</span>
+            <span class="hero-value">{{ formatNumber(activeAccounts) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 业绩概览 -->
+      <div class="card perf-card soft-card">
+        <div class="card-header">
+          <h2 class="card-title">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <path d="M2 14L6 9L10 11L16 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M12 4H16V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            {{ $t('dashboard.performanceOverview') }}
+          </h2>
+          <div class="period-tabs">
+            <button
+              v-for="p in periodOptions"
+              :key="p.key"
+              type="button"
+              class="period-tab"
+              :class="{ active: perfPeriod === p.key }"
+              @click="perfPeriod = p.key"
+            >{{ p.label }}</button>
+          </div>
+        </div>
+        <div class="perf-body">
+          <div class="perf-metrics">
+            <div class="perf-metric">
+              <span class="perf-metric-label">{{ $t('dashboard.sent') }}</span>
+              <span class="perf-metric-value">{{ formatNumber(currentPerf.sent) }}<i class="perf-unit">{{ $t('dashboard.items') }}</i></span>
+            </div>
+            <div class="perf-metric" v-if="permissions.view_finance">
+              <span class="perf-metric-label">{{ $t('dashboard.revenue') }}</span>
+              <span class="perf-metric-value money"><span class="perf-cur">$</span>{{ formatNumber(currentPerf.revenue) }}</span>
+            </div>
+            <div class="perf-metric" v-if="permissions.view_finance">
+              <span class="perf-metric-label">{{ $t('dashboard.cost') }}</span>
+              <span class="perf-metric-value"><span class="perf-cur">$</span>{{ formatNumber(currentPerf.cost) }}</span>
+            </div>
+            <div class="perf-metric" v-if="permissions.view_finance">
+              <span class="perf-metric-label">{{ $t('dashboard.profit') }}</span>
+              <span class="perf-metric-value profit" :class="{ positive: currentPerf.profit > 0 }"><span class="perf-cur">$</span>{{ formatNumber(currentPerf.profit) }}</span>
+            </div>
+          </div>
+          <div class="perf-spark">
+            <div class="perf-spark-head">
+              <span class="perf-spark-title">{{ $t('dashboard.last7days') }}</span>
+              <a class="perf-detail-link" @click="$router.push('/reports')" v-if="permissions.view_finance || permissions.view_global">{{ $t('dashboard.viewMore') }} →</a>
+            </div>
+            <svg v-if="sparkPath" class="spark-svg" :viewBox="`0 0 ${SPARK_W} ${SPARK_H}`" preserveAspectRatio="none">
+              <defs>
+                <linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="rgba(102,126,234,0.35)"/>
+                  <stop offset="100%" stop-color="rgba(102,126,234,0)"/>
+                </linearGradient>
+              </defs>
+              <path :d="sparkArea" fill="url(#sparkFill)" stroke="none"/>
+              <path :d="sparkPath" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <div v-else class="spark-empty">{{ $t('dashboard.noData') }}</div>
+          </div>
+        </div>
+      </div>
+
 <!-- 核心指标卡片 - 管理员（showStaffSmsOverview 为 false 时不展示） -->
       <div
         v-if="showStaffSmsOverview"
@@ -408,35 +523,53 @@
                 {{ $t('dashboard.quickActions') }}
               </h2>
             </div>
-            <div class="actions-grid admin-actions">
-              <div class="action-btn primary soft-button" @click="$router.push('/admin/accounts')" v-if="permissions.view_customers">
-                <div class="action-icon">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+            <div class="actions-list">
+              <div class="action-row" @click="$router.push('/admin/accounts')" v-if="permissions.view_customers">
+                <div class="action-row-icon primary">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
                     <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="2"/>
                     <path d="M4 20C4 16.5 7.5 14 12 14C16.5 14 20 16.5 20 20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                   </svg>
                 </div>
-                <span class="action-label">{{ $t('menu.customerManage') }}</span>
+                <div class="action-row-text">
+                  <span class="action-row-title">{{ $t('menu.customerManage') }}</span>
+                  <span class="action-row-desc">{{ $t('dashboard.customerManageDesc') }}</span>
+                </div>
+                <svg class="action-row-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M6 3L11 8L6 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
               </div>
-              <div class="action-btn warning soft-button" @click="$router.push('/channels')" v-if="permissions.view_channels">
-                <div class="action-icon">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <div class="action-row" @click="$router.push('/channels')" v-if="permissions.view_channels">
+                <div class="action-row-icon warning">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
                     <circle cx="6" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
                     <circle cx="18" cy="6" r="3" stroke="currentColor" stroke-width="2"/>
                     <circle cx="18" cy="18" r="3" stroke="currentColor" stroke-width="2"/>
                     <path d="M9 12H15M15 6L9 12M15 18L9 12" stroke="currentColor" stroke-width="2"/>
                   </svg>
                 </div>
-                <span class="action-label">{{ $t('menu.channelConfig') }}</span>
+                <div class="action-row-text">
+                  <span class="action-row-title">{{ $t('menu.channelConfig') }}</span>
+                  <span class="action-row-desc">{{ $t('dashboard.channelConfigDesc') }}</span>
+                </div>
+                <svg class="action-row-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M6 3L11 8L6 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
               </div>
-              <div class="action-btn info soft-button" @click="$router.push('/reports')" v-if="permissions.view_finance">
-                <div class="action-icon">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <div class="action-row" @click="$router.push('/reports')" v-if="permissions.view_finance">
+                <div class="action-row-icon info">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
                     <path d="M3 20H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                     <path d="M6 20V14M10 20V10M14 20V12M18 20V8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                   </svg>
                 </div>
-                <span class="action-label">{{ $t('menu.dataReport') }}</span>
+                <div class="action-row-text">
+                  <span class="action-row-title">{{ $t('menu.dataReport') }}</span>
+                  <span class="action-row-desc">{{ $t('dashboard.last7days') }}</span>
+                </div>
+                <svg class="action-row-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M6 3L11 8L6 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
               </div>
             </div>
           </div>
@@ -522,33 +655,36 @@
             </div>
           </div>
 
-          <!-- 系统概览 (管理员) -->
-          <div class="card overview-card" v-if="permissions.view_global">
+          <!-- 客户动态 (今日发送客户) -->
+          <div class="card activity-card" v-if="permissions.view_customers || permissions.view_global">
             <div class="card-header">
               <h2 class="card-title">
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                  <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/>
-                  <path d="M9 5V9L12 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  <path d="M2 9H5L7 4L11 14L13 9H16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
-                {{ $t('dashboard.systemOverview') }}
+                {{ $t('dashboard.customerActivity') }}
               </h2>
+              <button class="view-all-btn" @click="$router.push('/admin/accounts')" v-if="permissions.view_customers">
+                {{ $t('dashboard.viewAll') }}
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5 3L9 7L5 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
             </div>
-            <div class="overview-stats">
-              <div class="overview-item">
-                <span class="overview-label">{{ $t('dashboard.activeChannels') }}</span>
-                <span class="overview-value">{{ availableChannels }}</span>
+            <div class="activity-list">
+              <div v-if="topCustomers.length === 0" class="empty-state">
+                <span>{{ $t('dashboard.noActivityToday') }}</span>
               </div>
-              <div class="overview-item">
-                <span class="overview-label">{{ $t('dashboard.activeCustomers') }}</span>
-                <span class="overview-value">{{ activeAccounts }}</span>
-              </div>
-              <div class="overview-item">
-                <span class="overview-label">{{ $t('dashboard.systemBalance') }}</span>
-                <span class="overview-value">${{ formatNumber(totalBalance) }}</span>
-              </div>
-              <div class="overview-item">
-                <span class="overview-label">{{ $t('dashboard.todayCost') }}</span>
-                <span class="overview-value">${{ formatNumber(todayCost) }}</span>
+              <div
+                v-else
+                v-for="(cust, idx) in topCustomers.slice(0, 6)"
+                :key="cust.account_name"
+                class="activity-item"
+              >
+                <span class="activity-rank" :class="{ gold: idx === 0, silver: idx === 1, bronze: idx === 2 }">{{ idx + 1 }}</span>
+                <span class="activity-name">{{ cust.account_name }}</span>
+                <span class="activity-rate" v-if="cust.sent > 0">{{ ((cust.delivered / cust.sent) * 100).toFixed(0) }}%</span>
+                <span class="activity-sent">{{ cust.sent.toLocaleString() }}{{ $t('dashboard.items') }}</span>
               </div>
             </div>
           </div>
@@ -651,6 +787,44 @@ const dailyTrend = ref<{ date: string; sent: number; delivered: number; revenue:
 const topCustomers = ref<{ account_name: string; sent: number; delivered: number; revenue: number }[]>([])
 const batchOverview = ref<{ total: number; processing: number; completed: number; failed: number }>({ total: 0, processing: 0, completed: 0, failed: 0 })
 const channelStats = ref<{ channel_name: string; sent: number; delivered: number; rate: number }[]>([])
+
+/** 业绩概览：今日 / 本周 / 本月 切换 + 聚合数据 */
+type PerfStat = { sent: number; cost: number; revenue: number; profit: number }
+const emptyPerf: PerfStat = { sent: 0, cost: 0, revenue: 0, profit: 0 }
+const perfPeriod = ref<'today' | 'week' | 'month'>('today')
+const periodStats = ref<Record<'today' | 'week' | 'month', PerfStat>>({
+  today: { ...emptyPerf },
+  week: { ...emptyPerf },
+  month: { ...emptyPerf },
+})
+const periodOptions = computed(() => [
+  { key: 'today' as const, label: t('dashboard.periodToday') },
+  { key: 'week' as const, label: t('dashboard.periodWeek') },
+  { key: 'month' as const, label: t('dashboard.periodMonth') },
+])
+const currentPerf = computed<PerfStat>(() => periodStats.value[perfPeriod.value] || emptyPerf)
+
+/** 近 7 日发送量迷你折线（SVG path），无数据时返回空串由模板兜底 */
+const SPARK_W = 168
+const SPARK_H = 44
+const sparkPath = computed(() => {
+  const vals = dailyTrend.value.map((d) => Number(d.sent) || 0)
+  if (!vals.length) return ''
+  const max = Math.max(...vals, 1)
+  const n = vals.length
+  const step = n > 1 ? SPARK_W / (n - 1) : 0
+  return vals
+    .map((v, i) => {
+      const x = (i * step).toFixed(1)
+      const y = (SPARK_H - (v / max) * (SPARK_H - 6) - 3).toFixed(1)
+      return `${i === 0 ? 'M' : 'L'} ${x} ${y}`
+    })
+    .join(' ')
+})
+const sparkArea = computed(() => {
+  if (!sparkPath.value) return ''
+  return `${sparkPath.value} L ${SPARK_W} ${SPARK_H} L 0 ${SPARK_H} Z`
+})
 
 /** 是否展示服务器监控区（与权限同步，供模板使用） */
 const showSystemMonitor = computed(() => permissions.value.view_system_monitor)
@@ -903,6 +1077,28 @@ const loadStaffData = async () => {
         view_customers: false,
         ...(res.permissions || {}),
         view_system_monitor: viewSystemMonitor,
+      }
+      // 业绩概览：优先用后端 period_stats；旧后端未返回时，本周/本月回退为今日值以免显示空白
+      const todayPerf: PerfStat = {
+        sent: todaySent.value,
+        cost: todayCost.value,
+        revenue: todayRevenue.value,
+        profit: todayProfit.value,
+      }
+      const ps = (res.period_stats || {}) as Partial<Record<'today' | 'week' | 'month', PerfStat>>
+      const pick = (p?: PerfStat): PerfStat =>
+        p
+          ? {
+              sent: Number(p.sent) || 0,
+              cost: Number(p.cost) || 0,
+              revenue: Number(p.revenue) || 0,
+              profit: Number(p.profit) || 0,
+            }
+          : { ...todayPerf }
+      periodStats.value = {
+        today: ps.today ? pick(ps.today) : todayPerf,
+        week: pick(ps.week),
+        month: pick(ps.month),
       }
       yesterdayStats.value = res.yesterday_stats || { sent: 0, delivered: 0, failed: 0, revenue: 0 }
       dailyTrend.value = res.daily_trend || []
@@ -2208,6 +2404,193 @@ onUnmounted(() => {
 
 [data-theme="light"] .top-rank {
   background: rgba(0, 0, 0, 0.05);
+}
+
+/* ========== 新版仪表盘：hero 卡 ========== */
+.hero-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+  margin-bottom: 20px;
+}
+.hero-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 22px;
+  border-radius: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-default);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.hero-card:hover { transform: translateY(-2px); }
+.hero-icon {
+  flex-shrink: 0;
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hero-icon.balance { background: linear-gradient(135deg, rgba(102,126,234,0.2), rgba(118,75,162,0.14)); color: var(--primary); }
+.hero-icon.cost { background: linear-gradient(135deg, rgba(255,210,0,0.2), rgba(247,151,30,0.14)); color: var(--warning); }
+.hero-icon.channels { background: linear-gradient(135deg, rgba(79,172,254,0.2), rgba(0,242,254,0.14)); color: var(--info); }
+.hero-icon.customers { background: linear-gradient(135deg, rgba(56,239,125,0.2), rgba(17,153,142,0.14)); color: var(--success); }
+.hero-meta { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.hero-label { font-size: 12px; color: var(--text-tertiary); font-weight: 500; }
+.hero-value { font-size: 26px; font-weight: 800; color: var(--text-primary); line-height: 1; letter-spacing: -0.5px; }
+.hero-cur { font-size: 17px; font-weight: 700; color: var(--text-secondary); margin-right: 1px; }
+
+/* ========== 业绩概览 ========== */
+.perf-card { margin-bottom: 20px; }
+.period-tabs {
+  display: inline-flex;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 9px;
+  padding: 3px;
+  gap: 2px;
+}
+.period-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.period-tab:hover { color: var(--text-secondary); }
+.period-tab.active {
+  background: rgba(102, 126, 234, 0.18);
+  color: var(--primary);
+}
+.perf-body {
+  display: grid;
+  grid-template-columns: 1fr 220px;
+  gap: 24px;
+  padding: 22px 20px;
+  align-items: center;
+}
+.perf-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+.perf-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0;
+}
+.perf-metric-label { font-size: 12px; color: var(--text-quaternary); }
+.perf-metric-value { font-size: 22px; font-weight: 700; color: var(--text-primary); line-height: 1; }
+.perf-metric-value.money { color: var(--text-primary); }
+.perf-metric-value.profit.positive { color: var(--success); }
+.perf-cur { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-right: 1px; }
+.perf-unit { font-size: 12px; font-weight: 500; color: var(--text-quaternary); font-style: normal; margin-left: 3px; }
+.perf-spark {
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  padding-left: 22px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+}
+.perf-spark-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.perf-detail-link { color: var(--primary); cursor: pointer; font-weight: 500; }
+.perf-detail-link:hover { text-decoration: underline; }
+.spark-svg { width: 100%; height: 44px; display: block; }
+.spark-empty { font-size: 12px; color: var(--text-quaternary); height: 44px; display: flex; align-items: center; }
+
+/* ========== 快速操作（行式） ========== */
+.actions-list { display: flex; flex-direction: column; padding: 8px; gap: 4px; }
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.18s;
+}
+.action-row:hover { background: rgba(255, 255, 255, 0.04); }
+.action-row-icon {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.action-row-icon.primary { background: linear-gradient(135deg, rgba(102,126,234,0.16), rgba(118,75,162,0.1)); color: var(--primary); }
+.action-row-icon.warning { background: linear-gradient(135deg, rgba(255,210,0,0.16), rgba(247,151,30,0.1)); color: var(--warning); }
+.action-row-icon.info { background: linear-gradient(135deg, rgba(79,172,254,0.16), rgba(0,242,254,0.1)); color: var(--info); }
+.action-row-text { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.action-row-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.action-row-desc { font-size: 11px; color: var(--text-quaternary); }
+.action-row-arrow { color: var(--text-quaternary); flex-shrink: 0; transition: transform 0.18s; }
+.action-row:hover .action-row-arrow { transform: translateX(3px); color: var(--primary); }
+
+/* ========== 客户动态 ========== */
+.activity-list { padding: 8px 16px 14px; }
+.activity-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+}
+.activity-item:last-child { border-bottom: none; }
+.activity-rank {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-tertiary);
+}
+.activity-rank.gold { background: linear-gradient(135deg, #f59e0b, #d97706); color: #fff; }
+.activity-rank.silver { background: linear-gradient(135deg, #94a3b8, #64748b); color: #fff; }
+.activity-rank.bronze { background: linear-gradient(135deg, #c2884e, #a0693c); color: #fff; }
+.activity-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.activity-rate { color: var(--success); font-weight: 600; min-width: 40px; text-align: right; }
+.activity-sent { font-weight: 700; color: var(--primary); min-width: 70px; text-align: right; }
+
+/* 亮色主题（新版块） */
+[data-theme="light"] .hero-card { background: rgba(255,255,255,0.82); border: 0.5px solid rgba(0,0,0,0.08); box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+[data-theme="light"] .period-tabs { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.06); }
+[data-theme="light"] .perf-spark { border-left-color: rgba(0,0,0,0.07); }
+[data-theme="light"] .action-row:hover { background: rgba(0,0,0,0.03); }
+[data-theme="light"] .activity-item { border-bottom-color: rgba(0,0,0,0.05); }
+[data-theme="light"] .activity-rank { background: rgba(0,0,0,0.05); }
+
+/* 响应式（新版块） */
+@media (max-width: 1200px) {
+  .hero-grid { grid-template-columns: repeat(2, 1fr); }
+  .perf-body { grid-template-columns: 1fr; }
+  .perf-spark { border-left: none; border-top: 1px solid rgba(255,255,255,0.06); padding-left: 0; padding-top: 16px; }
+}
+@media (max-width: 640px) {
+  .hero-grid { grid-template-columns: 1fr; }
+  .perf-metrics { grid-template-columns: repeat(2, 1fr); }
 }
 
 </style>
