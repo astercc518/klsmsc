@@ -26,6 +26,9 @@ logger = get_logger(__name__)
 # 默认 30 分钟：与 Go 异步回写、万级队列积压相匹配；过短会误判「卡死」或把仍在队列中的 SMPP 标为过期
 _STUCK_BATCH_MINUTES = int(os.environ.get("BATCH_INSPECT_STUCK_MINUTES", "30"))
 _SMPP_ORPHAN_MINUTES = int(os.environ.get("BATCH_INSPECT_SMPP_ORPHAN_MINUTES", "30"))
+# SMPP pending 重派发阈值：消息卡 pending 超过此分钟数（且未达 orphan 过期阈值）即视为派发阶段丢失，
+# 重新投递回 sms_send_smpp 真正发出去。比 orphan 过期更早介入，把"静默丢失→expired"变为"自动补发"。
+_SMPP_REDISPATCH_MINUTES = int(os.environ.get("BATCH_INSPECT_SMPP_REDISPATCH_MINUTES", "5"))
 
 
 @celery_app.task(name='sync_processing_batch_progress_task')
@@ -283,6 +286,64 @@ async def _do_inspect_batches():
                         )
                 except Exception as e:
                     logger.error(f"检查COMPLETED批次 {batch.id} 虚拟DLR积压失败: {e}")
+
+            # 2.5 SMPP pending 重派发（修复"派发阶段丢失致整批卡 99%/100 条静默 pending"）：
+            # pending 可靠地等价于"从未成功 submit 到上游"——submit 到 socket 成功的消息在会话断连时
+            # 会被 Go 网关 OnClosed 标为 sent（非 pending），故 pending 重发安全、无重复风险；
+            # 与下方 expire 的本质区别：① 直接针对消息、不等整批 updated_at 停滞（854 因回执持续刷新
+            # updated_at 拖了 2 小时才被 expire，正是此门控之过）；② 只补 pending、绝不碰 queued
+            # （queued 可能已提交，重发有重复风险）。Redis NX 保证每条在可恢复窗口内至多重派发一次，
+            # 超 _SMPP_ORPHAN_MINUTES 仍 pending 才由下方 expire 兜底。
+            try:
+                _rd_hi = datetime.now() - timedelta(minutes=_SMPP_REDISPATCH_MINUTES)  # 卡超此才补（避开在途新消息）
+                _rd_lo = datetime.now() - timedelta(minutes=_SMPP_ORPHAN_MINUTES)      # 早于此放弃补发，交 expire
+                from app.modules.sms.channel import Channel as _RDCh
+                from app.utils.smpp_payload import smpp_payload_public_dict as _rd_pl
+
+                _rd_rows = (await db.execute(
+                    select(SMSLog, SmsBatch.status)
+                    .select_from(SMSLog)
+                    .join(_RDCh, SMSLog.channel_id == _RDCh.id)
+                    .join(SmsBatch, SMSLog.batch_id == SmsBatch.id)
+                    .where(
+                        and_(
+                            _RDCh.protocol == "SMPP",
+                            SMSLog.status == "pending",
+                            SMSLog.sent_time.is_(None),
+                            SMSLog.submit_time.isnot(None),
+                            SMSLog.submit_time < _rd_hi,
+                            SMSLog.submit_time >= _rd_lo,
+                            SmsBatch.status == BatchStatus.PROCESSING,
+                            SmsBatch.is_deleted == False,
+                        )
+                    )
+                    .limit(2000)
+                )).all()
+
+                if _rd_rows:
+                    from app.utils.cache import get_redis_client
+                    from app.utils.queue import QueueManager
+                    _rc = await get_redis_client()
+                    _rd_payloads = []
+                    for _rd_row, _rd_bstat in _rd_rows:
+                        try:
+                            # NX + 30min TTL：每条在可恢复窗口内至多补发一次，杜绝慢/挂网关下的重复 submit
+                            _rd_fresh = await _rc.set(
+                                f"smsc:smpp_redispatch:{_rd_row.message_id}", "1",
+                                nx=True, ex=_SMPP_ORPHAN_MINUTES * 60,
+                            )
+                        except Exception:
+                            _rd_fresh = True  # Redis 故障不阻断补发
+                        if _rd_fresh:
+                            _rd_payloads.append(_rd_pl(_rd_row, getattr(_rd_bstat, "value", str(_rd_bstat or ""))))
+                    if _rd_payloads:
+                        for _rd_i in range(0, len(_rd_payloads), 500):
+                            QueueManager.queue_sms_batch_smpp(_rd_payloads[_rd_i:_rd_i + 500])
+                        logger.warning(
+                            f"inspect: SMPP pending 重派发 {len(_rd_payloads)} 条 → sms_send_smpp（派发阶段丢失自动补发）"
+                        )
+            except Exception as _rd_err:
+                logger.error(f"inspect: SMPP pending 重派发异常: {_rd_err}")
 
             # 3. SMPP SubmitSMResp 丢失清理（兜底，Go 网关 OnClosed 应已处理大部分）
             # 仅清理「批次本身已停滞（updated_at 早于阈值）」的孤儿 queued/pending 记录，
