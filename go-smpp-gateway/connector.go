@@ -711,7 +711,7 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 	}
 
 	var connector gosmpp.Connector
-	dialer := gosmpp.NonTLSDialer
+	dialer := dialerForChannel(cfg)
 
 	// Default to Transceiver if not specified
 	if cfg.BindMode == "transmitter" {
@@ -1401,6 +1401,22 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 		}
 	}
 
+	// 自动适配:凡纯拉丁文(含葡文重音,码点≤0xFF)且 Latin1 编码 ≤254 字节,一律优先 Latin1
+	// 单 PDU(DCS=3,1字节/字符)。放在 UCS2 之前——短信也走 Latin1,避免上游按 UCS2(70字/段)
+	// 把纯 ASCII 短信(>70 字符)多计成 2 段;Latin1 一字节一字符,同样内容上游按 1 段计。
+	// 个别不认 DCS=3 的上游用 config_json {"force_ucs2":true} 回退 UCS2。
+	if !forceUCS2FromConfigJSON(cfg.ConfigJSON) && isLatin1(message) {
+		if enc, lErr := data.LATIN1.Encode(message); lErr == nil && len(enc) <= data.SM_MSG_LEN {
+			if err := s.Message.SetMessageDataWithEncoding(enc, data.LATIN1); err != nil {
+				return fmt.Errorf("latin1 short_message: %w", err)
+			}
+			s.RegisteredDelivery = 1
+			log.Printf("[SMPP-DEBUG] Submitting SM(Latin1单PDU/auto): channel=%s dest=%s chars=%d bytes=%d",
+				cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
+			return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
+		}
+	}
+
 	encoded, encErr := data.UCS2.Encode(message)
 	if encErr != nil {
 		log.Printf("[SMPP-ERROR] UCS2 Encode failed: channel=%s, msg=%s err=%v", cfg.ChannelCode, messageID, encErr)
@@ -1416,22 +1432,6 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 		}
 		s.RegisteredDelivery = 1
 		return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
-	}
-
-	// 自动适配:长信若纯拉丁文(含葡文重音,码点≤0xFF)且 Latin1 编码 ≤254 字节 → 用 Latin1
-	// 单 PDU(DCS=3,1字节/字符,不分段不 TLV)。绕开「不读 message_payload TLV(空白)」与
-	// 「不保留 UDH 拼接(多条)」两个上游死穴,TS_zhilian/飞渡等 CN 直连/中转上游都兼容。
-	// 免逐通道配置;个别不认 DCS=3 的上游用 config_json {"force_ucs2":true} 关闭回落 UCS2。
-	if !forceUCS2FromConfigJSON(cfg.ConfigJSON) && isLatin1(message) {
-		if enc, lErr := data.LATIN1.Encode(message); lErr == nil && len(enc) <= data.SM_MSG_LEN {
-			if err := s.Message.SetMessageDataWithEncoding(enc, data.LATIN1); err != nil {
-				return fmt.Errorf("latin1 short_message: %w", err)
-			}
-			s.RegisteredDelivery = 1
-			log.Printf("[SMPP-DEBUG] Submitting SM(Latin1单PDU/auto): channel=%s dest=%s chars=%d bytes=%d",
-				cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
-			return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
-		}
 	}
 
 	// 长消息：按通道配置选择 message_payload TLV 或 UDH 多段分段
