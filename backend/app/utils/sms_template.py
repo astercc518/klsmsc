@@ -16,6 +16,7 @@ SMS_TEMPLATE_VAR_TAGS = (
     "{时间}",
     "{随机码}",
     "{号码}",
+    "{号码后四位}",
     "{金额}",
     "{随机字母}",
     "{index}",
@@ -24,6 +25,7 @@ SMS_TEMPLATE_VAR_TAGS = (
     "{time}",
     "{code}",
     "{phone}",
+    "{last4}",
     "{amount}",
     "{letters}",
 )
@@ -85,6 +87,7 @@ def render_sms_variables(
     rand_code = _rand_digits(6)
     rand_letter = _rand_letters(6)
     phone_digits = phone_e164.lstrip("+") if phone_e164 else ""
+    phone_last4 = phone_digits[-4:] if phone_digits else ""
     cc = (country_code or "").strip()
     amt = (amount or "").strip()
 
@@ -97,6 +100,7 @@ def render_sms_variables(
     msg = msg.replace("{时间}", time_str)
     msg = msg.replace("{随机码}", rand_code)
     msg = msg.replace("{号码}", phone_digits)
+    msg = msg.replace("{号码后四位}", phone_last4)
     msg = msg.replace("{金额}", amt)
     msg = msg.replace("{随机字母}", rand_letter)
 
@@ -106,6 +110,7 @@ def render_sms_variables(
     msg = msg.replace("{time}", time_str)
     msg = msg.replace("{code}", rand_code)
     msg = msg.replace("{phone}", phone_digits)
+    msg = msg.replace("{last4}", phone_last4)
     msg = msg.replace("{amount}", amt)
     msg = msg.replace("{letters}", rand_letter)
 

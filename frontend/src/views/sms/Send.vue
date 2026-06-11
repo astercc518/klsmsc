@@ -1016,16 +1016,17 @@ const route = useRoute()
 
 const MAIN_VARS = [
   { tag: '{序号}', label: '序号', tip: '批次内序号，从1递增' },
+  { tag: '{号码后四位}', label: '号码后四位', tip: '接收方号码后4位' },
+  { tag: '{随机码4}', label: '随机码4', tip: '4位随机数字' },
+  { tag: '{随机字母}', label: '随机字母', tip: '6位随机大写字母' },
+  { tag: '{时间}', label: '时间', tip: '当前时间 HH:MM' },
+]
+const MORE_VARS = [
   { tag: '{号码}', label: '号码', tip: '接收方手机号码' },
   { tag: '{国家}', label: '国家', tip: '目标国家代码（如 BR、IN）' },
   { tag: '{日期}', label: '日期', tip: '当天日期 YYYY-MM-DD' },
   { tag: '{随机码}', label: '随机码', tip: '6位随机数字' },
-]
-const MORE_VARS = [
-  { tag: '{时间}', label: '时间', tip: '当前时间 HH:MM' },
-  { tag: '{随机码4}', label: '随机码4', tip: '4位随机数字' },
   { tag: '{随机码8}', label: '随机码8', tip: '8位随机数字' },
-  { tag: '{随机字母}', label: '随机字母', tip: '6位随机大写字母' },
 ]
 const VARIABLES = [...MAIN_VARS, ...MORE_VARS]
 
@@ -1713,7 +1714,7 @@ function replaceTrackPlaceholdersForPreview(msg: string): string {
   })
 }
 const messageEffectiveForCount = computed(() =>
-  replaceTrackPlaceholdersForPreview(form.value.message),
+  resolveMessageForCount(form.value.message),
 )
 
 /** 正文码点数与超限阈值（GSM-7 单条 160，否则单条 70） */
@@ -1726,7 +1727,7 @@ const estimatedParts = computed(() => countSmsParts(messageEffectiveForCount.val
 // 多文案时按第一条算段数（与 buy-and-send 后端计费一致）
 const storeSmsParts = computed(() =>
   multiMessages.value.length > 1
-    ? countSmsParts(replaceTrackPlaceholdersForPreview(multiMessages.value[0]))
+    ? countSmsParts(resolveMessageForCount(multiMessages.value[0]))
     : estimatedParts.value
 )
 
@@ -1772,7 +1773,7 @@ const privateCostStr = computed(() => formatUsdEstimate(privateTotalCost.value))
 
 const hasVariables = computed(() => {
   const msg = form.value.message
-  if (/\{(序号|国家|日期|时间|随机码|号码|随机字母|index|country|date|time|code|phone|letters)\}/.test(msg)) return true
+  if (/\{(序号|国家|日期|时间|随机码|号码后四位|号码|随机字母|index|country|date|time|code|phone|last4|letters)\}/.test(msg)) return true
   if (/\{(随机码|code|随机字母|letters)\d{1,2}\}/.test(msg)) return true
   if (msg.includes('{{TRACK_URL')) return true   // 让右侧手机 mockup 渲染替换后的短链
   return customVars.value.some(cv => msg.includes(`{${cv.name}}`))
@@ -1796,9 +1797,11 @@ function _previewRandLetters(n: number): string {
   return Array.from({ length: n }, () => chars[Math.floor(Math.random() * 26)]).join('')
 }
 
-const previewSms = computed(() => {
-  // 先把 {{TRACK_URL=...}} 替换为实际发送形态（base/token），让预览贴近收件方真实看到的内容
-  let msg = replaceTrackPlaceholdersForPreview(form.value.message)
+// 把 {{TRACK_URL}} 与 {序号}/{国家}/... 变量都替换成"示例值",得到贴近真实发送形态的文本。
+// 既用于预览,也用于计费估算 —— 变量名本身含中文({国家}/{序号}/{随机码} 等)会让编码检测把
+// 整条误判为 UCS2(70字/条)从而多算段数;替换成 ASCII 示例后,编码与段数才按真实发送内容计算。
+function resolveMessageForCount(rawMsg: string): string {
+  let msg = replaceTrackPlaceholdersForPreview(rawMsg)
   const now = new Date()
   const today = now.toISOString().slice(0, 10)
   const time = now.toTimeString().slice(0, 5)
@@ -1808,6 +1811,7 @@ const previewSms = computed(() => {
   msg = msg.replace(/\{时间\}/g, time).replace(/\{time\}/g, time)
   msg = msg.replace(/\{随机码\}/g, '385921').replace(/\{code\}/g, '385921')
   msg = msg.replace(/\{号码\}/g, '5511999887766').replace(/\{phone\}/g, '5511999887766')
+  msg = msg.replace(/\{号码后四位\}/g, '7766').replace(/\{last4\}/g, '7766')
   msg = msg.replace(/\{随机字母\}/g, 'AXKPMZ').replace(/\{letters\}/g, 'AXKPMZ')
   msg = msg.replace(/\{随机码(\d{1,2})\}/g, (_, n) => _previewRandDigits(parseInt(n)))
   msg = msg.replace(/\{code(\d{1,2})\}/g, (_, n) => _previewRandDigits(parseInt(n)))
@@ -1823,7 +1827,8 @@ const previewSms = computed(() => {
     }
   }
   return msg
-})
+}
+const previewSms = computed(() => resolveMessageForCount(form.value.message))
 
 // ============ 变量插入 ============
 
@@ -2046,7 +2051,7 @@ async function handlePrivateSend() {
   if (!selectedPrivateGroup.value) return ElMessage.warning('请选择要发送的号码组')
   if (!form.value.message) return ElMessage.warning('请输入短信内容')
   
-  const currentParts = countSmsParts(replaceTrackPlaceholdersForPreview(form.value.message))
+  const currentParts = countSmsParts(resolveMessageForCount(form.value.message))
   if (currentParts > 1) {
     try {
       await ElMessageBox.confirm(
@@ -2343,7 +2348,7 @@ const handleSubmitApproval = async () => {
     ElMessage.warning(t('smsSend.pleaseEnterContent'))
     return
   }
-  const currentParts = countSmsParts(replaceTrackPlaceholdersForPreview(form.value.message))
+  const currentParts = countSmsParts(resolveMessageForCount(form.value.message))
   if (currentParts > 1) {
     try {
       await ElMessageBox.confirm(
@@ -2395,7 +2400,7 @@ const handleSend = async () => {
   if (isPrivate && !selectedPrivateGroup.value) { ElMessage.warning('请选择私有库分组'); return }
   if (!form.value.message) { ElMessage.warning(t('smsSend.pleaseEnterContent')); return }
 
-  const currentParts = countSmsParts(replaceTrackPlaceholdersForPreview(form.value.message))
+  const currentParts = countSmsParts(resolveMessageForCount(form.value.message))
   if (currentParts > 1) {
     try {
       await ElMessageBox.confirm(
@@ -2588,7 +2593,7 @@ const selectProduct = (product: DataProduct) => {
 }
 
 const handleStoreSend = async () => {
-  const currentParts = countSmsParts(replaceTrackPlaceholdersForPreview(form.value.message))
+  const currentParts = countSmsParts(resolveMessageForCount(form.value.message))
   if (currentParts > 1) {
     try {
       await ElMessageBox.confirm(
