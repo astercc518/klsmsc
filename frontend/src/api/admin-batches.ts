@@ -5,6 +5,9 @@ export interface AdminBatchItem {
   account_id: number
   account_name?: string
   batch_name: string
+  content?: string | null
+  channel_code?: string | null
+  channel_name?: string | null
   total_count: number
   success_count: number
   delivered_count: number

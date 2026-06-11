@@ -3381,9 +3381,14 @@ async def create_pricing(
 ):
     """创建费率规则"""
     from app.modules.sms.country_pricing import CountryPricing
+    from app.utils.country_code import normalize_country_code
     from decimal import Decimal
     from datetime import date
-    
+
+    # 入库 country_code 统一规范为 ISO2（避免管理员误填区号如 381 导致与
+    # 号码归属国 RS 不一致，进而触发账户国家限制/路由匹配失败、TG 开户显示裸代码）
+    request.country_code = normalize_country_code(request.country_code) or request.country_code
+
     # 默认生效日期：今天（避免 effective_date 为空导致查询取不到最新价格）
     if request.effective_date:
         try:
@@ -3912,6 +3917,45 @@ async def get_admin_dashboard(
                 "rate": round(int(r.delivered or 0) / r.sent * 100, 1) if r.sent > 0 else 0,
             })
 
+    # ========== 业绩概览：今日 / 本周 / 本月 聚合（前端 perf-overview 卡片） ==========
+    # 口径与今日统计一致，按角色复用相同的数据范围
+    week_start = today_start - timedelta(days=today.weekday())  # 本周一 00:00
+    month_start = datetime.combine(today.replace(day=1), datetime.min.time())
+
+    def _period_scope(start, end):
+        conds = [SMSLog.submit_time >= start, SMSLog.submit_time < end]
+        if is_sales and my_account_ids:
+            conds.append(SMSLog.account_id.in_(my_account_ids))
+        elif is_sales:
+            conds.append(SMSLog.id < 0)  # 销售无客户：永假，返回零
+        return and_(*conds)
+
+    async def _period_agg(start, end):
+        q = select(
+            func.count(SMSLog.id).label("sent"),
+            func.sum(SMSLog.cost_price).label("cost"),
+            func.sum(SMSLog.selling_price).label("revenue"),
+            func.sum(SMSLog.profit).label("profit"),
+        ).where(_period_scope(start, end))
+        row = (await db.execute(q)).first()
+        return {
+            "sent": int(row.sent or 0),
+            "cost": round(float(row.cost or 0), 4),
+            "revenue": round(float(row.revenue or 0), 4),
+            "profit": round(float(row.profit or 0), 4),
+        }
+
+    period_stats = {
+        "today": {
+            "sent": int(today_sent),
+            "cost": round(today_cost, 4),
+            "revenue": round(today_revenue, 4),
+            "profit": round(today_profit, 4),
+        },
+        "week": await _period_agg(week_start, today_end),
+        "month": await _period_agg(month_start, today_end),
+    }
+
     logger.info(f"仪表板查询: admin={admin.username}, role={admin.role}")
 
     view_system_monitor = admin.role in ("super_admin", "admin", "tech")
@@ -3974,6 +4018,7 @@ async def get_admin_dashboard(
             "active_accounts": active_accounts,
             "total_balance": round(total_balance, 2)
         },
+        "period_stats": period_stats,
         "yesterday_stats": yesterday_stats,
         "daily_trend": daily_trend,
         "top_customers": top_customers,
@@ -5604,6 +5649,35 @@ async def admin_list_batches(
             name_map = {row[0]: row[1] for row in r.all()}
             for i in items:
                 i["account_name"] = name_map.get(i["account_id"])
+
+    # 短信内容 + 发送通道：批次表不存这两项，取每批一条代表性 sms_logs（最早一条 MIN(id)）
+    # 反查 message 与 channel_id，再映射通道编码。一次性查，避免逐批查询。
+    if items:
+        batch_ids = [i["id"] for i in items]
+        rep_sub = (
+            select(SMSLog.batch_id, sa_func.min(SMSLog.id).label("mid"))
+            .where(SMSLog.batch_id.in_(batch_ids))
+            .group_by(SMSLog.batch_id)
+        ).subquery()
+        rep_rows = (await db.execute(
+            select(SMSLog.batch_id, SMSLog.message, SMSLog.channel_id)
+            .join(rep_sub, SMSLog.id == rep_sub.c.mid)
+        )).all()
+        rep_map = {bid: (msg, cid) for bid, msg, cid in rep_rows}
+        chan_ids = {cid for _, cid in rep_map.values() if cid}
+        chan_map = {}
+        if chan_ids:
+            from app.modules.sms.channel import Channel as _Ch
+            cr = await db.execute(
+                select(_Ch.id, _Ch.channel_code, _Ch.channel_name).where(_Ch.id.in_(chan_ids))
+            )
+            chan_map = {row[0]: (row[1], row[2]) for row in cr.all()}
+        for i in items:
+            msg, cid = rep_map.get(i["id"], (None, None))
+            i["content"] = msg
+            cc = chan_map.get(cid) if cid else None
+            i["channel_code"] = cc[0] if cc else None
+            i["channel_name"] = cc[1] if cc else None
 
     return {
         "success": True,

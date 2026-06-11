@@ -59,7 +59,7 @@
       <div class="panel-header">
         <div class="panel-header-text">
           <h3 class="panel-title">全局短信任务</h3>
-          <p class="panel-desc">全局批次任务监控与运维：暂停 / 切换通道 / 清空队列 / 失败退款</p>
+          <p class="panel-desc">全局批次任务监控与运维：暂停 / 切换通道 / 清空队列</p>
         </div>
         <div class="panel-actions">
           <!-- 筛选区 -->
@@ -116,7 +116,16 @@
             </template>
           </el-table-column>
 
-          <el-table-column v-if="isColVisible('batch_name')" prop="batch_name" label="批次名" min-width="160" show-overflow-tooltip />
+          <el-table-column v-if="isColVisible('content')" prop="content" label="短信内容" min-width="240" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.content || '-' }}</template>
+          </el-table-column>
+
+          <el-table-column v-if="isColVisible('channel')" label="发送通道" width="140" show-overflow-tooltip>
+            <template #default="{ row }">
+              <el-tag v-if="row.channel_code" size="small" type="info">{{ row.channel_code }}</el-tag>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
 
           <el-table-column v-if="isColVisible('sid')" prop="sender_id" label="发送ID(SID)" width="120" align="center">
             <template #default="{ row }">
@@ -211,7 +220,6 @@
                 <el-button v-if="row.status === 'paused'" link type="primary" size="small" @click="onResume(row)">继续</el-button>
                 <el-button v-if="row.status === 'paused'" link type="primary" size="small" @click="openSwitch(row)">切换通道</el-button>
                 <el-button v-if="row.status === 'paused'" link type="danger" size="small" @click="onClearQueue(row)">清空队列</el-button>
-                <el-button v-if="['completed','failed'].includes(row.status)" link type="success" size="small" @click="goRefund(row)">系统退款</el-button>
                 <el-dropdown trigger="click" @command="(cat: BatchPhoneCategory) => onDownloadPhones(row, cat)">
                   <el-button link type="primary" size="small">
                     下载号码<el-icon class="el-icon--right"><ArrowDown /></el-icon>
@@ -226,7 +234,7 @@
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
-                <el-button link size="small" @click="openDetail(row)">详情</el-button>
+                <el-button link size="small" @click="goRecords(row)">详情</el-button>
               </div>
             </template>
           </el-table-column>
@@ -248,45 +256,6 @@
         />
       </div>
     </div>
-
-    <!-- 详情抽屉 -->
-    <el-drawer v-model="detailVisible" title="批次详情" size="640px">
-      <div v-if="detail" class="detail-panel">
-        <h3>{{ detail.batch_name }}</h3>
-        <el-descriptions :column="2" border size="small">
-          <el-descriptions-item label="批次ID">{{ detail.id }}</el-descriptions-item>
-          <el-descriptions-item label="状态"><el-tag :type="statusType(detail.status)" size="small">{{ statusLabel(detail.status) }}</el-tag></el-descriptions-item>
-          <el-descriptions-item label="账户">{{ detail.account_name || `#${detail.account_id}` }}</el-descriptions-item>
-          <el-descriptions-item label="进度">{{ detail.progress }}%</el-descriptions-item>
-          <el-descriptions-item label="总数">{{ detail.total_count }}</el-descriptions-item>
-          <el-descriptions-item label="成功">{{ detail.success_count }}</el-descriptions-item>
-          <el-descriptions-item label="送达">{{ detail.delivered_count }}</el-descriptions-item>
-          <el-descriptions-item label="失败">{{ detail.failed_count }}</el-descriptions-item>
-          <el-descriptions-item label="处理中">{{ detail.processing_count }}</el-descriptions-item>
-          <el-descriptions-item label="可退款">{{ detail.refundable_count || 0 }}</el-descriptions-item>
-          <el-descriptions-item label="创建时间">{{ fmtTime(detail.created_at) }}</el-descriptions-item>
-          <el-descriptions-item label="完成时间">{{ fmtTime(detail.completed_at) }}</el-descriptions-item>
-          <el-descriptions-item v-if="detail.error_message" label="错误" :span="2">
-            <span class="err-text">{{ detail.error_message }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item v-if="detail.current_channel" label="当前通道" :span="2">
-            <span>
-              {{ detail.current_channel.channel_code }} ({{ detail.current_channel.protocol }})
-              <el-tag size="small" :type="detail.current_channel.connection_status === 'online' ? 'success' : 'info'" style="margin-left: 8px">
-                {{ detail.current_channel.connection_status || '-' }}
-              </el-tag>
-            </span>
-          </el-descriptions-item>
-        </el-descriptions>
-
-        <h4 style="margin-top: 20px">状态分布</h4>
-        <div class="status-counts">
-          <span v-for="(cnt, st) in detail.status_counts" :key="st" class="status-pill">
-            {{ st }}: <b>{{ cnt }}</b>
-          </span>
-        </div>
-      </div>
-    </el-drawer>
 
     <!-- 切换通道对话框 -->
     <el-dialog v-model="switchVisible" title="切换通道继续发送" width="600px" :close-on-click-modal="false">
@@ -351,9 +320,9 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, WarningFilled, ArrowDown, Setting } from '@element-plus/icons-vue'
 import {
-  listAdminBatches, getAdminBatch, pauseBatch, resumeBatch,
+  listAdminBatches, pauseBatch, resumeBatch,
   clearBatchQueue, previewSwitchChannel, exportBatchPhones,
-  type AdminBatchItem, type AdminBatchDetail, type PreviewSwitchResult,
+  type AdminBatchItem, type PreviewSwitchResult,
   type BatchPhoneCategory,
 } from '@/api/admin-batches'
 import { getChannelsAdmin } from '@/api/admin'
@@ -370,7 +339,8 @@ const stats = reactive({ processing: 0, paused: 0, completed: 0 })
 // 可见列配置：固定列（ID、操作）不在此清单内；其余支持用户勾选并持久化到 localStorage。
 const COLUMN_DEFS = [
   { key: 'account', label: '账户' },
-  { key: 'batch_name', label: '批次名' },
+  { key: 'content', label: '短信内容' },
+  { key: 'channel', label: '发送通道' },
   { key: 'sid', label: '发送ID(SID)' },
   { key: 'total', label: '总数' },
   { key: 'success', label: '成功（通道已接受）' },
@@ -384,7 +354,7 @@ const COLUMN_DEFS = [
   { key: 'completed_at', label: '完成时间' },
 ] as const
 const DEFAULT_COLS = COLUMN_DEFS.map(c => c.key)
-const COL_STORAGE_KEY = 'admin.sms.tasks.visibleColumns.v2'
+const COL_STORAGE_KEY = 'admin.sms.tasks.visibleColumns.v3'
 
 const visibleColumns = ref<string[]>([...DEFAULT_COLS])
 try {
@@ -405,9 +375,6 @@ function isColVisible(key: string) {
 function resetColumns() {
   visibleColumns.value = [...DEFAULT_COLS]
 }
-
-const detailVisible = ref(false)
-const detail = ref<AdminBatchDetail | null>(null)
 
 const switchVisible = ref(false)
 const switchTarget = ref<AdminBatchItem | null>(null)
@@ -456,12 +423,9 @@ function computeStats(rows: AdminBatchItem[]) {
   stats.completed = rows.filter(r => r.status === 'completed').length
 }
 
-async function openDetail(row: AdminBatchItem) {
-  detailVisible.value = true
-  detail.value = null
-  const res = await getAdminBatch(row.id)
-  if (res.success) detail.value = res.batch
-  else ElMessage.error(res.error || '加载失败')
+// 详情 → 跳转发送记录页，按 batch_id 过滤（管理员可跨账户查看该批次的逐条记录）
+function goRecords(row: AdminBatchItem) {
+  router.push({ path: '/sms/records', query: { batch_id: row.id } })
 }
 
 async function onPause(row: AdminBatchItem) {
@@ -547,10 +511,6 @@ async function submitSwitch() {
   } finally {
     switchSubmitting.value = false
   }
-}
-
-function goRefund(row: AdminBatchItem) {
-  router.push({ path: '/admin/sms/refund-audit', query: { batch_id: String(row.id) } })
 }
 
 async function onDownloadPhones(row: AdminBatchItem, category: BatchPhoneCategory) {
