@@ -419,6 +419,15 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
         untrack_water_task(account_id, self.request.id)
     logger.info(f"注水注册开始: sms_log={sms_log_id}, account={account_id}, batch={batch_id}, url={url[:80]}")
     try:
+        # 直连注册 API 域名(如 in1.fun→jilievobdt 博彩SPA):页面反自动化把浏览器拖到200s超时,
+        # 改走逆向出的加密注册接口,直接建号,快且稳。
+        from urllib.parse import urlparse
+        from app.workers.jl_api_register import MERCHANT_BY_DOMAIN
+        if (urlparse(url).hostname or "").lower() in MERCHANT_BY_DOMAIN:
+            return _do_register_via_api(
+                sms_log_id, url, channel_id, task_config_id, account_id,
+                country_code, proxy_id, batch_id=batch_id
+            )
         return _do_register_sync(
             sms_log_id, url, channel_id, task_config_id, account_id, country_code,
             proxy_id, ua_type, click_log_id, batch_id=batch_id
@@ -427,6 +436,78 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
         logger.warning(f"注水注册软超时: sms_log={sms_log_id}")
         _mark_processing_log_failed(sms_log_id, 'register', 'soft_time_limit')
         return {"success": False, "error": "soft_time_limit"}
+
+
+async def _fetch_sms_phone(factory, sms_log_id):
+    """取该 sms_log 的收信号码(用于撞库派生用户名)。"""
+    from sqlalchemy import select as _select
+    from app.modules.sms.sms_log import SMSLog
+    async with factory() as db:
+        return (await db.execute(_select(SMSLog.phone_number).where(SMSLog.id == sms_log_id))).scalar()
+
+
+def _do_register_via_api(sms_log_id, url, channel_id, task_config_id, account_id,
+                         country_code, proxy_id, batch_id=None):
+    """直连加密注册接口建号(无浏览器)。复用注册日志/代理获取,写终态。"""
+    import time as _time
+    from app.workers.jl_api_register import register_via_api, phone_to_username
+    eng, factory = _make_session()
+    start = _time.time()
+    try:
+        log_id, proxy_config, script_data = _db_sync(
+            _create_register_log(factory, sms_log_id, account_id, channel_id,
+                                 task_config_id, url, proxy_id, country_code, batch_id=batch_id)
+        )
+        _db_sync(eng.dispose())
+
+        # 注册站点配置(merchant/module/register_path)可在后台「注册脚本」里按域名编辑
+        cfg = None
+        _steps = (script_data or {}).get("steps") if script_data else None
+        if isinstance(_steps, dict):
+            cfg = _steps
+
+        # 用「点击号码」派生用户名 = 把真实收信人手机号发往外部博彩站(个人数据出境)。
+        # 默认关闭,仅当脚本配置显式 use_phone_username=true 时启用;否则用随机用户名(不涉真实PII)。
+        username = None
+        if cfg and cfg.get("use_phone_username"):
+            phone = _db_sync(_fetch_sms_phone(factory2 if False else factory, sms_log_id)) if False else None
+            try:
+                _e3, _f3 = _make_session()
+                phone = _db_sync(_fetch_sms_phone(_f3, sms_log_id))
+                _db_sync(_e3.dispose())
+            except Exception:
+                phone = None
+            username = phone_to_username(phone) if phone else None
+
+        result = register_via_api(url, proxy_config=proxy_config, config=cfg, username=username)
+        dur = int((_time.time() - start) * 1000)
+        proxy_ip = (proxy_config or {}).get("__ip") if proxy_config else None
+
+        eng2, factory2 = _make_session()
+        if result.get("success"):
+            # 凭证 + 存在核验结果写进 device_info(注水记录「设备」列可见),便于核实真实性
+            v = result.get("verified")
+            vtxt = "核验OK(查重已占用)" if v is True else ("核验:未确认" if v is None else "核验失败(查重显示未占用)")
+            creds = (f"账号 {result.get('username')} ┊ 密码 {result.get('password')} ┊ "
+                     f"custId {result.get('customer_id')} ┊ {vtxt} @ {result.get('base')}")
+            _db_sync(_update_log_status(
+                factory2, log_id, 'success', dur,
+                user_agent=f"直连注册API:{result.get('base')}",
+                proxy_ip=proxy_ip, device_info=creds[:255]))
+            logger.info(f"注水注册成功(API): sms_log={sms_log_id}, user={result.get('username')}, "
+                        f"pwd={result.get('password')}, customer_id={result.get('customer_id')}, "
+                        f"verified={v}, {dur}ms")
+        else:
+            _db_sync(_update_log_status(
+                factory2, log_id, 'failed', dur, (result.get('reason') or '注册失败')[:500],
+                proxy_ip=proxy_ip, device_info="直连注册API"))
+            logger.warning(f"注水注册失败(API): sms_log={sms_log_id}, {result.get('reason')}")
+        _db_sync(eng2.dispose())
+        return {"success": bool(result.get("success")), "log_id": log_id, "api": True}
+    except Exception as e:
+        logger.error(f"直连注册API异常: sms_log={sms_log_id}, {e}", exc_info=True)
+        _mark_processing_log_failed(sms_log_id, 'register', f'api_error: {str(e)[:200]}')
+        return {"success": False, "error": str(e)[:200]}
 
 
 @celery_app.task(name="cleanup_stuck_water_logs_task", queue="web_automation")
@@ -612,7 +693,7 @@ def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, coun
                     "click_log_id": log_id,
                     "batch_id": batch_id,
                 },
-                queue="web_automation",
+                queue="web_register",
                 countdown=random.randint(5, 30),
             )
             if account_id and getattr(reg_async, "id", None):
@@ -1000,7 +1081,9 @@ def _goto_register_form(page, url: str):
         base = url.rstrip("/")
     for path in _REGISTER_PATHS:
         try:
-            page.goto(base + path, wait_until="domcontentloaded", timeout=20000)
+            # 候选路径多为 404/无表单：单次 20s 超时 × 7 个会撑满 200s 软超时致注册卡死。
+            # 降到 8s 快速试探,最坏 ~56s,引流落地页无注册表单时快速失败落终态而非 hang。
+            page.goto(base + path, wait_until="domcontentloaded", timeout=8000)
             _wait_through_cf(page)
             page.wait_for_timeout(random.randint(800, 1500))
             if page.query_selector("input[type=password]"):

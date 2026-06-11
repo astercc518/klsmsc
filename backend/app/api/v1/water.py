@@ -894,6 +894,15 @@ async def list_scripts(
     result = await db.execute(query)
     scripts = result.scalars().all()
 
+    def _safe_steps(raw):
+        if not isinstance(raw, str):
+            return raw
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            # 脏 JSON 不再整页 500:原样返回字符串,前端可见并可重新编辑修复
+            return raw
+
     return {
         "total": total,
         "items": [
@@ -901,7 +910,7 @@ async def list_scripts(
                 "id": s.id,
                 "name": s.name,
                 "domain": s.domain,
-                "steps": json.loads(s.steps) if isinstance(s.steps, str) else s.steps,
+                "steps": _safe_steps(s.steps),
                 "enabled": s.enabled,
                 "success_count": s.success_count,
                 "fail_count": s.fail_count,

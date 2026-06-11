@@ -21,6 +21,7 @@ celery_app = Celery(
         'app.workers.okcc_worker',
         'app.workers.web_worker',
         'app.workers.batch_inspector',
+        'app.workers.channel_encoding_inspector',
     ]
 )
 
@@ -96,6 +97,13 @@ celery_app.conf.task_queues = {
         'exchange': 'web_automation',
         'routing_key': 'web_automation',
     },
+    # 注水注册独立队列：点击任务带超长 click_delay(最长14400s)以 ETA 形式预取挂在
+    # worker-web 内存，会占满 prefetch 窗口饿死同队列的注册任务。注册单列一队 + 专用 worker，
+    # 自带独立连接/QoS，永不被点击 ETA 洪流阻塞。
+    'web_register': {
+        'exchange': 'web_register',
+        'routing_key': 'web_register',
+    },
     # 与通用 celery 队列隔离：Webhook 洪峰不拖慢批量 chunk
     'webhook_tasks': {
         'exchange': 'webhook_tasks',
@@ -138,6 +146,7 @@ celery_app.conf.task_routes.update({
     'retry_batch_as_new': {'queue': 'celery'},
     'inspect_batches_task': {'queue': 'celery'},
     'sync_processing_batch_progress_task': {'queue': 'celery'},
+    'inspect_channel_encoding_risk_task': {'queue': 'celery'},
     'send_webhook': {'queue': 'webhook_tasks'},
     'record_link_click_task': {'queue': 'webhook_tasks'},
     'okcc_sync_balances_task': {'queue': 'integrations'},
@@ -148,7 +157,8 @@ celery_app.conf.task_routes.update({
     'repair_virtual_batch_dlr': {'queue': 'sms_send'},
     'data_buy_send_async': {'queue': 'data_tasks'},
     'web_click_task': {'queue': 'web_automation'},
-    'web_register_task': {'queue': 'web_automation'},
+    # 注册改走独立队列 web_register（专用 worker-web-register 消费），避免被点击 ETA 洪流饿死
+    'web_register_task': {'queue': 'web_register'},
     'cleanup_stuck_water_logs_task': {'queue': 'web_automation'},
     # SMPP 入站待发 DLR 清理（与其他 sms_dlr 任务同队列；任务体本身只跑短 SQL）
     'smpp_pending_dlr_cleanup': {'queue': 'sms_dlr'},
@@ -221,6 +231,11 @@ celery_app.conf.beat_schedule = {
     'cleanup-stuck-water-logs-5min': {
         'task': 'cleanup_stuck_water_logs_task',
         'schedule': 300.0,
+    },
+    # 每天 09:00 巡检"走 message_payload 发长信"的通道(TLV-blind 上游空白隐患)，超阈值告警
+    'inspect-channel-encoding-risk-daily': {
+        'task': 'inspect_channel_encoding_risk_task',
+        'schedule': crontab(hour=9, minute=0),
     },
 }
 
