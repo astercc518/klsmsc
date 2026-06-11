@@ -11,6 +11,7 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import router from './router'
 import i18n, { getLocale } from './i18n'
 import App from './App.vue'
+import { loadBrand } from './composables/useBrand'
 
 const app = createApp(App)
 
@@ -28,6 +29,9 @@ app.use(i18n)
 app.use(ElementPlus, { locale: elementLocale })
 
 app.mount('#app')
+
+// 拉取并套用当前激活品牌皮肤(主色/Logo/品牌名/favicon)。fire-and-forget,失败静默。
+loadBrand()
 
 // 注册 PWA service worker（仅生产环境 + 安全上下文）
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {

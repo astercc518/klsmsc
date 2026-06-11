@@ -22,6 +22,9 @@
       <el-tab-pane :label="$t('license.tab')" name="license">
         <SystemLicense />
       </el-tab-pane>
+      <el-tab-pane label="品牌皮肤" name="brand_themes">
+        <BrandThemes />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -34,6 +37,7 @@ import SystemServices from './Services.vue'
 import SystemSecurity from './Security.vue'
 import ShortLinkDomains from './ShortLinkDomains.vue'
 import SystemLicense from './License.vue'
+import BrandThemes from './BrandThemes.vue'
 
 const activeTab = ref('config')
 </script>

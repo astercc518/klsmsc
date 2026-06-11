@@ -210,7 +210,7 @@
         </section>
       </div>
 
-      <p class="copyright" :class="{ show: mounted }">© 2024 {{ $t('brand.name') }} · All rights reserved</p>
+      <p class="copyright" :class="{ show: mounted }">© 2024 {{ brandName || $t('brand.name') }} · All rights reserved</p>
     </main>
   </div>
 </template>
@@ -224,6 +224,7 @@ import type { FormInstance, FormRules } from 'element-plus'
 import { adminLogin, sendTelegramLoginCode, verifyTelegramLoginCode } from '@/api/admin'
 import { sendAccountTelegramCode, verifyAccountTelegramCode, getAccountInfo, login as accountLogin } from '@/api/account'
 import SliderCaptcha from '@/components/SliderCaptcha.vue'
+import { brandName } from '@/composables/useBrand'
 
 const { t, locale } = useI18n()
 const router = useRouter()

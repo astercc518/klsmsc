@@ -725,7 +725,8 @@ import { getAccountInfo } from '@/api/account'
 import { setLocale, getLocale } from '@/i18n'
 import { CUSTOMER_SMS_NAV } from '@/config/customerSmsNav'
 import { useAuthStore } from '@/stores/auth'
-import { getLicenseStatus, getBrand } from '@/api/license'
+import { getLicenseStatus } from '@/api/license'
+import { brandName, brandLogo } from '@/composables/useBrand'
 
 const customerSmsNavItems = CUSTOMER_SMS_NAV
 
@@ -738,8 +739,7 @@ const authStore = useAuthStore()
 const lic = ref<{ state: string; valid_for_send: boolean; days_left: number | null; message: string }>(
   { state: '', valid_for_send: true, days_left: null, message: '' }
 )
-const brandName = ref('')
-const brandLogo = ref('')
+// brandName/brandLogo 来自全局 useBrand（main.ts 启动时已 loadBrand 套用激活品牌）
 const licenseBanner = computed(() => {
   const st = lic.value.state
   if (st && st !== 'missing' && !lic.value.valid_for_send) return { type: 'error', msg: lic.value.message }
@@ -749,10 +749,7 @@ const licenseBanner = computed(() => {
   return null
 })
 async function loadLicenseAndBrand() {
-  try {
-    const b: any = await getBrand()
-    if (b?.brand) { brandName.value = b.brand.name || ''; brandLogo.value = b.brand.logo || '' }
-  } catch { /* 公开接口失败不影响 */ }
+  // 品牌皮肤由 main.ts 的 loadBrand() 全局套用,这里只取授权状态(横幅)
   if (authStore.isAdmin) {
     try { const r: any = await getLicenseStatus(); Object.assign(lic.value, r.license || {}) } catch { /* 非超管或无权限忽略 */ }
   }
