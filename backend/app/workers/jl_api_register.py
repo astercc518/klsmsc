@@ -101,34 +101,58 @@ def _rsa_utils_encrypt(text: str, modulus_hex: str) -> str:
 _CONS = "bcdfghjklmnpqrstvwxyz"
 _VOWELS = "aeiou"
 
+# 真人风词库:孟加拉常见罗马化名 + 通用英文名/词,用于拼出"像真人取的"账号密码,而非随机串。
+_NAMES = [
+    "rakib", "sumon", "shakib", "raju", "sakib", "karim", "rahim", "jamal", "hasan",
+    "akash", "rana", "bappy", "mithun", "sojib", "rabbi", "nayem", "shanto", "riad",
+    "fahim", "tanvir", "sabbir", "arif", "masud", "milon", "polash", "robin", "joy",
+    "tania", "nadia", "sadia", "tisha", "muna", "sumi", "mim", "rumana", "shorna",
+    "jonny", "alamin", "russel", "emon", "limon", "shuvo", "tuhin", "noyon", "biplob",
+    "john", "mike", "david", "alex", "sam", "leo", "ryan", "tony", "jack", "kevin",
+]
+_PWORDS = [
+    "dhaka", "bangla", "tiger", "king", "star", "lucky", "money", "football", "cricket",
+    "winner", "gold", "royal", "power", "sun", "moon", "river", "ocean", "summer",
+    "dream", "magic", "happy", "smart", "super", "rocket", "panda", "eagle", "lion",
+]
+# 自然数字尾:出生年/吉利数/常见尾巴(真人爱用)
+_NUMS = (
+    [str(y) for y in range(1985, 2011)]
+    + ["123", "1234", "12345", "786", "111", "007", "99", "00", "21", "23", "01", "69", "88"]
+)
+
+
+def _cap(s: str) -> str:
+    return s[:1].upper() + s[1:] if s else s
+
 
 def _syllables(n_syl: int) -> str:
-    """拼可发音音节(辅音+元音),像真人取的名。"""
+    """拼可发音音节(辅音+元音),作为词库之外的少数派变体。"""
     return "".join(random.choice(_CONS) + random.choice(_VOWELS) for _ in range(n_syl))
 
 
 def _gen_username() -> str:
-    """生成无固定特征的用户名:6-13位,^[a-zA-Z0-9]+$,多风格混合,避免一眼识别为机器号。"""
+    """生成拟人用户名:6-13位,^[a-zA-Z0-9]+$。主力用真人名+自然数字尾,辅以拼名/可发音变体,避免一眼假或清一色。"""
     style = random.random()
-    if style < 0.5:
-        # 可发音名 + 可选数字尾(最像真人)
-        u = _syllables(random.randint(2, 4))
-        if random.random() < 0.7:
-            u += str(random.randint(1, 9999))
-    elif style < 0.8:
-        # 词 + 数字穿插
-        u = _syllables(random.randint(2, 3)) + str(random.randint(10, 999))
+    if style < 0.55:
+        # 真人名 + 自然数字(rakib95 / Sumon2018 / tania786)
+        u = random.choice(_NAMES) + (random.choice(_NUMS) if random.random() < 0.85 else "")
+    elif style < 0.78:
+        # 双名拼接(rakibhasan / joysumon),偶带短数字
+        u = random.choice(_NAMES) + random.choice(_NAMES)
         if random.random() < 0.4:
-            u += random.choice(_VOWELS) + random.choice(_CONS)
+            u += random.choice(["1", "12", "7", "99", "23"])
+    elif style < 0.92:
+        # 名 + 短可发音尾(rakibny / sumonta),更杂避免名库被识别
+        u = random.choice(_NAMES) + _syllables(random.randint(1, 2))
+        if random.random() < 0.5:
+            u += str(random.randint(1, 99))
     else:
-        # 纯随机字母数字(首位字母)
-        ln = random.randint(7, 12)
-        u = random.choice(string.ascii_lowercase) + "".join(
-            random.choice(string.ascii_lowercase + string.digits) for _ in range(ln - 1))
-    # 约 30% 首字母大写(真人常见)
-    if random.random() < 0.3:
-        u = u[0].upper() + u[1:]
-    # 收敛长度到 [6,13]
+        # 少数可发音随机(防止全是词库名)
+        u = _syllables(random.randint(2, 4)) + (str(random.randint(1, 999)) if random.random() < 0.6 else "")
+    # 约 35% 首字母大写(真人常见)
+    if random.random() < 0.35:
+        u = _cap(u)
     u = u[:13]
     while len(u) < 6:
         u += random.choice(string.ascii_lowercase + string.digits)
@@ -136,13 +160,25 @@ def _gen_username() -> str:
 
 
 def _gen_password() -> str:
-    """无固定特征密码:8-12位,纯字母数字,保证含大写/小写/数字各≥1,位置随机。"""
-    ln = random.randint(8, 12)
-    pool = string.ascii_letters + string.digits
-    while True:
-        p = "".join(random.choice(pool) for _ in range(ln))
-        if any(c.islower() for c in p) and any(c.isupper() for c in p) and any(c.isdigit() for c in p):
+    """生成拟人密码:6-12位,^[a-zA-Z0-9]+$,含大小写+数字。主力为「首字母大写词/名 + 数字」(Dhaka2018 / Rakib786)。"""
+    for _ in range(12):
+        style = random.random()
+        if style < 0.6:
+            # 大写词 + 数字(Tiger2019 / Dhaka786)
+            p = _cap(random.choice(_PWORDS)) + random.choice(_NUMS)
+        elif style < 0.85:
+            # 大写名 + 数字(Rakib1998)
+            p = _cap(random.choice(_NAMES)) + random.choice(_NUMS)
+        else:
+            # 词 + 大写词(无数字时补一位)(tigerKing7)
+            p = random.choice(_PWORDS) + _cap(random.choice(_PWORDS))
+            if not any(c.isdigit() for c in p):
+                p += str(random.randint(1, 99))
+        p = p[:12]
+        if 6 <= len(p) <= 12 and any(c.islower() for c in p) and any(c.isupper() for c in p) and any(c.isdigit() for c in p):
             return p
+    # 兜底:保证一定产出合规密码
+    return _cap(random.choice(_PWORDS)) + str(random.randint(1985, 2010))
 
 
 def to_bd_mobile(phone: str) -> Optional[str]:
@@ -222,8 +258,16 @@ def register_via_api(url: str, proxy_config: Optional[dict] = None,
         if len(mod) < 200:
             return {"success": False, "reason": f"取RSA公钥失败: {mod[:80]}", "base": base}
 
-        # 3) 组装加密注册请求(用户名/密码无固定特征;手机号绑收件号撞库)
-        username = username or _gen_username()
+        # 3) 组装加密注册请求(用户名/密码拟人;手机号绑收件号撞库)
+        # 拟人用户名易与站点已有真实用户撞名 → 提交前用只读 check/username 预检,被占就换,
+        # 避免把已解的 GeeTest 浪费在注定"用户名已占用"的提交上。
+        if not username:
+            username = _gen_username()
+            for _ in range(6):
+                taken = _verify_username_exists(cli, base, merchant, module, username)
+                if taken is not True:   # False=可用 / None=查不了 → 放行
+                    break
+                username = _gen_username()
         password = _gen_password()
         payload = {
             "username": username, "password": password, "confirmPassword": password,

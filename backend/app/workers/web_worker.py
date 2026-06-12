@@ -330,6 +330,51 @@ async def _update_log_status(factory, log_id: int, status: str, duration_ms: int
         await db.commit()
 
 
+async def _attribute_short_link_click(factory, sms_log_id: int,
+                                      client_ip: str = None, user_agent: str = None):
+    """注水点击成功后，把这次真实 headless 访问归因到该消息的短链 token。
+
+    背景：点击计数原本只靠短链域(如外部 66c.eu)重定向回流 record_link_click_task，
+    但外域回流极不可靠(实测仅 ~15% 命中)，致 click_count 远低于成功点击数。
+    这里在点击任务确实成功后，直接按 sms_log 的短链 token 记一条点击明细 + 累加
+    click_count，与重定向同一套表结构。
+
+    幂等：每个 sms_log 的 token 最多记一条注水点击——已存在点击明细(外域回流或重试
+    已记)则跳过，避免重复计数。无短链(非营销宏消息)则静默跳过。
+    """
+    from sqlalchemy import select as _sel, update as _upd
+    from app.modules.sms.short_link_log import ShortLinkLog
+    from app.modules.sms.short_link_click import ShortLinkClick
+
+    async with factory() as db:
+        row = (await db.execute(
+            _sel(ShortLinkLog.id, ShortLinkLog.token)
+            .where(ShortLinkLog.sms_log_id == sms_log_id)
+        )).first()
+        if not row:
+            return False
+        sl_id, token = row
+        exists = (await db.execute(
+            _sel(ShortLinkClick.id)
+            .where(ShortLinkClick.short_link_log_id == sl_id).limit(1)
+        )).scalar_one_or_none()
+        if exists:
+            return False
+        now = datetime.now()
+        await db.execute(
+            _upd(ShortLinkLog).where(ShortLinkLog.id == sl_id)
+            .values(click_count=ShortLinkLog.click_count + 1, last_click_at=now)
+        )
+        db.add(ShortLinkClick(
+            token=token, short_link_log_id=sl_id, clicked_at=now,
+            client_ip=(client_ip or None) and str(client_ip)[:64],
+            user_agent=(user_agent or "")[:512] or None,
+            is_bot=False, bot_reason=None,
+        ))
+        await db.commit()
+        return True
+
+
 async def _increment_script_counter(factory, script_id: int, success: bool):
     """更新脚本成功/失败计数"""
     from sqlalchemy import update as sa_update
@@ -409,6 +454,30 @@ def web_click_task(self, sms_log_id: int, url: str, channel_id: int,
         return {"success": False, "error": "soft_time_limit"}
 
 
+def _resolve_short_link(url: str) -> str:
+    """跟随跳转把点击追踪短链(如 66c.eu/<token>)解析成真实落地 URL。
+
+    注册分流/脚本匹配/affiliate 提取全靠落地域(rztk6mpvx.com),但虚拟通道批次的消息宏
+    只替换成短链 66c.eu/<token>(见 project_virtual_chunk_shortlink_clicks),裸短链 host=66c.eu
+    匹配不到任何 merchant → 注册被错误地拖进浏览器路径并 260s 超时。这里一次 HTTP 跟随跳转
+    取真实落地域(实测 66c.eu/<token> → www.rztk6mpvx.com/?affiliateCode=...),失败则原样返回。
+    """
+    import httpx
+    from urllib.parse import urlparse
+    raw = (url or "").split("|", 1)[0].strip()
+    try:
+        r = httpx.get(raw, follow_redirects=True, verify=False, timeout=12.0,
+                      headers={"User-Agent": (
+                          "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+                          "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1")})
+        final = str(r.url)
+        if urlparse(final).hostname:
+            return final
+    except Exception as e:
+        logger.warning(f"短链解析失败,沿用原 url: {raw[:80]} ({type(e).__name__}: {e})")
+    return url
+
+
 @celery_app.task(name="web_register_task", bind=True, max_retries=1,
                  autoretry_for=(OSError, ConnectionError), retry_backoff=15,
                  soft_time_limit=200, time_limit=260)
@@ -427,6 +496,13 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
         # 改走逆向出的加密注册接口,直接建号,快且稳。
         from urllib.parse import urlparse
         from app.workers.jl_api_register import merchant_for_host
+        # 裸短链(66c.eu/<token>)匹配不到 merchant → 先跟随跳转解析出真实落地域,
+        # 让 merchant/脚本/affiliate 都能命中,避免被错误拖进浏览器路径而超时。
+        if not merchant_for_host(urlparse(url).hostname or ""):
+            resolved = _resolve_short_link(url)
+            if merchant_for_host(urlparse(resolved).hostname or ""):
+                logger.info(f"短链解析: {url[:60]} -> {resolved[:80]}")
+                url = resolved
         if merchant_for_host(urlparse(url).hostname or ""):
             return _do_register_via_api(
                 sms_log_id, url, channel_id, task_config_id, account_id,
@@ -683,6 +759,13 @@ def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, coun
         eng2, factory2 = _make_session()
         _db_sync(_update_log_status(factory2, log_id, 'success', duration, proxy_ip=detected_ip,
                                     device_info=device_desc, user_agent=ua))
+        # 点击成功 → 直接归因到短链 token（不再依赖外部短域重定向回流，那只命中 ~15%）。
+        # 幂等：已有点击明细则跳过，不与回流重复计数。
+        try:
+            _db_sync(_attribute_short_link_click(factory2, sms_log_id,
+                                                 client_ip=detected_ip, user_agent=ua))
+        except Exception as _attr_e:
+            logger.warning(f"注水点击短链归因失败 sms_log={sms_log_id}: {_attr_e}")
         _db_sync(eng2.dispose())
         logger.info(f"注水点击成功: log={log_id}, duration={duration}ms, ip={detected_ip}, final={final_url[:80]}")
 
