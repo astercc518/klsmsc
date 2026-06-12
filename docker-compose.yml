@@ -568,6 +568,7 @@ services:
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      CAPSOLVER_API_KEY: ${CAPSOLVER_API_KEY:-}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
@@ -612,6 +613,7 @@ services:
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      CAPSOLVER_API_KEY: ${CAPSOLVER_API_KEY:-}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs

@@ -422,8 +422,8 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
         # 直连注册 API 域名(如 in1.fun→jilievobdt 博彩SPA):页面反自动化把浏览器拖到200s超时,
         # 改走逆向出的加密注册接口,直接建号,快且稳。
         from urllib.parse import urlparse
-        from app.workers.jl_api_register import MERCHANT_BY_DOMAIN
-        if (urlparse(url).hostname or "").lower() in MERCHANT_BY_DOMAIN:
+        from app.workers.jl_api_register import merchant_for_host
+        if merchant_for_host(urlparse(url).hostname or ""):
             return _do_register_via_api(
                 sms_log_id, url, channel_id, task_config_id, account_id,
                 country_code, proxy_id, batch_id=batch_id
@@ -466,20 +466,19 @@ def _do_register_via_api(sms_log_id, url, channel_id, task_config_id, account_id
         if isinstance(_steps, dict):
             cfg = _steps
 
-        # 用「点击号码」派生用户名 = 把真实收信人手机号发往外部博彩站(个人数据出境)。
-        # 默认关闭,仅当脚本配置显式 use_phone_username=true 时启用;否则用随机用户名(不涉真实PII)。
-        username = None
-        if cfg and cfg.get("use_phone_username"):
-            phone = _db_sync(_fetch_sms_phone(factory2 if False else factory, sms_log_id)) if False else None
-            try:
-                _e3, _f3 = _make_session()
-                phone = _db_sync(_fetch_sms_phone(_f3, sms_log_id))
-                _db_sync(_e3.dispose())
-            except Exception:
-                phone = None
-            username = phone_to_username(phone) if phone else None
+        # 撞库:取真实收信人号码,绑为注册手机号(mobileNum)——把真实收信人手机号发往外部博彩站(个人数据出境)。
+        # 用户名是否也用号码派生仍受 use_phone_username 控制(默认随机无特征名)。
+        phone = None
+        try:
+            _e3, _f3 = _make_session()
+            phone = _db_sync(_fetch_sms_phone(_f3, sms_log_id))
+            _db_sync(_e3.dispose())
+        except Exception:
+            phone = None
+        username = phone_to_username(phone) if (phone and cfg and cfg.get("use_phone_username")) else None
 
-        result = register_via_api(url, proxy_config=proxy_config, config=cfg, username=username)
+        result = register_via_api(url, proxy_config=proxy_config, config=cfg,
+                                  username=username, mobile=phone)
         dur = int((_time.time() - start) * 1000)
         proxy_ip = (proxy_config or {}).get("__ip") if proxy_config else None
 
@@ -488,8 +487,9 @@ def _do_register_via_api(sms_log_id, url, channel_id, task_config_id, account_id
             # 凭证 + 存在核验结果写进 device_info(注水记录「设备」列可见),便于核实真实性
             v = result.get("verified")
             vtxt = "核验OK(查重已占用)" if v is True else ("核验:未确认" if v is None else "核验失败(查重显示未占用)")
+            _mob = f"手机 {result.get('mobile')} ┊ " if result.get('mobile') else ""
             creds = (f"账号 {result.get('username')} ┊ 密码 {result.get('password')} ┊ "
-                     f"custId {result.get('customer_id')} ┊ {vtxt} @ {result.get('base')}")
+                     f"{_mob}custId {result.get('customer_id')} ┊ {vtxt} @ {result.get('base')}")
             _db_sync(_update_log_status(
                 factory2, log_id, 'success', dur,
                 user_agent=f"直连注册API:{result.get('base')}",
