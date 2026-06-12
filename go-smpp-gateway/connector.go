@@ -491,6 +491,20 @@ func (m *SMPPManager) closeSessions(channelID int, sessions []*gosmpp.Session, c
 	}
 }
 
+// connParamsChanged 判断两份通道配置的「连接身份」是否变化——任一改变都需重新 bind。
+// 仅比较真正影响 dial/bind 的字段：SMSC 地址(host:port)、SystemID/Password/SystemType、
+// bind 模式、以及 TLS 开关。发送期字段(gsm7_enabled、throttle_tps、strip_leading_plus 等)
+// 变化不触发重连，避免无谓断流。
+func connParamsChanged(a, b ChannelConfig) bool {
+	return a.Host != b.Host ||
+		a.Port != b.Port ||
+		a.Username != b.Username ||
+		a.Password != b.Password ||
+		a.SystemType != b.SystemType ||
+		a.BindMode != b.BindMode ||
+		channelUsesTLS(a) != channelUsesTLS(b)
+}
+
 // ReloadChannels reloads configurations and establishes connections asynchronously.
 // It no longer holds the global lock during network I/O.
 func (m *SMPPManager) ReloadChannels() error {
@@ -535,9 +549,21 @@ func (m *SMPPManager) ReloadChannels() error {
 	var addTasks []addTask
 
 	for id, cfg := range newConfigs {
-		oldCfg := m.configs[id]
+		oldCfg, existed := m.configs[id]
 		m.configs[id] = cfg
 		currentConns := m.connections[id]
+
+		// 连接参数(host/port/凭据/bind模式/TLS)变化时强制重连：关闭全部旧会话，
+		// 让下方 diff 据此重新拉起 cfg.Concurrency 条指向新配置的会话。
+		// 原逻辑只看并发数差值，host 等变化时 diff=0 → 旧会话(可能仍连旧端点/旧 DC)
+		// 永不替换，导致「改了通道地址却不生效，必须手动重启网关」。
+		if existed && len(currentConns) > 0 && connParamsChanged(oldCfg, cfg) {
+			log.Printf("Channel %s connection params changed (host/port/cred/bind/tls), closing %d session(s) to reconnect", cfg.ChannelCode, len(currentConns))
+			toClose = append(toClose, closeTask{channelID: id, channelCode: cfg.ChannelCode, sessions: currentConns})
+			m.connections[id] = nil
+			currentConns = nil
+		}
+
 		diff := cfg.Concurrency - len(currentConns)
 
 		// 更新 TPS 限速器（TPS 变更时重建）
