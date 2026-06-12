@@ -276,13 +276,17 @@ async def _create_register_log(factory, sms_log_id, account_id, channel_id, task
         domain = urlparse(url).hostname or ""
         script = None
         if domain:
+            # 按主域后缀匹配(应对随机子域轮换),命中多条取最具体(domain 最长)的一条
+            from app.workers.jl_api_register import domain_candidates
+            cands = domain_candidates(domain)
             result = await db.execute(
                 select(WaterRegisterScript).where(
-                    WaterRegisterScript.domain == domain,
+                    WaterRegisterScript.domain.in_(cands or [domain]),
                     WaterRegisterScript.enabled == True,
                 )
             )
-            script = result.scalar_one_or_none()
+            scripts = result.scalars().all()
+            script = max(scripts, key=lambda s: len(s.domain)) if scripts else None
 
         proxy_config = await get_proxy_for_country(db, country_code, proxy_id)
         await db.commit()

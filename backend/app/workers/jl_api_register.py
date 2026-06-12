@@ -53,6 +53,16 @@ def extract_affiliate(url: str, host: str = None) -> str:
     if len(labels) >= 3 and labels[0] not in ("www", "m", "mobile", "h5"):
         return labels[0]
     return ""
+
+
+def domain_candidates(host: str) -> list:
+    """host → 由具体到主域的候选列表(≥2 段),供注册脚本表按主域后缀匹配随机子域。
+    例:8kbd2087.rztk6mpvx.com → [8kbd2087.rztk6mpvx.com, rztk6mpvx.com];in1.fun → [in1.fun]。"""
+    host = (host or "").lower().strip(".")
+    parts = host.split(".") if host else []
+    return [".".join(parts[i:]) for i in range(len(parts) - 1)]
+
+
 REGISTER_MODULE = "REG3"
 UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 "
       "(KHTML, like Gecko) Mobile/15E148 Safari/604.1")
