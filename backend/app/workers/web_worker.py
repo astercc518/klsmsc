@@ -506,6 +506,9 @@ def _do_register_via_api(sms_log_id, url, channel_id, task_config_id, account_id
                 factory2, log_id, 'failed', dur, (result.get('reason') or '注册失败')[:500],
                 proxy_ip=proxy_ip, device_info="直连注册API"))
             logger.warning(f"注水注册失败(API): sms_log={sms_log_id}, {result.get('reason')}")
+        # 命中脚本时回写成功/失败计数 + last_run_at(后台「注册脚本」页统计随 API 路径更新)
+        if script_data and script_data.get("id"):
+            _db_sync(_increment_script_counter(factory2, script_data["id"], bool(result.get("success"))))
         _db_sync(eng2.dispose())
         return {"success": bool(result.get("success")), "log_id": log_id, "api": True}
     except Exception as e:
