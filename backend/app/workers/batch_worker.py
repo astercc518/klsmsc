@@ -1378,7 +1378,7 @@ def retry_batch_as_new(self, new_batch_id: int, src_batch_id: int, account_id: i
     logger.info(f"失败重发任务开始: new_batch={new_batch_id}, src={src_batch_id}, account={account_id}")
     return _run_async(
         _do_retry_batch_as_new(new_batch_id, src_batch_id, account_id),
-        timeout=None,  # 大批量，禁用 _run_async 默认 60s 上限，靠 celery soft/hard time limit 兜底
+        timeout=0,  # 大批量：0 才真正禁用 _run_async 超时（None 会被当成默认 60s！）；靠 celery soft/hard time limit 兜底
     )
 
 
@@ -1441,6 +1441,13 @@ async def _do_retry_batch_as_new(new_batch_id: int, src_batch_id: int, account_i
                     SMSLog.batch_id == src_batch_id,
                     SMSLog.account_id == account_id,
                     or_(SMSLog.status == "failed", SMSLog.status == "expired"),
+                    # 跳过本批次已重发过的源行(error_message 已打 #N 标记)——使失败重发可断点续传:
+                    # 任务被超时/重启中断后重跑只补未发的,不重复发已发的。NULL 兜底:无 error_message
+                    # 的行(NOT LIKE 对 NULL 判 NULL 会被误排除)须显式纳入。
+                    or_(
+                        SMSLog.error_message.is_(None),
+                        SMSLog.error_message.op("NOT LIKE")(f"%已转批次 #{new_batch_id} 重发%"),
+                    ),
                     SMSLog.id > last_id,
                 ).order_by(SMSLog.id.asc()).limit(PAGE)
             )).scalars().all()
