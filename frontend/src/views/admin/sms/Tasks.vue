@@ -63,26 +63,40 @@
         </div>
         <div class="panel-actions">
           <!-- 筛选区 -->
-          <el-input v-model="filters.keyword" placeholder="批次名/关键词" clearable style="width: 160px" @change="loadList" />
-          <el-select v-model="filters.status" placeholder="状态" clearable style="width: 120px" @change="loadList">
-            <el-option label="待处理" value="pending" />
-            <el-option label="处理中" value="processing" />
-            <el-option label="已暂停" value="paused" />
-            <el-option label="已完成" value="completed" />
-            <el-option label="失败" value="failed" />
-            <el-option label="已取消" value="cancelled" />
-          </el-select>
-          <el-input v-model.number="filters.account_id" placeholder="账户ID" clearable style="width: 100px" @change="loadList" />
-          <el-date-picker
-            v-model="dateRange"
-            type="daterange"
-            range-separator="至"
-            start-placeholder="开始"
-            end-placeholder="结束"
-            value-format="YYYY-MM-DD"
-            style="width: 240px"
-            @change="onDateChange"
-          />
+          <div class="filter-fields">
+            <el-input v-model.number="filters.batch_id" placeholder="批次ID" clearable class="f-batch" @change="onFilterChange" />
+            <el-input v-model="filters.content" placeholder="短信内容" clearable class="f-content" @change="onFilterChange" />
+            <el-select
+              v-model="filters.channel_id"
+              placeholder="发送通道"
+              clearable
+              filterable
+              class="f-channel"
+              @change="onFilterChange"
+              @visible-change="ensureChannels"
+            >
+              <el-option v-for="c in channels" :key="c.id" :label="c.channel_code || c.channel_name" :value="c.id" />
+            </el-select>
+            <el-select v-model="filters.status" placeholder="状态" clearable class="f-status" @change="onFilterChange">
+              <el-option label="待处理" value="pending" />
+              <el-option label="处理中" value="processing" />
+              <el-option label="已暂停" value="paused" />
+              <el-option label="已完成" value="completed" />
+              <el-option label="失败" value="failed" />
+              <el-option label="已取消" value="cancelled" />
+            </el-select>
+            <el-input v-model="filters.account" placeholder="账户名/ID" clearable class="f-account" @change="onFilterChange" />
+            <el-date-picker
+              v-model="dateRange"
+              type="daterange"
+              range-separator="至"
+              start-placeholder="开始"
+              end-placeholder="结束"
+              value-format="YYYY-MM-DD"
+              class="f-date"
+              @change="onDateChange"
+            />
+          </div>
           <el-button :icon="Refresh" @click="loadList">刷新</el-button>
           <el-popover placement="bottom-end" :width="220" trigger="click" popper-class="col-picker-pop">
             <template #reference>
@@ -331,7 +345,7 @@ const router = useRouter()
 const loading = ref(false)
 const items = ref<AdminBatchItem[]>([])
 const pagination = reactive({ total: 0, page: 1, page_size: 20 })
-const filters = reactive<{ keyword?: string; status?: string; account_id?: number; start_date?: string; end_date?: string }>({})
+const filters = reactive<{ batch_id?: number; content?: string; channel_id?: number; status?: string; account?: string; start_date?: string; end_date?: string }>({})
 const dateRange = ref<[string, string] | null>(null)
 
 const stats = reactive({ processing: 0, paused: 0, completed: 0 })
@@ -392,6 +406,21 @@ const canSubmitSwitch = computed(() =>
   switchConfirmText.value.trim() === '确认'
 )
 
+// 任意筛选条件变化后回到第 1 页再查，避免停留在越界页码导致结果为空
+function onFilterChange() {
+  pagination.page = 1
+  loadList()
+}
+
+// 通道下拉首次展开时按需加载（与切换通道弹窗共用 channels 缓存）
+async function ensureChannels() {
+  if (channels.value.length > 0) return
+  try {
+    const res = await getChannelsAdmin()
+    channels.value = (res.channels || res.data || []).filter((c: any) => c.status === 'active' && !c.is_deleted)
+  } catch { /* ignore */ }
+}
+
 function onDateChange(v: any) {
   if (Array.isArray(v) && v.length === 2) {
     filters.start_date = v[0]
@@ -403,10 +432,21 @@ function onDateChange(v: any) {
   loadList()
 }
 
+// 清掉空串/null/NaN 等无效值，避免 account_id=、batch_id= 之类触发后端 422
+function cleanFilters() {
+  const out: Record<string, any> = {}
+  for (const [k, v] of Object.entries(filters)) {
+    if (v === '' || v === null || v === undefined) continue
+    if (typeof v === 'number' && Number.isNaN(v)) continue
+    out[k] = v
+  }
+  return out
+}
+
 async function loadList() {
   loading.value = true
   try {
-    const res = await listAdminBatches({ ...filters, page: pagination.page, page_size: pagination.page_size })
+    const res = await listAdminBatches({ ...cleanFilters(), page: pagination.page, page_size: pagination.page_size })
     if (res.success) {
       items.value = res.items
       pagination.total = res.total
@@ -481,12 +521,7 @@ async function openSwitch(row: AdminBatchItem) {
   switchForm.new_channel_id = undefined
   switchPreview.value = null
   switchConfirmText.value = ''
-  if (channels.value.length === 0) {
-    try {
-      const res = await getChannelsAdmin()
-      channels.value = (res.channels || res.data || []).filter((c: any) => c.status === 'active' && !c.is_deleted)
-    } catch { /* ignore */ }
-  }
+  await ensureChannels()
   switchVisible.value = true
 }
 
@@ -671,6 +706,20 @@ onMounted(() => { loadList() })
   gap: 8px;
   align-items: center;
 }
+
+/* 筛选字段编组：整体作为一行搜索区，刷新/列按钮跟在其后 */
+.filter-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.filter-fields .f-batch { width: 96px; }
+.filter-fields .f-content { width: 180px; }
+.filter-fields .f-channel { width: 150px; }
+.filter-fields .f-status { width: 110px; }
+.filter-fields .f-account { width: 130px; }
+.filter-fields .f-date { width: 230px; }
 
 /* 表格 */
 .table-scroll-wrapper { overflow-x: auto; }

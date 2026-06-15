@@ -266,10 +266,6 @@
                 </span>
               </div>
               <div class="account-row">
-                <span class="account-label">{{ $t('dashboard.salesContactTg') }}</span>
-                <span class="account-value">{{ formatTgHandle(customerAccountInfo?.sales_tg_username) }}</span>
-              </div>
-              <div class="account-row">
                 <span class="account-label">{{ $t('dashboard.accountName') }}</span>
                 <span class="account-value">{{ accountName }}</span>
               </div>
@@ -305,7 +301,7 @@ import { ref, onMounted, computed, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getAccountInfo, type AccountInfo } from '@/api/account'
 import { getChannels } from '@/api/channel'
-import { getStatistics } from '@/api/reports'
+import { getSentSummary } from '@/api/reports'
 import { getAdminDashboard, type AdminServerMetrics, type AdminServiceStatusItem } from '@/api/admin'
 import { getSMSRecords } from '@/api/sms'
 import { useI18n } from 'vue-i18n'
@@ -661,34 +657,16 @@ const loadCustomerData = async () => {
       }
     }
 
-    const todayStr = new Date().toISOString().split('T')[0]
+    // 今日/本周/本月发送数：单次 count-only 查询（后端一次扫描派生三个数 + 60s 缓存），
+    // 取代原来三次 /statistics 串行调用（高量账户本月查询单次就要 ~9s）。
     try {
-      const statsRes = await getStatistics(todayStr, todayStr)
-      todaySent.value = Number(statsRes.total_sent) || 0
+      const summary = await getSentSummary()
+      todaySent.value = Number(summary.today_sent) || 0
+      weekSent.value = Number(summary.week_sent) || 0
+      monthSent.value = Number(summary.month_sent) || 0
     } catch {
       todaySent.value = 0
-    }
-
-    const now = new Date()
-    const dow = now.getDay()
-    const diffToMonday = dow === 0 ? -6 : 1 - dow
-    const weekStart = new Date(now)
-    weekStart.setDate(now.getDate() + diffToMonday)
-    weekStart.setHours(0, 0, 0, 0)
-    const weekStartStr = weekStart.toISOString().split('T')[0]
-    try {
-      const weekStats = await getStatistics(weekStartStr, todayStr)
-      weekSent.value = Number(weekStats.total_sent) || 0
-    } catch {
       weekSent.value = 0
-    }
-
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
-    const monthStartStr = monthStart.toISOString().split('T')[0]
-    try {
-      const monthStats = await getStatistics(monthStartStr, todayStr)
-      monthSent.value = Number(monthStats.total_sent) || 0
-    } catch {
       monthSent.value = 0
     }
 

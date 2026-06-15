@@ -1316,6 +1316,13 @@ export default {
     noActivityToday: '今日暂无发送记录',
     customerManageDesc: '账户 · 余额 · 通道绑定',
     channelConfigDesc: '通道 · 路由 · 报价',
+    topCountries: '今日各国发送 Top',
+    lowBalanceAlert: '余额不足预警',
+    lowBalanceEmpty: '暂无余额不足客户',
+    activeBatches: '异常 / 进行中批次',
+    activeBatchesEmpty: '暂无异常或进行中批次',
+    worstChannels: '通道送达率异常榜',
+    viewAllTasks: '全局任务',
   },
   dataMyNumbers: {
     libraryOriginLabel: '号码来源',

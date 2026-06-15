@@ -50,7 +50,10 @@ export interface PreviewSwitchResult {
 
 export interface ListBatchesParams {
   account_id?: number
+  account?: string
   channel_id?: number
+  batch_id?: number
+  content?: string
   status?: string
   keyword?: string
   start_date?: string

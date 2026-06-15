@@ -336,6 +336,10 @@ export interface AdminDashboardResponse {
   };
   server_metrics?: AdminServerMetrics | null;
   service_status?: AdminServiceStatusItem[] | null;
+  worst_channels?: { channel_name: string; sent: number; delivered: number; rate: number }[];
+  top_countries?: { country_code: string; sent: number; delivered: number; rate: number }[];
+  low_balance_accounts?: { id: number; account_name: string; balance: number; currency: string; threshold: number }[];
+  active_batches?: { id: number; batch_name: string; status: string; account_name: string; total: number; progress: number }[];
 }
 
 export async function getAdminDashboard(): Promise<AdminDashboardResponse> {

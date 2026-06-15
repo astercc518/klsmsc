@@ -326,31 +326,27 @@
             <div v-else class="empty-state subtle">{{ $t('dashboard.systemMonitorNoBackend') }}</div>
           </div>
         </div>
-        <div class="card service-health-card soft-card">
+        <!-- 今日各国发送 Top -->
+        <div class="card country-top-card soft-card">
           <div class="card-header">
             <h2 class="card-title">
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.5"/>
-                <path d="M9 5V9L12 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M2 9H16M9 2C11 4.5 11 13.5 9 16C7 13.5 7 4.5 9 2Z" stroke="currentColor" stroke-width="1.3"/>
               </svg>
-              {{ $t('dashboard.backendServiceStatus') }}
+              {{ $t('dashboard.topCountries') }}
             </h2>
           </div>
-          <div class="service-health-body">
-            <div v-if="dashboardLoading && !serviceStatus.length" class="empty-state subtle">{{ $t('common.loading') }}</div>
-            <div v-else-if="!serviceStatus.length" class="empty-state subtle">{{ $t('dashboard.systemMonitorNoBackend') }}</div>
-            <div
-              v-else
-              v-for="svc in serviceStatus"
-              :key="svc.id"
-              class="service-row"
-            >
-              <span class="service-name">{{ serviceLabel(svc.id) }}</span>
-              <span :class="['service-badge', svc.status === 'ok' ? 'ok' : 'err']">
-                <span class="status-dot"></span>
-                {{ svc.status === 'ok' ? $t('dashboard.serviceOk') : $t('dashboard.serviceError') }}
-              </span>
-              <p v-if="svc.message" class="service-msg">{{ svc.message }}</p>
+          <div class="ch-stats-list">
+            <div v-if="dashboardLoading && !topCountries.length" class="empty-state subtle">{{ $t('common.loading') }}</div>
+            <div v-else-if="!topCountries.length" class="empty-state subtle">{{ $t('dashboard.noActivityToday') }}</div>
+            <div v-else v-for="c in topCountries" :key="c.country_code" class="ch-stat-row">
+              <span class="ch-stat-name">{{ c.country_code }}</span>
+              <div class="ch-stat-bar-wrap">
+                <div class="ch-stat-bar" :class="c.rate >= 90 ? 'good' : c.rate >= 60 ? 'warn' : 'bad'" :style="{ width: `${c.rate}%` }"></div>
+              </div>
+              <span class="ch-stat-pct">{{ c.rate }}%</span>
+              <span class="ch-stat-cnt">{{ c.sent.toLocaleString() }}{{ $t('dashboard.items') }}</span>
             </div>
           </div>
         </div>
@@ -510,112 +506,64 @@
       <div class="content-grid admin-grid">
         <!-- 左侧 -->
         <div class="content-left">
-          <!-- 快速操作 -->
-          <div class="card actions-card">
+          <!-- 异常 / 进行中批次 -->
+          <div class="card active-batch-card" v-if="permissions.view_global || permissions.view_channels || isSales">
             <div class="card-header">
               <h2 class="card-title">
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                  <rect x="2" y="2" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
-                  <rect x="10" y="2" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
-                  <rect x="2" y="10" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
-                  <rect x="10" y="10" width="6" height="6" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M9 2L16 14H2L9 2Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                  <path d="M9 7V10M9 12V12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
                 </svg>
-                {{ $t('dashboard.quickActions') }}
+                {{ $t('dashboard.activeBatches') }}
               </h2>
+              <button class="view-all-btn" @click="$router.push('/admin/sms/tasks')">
+                {{ $t('dashboard.viewAllTasks') }}
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5 3L9 7L5 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
             </div>
-            <div class="actions-list">
-              <div class="action-row" @click="$router.push('/admin/accounts')" v-if="permissions.view_customers">
-                <div class="action-row-icon primary">
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                    <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="2"/>
-                    <path d="M4 20C4 16.5 7.5 14 12 14C16.5 14 20 16.5 20 20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                  </svg>
-                </div>
-                <div class="action-row-text">
-                  <span class="action-row-title">{{ $t('menu.customerManage') }}</span>
-                  <span class="action-row-desc">{{ $t('dashboard.customerManageDesc') }}</span>
-                </div>
-                <svg class="action-row-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path d="M6 3L11 8L6 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-              </div>
-              <div class="action-row" @click="$router.push('/channels')" v-if="permissions.view_channels">
-                <div class="action-row-icon warning">
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                    <circle cx="6" cy="12" r="3" stroke="currentColor" stroke-width="2"/>
-                    <circle cx="18" cy="6" r="3" stroke="currentColor" stroke-width="2"/>
-                    <circle cx="18" cy="18" r="3" stroke="currentColor" stroke-width="2"/>
-                    <path d="M9 12H15M15 6L9 12M15 18L9 12" stroke="currentColor" stroke-width="2"/>
-                  </svg>
-                </div>
-                <div class="action-row-text">
-                  <span class="action-row-title">{{ $t('menu.channelConfig') }}</span>
-                  <span class="action-row-desc">{{ $t('dashboard.channelConfigDesc') }}</span>
-                </div>
-                <svg class="action-row-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path d="M6 3L11 8L6 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-              </div>
-              <div class="action-row" @click="$router.push('/reports')" v-if="permissions.view_finance">
-                <div class="action-row-icon info">
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                    <path d="M3 20H21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                    <path d="M6 20V14M10 20V10M14 20V12M18 20V8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                  </svg>
-                </div>
-                <div class="action-row-text">
-                  <span class="action-row-title">{{ $t('menu.dataReport') }}</span>
-                  <span class="action-row-desc">{{ $t('dashboard.last7days') }}</span>
-                </div>
-                <svg class="action-row-arrow" width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path d="M6 3L11 8L6 13" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
+            <div class="active-batch-list">
+              <div v-if="!activeBatches.length" class="empty-state"><span>{{ $t('dashboard.activeBatchesEmpty') }}</span></div>
+              <div
+                v-else
+                v-for="b in activeBatches"
+                :key="b.id"
+                class="active-batch-item"
+                @click="$router.push('/admin/sms/tasks')"
+              >
+                <span class="ab-status" :class="b.status">{{ batchStatusText(b.status) }}</span>
+                <span class="ab-name">#{{ b.id }} {{ b.batch_name }}</span>
+                <span class="ab-acct">{{ b.account_name }}</span>
+                <span class="ab-progress">{{ b.progress }}%</span>
               </div>
             </div>
           </div>
 
-          <!-- 通道状态 (技术/管理员) -->
-          <div class="card channels-card" v-if="permissions.view_channels">
+          <!-- 通道送达率异常榜 -->
+          <div class="card ch-worst-card" v-if="permissions.view_channels && worstChannels.length > 0">
             <div class="card-header">
               <h2 class="card-title">
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                  <circle cx="5" cy="9" r="2.5" stroke="currentColor" stroke-width="1.5"/>
-                  <circle cx="13" cy="5" r="2.5" stroke="currentColor" stroke-width="1.5"/>
-                  <circle cx="13" cy="13" r="2.5" stroke="currentColor" stroke-width="1.5"/>
-                  <path d="M7.5 9H10.5M10.5 5L7.5 9M10.5 13L7.5 9" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M2 4L7 9L10 6L16 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M16 8V12H12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
-                {{ $t('dashboard.channelStatus') }}
+                {{ $t('dashboard.worstChannels') }}
               </h2>
-              <span class="channel-count">{{ availableChannels }} {{ $t('common.active') }}</span>
             </div>
-            <div class="channels-list">
-              <div v-if="channels.length === 0" class="empty-state">
-                <span>{{ $t('common.noData') }}</span>
-              </div>
-              <div 
-                v-else
-                v-for="channel in channels.slice(0, 5)" 
-                :key="channel.id" 
-                class="channel-item"
-              >
-                <div class="channel-info">
-                  <span class="channel-name">{{ channel.channel_name || channel.channel_code }}</span>
-                  <span class="channel-protocol">{{ channel.protocol }}</span>
+            <div class="ch-stats-list">
+              <div v-for="ch in worstChannels" :key="ch.channel_name" class="ch-stat-row">
+                <span class="ch-stat-name">{{ ch.channel_name }}</span>
+                <div class="ch-stat-bar-wrap">
+                  <div class="ch-stat-bar" :class="ch.rate >= 90 ? 'good' : ch.rate >= 60 ? 'warn' : 'bad'" :style="{ width: `${ch.rate}%` }"></div>
                 </div>
-                <div :class="['channel-status', channel.status]">
-                  <div class="channel-activity" v-if="channel.status === 'active'">
-                    <span class="activity-bar" style="height: 12px; animation-delay: 0.1s"></span>
-                    <span class="activity-bar" style="height: 18px; animation-delay: 0.3s"></span>
-                    <span class="activity-bar" style="height: 14px; animation-delay: 0.2s"></span>
-                    <span class="activity-bar" style="height: 10px; animation-delay: 0.4s"></span>
-                  </div>
-                  <span class="status-dot"></span>
-                  {{ getChannelStatusText(channel.status) }}
-                </div>
+                <span class="ch-stat-pct">{{ ch.rate }}%</span>
+                <span class="ch-stat-cnt">{{ ch.sent.toLocaleString() }}{{ $t('dashboard.items') }}</span>
               </div>
             </div>
           </div>
         </div>
+
 
         <!-- 右侧 -->
         <div class="content-right">
@@ -689,32 +637,30 @@
             </div>
           </div>
 
-          <!-- 管理员信息 -->
-          <div class="card account-card">
+          <!-- 余额不足客户预警 -->
+          <div class="card low-balance-card" v-if="permissions.view_global || isSales">
             <div class="card-header">
               <h2 class="card-title">
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                  <circle cx="9" cy="6" r="3" stroke="currentColor" stroke-width="1.5"/>
-                  <path d="M3 16C3 13.2386 5.68629 11 9 11C12.3137 11 15 13.2386 15 16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  <rect x="2" y="4" width="14" height="10" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M2 7H16" stroke="currentColor" stroke-width="1.5"/>
+                  <circle cx="12.5" cy="10.5" r="1" fill="currentColor"/>
                 </svg>
-                {{ $t('dashboard.adminInfo') }}
+                {{ $t('dashboard.lowBalanceAlert') }}
               </h2>
+              <span class="channel-count alert" v-if="lowBalanceAccounts.length">{{ lowBalanceAccounts.length }}</span>
             </div>
-            <div class="account-details">
-              <div class="account-row">
-                <span class="account-label">{{ $t('dashboard.accountName') }}</span>
-                <span class="account-value">{{ accountName }}</span>
-              </div>
-              <div class="account-row">
-                <span class="account-label">{{ $t('dashboard.role') }}</span>
-                <span :class="['role-tag', adminRole]">{{ getRoleLabel() }}</span>
-              </div>
-              <div class="account-row">
-                <span class="account-label">{{ $t('common.status') }}</span>
-                <span class="status-badge active">
-                  <span class="status-dot"></span>
-                  {{ $t('dashboard.online') }}
-                </span>
+            <div class="lowbal-list">
+              <div v-if="!lowBalanceAccounts.length" class="empty-state"><span>{{ $t('dashboard.lowBalanceEmpty') }}</span></div>
+              <div
+                v-else
+                v-for="a in lowBalanceAccounts"
+                :key="a.id"
+                class="lowbal-item"
+                @click="$router.push('/admin/accounts')"
+              >
+                <span class="lowbal-name">{{ a.account_name }}</span>
+                <span class="lowbal-bal" :class="{ neg: a.balance <= 0 }">{{ a.currency }} {{ formatNumber(a.balance) }}</span>
               </div>
             </div>
           </div>
@@ -787,6 +733,11 @@ const dailyTrend = ref<{ date: string; sent: number; delivered: number; revenue:
 const topCustomers = ref<{ account_name: string; sent: number; delivered: number; revenue: number }[]>([])
 const batchOverview = ref<{ total: number; processing: number; completed: number; failed: number }>({ total: 0, processing: 0, completed: 0, failed: 0 })
 const channelStats = ref<{ channel_name: string; sent: number; delivered: number; rate: number }[]>([])
+const topCountries = ref<{ country_code: string; sent: number; delivered: number; rate: number }[]>([])
+const lowBalanceAccounts = ref<{ id: number; account_name: string; balance: number; currency: string; threshold: number }[]>([])
+const activeBatches = ref<{ id: number; batch_name: string; status: string; account_name: string; total: number; progress: number }[]>([])
+// 通道送达率异常榜：后端单独取今日有量通道按送达率升序（最差排前，sent>=30）
+const worstChannels = ref<{ channel_name: string; sent: number; delivered: number; rate: number }[]>([])
 
 /** 业绩概览：今日 / 本周 / 本月 切换 + 聚合数据 */
 type PerfStat = { sent: number; cost: number; revenue: number; profit: number }
@@ -951,17 +902,6 @@ const formatRate = (rate: number) => {
   return r.toFixed(1)
 }
 
-/** 依赖服务展示名称 */
-const serviceLabel = (id: string) => {
-  const keys: Record<string, string> = {
-    mysql: 'dashboard.serviceMysql',
-    redis: 'dashboard.serviceRedis',
-    rabbitmq: 'dashboard.serviceRabbitmq'
-  }
-  const k = keys[id]
-  return k ? t(k) : id
-}
-
 const getCountryFlag = (code: string) => {
   const flags: Record<string, string> = {
     '86': '🇨🇳', '1': '🇺🇸', '44': '🇬🇧', '81': '🇯🇵', '82': '🇰🇷',
@@ -971,21 +911,24 @@ const getCountryFlag = (code: string) => {
   return flags[code] || '🌍'
 }
 
+const batchStatusText = (status: string) => {
+  const map: Record<string, string> = {
+    processing: '处理中',
+    paused: '已暂停',
+    failed: '失败',
+    pending: '待处理',
+    completed: '已完成',
+    cancelled: '已取消',
+  }
+  return map[status] || status
+}
+
 const getStatusText = (status: string) => {
   const statusMap: Record<string, string> = {
     'pending': 'pending', 'sent': 'sent', 'delivered': 'delivered', 'failed': 'failed',
   }
   const key = statusMap[status] || status
   return t(`smsStatus.${key}`)
-}
-
-const getChannelStatusText = (status: string) => {
-  const statusMap: Record<string, string> = {
-    'active': t('channelStatus.active'),
-    'inactive': t('channelStatus.inactive'),
-    'maintenance': t('channelStatus.maintenance'),
-  }
-  return statusMap[status] || status
 }
 
 const truncateMessage = (msg: string) => {
@@ -1105,6 +1048,10 @@ const loadStaffData = async () => {
       topCustomers.value = res.top_customers || []
       batchOverview.value = res.batch_overview || { total: 0, processing: 0, completed: 0, failed: 0 }
       channelStats.value = res.channel_stats || []
+      worstChannels.value = res.worst_channels || []
+      topCountries.value = res.top_countries || []
+      lowBalanceAccounts.value = res.low_balance_accounts || []
+      activeBatches.value = res.active_batches || []
       recentCustomers.value = res.recent_customers || []
       if (viewSystemMonitor) {
         const r = res as Record<string, unknown>
@@ -1371,13 +1318,11 @@ onUnmounted(() => {
   margin-bottom: 32px;
 }
 
-.server-health-card,
-.service-health-card {
+.server-health-card {
   height: auto;
 }
 
-.server-health-body,
-.service-health-body {
+.server-health-body {
   padding: 16px 20px 20px;
 }
 
@@ -1458,53 +1403,6 @@ onUnmounted(() => {
   font-size: 13px;
   color: var(--error);
   line-height: 1.5;
-}
-
-.service-row {
-  padding: 12px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.service-row:last-child {
-  border-bottom: none;
-}
-
-.service-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
-  display: block;
-}
-
-.service-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  margin-top: 8px;
-}
-
-.service-badge.ok {
-  color: var(--success);
-}
-
-.service-badge.err {
-  color: var(--error);
-}
-
-.service-badge .status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.service-msg {
-  font-size: 11px;
-  color: var(--text-quaternary);
-  margin: 6px 0 0;
-  word-break: break-all;
 }
 
 .empty-state.subtle {
@@ -1750,75 +1648,6 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-.channels-list {
-  padding: 8px 16px 16px;
-}
-
-.channel-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-}
-
-.channel-item:last-child {
-  border-bottom: none;
-}
-
-.channel-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.channel-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.channel-protocol {
-  font-size: 10px;
-  padding: 2px 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 4px;
-  color: var(--text-quaternary);
-}
-
-.channel-status {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.channel-status .status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  animation: status-pulse 2s infinite ease-in-out;
-}
-
-@keyframes status-pulse {
-  0% { transform: scale(1); opacity: 1; box-shadow: 0 0 0px currentColor; }
-  50% { transform: scale(1.2); opacity: 0.8; box-shadow: 0 0 12px currentColor; }
-  100% { transform: scale(1); opacity: 1; box-shadow: 0 0 0px currentColor; }
-}
-
-.channel-status.active { color: var(--success); }
-.channel-activity { display: flex; align-items: flex-end; gap: 2px; margin-right: 8px; height: 20px; }
-.activity-bar { width: 2px; background: var(--success); border-radius: 1px; animation: activity-pulse 1.2s infinite ease-in-out; opacity: 0.6; }
-@keyframes activity-pulse {
-  0%, 100% { transform: scaleY(1); opacity: 0.4; }
-  50% { transform: scaleY(1.5); opacity: 1; }
-}
-.channel-status.active .status-dot { background: var(--success); }
-.channel-status.inactive { color: var(--text-quaternary); }
-.channel-status.inactive .status-dot { background: var(--text-quaternary); }
-.channel-status.maintenance { color: var(--warning); }
-.channel-status.maintenance .status-dot { background: var(--warning); }
 
 /* 客户列表 (销售专属) */
 .customers-list {
@@ -1964,61 +1793,6 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-/* 账户信息 */
-.account-details {
-  padding: 12px 16px 16px;
-}
-
-.account-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-}
-
-.account-row:last-child {
-  border-bottom: none;
-}
-
-.account-label {
-  font-size: 13px;
-  color: var(--text-tertiary);
-}
-
-.account-value {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.role-tag {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 6px;
-}
-
-.role-tag.super_admin, .role-tag.admin {
-  background: rgba(255, 77, 79, 0.1);
-  color: #ff4d4f;
-}
-
-.role-tag.sales {
-  background: rgba(102, 126, 234, 0.1);
-  color: var(--primary);
-}
-
-.role-tag.finance {
-  background: rgba(255, 210, 0, 0.1);
-  color: var(--warning);
-}
-
-.role-tag.tech {
-  background: rgba(79, 172, 254, 0.1);
-  color: var(--info);
-}
-
 .status-badge {
   display: flex;
   align-items: center;
@@ -2042,15 +1816,6 @@ onUnmounted(() => {
 .status-badge.inactive {
   background: rgba(148, 163, 184, 0.15);
   color: var(--text-tertiary);
-}
-
-.account-details-customer .account-row {
-  align-items: flex-start;
-}
-
-.account-details-customer .account-value {
-  text-align: right;
-  word-break: break-all;
 }
 
 .status-badge .status-dot {
@@ -2303,6 +2068,46 @@ onUnmounted(() => {
 .ch-stat-row .ch-stat-pct { color: var(--text-secondary); }
 .ch-stat-cnt { color: var(--text-quaternary); min-width: 70px; text-align: right; }
 
+/* 余额不足预警 */
+.channel-count.alert { color: var(--danger, #ef4444); background: rgba(239, 68, 68, 0.12); padding: 1px 8px; border-radius: 10px; }
+.lowbal-list { padding: 6px 16px 12px; }
+.lowbal-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+  cursor: pointer;
+}
+.lowbal-item:last-child { border-bottom: none; }
+.lowbal-item:hover { background: rgba(255, 255, 255, 0.03); }
+.lowbal-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.lowbal-bal { font-weight: 700; color: var(--warning, #f59e0b); white-space: nowrap; }
+.lowbal-bal.neg { color: var(--danger, #ef4444); }
+
+/* 异常/进行中批次 */
+.active-batch-list { padding: 6px 16px 12px; }
+.active-batch-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+  cursor: pointer;
+}
+.active-batch-item:last-child { border-bottom: none; }
+.active-batch-item:hover { background: rgba(255, 255, 255, 0.03); }
+.ab-status { flex-shrink: 0; min-width: 48px; text-align: center; font-size: 11px; font-weight: 600; padding: 2px 6px; border-radius: 6px; }
+.ab-status.processing { color: #3b82f6; background: rgba(59, 130, 246, 0.14); }
+.ab-status.paused { color: #f59e0b; background: rgba(245, 158, 11, 0.14); }
+.ab-status.failed { color: #ef4444; background: rgba(239, 68, 68, 0.14); }
+.ab-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.ab-acct { color: var(--text-quaternary); max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ab-progress { font-weight: 700; min-width: 48px; text-align: right; color: var(--text-secondary); }
+
 /* 响应式 */
 @media (max-width: 1400px) {
   .metrics-grid.metrics-6 {
@@ -2513,35 +2318,6 @@ onUnmounted(() => {
 .spark-svg { width: 100%; height: 44px; display: block; }
 .spark-empty { font-size: 12px; color: var(--text-quaternary); height: 44px; display: flex; align-items: center; }
 
-/* ========== 快速操作（行式） ========== */
-.actions-list { display: flex; flex-direction: column; padding: 8px; gap: 4px; }
-.action-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 12px 12px;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: background 0.18s;
-}
-.action-row:hover { background: rgba(255, 255, 255, 0.04); }
-.action-row-icon {
-  flex-shrink: 0;
-  width: 40px;
-  height: 40px;
-  border-radius: 11px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.action-row-icon.primary { background: linear-gradient(135deg, rgba(102,126,234,0.16), rgba(118,75,162,0.1)); color: var(--primary); }
-.action-row-icon.warning { background: linear-gradient(135deg, rgba(255,210,0,0.16), rgba(247,151,30,0.1)); color: var(--warning); }
-.action-row-icon.info { background: linear-gradient(135deg, rgba(79,172,254,0.16), rgba(0,242,254,0.1)); color: var(--info); }
-.action-row-text { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.action-row-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
-.action-row-desc { font-size: 11px; color: var(--text-quaternary); }
-.action-row-arrow { color: var(--text-quaternary); flex-shrink: 0; transition: transform 0.18s; }
-.action-row:hover .action-row-arrow { transform: translateX(3px); color: var(--primary); }
 
 /* ========== 客户动态 ========== */
 .activity-list { padding: 8px 16px 14px; }

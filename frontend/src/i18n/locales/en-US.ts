@@ -1313,6 +1313,13 @@ export default {
     noActivityToday: 'No sends today',
     customerManageDesc: 'Accounts · Balance · Binding',
     channelConfigDesc: 'Channels · Routing · Pricing',
+    topCountries: 'Top Countries Today',
+    lowBalanceAlert: 'Low Balance Alert',
+    lowBalanceEmpty: 'No low-balance customers',
+    activeBatches: 'Failing / In-progress Batches',
+    activeBatchesEmpty: 'No failing or in-progress batches',
+    worstChannels: 'Worst Delivery Channels',
+    viewAllTasks: 'All tasks',
   },
   dataMyNumbers: {
     libraryOriginLabel: 'Origin',

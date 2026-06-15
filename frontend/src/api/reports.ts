@@ -69,6 +69,18 @@ export async function getStatistics(
 }
 
 /**
+ * 仪表盘今日/本周/本月发送条数（count-only，一次查询，远快于三次 /statistics）
+ */
+export interface SentSummary {
+  today_sent: number;
+  week_sent: number;
+  month_sent: number;
+}
+export async function getSentSummary(): Promise<SentSummary> {
+  return request.get<SentSummary>('/reports/sent-summary');
+}
+
+/**
  * 获取成功率分析
  * 管理员模式下返回空数据（暂未实现管理员版本）
  */

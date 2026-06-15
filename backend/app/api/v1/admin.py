@@ -3917,6 +3917,114 @@ async def get_admin_dashboard(
                 "rate": round(int(r.delivered or 0) / r.sent * 100, 1) if r.sent > 0 else 0,
             })
 
+    # 通道送达率异常榜：今日有量通道按送达率「升序」（最差排前），含小量但低送达的通道。
+    # HAVING sent>=30 滤掉一两条的噪声；与 channel_stats（按量Top8）口径不同，单独取。
+    worst_channels = []
+    if is_global_admin or admin.role == 'tech':
+        wc_sent = func.count(SMSLog.id)
+        wc_dlv = func.sum(case((SMSLog.status == "delivered", 1), else_=0))
+        wc_q = (
+            select(Channel.channel_name, wc_sent.label("sent"), wc_dlv.label("delivered"))
+            .join(Channel, SMSLog.channel_id == Channel.id)
+            .where(and_(SMSLog.submit_time >= today_start, SMSLog.submit_time < today_end))
+            .group_by(Channel.channel_name)
+            .having(wc_sent >= 30)
+            .order_by((wc_dlv * 1.0 / wc_sent).asc(), wc_sent.desc())
+            .limit(8)
+        )
+        for r in (await db.execute(wc_q)).fetchall():
+            worst_channels.append({
+                "channel_name": r.channel_name,
+                "sent": r.sent,
+                "delivered": int(r.delivered or 0),
+                "rate": round(int(r.delivered or 0) / r.sent * 100, 1) if r.sent > 0 else 0,
+            })
+
+    # 今日各国发送 TOP8（按发送量排序，附送达率）
+    top_countries = []
+    if is_global_admin or admin.role == 'tech' or (is_sales and my_account_ids):
+        tc_filter = [SMSLog.submit_time >= today_start, SMSLog.submit_time < today_end]
+        if is_sales and my_account_ids:
+            tc_filter.append(SMSLog.account_id.in_(my_account_ids))
+        tc_q = (
+            select(
+                SMSLog.country_code,
+                func.count(SMSLog.id).label("sent"),
+                func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
+            )
+            .where(and_(*tc_filter))
+            .group_by(SMSLog.country_code)
+            .order_by(func.count(SMSLog.id).desc())
+            .limit(8)
+        )
+        for r in (await db.execute(tc_q)).fetchall():
+            sent = r.sent or 0
+            dlv = int(r.delivered or 0)
+            top_countries.append({
+                "country_code": r.country_code or "?",
+                "sent": sent,
+                "delivered": dlv,
+                "rate": round(dlv / sent * 100, 1) if sent > 0 else 0,
+            })
+
+    # 余额不足客户预警（balance < 各自 low_balance_threshold，最缺的排前面）
+    low_balance_accounts = []
+    if is_global_admin or (is_sales and my_account_ids):
+        thr = func.coalesce(Account.low_balance_threshold, 100)
+        lb_filter = [
+            Account.is_deleted == False,  # noqa: E712
+            Account.status == "active",
+            Account.balance < thr,
+        ]
+        if is_sales and my_account_ids:
+            lb_filter.append(Account.id.in_(my_account_ids))
+        lb_q = (
+            select(Account.id, Account.account_name, Account.balance, Account.currency, thr.label("threshold"))
+            .where(and_(*lb_filter))
+            .order_by(Account.balance.asc())
+            .limit(10)
+        )
+        for r in (await db.execute(lb_q)).fetchall():
+            low_balance_accounts.append({
+                "id": r.id,
+                "account_name": r.account_name,
+                "balance": round(float(r.balance or 0), 2),
+                "currency": r.currency or "USD",
+                "threshold": round(float(r.threshold or 0), 2),
+            })
+
+    # 异常/进行中批次（处理中/已暂停/失败，最近优先）
+    active_batches = []
+    if is_global_admin or admin.role == 'tech' or (is_sales and my_account_ids):
+        ab_filter = [
+            SmsBatch.is_deleted == False,  # noqa: E712
+            SmsBatch.status.in_(["processing", "paused", "failed"]),
+        ]
+        if is_sales and my_account_ids:
+            ab_filter.append(SmsBatch.account_id.in_(my_account_ids))
+        ab_q = (
+            select(
+                SmsBatch.id, SmsBatch.batch_name, SmsBatch.status, SmsBatch.account_id,
+                SmsBatch.total_count, SmsBatch.success_count, SmsBatch.failed_count,
+                Account.account_name,
+            )
+            .join(Account, SmsBatch.account_id == Account.id, isouter=True)
+            .where(and_(*ab_filter))
+            .order_by(SmsBatch.id.desc())
+            .limit(8)
+        )
+        for r in (await db.execute(ab_q)).fetchall():
+            total = r.total_count or 0
+            done = (r.success_count or 0) + (r.failed_count or 0)
+            active_batches.append({
+                "id": r.id,
+                "batch_name": r.batch_name,
+                "status": getattr(r.status, "value", r.status),
+                "account_name": r.account_name,
+                "total": total,
+                "progress": round(done / total * 100, 1) if total > 0 else 0,
+            })
+
     # ========== 业绩概览：今日 / 本周 / 本月 聚合（前端 perf-overview 卡片） ==========
     # 口径与今日统计一致，按角色复用相同的数据范围
     week_start = today_start - timedelta(days=today.weekday())  # 本周一 00:00
@@ -4024,6 +4132,10 @@ async def get_admin_dashboard(
         "top_customers": top_customers,
         "batch_overview": batch_overview,
         "channel_stats": channel_stats,
+        "worst_channels": worst_channels,
+        "top_countries": top_countries,
+        "low_balance_accounts": low_balance_accounts,
+        "active_batches": active_batches,
         "recent_customers": recent_customers if is_sales else [],
         "permissions": {
             "view_global": is_global_admin,
@@ -5564,7 +5676,10 @@ def _serialize_batch_row(b, patch: Optional[dict] = None) -> dict:
 @router.get("/batches", response_model=dict)
 async def admin_list_batches(
     account_id: Optional[int] = None,
+    account: Optional[str] = None,
     channel_id: Optional[int] = None,
+    batch_id: Optional[int] = None,
+    content: Optional[str] = None,
     status: Optional[str] = None,
     keyword: Optional[str] = None,
     start_date: Optional[str] = None,
@@ -5587,9 +5702,24 @@ async def admin_list_batches(
     page = max(1, int(page or 1))
     page_size = max(1, min(int(page_size or 20), 100))
 
+    from app.modules.common.account import Account as _Acc
+
     where = [SmsBatch.is_deleted == False]  # noqa: E712
     if account_id:
         where.append(SmsBatch.account_id == int(account_id))
+    # account：支持账户名或账户ID 统一入口（纯数字按ID精确，否则按账户名模糊）
+    if account and account.strip():
+        av = account.strip()
+        if av.isdigit():
+            where.append(SmsBatch.account_id == int(av))
+        else:
+            where.append(
+                SmsBatch.account_id.in_(
+                    select(_Acc.id).where(_Acc.account_name.like(f"%{av}%"))
+                )
+            )
+    if batch_id:
+        where.append(SmsBatch.id == int(batch_id))
     if status:
         try:
             where.append(SmsBatch.status == BatchStatus(status))
@@ -5614,6 +5744,15 @@ async def admin_list_batches(
         where.append(
             SmsBatch.id.in_(
                 select(SMSLog.batch_id).where(SMSLog.channel_id == int(channel_id)).distinct()
+            )
+        )
+
+    # 短信内容筛选：批次表不存内容，同样通过 sms_logs.message 反查
+    if content and content.strip():
+        ct = f"%{content.strip()}%"
+        where.append(
+            SmsBatch.id.in_(
+                select(SMSLog.batch_id).where(SMSLog.message.like(ct)).distinct()
             )
         )
 
@@ -5650,21 +5789,34 @@ async def admin_list_batches(
             for i in items:
                 i["account_name"] = name_map.get(i["account_id"])
 
-    # 短信内容 + 发送通道：批次表不存这两项，取每批一条代表性 sms_logs（最早一条 MIN(id)）
-    # 反查 message 与 channel_id，再映射通道编码。一次性查，避免逐批查询。
+    # 短信内容 + 发送通道：批次表不存这两项，取每批代表性 sms_logs 反查。
+    # 内容用最早一条 MIN(id)；通道单独取「最早一条 channel_id 非空」的行——
+    # 大批次首行常是 channel_id=NULL 的占位/种子行，直接用 MIN(id) 会误显示为「-」。
     if items:
         batch_ids = [i["id"] for i in items]
-        rep_sub = (
+        # 内容：MIN(id)
+        msg_sub = (
             select(SMSLog.batch_id, sa_func.min(SMSLog.id).label("mid"))
             .where(SMSLog.batch_id.in_(batch_ids))
             .group_by(SMSLog.batch_id)
         ).subquery()
-        rep_rows = (await db.execute(
-            select(SMSLog.batch_id, SMSLog.message, SMSLog.channel_id)
-            .join(rep_sub, SMSLog.id == rep_sub.c.mid)
+        msg_rows = (await db.execute(
+            select(SMSLog.batch_id, SMSLog.message)
+            .join(msg_sub, SMSLog.id == msg_sub.c.mid)
         )).all()
-        rep_map = {bid: (msg, cid) for bid, msg, cid in rep_rows}
-        chan_ids = {cid for _, cid in rep_map.values() if cid}
+        msg_map = {bid: msg for bid, msg in msg_rows}
+        # 通道：MIN(id) 且 channel_id IS NOT NULL
+        ch_sub = (
+            select(SMSLog.batch_id, sa_func.min(SMSLog.id).label("cid_min"))
+            .where(SMSLog.batch_id.in_(batch_ids), SMSLog.channel_id.isnot(None))
+            .group_by(SMSLog.batch_id)
+        ).subquery()
+        ch_rows = (await db.execute(
+            select(SMSLog.batch_id, SMSLog.channel_id)
+            .join(ch_sub, SMSLog.id == ch_sub.c.cid_min)
+        )).all()
+        bid_chan = {bid: cid for bid, cid in ch_rows}
+        chan_ids = {cid for cid in bid_chan.values() if cid}
         chan_map = {}
         if chan_ids:
             from app.modules.sms.channel import Channel as _Ch
@@ -5673,8 +5825,8 @@ async def admin_list_batches(
             )
             chan_map = {row[0]: (row[1], row[2]) for row in cr.all()}
         for i in items:
-            msg, cid = rep_map.get(i["id"], (None, None))
-            i["content"] = msg
+            i["content"] = msg_map.get(i["id"])
+            cid = bid_chan.get(i["id"])
             cc = chan_map.get(cid) if cid else None
             i["channel_code"] = cc[0] if cc else None
             i["channel_name"] = cc[1] if cc else None

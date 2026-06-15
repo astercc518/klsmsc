@@ -19,6 +19,9 @@ class SMSLog(Base):
         Index("idx_account_time", "account_id", "submit_time"),
         Index("idx_channel_id_submit", "channel_id", "submit_time"),
         Index("idx_country_code_submit", "country_code", "submit_time"),
+        # 全局批次按通道筛选：DISTINCT batch_id WHERE channel_id=X 需要 batch_id 进索引，
+        # 否则要回表读 3M+ 行再用临时表去重（实测 ~12s）。覆盖索引使其变松散索引扫描，子秒返回。
+        Index("idx_channel_id_batch", "channel_id", "batch_id"),
     )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="记录ID")
