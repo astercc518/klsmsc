@@ -144,10 +144,17 @@ func handleSession(conn net.Conn) {
 	if maxBinds <= 0 {
 		maxBinds = getMaxBindsPerAccount()
 	}
-	if inboundReg.CountBySystem(s.systemID) >= maxBinds {
-		_ = s.writePDUSafe(bindRespCmdID(hdr.commandID), statusBindFail, hdr.sequenceNumber, buildBindResp(gwSystemID))
-		log.Printf("[INBOUND] %s BIND 拒绝（超过最大绑定数）: system_id=%s", remoteIP, s.systemID)
-		return
+	// 满槽时不再硬拒,而是踢掉最旧的会话给新绑定腾位(LRU 驱逐)。根治"对端反复重连留下的
+	// 孤儿连接(仍自动回 enquire_link,90s idle 清理抓不到)占满槽位致合法新绑定永久被拒、
+	// 通道永久离线"。新绑定恒为最新、孤儿恒为最旧 → 新绑定优先挤掉孤儿;关掉孤儿 TCP 也会
+	// 触发对端 OnClosed 把它清掉(双向收敛)。循环驱逐防并发下计数瞬时超额。
+	for inboundReg.CountBySystem(s.systemID) >= maxBinds {
+		old := inboundReg.EvictOldest(s.systemID)
+		if old == nil {
+			break
+		}
+		old.close()
+		log.Printf("[INBOUND] %s 满槽驱逐最旧会话给新绑定腾位: system_id=%s (max=%d)", remoteIP, s.systemID, maxBinds)
 	}
 
 	// 4) TPS 限流（依据 accounts.rate_limit；默认 1000）
