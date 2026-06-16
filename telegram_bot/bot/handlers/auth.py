@@ -49,18 +49,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 login_password = extra_info.get('login_password', '')
 
                 msg = f"🎉 <b>开户成功！</b>\n\n"
-                if tpl_name:
-                    msg += f"📋 模板: {tpl_name}\n"
                 msg += (
-                    f"📦 业务类型: {biz_label}\n\n"
                     f"━━━ 📱 平台登录信息 ━━━\n"
                     f"🌐 平台地址: https://www.kaolach.com\n"
                     f"👤 登录账户: <code>{login_account}</code>\n"
                     f"🔒 登录密码: <code>{login_password}</code>\n\n"
-                    f"━━━ 🔧 API 接口信息 ━━━\n"
-                    f"🆔 账户ID: <code>{account['id']}</code>\n"
-                    f"🔑 API Key: <code>{login_account}</code>\n"
-                    f"🔐 API Secret: <code>{api_key}</code>\n\n"
                 )
 
                 if business_type == 'voice' and extra_info.get('voice'):
