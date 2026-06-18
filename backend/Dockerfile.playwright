@@ -13,6 +13,10 @@ RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
 
 RUN pip install --no-cache-dir --break-system-packages "playwright==1.52.0" playwright-stealth>=1.0.6 faker>=33.0.0
 
+# patchright(反检测 Playwright,已在 requirements 中)的专用 Chromium —— 过 1win 指纹墙
+# 装到基础镜像的 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright(全局可读),供 uid 1000 使用
+RUN python -m patchright install chromium
+
 # Playwright 浏览器已内置在基础镜像中，无需额外安装
 
 COPY . .

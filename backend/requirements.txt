@@ -46,6 +46,9 @@ email-validator==2.1.0
 # Playwright 浏览器自动化（注水 worker 使用）
 playwright==1.52.0
 playwright-stealth>=1.0.6
+# patchright: 驱动层打补丁的 Playwright,抹掉 CDP Runtime.enable / navigator.webdriver 等
+# 自动化泄漏,用于过 1win 的 Cloudflare jsd + CDA 指纹墙(点击+注册均走它)
+patchright>=1.52.0
 faker>=33.0.0
 
 # 测试依赖

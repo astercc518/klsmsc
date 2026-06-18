@@ -614,6 +614,9 @@ services:
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
       CAPSOLVER_API_KEY: ${CAPSOLVER_API_KEY:-}
+      # 1win 系落地马甲域(会轮换):匹配中即走 _do_register_1win 专用表单路径,否则误入通用浏览器路径报"未发现表单"。
+      # 域名轮换时更新此处(逗号分隔,后缀匹配),改后须 docker compose up -d worker-web-register 重建生效。
+      WATER_ONEWIN_DOMAINS: ${WATER_ONEWIN_DOMAINS:-1wzbzs.life,rhrh888.com}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs

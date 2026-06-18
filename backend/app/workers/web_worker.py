@@ -44,14 +44,17 @@ def _get_browser():
                 _BROWSER = None
 
         if _BROWSER is None:
-            from playwright.sync_api import sync_playwright
+            # patchright:驱动层打补丁的 Playwright,抹掉 CDP Runtime.enable / navigator.webdriver
+            # 等自动化泄漏,过 1win 的 Cloudflare jsd + CDA 指纹墙(点击+注册均走它)。API 与
+            # playwright 完全兼容,设备模拟(UA/视口/is_mobile/touch)照常。
+            from patchright.sync_api import sync_playwright
             if _PW is None:
                 _PW = sync_playwright().start()
             _BROWSER = _PW.chromium.launch(
                 headless=True,
                 args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
             )
-            logger.info(f"web_worker: Chromium launched, pid={getattr(_BROWSER, 'pid', '?')}")
+            logger.info(f"web_worker: patchright Chromium launched, pid={getattr(_BROWSER, 'pid', '?')}")
         return _BROWSER
 
 
@@ -76,18 +79,13 @@ logger = get_logger(__name__)
 
 
 def _apply_stealth(page):
-    """应用 playwright-stealth 反指纹检测补丁（支持 v1 stealth_sync / v2 Stealth().use_sync）"""
-    try:
-        from playwright_stealth import Stealth
-        Stealth().use_sync(page)
-        return
-    except Exception:
-        pass
-    try:
-        from playwright_stealth import stealth_sync
-        stealth_sync(page)
-    except Exception:
-        pass
+    """反指纹由 patchright 驱动层内置补丁负责,此处不再叠加 playwright_stealth。
+
+    patchright 官方明确警告:其它 stealth 插件(如 playwright_stealth)注入的 init 脚本会
+    覆盖/破坏 patchright 的补丁、反而引入可被指纹识别的新特征。故保留空实现,
+    仅作为各调用点的占位(避免改动调用方)。
+    """
+    return
 
 
 def _wait_through_cf(page, max_wait_ms: int = 25000):
@@ -454,13 +452,16 @@ def web_click_task(self, sms_log_id: int, url: str, channel_id: int,
         return {"success": False, "error": "soft_time_limit"}
 
 
-def _resolve_short_link(url: str) -> str:
-    """跟随跳转把点击追踪短链(如 66c.eu/<token>)解析成真实落地 URL。
+def _resolve_short_link(url: str):
+    """跟随跳转把点击追踪短链(如 66c.eu/<token>)解析成真实落地 URL,并返回落地页 HTML。
 
     注册分流/脚本匹配/affiliate 提取全靠落地域(rztk6mpvx.com),但虚拟通道批次的消息宏
     只替换成短链 66c.eu/<token>(见 project_virtual_chunk_shortlink_clicks),裸短链 host=66c.eu
     匹配不到任何 merchant → 注册被错误地拖进浏览器路径并 260s 超时。这里一次 HTTP 跟随跳转
     取真实落地域(实测 66c.eu/<token> → www.rztk6mpvx.com/?affiliateCode=...),失败则原样返回。
+
+    返回 (final_url, html):html 供 _looks_like_onewin 做内容识别(1win 马甲域会轮换,
+    域名白名单常漏,落地页 meta(author/application-name=1win)远比域名稳定)。
     """
     import httpx
     from urllib.parse import urlparse
@@ -471,11 +472,423 @@ def _resolve_short_link(url: str) -> str:
                           "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
                           "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1")})
         final = str(r.url)
+        html = ""
+        try:
+            html = r.text or ""
+        except Exception:
+            html = ""
         if urlparse(final).hostname:
-            return final
+            return final, html
+        return url, html
     except Exception as e:
         logger.warning(f"短链解析失败,沿用原 url: {raw[:80]} ({type(e).__name__}: {e})")
-    return url
+    return url, ""
+
+
+# 1win 落地页内容指纹(比轮换的马甲域稳定):品牌 meta + 注册微前端模块 + 专属 CDN。
+# 命中任一即判为 1win 系,走 _do_register_1win 专用表单路径,无需把新马甲域加进白名单。
+_ONEWIN_CONTENT_MARKERS = (
+    'name="author" content="1win"',
+    'name="application-name" content="1win"',
+    'apple-mobile-web-app-title" content="1win"',
+    '"paywidget":',          # importmap 里 1win 的注册支付微前端模块
+    'bundlecdn.com',
+    'bundlecda.com',
+)
+
+
+def _looks_like_onewin(html: str) -> bool:
+    """按落地页内容特征判断是否 1win 系(域名白名单漏掉的新马甲域兜底)。"""
+    if not html:
+        return False
+    h = re.sub(r"\s+", " ", html).lower()
+    return any(m.lower() in h for m in _ONEWIN_CONTENT_MARKERS)
+
+
+# ========== 1win 系博彩注册（浏览器表单） ==========
+# 1win 落地页(如 1wzbzs.life)是 Cloudflare 防护的 Vue SPA,与 wps 平台(rztk6mpvx/in1.fun)
+# 完全不同:无逆向出的直连 API,且注册体强依赖浏览器实时算的 fingerprint。故走浏览器表单。
+# 关键约束:
+#   1) 必须经"目标国"住宅代理出口,否则站点弹"区域受限"弹窗,根本不渲染注册表单。
+#   2) 表单 = 国码电话(撞库:填该消息真实收信号) + 密码(≥8) + 协议勾选;填手机号不触发 OTP,提交即建号。
+#   3) 域名会轮换 → 用 WATER_ONEWIN_DOMAINS 环境变量(逗号分隔,后缀匹配)维护当前落地主域。
+_ONEWIN_DOMAINS = [
+    d.strip().lower().strip(".")
+    for d in os.getenv("WATER_ONEWIN_DOMAINS", "1wzbzs.life").split(",")
+    if d.strip()
+]
+
+# 国家 ISO2 → 国际区号(用于把 E.164 收信号去掉区号,填进表单"国码+本地号"控件的本地号位)
+_DIAL_CODES = {
+    "TH": "66", "BD": "880", "IN": "91", "ID": "62", "PH": "63", "VN": "84",
+    "MY": "60", "PK": "92", "MM": "95", "KH": "855", "LA": "856", "NP": "977",
+    "LK": "94", "BR": "55", "NG": "234", "EG": "20", "TR": "90",
+}
+
+
+def _onewin_host(host: str) -> bool:
+    """host 是否属于 1win 系落地域(精确或子域后缀匹配)。匹配不到返回 False。"""
+    host = (host or "").lower().strip(".")
+    if not host:
+        return False
+    for dom in _ONEWIN_DOMAINS:
+        if host == dom or host.endswith("." + dom):
+            return True
+    return False
+
+
+def _to_national_number(phone: str, country_code: str) -> str:
+    """E.164 收信号 → 表单本地号(去国际区号与前导 0)。
+    例:TH +66822851805 → 822851805;BD 8801712345678 → 1712345678。"""
+    d = re.sub(r"\D", "", phone or "")
+    cc = _DIAL_CODES.get((country_code or "").upper())
+    if cc and d.startswith(cc):
+        d = d[len(cc):]
+    return d.lstrip("0")
+
+
+def _gen_1win_password() -> str:
+    """1win 密码:8-14 位,含大小写+数字(拟人,复用 jl 词库生成器,不足 8 位补数字)。"""
+    import string as _string
+    from app.workers.jl_api_register import _gen_password
+    p = _gen_password()
+    while len(p) < 8:
+        p += random.choice(_string.digits)
+    return p[:14]
+
+
+def _gen_1win_email() -> str:
+    """生成拟人随机邮箱(1win 注册表单 email 必填,无需收件验证)。"""
+    import string as _string
+    user = "".join(random.choice(_string.ascii_lowercase) for _ in range(random.randint(6, 10)))
+    user += str(random.randint(2, 9999))
+    dom = random.choice(["gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com"])
+    return f"{user}@{dom}"
+
+
+# 提交前注入:预挂钩 window.initGeetest4(SDK 在点提交后才加载,用 defineProperty 拦截其赋值),
+# 捕获 captcha 实例、captchaId 与站点注册成功回调,存到 window.__gt4。
+_GEETEST_HOOK_JS = """() => {
+  if (window.__gt4hooked) return;
+  window.__gt4hooked = true;
+  window.__gt4 = {};
+  let _real = undefined;
+  function _wrapped(config, cb) {
+    try { window.__gt4.captchaId = config && (config.captchaId || config.captcha_id); } catch(e){}
+    return _real(config, function(captcha) {
+      window.__gt4.captcha = captcha;
+      try {
+        const _orig = captcha.onSuccess.bind(captcha);
+        captcha.onSuccess = function(fn){ window.__gt4.successCb = fn; return _orig(fn); };
+      } catch(e){ window.__gt4.err2 = String(e); }
+      return cb(captcha);
+    });
+  }
+  try {
+    Object.defineProperty(window, 'initGeetest4', {
+      configurable: true,
+      get() { return _real ? _wrapped : _real; },
+      set(v) { _real = v; }
+    });
+  } catch(e) { window.__gt4.err = String(e); }
+}"""
+
+# 解出凭证后注入:覆盖 getValidate 返回 CapSolver 凭证,并触发站点成功回调 → 站点自动提交注册。
+_GEETEST_INJECT_JS = """(validate) => {
+  const g = window.__gt4 || {};
+  if (!g.captcha) return 'no-captcha';
+  try { g.captcha.getValidate = function(){ return validate; }; }
+  catch(e){ return 'override-failed:' + e; }
+  if (typeof g.successCb === 'function') {
+    try { g.successCb(validate); return 'fired-cb'; } catch(e){ return 'cb-error:' + e; }
+  }
+  return 'no-cb';
+}"""
+
+
+def _solve_and_inject_geetest(page, website_url):
+    """等 GeeTest 弹出→取 captchaId→CapSolver 解→注入凭证触发注册。返回 (ok, reason)。"""
+    captcha_id = None
+    deadline = time.time() + 25
+    while time.time() < deadline:
+        try:
+            captcha_id = page.evaluate("()=> (window.__gt4 && window.__gt4.captchaId) || null")
+        except Exception:
+            captcha_id = None
+        if captcha_id:
+            break
+        page.wait_for_timeout(800)
+    if not captcha_id:
+        return False, "未捕获 GeeTest captchaId(可能未触发验证码)"
+    from app.workers.geetest_solver import solve_geetest_v4
+    val = solve_geetest_v4(captcha_id, website_url)
+    if not val:
+        return False, "CapSolver 未解出 GeeTest"
+    # GeeTest getValidate() 期望 snake_case;CapSolver 返回即是该结构
+    validate = {k: val.get(k) for k in
+                ("lot_number", "captcha_output", "pass_token", "gen_time") if val.get(k) is not None}
+    validate["captcha_id"] = val.get("captcha_id") or captcha_id
+    if val.get("risk_type"):
+        validate["risk_type"] = val["risk_type"]
+    try:
+        res = page.evaluate(_GEETEST_INJECT_JS, validate)
+    except Exception as e:
+        return False, f"GeeTest 注入异常: {e}"
+    logger.info(f"1win GeeTest 注入结果: {res}")
+    return (res == "fired-cb"), f"geetest:{res}"
+
+
+def _safe_query_selector(page, selector, retries=4, wait_ms=1200):
+    """query_selector,容忍 SPA 客户端导航致"执行上下文被销毁"(重试),返回元素或 None。
+
+    1win 落地页 goto 后常再做一次客户端跳转(?p=xxx→区域化路径),此刻 query_selector
+    会抛 "Execution context was destroyed, most likely because of a navigation"。
+    """
+    for _ in range(retries):
+        try:
+            return page.query_selector(selector)
+        except Exception as e:
+            if "Execution context" in str(e) or "navigation" in str(e):
+                try:
+                    page.wait_for_timeout(wait_ms)
+                except Exception:
+                    pass
+                continue
+            return None
+    try:
+        return page.query_selector(selector)
+    except Exception:
+        return None
+
+
+def _do_register_1win(sms_log_id, url, channel_id, task_config_id, account_id,
+                      country_code, proxy_id, batch_id=None):
+    """1win 系博彩注册:经目标国代理驱动浏览器表单建号(撞库电话,无 OTP)。"""
+    import time as _time
+    from urllib.parse import urlparse
+    eng, factory = _make_session()
+    start = _time.time()
+    log_id = None
+    detected_ip = None
+    ua = None
+    device_desc = None
+    try:
+        log_id, proxy_config, script_data = _db_sync(
+            _create_register_log(factory, sms_log_id, account_id, channel_id,
+                                 task_config_id, url, proxy_id, country_code, batch_id=batch_id)
+        )
+        _db_sync(eng.dispose())
+
+        # 1) 无代理则直接放弃:无目标国出口必被地域拦截,表单不渲染。
+        if not proxy_config:
+            _db_sync(_update_log_status(_make_session()[1], log_id, 'failed',
+                                        int((_time.time() - start) * 1000),
+                                        '1win 注册需目标国住宅代理,未取到可用代理',
+                                        device_info='1win'))
+            logger.warning(f"1win 注册放弃: sms_log={sms_log_id} 无代理(country={country_code})")
+            return {"success": False, "error": "no_proxy"}
+
+        # 2) 撞库:取真实收信号 → 表单本地号
+        phone = None
+        try:
+            _e3, _f3 = _make_session()
+            phone = _db_sync(_fetch_sms_phone(_f3, sms_log_id))
+            _db_sync(_e3.dispose())
+        except Exception:
+            phone = None
+        national = _to_national_number(phone, country_code)
+        if not national:
+            _db_sync(_update_log_status(_make_session()[1], log_id, 'failed',
+                                        int((_time.time() - start) * 1000),
+                                        f'无有效收信号可撞库: {phone}', device_info='1win'))
+            return {"success": False, "error": "no_phone"}
+        password = _gen_1win_password()
+        email = ""
+
+        # 3) 浏览器表单
+        browser = _get_browser()
+        ua = _pick_user_agent("mobile")
+        viewport = {"width": 390, "height": 844}
+        device_desc = _describe_device(ua, True, viewport)
+        locale, tz = _get_locale_timezone(country_code)
+        ctx_kwargs = {
+            "user_agent": ua, "viewport": viewport, "locale": locale, "timezone_id": tz,
+            "screen": dict(viewport), "device_scale_factor": 3, "is_mobile": True, "has_touch": True,
+            "proxy": proxy_config,
+        }
+        context = browser.new_context(**ctx_kwargs)
+        captured = {}
+
+        def _on_resp(resp):
+            try:
+                u = resp.url
+                # 真实注册端点是 MS-AUTH 系(如 /api/MS-AUTH/register/v2),旧的 /auth/register 兜底保留。
+                # captcha-isEnabled 是验证码探测,非注册结果,排除。
+                is_reg = ("captcha-isenabled" not in u.lower()) and (
+                    "/auth/register" in u
+                    or ("ms-auth" in u.lower() and "regist" in u.lower())
+                )
+                if is_reg:
+                    captured["status"] = resp.status
+                    captured["url"] = u
+                    try:
+                        captured["body"] = (resp.text() or "")[:600]
+                    except Exception:
+                        captured["body"] = ""
+            except Exception:
+                pass
+
+        success = False
+        try:
+            page = context.new_page()
+            _apply_stealth(page)
+            page.on("response", _on_resp)
+
+            # 出口 IP 探测(best-effort)
+            try:
+                ip_page = context.new_page()
+                _apply_stealth(ip_page)
+                ip_page.goto("https://api.ipify.org?format=text", timeout=8000)
+                m = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", ip_page.content() or "")
+                detected_ip = m.group(1) if m else None
+                ip_page.close()
+            except Exception:
+                detected_ip = None
+
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            _wait_through_cf(page)
+            page.wait_for_timeout(random.randint(3500, 5500))
+            # SPA 落地后常再做一次客户端跳转,先等网络静默让导航落定,避免随后探测撞上下文销毁
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+
+            # 注册表单常随落地自动弹;若没有电话输入框,主动点"注册"打开弹窗(多语言兜底)
+            if not _safe_query_selector(page, "input[type=tel]"):
+                for label in ("ลงทะเบียน", "Register", "Daftar", "Registrasi",
+                              "Sign up", "Đăng ký", "Регистрация", "注册"):
+                    try:
+                        page.get_by_text(label, exact=True).first.click(timeout=3500)
+                        break
+                    except Exception:
+                        continue
+                page.wait_for_timeout(3000)
+
+            tel = _safe_query_selector(page, "input[type=tel]")
+            if not tel:
+                # 多半是被地域拦截(代理出口非目标国)→ 取弹窗文案辅助排查
+                blk = ""
+                try:
+                    blk = page.evaluate(
+                        "()=>{const m=document.querySelector('[data-testid=modal-layout]');"
+                        "return m?(m.innerText||'').slice(0,120):''}") or ""
+                except Exception:
+                    pass
+                raise RuntimeError(f"未找到电话输入框(疑似地域拦截/代理非目标国): {blk[:100]}")
+
+            tel.click()
+            tel.type(national, delay=random.randint(50, 110))
+            # 邮箱必填:不填则提交按钮校验不过、不触发注册请求(无需收件验证)
+            email = email or _gen_1win_email()
+            ef = _safe_query_selector(page, "input[type=email]")
+            if ef:
+                try:
+                    ef.click()
+                    ef.type(email, delay=random.randint(40, 90))
+                except Exception:
+                    try:
+                        ef.fill(email)
+                    except Exception:
+                        pass
+            pwf = _safe_query_selector(page, "input[type=password]")
+            if pwf:
+                pwf.fill(password)
+            # 勾选所有协议复选框(自定义组件:真 input 可能隐藏,force 点击)
+            for cb in page.query_selector_all("input[type=checkbox]"):
+                try:
+                    if not cb.is_checked():
+                        cb.click(force=True)
+                except Exception:
+                    pass
+            page.wait_for_timeout(random.randint(700, 1300))
+
+            # 提交前预挂钩 GeeTest(SDK 在点提交后才加载)
+            try:
+                page.evaluate(_GEETEST_HOOK_JS)
+            except Exception as _he:
+                logger.warning(f"1win GeeTest 挂钩失败: {_he}")
+
+            # 提交:弹窗内 submit 按钮优先
+            btn = (page.query_selector("[data-testid=modal-layout] button[type=submit]")
+                   or page.query_selector("button[type=submit]"))
+            if btn:
+                try:
+                    btn.click(force=True)
+                except Exception:
+                    pass
+            else:
+                for label in ("ลงทะเบียน", "Register", "Daftar", "Đăng ký", "Регистрация"):
+                    try:
+                        page.get_by_role("button", name=label).last.click(timeout=3000, force=True)
+                        break
+                    except Exception:
+                        continue
+
+            # 注册门有 GeeTest v4:解码并注入凭证触发注册(无验证码时快速返回,不阻塞)
+            try:
+                gt_ok, gt_reason = _solve_and_inject_geetest(page, url)
+                if gt_reason and "未捕获" not in gt_reason:
+                    logger.info(f"1win GeeTest: {gt_reason} sms_log={sms_log_id}")
+            except Exception as _ge:
+                logger.warning(f"1win GeeTest 处理异常: {_ge}")
+
+            # 等注册响应回来(最多 ~16s)
+            for _ in range(20):
+                page.wait_for_timeout(800)
+                if captured.get("status"):
+                    break
+            page.wait_for_timeout(1500)
+
+            if captured.get("status") and 200 <= captured["status"] < 300:
+                success = True
+            elif not captured.get("status"):
+                # 没截到响应(可能 SPA 内部 fetch 早于监听或被合并)→ 退回页面信号判定
+                success = _check_register_success(page, url)
+        finally:
+            try:
+                context.close()
+            except Exception:
+                pass
+
+        duration = int((_time.time() - start) * 1000)
+        eng2, factory2 = _make_session()
+        if success:
+            login = "+" + re.sub(r"\D", "", phone or "")
+            creds = (f"账号(手机) {login} ┊ 邮箱 {email} ┊ 密码 {password} ┊ 1win @ "
+                     f"{urlparse(url).hostname} ┊ exit {detected_ip}")
+            _db_sync(_update_log_status(factory2, log_id, 'success', duration,
+                                        proxy_ip=detected_ip, device_info=creds[:255], user_agent=ua))
+            logger.info(f"1win 注册成功: sms_log={sms_log_id}, login={login}, pwd={password}, "
+                        f"status={captured.get('status')}, {duration}ms")
+        else:
+            err = (f"1win 注册未成功 status={captured.get('status')} "
+                   f"{(captured.get('body') or '')[:160]}")
+            _db_sync(_update_log_status(factory2, log_id, 'failed', duration, err[:500],
+                                        proxy_ip=detected_ip, device_info=device_desc, user_agent=ua))
+            logger.warning(f"1win 注册失败: sms_log={sms_log_id}, {err}")
+        if script_data and script_data.get("id"):
+            _db_sync(_increment_script_counter(factory2, script_data["id"], success))
+        _db_sync(eng2.dispose())
+        return {"success": success, "log_id": log_id}
+    except SoftTimeLimitExceeded:
+        logger.warning(f"1win 注册软超时: sms_log={sms_log_id}")
+        _mark_processing_log_failed(sms_log_id, 'register', '1win_soft_time_limit')
+        return {"success": False, "error": "soft_time_limit"}
+    except Exception as e:
+        logger.error(f"1win 注册异常: sms_log={sms_log_id}, {e}", exc_info=True)
+        _mark_processing_log_failed(sms_log_id, 'register', f'1win_error: {str(e)[:200]}')
+        return {"success": False, "error": str(e)[:200]}
 
 
 @celery_app.task(name="web_register_task", bind=True, max_retries=1,
@@ -496,15 +909,28 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
         # 改走逆向出的加密注册接口,直接建号,快且稳。
         from urllib.parse import urlparse
         from app.workers.jl_api_register import merchant_for_host
-        # 裸短链(66c.eu/<token>)匹配不到 merchant → 先跟随跳转解析出真实落地域,
-        # 让 merchant/脚本/affiliate 都能命中,避免被错误拖进浏览器路径而超时。
-        if not merchant_for_host(urlparse(url).hostname or ""):
-            resolved = _resolve_short_link(url)
-            if merchant_for_host(urlparse(resolved).hostname or ""):
+        host = urlparse(url).hostname or ""
+        landing_html = ""
+        # 裸短链(66c.eu/<token>、cutt.ly/<id>)匹配不到任何已知落地域 → 先跟随跳转解析真实落地域,
+        # 让 merchant/1win/脚本/affiliate 都能命中,避免被错误拖进通用浏览器路径而超时。
+        # 顺带取落地页 HTML 供内容识别 1win 马甲域(域名会轮换,白名单常漏)。
+        if not merchant_for_host(host) and not _onewin_host(host):
+            resolved, landing_html = _resolve_short_link(url)
+            if resolved and resolved != url:
                 logger.info(f"短链解析: {url[:60]} -> {resolved[:80]}")
                 url = resolved
-        if merchant_for_host(urlparse(url).hostname or ""):
+                host = urlparse(url).hostname or ""
+        if merchant_for_host(host):
             return _do_register_via_api(
+                sms_log_id, url, channel_id, task_config_id, account_id,
+                country_code, proxy_id, batch_id=batch_id
+            )
+        # 1win 系博彩(必须经目标国住宅代理;表单=国码电话(撞库)+密码+协议,无 OTP,提交即建号)
+        # 域名白名单 或 落地页内容特征命中即走专用路径——后者兜住未及时入白名单的新马甲域。
+        if _onewin_host(host) or _looks_like_onewin(landing_html):
+            if not _onewin_host(host):
+                logger.info(f"内容识别为 1win 落地页(域名 {host} 不在白名单)→ 走专用注册路径")
+            return _do_register_1win(
                 sms_log_id, url, channel_id, task_config_id, account_id,
                 country_code, proxy_id, batch_id=batch_id
             )
@@ -1342,6 +1768,13 @@ def _auto_register(page, url: str = "", country_code: str = ""):
     except Exception:
         pass
     try:
+        # 0) 等 SPA 把表单渲染出来：1win/引流落地页多为 Vue 客户端渲染,
+        #    domcontentloaded 时表单 DOM 尚未注入,死等固定时长会扫空误判"无表单"。
+        #    轮询最多 15s,出现可填输入框即停,避免对重型 SPA 过早放弃。
+        if not _has_fillable_input(page):
+            deadline = time.time() + 15
+            while time.time() < deadline and not _has_fillable_input(page):
+                page.wait_for_timeout(1000)
         # 1) 当前页没有任何可填输入框时，才去找注册页(避免把已有表单导航走)
         if not _has_fillable_input(page):
             _goto_register_form(page, url)
