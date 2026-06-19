@@ -29,6 +29,10 @@ _SMPP_ORPHAN_MINUTES = int(os.environ.get("BATCH_INSPECT_SMPP_ORPHAN_MINUTES", "
 # SMPP pending 重派发阈值：消息卡 pending 超过此分钟数（且未达 orphan 过期阈值）即视为派发阶段丢失，
 # 重新投递回 sms_send_smpp 真正发出去。比 orphan 过期更早介入，把"静默丢失→expired"变为"自动补发"。
 _SMPP_REDISPATCH_MINUTES = int(os.environ.get("BATCH_INSPECT_SMPP_REDISPATCH_MINUTES", "5"))
+# 派发丢行(分片插库时撞死锁1213/掉线2013整片不入库)对齐 total_count 的空闲阈值。
+# 该场景判据强(全部 sms_logs 终态 + 无 pending/queued + log_total<total),远比"杀 pending"安全,
+# 故用短得多的空闲即可触发,把"卡 99% 等 30 分钟"缩短到 ~5 分钟自愈。
+_LOSTROW_RECONCILE_MINUTES = int(os.environ.get("BATCH_INSPECT_LOSTROW_MINUTES", "5"))
 
 
 @celery_app.task(name='sync_processing_batch_progress_task')
@@ -98,15 +102,19 @@ async def _do_inspect_batches():
     eng, Session = _make_session()
     try:
         async with Session() as db:
-            # 1. 停滞 processing 批次：updated_at 早于阈值（依赖 batch_utils 防抖后「真变才刷」）
-            cutoff = datetime.now() - timedelta(minutes=_STUCK_BATCH_MINUTES)
+            # 1. 停滞 processing 批次：updated_at 早于阈值（依赖 batch_utils 防抖后「真变才刷」）。
+            #    两档:派发丢行对齐 total_count 用短空闲(_LOSTROW_RECONCILE_MINUTES)快速自愈;
+            #    杀 pending/queued 等激进操作仍需长空闲(_STUCK_BATCH_MINUTES),避免误杀在途 SMPP。
+            now_ = datetime.now()
+            scan_cutoff = now_ - timedelta(minutes=min(_STUCK_BATCH_MINUTES, _LOSTROW_RECONCILE_MINUTES))
+            stuck_cutoff = now_ - timedelta(minutes=_STUCK_BATCH_MINUTES)
 
             result = await db.execute(
                 select(SmsBatch).where(
                     and_(
                         SmsBatch.status == BatchStatus.PROCESSING,
                         SmsBatch.is_deleted == False,
-                        SmsBatch.updated_at < cutoff,
+                        SmsBatch.updated_at < scan_cutoff,
                     )
                 ).limit(200)
             )
@@ -121,6 +129,10 @@ async def _do_inspect_batches():
             stuck_force_failed = 0
             for batch in stuck_batches:
                 try:
+                    # 选中时的空闲程度(用于区分短空闲快速对齐 vs 长空闲才允许激进斩杀)
+                    orig_updated = batch.updated_at
+                    idle_long = orig_updated is not None and orig_updated < stuck_cutoff
+
                     # 调用统一的进度校准逻辑
                     await update_batch_progress(db, batch.id)
 
@@ -129,6 +141,7 @@ async def _do_inspect_batches():
 
                     # 绝对斩杀：停滞超过 BATCH_INSPECT_STUCK_MINUTES 的批次，无视 batch_utils 内 2% 虚拟兜底限制，
                     # 将仍卡在 pending/queued 的记录标为 failed，避免进度永久卡在 ~97%。
+                    # 仅长空闲档执行(短空闲可能仍在队列在途,误杀会丢消息)。
                     pend_q = (
                         await db.execute(
                             select(func.count(SMSLog.id)).where(
@@ -139,7 +152,7 @@ async def _do_inspect_batches():
                             )
                         )
                     ).scalar() or 0
-                    if pend_q > 0 and batch.status == BatchStatus.PROCESSING:
+                    if pend_q > 0 and batch.status == BatchStatus.PROCESSING and idle_long:
                         _timeout_msg = "Timeout or dropped by gateway"
                         _now_ts = datetime.now()
                         await db.execute(
