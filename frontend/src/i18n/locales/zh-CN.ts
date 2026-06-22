@@ -769,7 +769,7 @@ export default {
     qps: 'QPS',
     qpsPlaceholder: '每秒查询数',
     rateControl: '速率控制',
-    rateControlTip: '速率控制：每个窗口周期内最多发送 TPS × 窗口(秒) 条消息',
+    rateControlTip: '最大 TPS：每秒最多向上游提交的条数（由令牌桶精确限速）；并发数：对该上游并行的绑定会话数。',
     rateControlWindow: '控制窗口',
     maxInflight: '在途窗口',
     maxInflightDefault: '留空=默认1000',

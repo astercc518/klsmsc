@@ -769,7 +769,7 @@ export default {
     qps: 'QPS',
     qpsPlaceholder: 'Queries per second',
     rateControl: 'Rate Control',
-    rateControlTip: '速率控制：每个窗口周期内最多发送 TPS × 窗口(秒) 条消息',
+    rateControlTip: 'Max TPS: max submits per second to the upstream (token-bucket rate limited); Concurrency: number of parallel bind sessions to the upstream.',
     rateControlWindow: '控制窗口',
     maxInflight: 'In-flight Window',
     maxInflightDefault: 'Blank = default 1000',

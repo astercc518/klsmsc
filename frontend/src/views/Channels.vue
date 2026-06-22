@@ -135,7 +135,7 @@
           <template #default="{ row }">
             <div class="rate-info">
               <span class="rate-text">{{ row.max_tps || 100 }} TPS</span>
-              <span class="rate-sub">{{ row.concurrency || 1 }}C / {{ row.rate_control_window || 1000 }}ms</span>
+              <span class="rate-sub">{{ row.concurrency || 1 }}C</span>
             </div>
           </template>
         </el-table-column>
@@ -412,23 +412,16 @@
 
         <el-divider content-position="left">{{ $t('channels.rateControl') }}</el-divider>
         <el-row :gutter="24">
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item :label="$t('channels.maxTps')" prop="max_tps">
               <el-input-number v-model="form.max_tps" :min="1" :max="10000" controls-position="right" style="width: 100%">
                 <template #suffix>{{ $t('channels.perSecond') }}</template>
               </el-input-number>
             </el-form-item>
           </el-col>
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item :label="$t('channels.concurrency')" prop="concurrency">
               <el-input-number v-model="form.concurrency" :min="1" :max="100" controls-position="right" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item :label="$t('channels.rateControlWindow')" prop="rate_control_window">
-              <el-input-number v-model="form.rate_control_window" :min="10" :max="600000" :step="10" controls-position="right" style="width: 100%">
-                <template #suffix>ms</template>
-              </el-input-number>
             </el-form-item>
           </el-col>
         </el-row>
