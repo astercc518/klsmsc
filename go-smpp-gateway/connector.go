@@ -1285,9 +1285,9 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 	// 若超过阈值，说明 SMSC 已停止回包（静默限流/会话异常），阻塞等待窗口释放。
 	// 调用方（processSingleSMS）不应在此情况下写 DB failed；此处阻塞而非返回错误，
 	// 消息保持 pending/queued 状态，待 stale monitor（每 5s）关闭会话后窗口清空自动重试。
-	// max_inflight 可通过 config_json 按通道定制（默认 500）。
+	// max_inflight 可通过 config_json 按通道定制（默认 1000）。
 	// inflightWaitInterval=200ms：stale monitor 清空条目后最快 200ms 内重新尝试（原 5s）。
-	inflightWindowMax := parseConfigJSONInt(cfg.ConfigJSON, "max_inflight", 500)
+	inflightWindowMax := parseConfigJSONInt(cfg.ConfigJSON, "max_inflight", 1000)
 	const inflightWaitInterval = 200 * time.Millisecond
 	const inflightWaitMax = 120 * time.Second
 	prefix := fmt.Sprintf("%d:", channelID)

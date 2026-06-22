@@ -34,6 +34,49 @@ _SMPP_REDISPATCH_MINUTES = int(os.environ.get("BATCH_INSPECT_SMPP_REDISPATCH_MIN
 # 故用短得多的空闲即可触发,把"卡 99% 等 30 分钟"缩短到 ~5 分钟自愈。
 _LOSTROW_RECONCILE_MINUTES = int(os.environ.get("BATCH_INSPECT_LOSTROW_MINUTES", "5"))
 
+# SMPP 发送队列名（所有 SMPP 通道共用单一 FIFO，由 Go 网关消费）。
+_SMPP_SEND_QUEUE = "sms_send_smpp"
+# 在途守门阈值：sms_send_smpp 堆积超过此数量时，认定网关仍在排空、SMPP pending/queued 仍在途，
+# 暂缓一切对 SMPP 记录的斩杀/过期。0 = 只要队列非空就守门。
+# [事故根因] 批次 1118-1120 共 9 万条排在共用队列尾部，30 分钟内未轮到网关消费，
+# 却被「30 分钟空闲即斩杀」当成卡死全标 failed——比网关真正取到只早了约 30 秒。
+_SMPP_QUEUE_ALIVE_THRESHOLD = int(os.environ.get("BATCH_INSPECT_SMPP_QUEUE_ALIVE", "0"))
+
+
+def _smpp_send_queue_depth() -> int:
+    """读取 sms_send_smpp 队列堆积条数；-1 表示探测失败（未知）。
+
+    用于区分『消息仍在网关队列排队在途』与『真卡死/丢失』：队列非空时网关只是积压、并未死，
+    此时绝不能把排队中的 SMPP pending/queued 误判为超时。探测失败回退旧行为（按时间斩杀）。
+    """
+    try:
+        with celery_app.connection_for_read() as conn:
+            q = conn.default_channel.queue_declare(queue=_SMPP_SEND_QUEUE, passive=True)
+            return int(q.message_count)
+    except Exception as e:
+        logger.debug(f"inspect: 读取 {_SMPP_SEND_QUEUE} 队列深度失败: {e}")
+        return -1
+
+
+async def _batch_has_smpp_pending(db, batch_id) -> bool:
+    """批次是否还有 SMPP 通道的 pending/queued 记录（用于在途守门时判断要不要暂缓斩杀）。"""
+    from app.modules.sms.channel import Channel as _Ch
+    cnt = (
+        await db.execute(
+            select(func.count(SMSLog.id))
+            .select_from(SMSLog)
+            .join(_Ch, SMSLog.channel_id == _Ch.id)
+            .where(
+                and_(
+                    SMSLog.batch_id == batch_id,
+                    SMSLog.status.in_(["pending", "queued"]),
+                    _Ch.protocol == "SMPP",
+                )
+            )
+        )
+    ).scalar() or 0
+    return cnt > 0
+
 
 @celery_app.task(name='sync_processing_batch_progress_task')
 def sync_processing_batch_progress_task():
@@ -125,6 +168,15 @@ async def _do_inspect_batches():
             else:
                 logger.info(f"发现 {len(stuck_batches)} 个疑似卡死的批次，开始校准...")
 
+            # 在途守门信号（每轮巡检读一次）：sms_send_smpp 仍有积压时，网关只是排空慢、并未死，
+            # 排队中的 SMPP pending/queued 不得被斩杀/过期。-1=探测失败→回退旧的按时间收割。
+            _smpp_backlog = _smpp_send_queue_depth()
+            _smpp_inflight = _smpp_backlog > _SMPP_QUEUE_ALIVE_THRESHOLD
+            if _smpp_inflight:
+                logger.info(
+                    f"inspect: sms_send_smpp 仍积压 {_smpp_backlog} 条，本轮暂缓斩杀/过期 SMPP 在途记录"
+                )
+
             reconciled = 0
             stuck_force_failed = 0
             for batch in stuck_batches:
@@ -152,7 +204,21 @@ async def _do_inspect_batches():
                             )
                         )
                     ).scalar() or 0
-                    if pend_q > 0 and batch.status == BatchStatus.PROCESSING and idle_long:
+                    # 在途守门：网关发送队列仍有积压时，本批的 SMPP pending/queued 极可能仍排队等消费，
+                    # 并非真卡死。跳过斩杀，留给队列自然排空（或排空后再由下方 orphan 兜底）。
+                    _smpp_inflight_guard = (
+                        pend_q > 0
+                        and batch.status == BatchStatus.PROCESSING
+                        and idle_long
+                        and _smpp_inflight
+                        and await _batch_has_smpp_pending(db, batch.id)
+                    )
+                    if _smpp_inflight_guard:
+                        logger.warning(
+                            f"inspect: 批次 {batch.id} 有 SMPP pending/queued，但 sms_send_smpp 仍积压 "
+                            f"{_smpp_backlog} 条，判定为在途、暂缓斩杀（等队列排空）"
+                        )
+                    elif pend_q > 0 and batch.status == BatchStatus.PROCESSING and idle_long:
                         _timeout_msg = "Timeout or dropped by gateway"
                         _now_ts = datetime.now()
                         await db.execute(
@@ -377,6 +443,13 @@ async def _do_inspect_batches():
             stale_batch_ids = stale_batch_ids_res.scalars().all()
 
             smpp_orphan_cleaned = 0
+            if _smpp_inflight:
+                # 在途守门：发送队列仍积压时，pending/queued 大多仍排队等网关消费，不做过期收割，
+                # 避免与第 1 步同样的「排队中被误判超时」。待队列排空后下一轮再兜底。
+                logger.info(
+                    f"inspect: sms_send_smpp 积压 {_smpp_backlog} 条，跳过本轮 SMPP 孤儿过期清理"
+                )
+                stale_batch_ids = []
             if stale_batch_ids:
                 r_smpp = await db.execute(
                     _sa_upd2(SMSLog)
@@ -397,23 +470,25 @@ async def _do_inspect_batches():
                 smpp_orphan_cleaned = r_smpp.rowcount
 
             # 无批次归属的孤儿单条消息（batch_id IS NULL），继续用时间兜底清理
-            r_smpp_standalone = await db.execute(
-                _sa_upd2(SMSLog)
-                .where(
-                    and_(
-                        SMSLog.batch_id.is_(None),
-                        SMSLog.status.in_(['queued', 'pending']),
-                        SMSLog.sent_time.is_(None),
-                        SMSLog.submit_time < smpp_orphan_cutoff,
-                        SMSLog.submit_time.isnot(None),
+            # 同样受在途守门：队列仍积压时这些消息可能仍排队，不收割。
+            if not _smpp_inflight:
+                r_smpp_standalone = await db.execute(
+                    _sa_upd2(SMSLog)
+                    .where(
+                        and_(
+                            SMSLog.batch_id.is_(None),
+                            SMSLog.status.in_(['queued', 'pending']),
+                            SMSLog.sent_time.is_(None),
+                            SMSLog.submit_time < smpp_orphan_cutoff,
+                            SMSLog.submit_time.isnot(None),
+                        )
+                    )
+                    .values(
+                        status='expired',
+                        error_message='SMPP SubmitSMResp丢失: 会话断连导致提交回执未收到，超时标记',
                     )
                 )
-                .values(
-                    status='expired',
-                    error_message='SMPP SubmitSMResp丢失: 会话断连导致提交回执未收到，超时标记',
-                )
-            )
-            smpp_orphan_cleaned += r_smpp_standalone.rowcount
+                smpp_orphan_cleaned += r_smpp_standalone.rowcount
 
             if smpp_orphan_cleaned > 0:
                 await db.commit()
