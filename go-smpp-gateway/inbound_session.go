@@ -59,6 +59,74 @@ func (l *tpsLimiter) Allow() bool {
 	return false
 }
 
+// updateRate 在复用账号共享桶时把速率上限刷新为最新 cap（管理员改 accounts.rate_limit 后，
+// 该账号新绑定时生效）。不重置当前 tokens，避免改配置瞬间放量。
+func (l *tpsLimiter) updateRate(rps float64) {
+	l.mu.Lock()
+	l.rate = rps
+	l.maxTok = rps
+	if l.tokens > l.maxTok {
+		l.tokens = l.maxTok
+	}
+	l.mu.Unlock()
+}
+
+// 每账号共享一个令牌桶：同一账号的多条绑定会话共用同一个桶，防止"开多条绑定 = N×TPS"
+// 绕过 per-account 限流（accounts.rate_limit 是账号级合约速率，不是单连接速率）。
+// tpsLimiter 自带 mutex，可安全被该账号的多条会话 goroutine 并发调用。
+var (
+	accountTPSBuckets   = make(map[int]*tpsLimiter)
+	accountTPSBucketsMu sync.Mutex
+)
+
+// getAccountTPSLimiter 返回账号共享的令牌桶：首次创建，后续复用并刷新速率。
+func getAccountTPSLimiter(accountID int, rps float64) *tpsLimiter {
+	accountTPSBucketsMu.Lock()
+	defer accountTPSBucketsMu.Unlock()
+	if l, ok := accountTPSBuckets[accountID]; ok {
+		l.updateRate(rps)
+		return l
+	}
+	l := newTPSLimiter(rps)
+	accountTPSBuckets[accountID] = l
+	return l
+}
+
+// newTPSLimiterBurst 构造突发容量与补充速率分离的令牌桶（用于 bind 限速：
+// 突发给足正常启动的并发绑定，之后按低速率补）。
+func newTPSLimiterBurst(rate, burst float64) *tpsLimiter {
+	return &tpsLimiter{tokens: burst, maxTok: burst, rate: rate, lastTime: time.Now()}
+}
+
+// —— 绑定限速 / 防 bind 风暴 ——
+// 按来源 IP 限制 bind 速率：合法客户端启动期一次性绑满(≤突发额度)即停；异常客户端
+// 狂重绑会迅速耗尽突发额度，之后被慢拒绝（持连 bindRejectDelay 再回 RTHROTTLED）。
+// 配合 per-IP 并发连接上限(默认 20)，把风暴速率硬压到 maxConnsPerIP / bindRejectDelay。
+// 放在 authenticateBind 之前，超限的 bind 不再查 DB，顺带护住鉴权数据源。
+const (
+	bindBurst        = 32              // 突发容量：足够任何合法客户端启动期并发绑定
+	bindRefillPerSec = 2.0             // 稳态补充速率：合法重连绰绰有余
+	bindRejectDelay  = 1 * time.Second // 慢拒绝持连时长：把 per-IP 并发上限转成速率上限
+)
+
+var (
+	bindRateBuckets   = make(map[string]*tpsLimiter)
+	bindRateBucketsMu sync.Mutex
+	bindRejectCount   int64 // atomic：累计慢拒绝次数，用于节流日志
+)
+
+// allowBindRate 返回该 IP 是否允许本次 bind（令牌桶）。
+func allowBindRate(ip string) bool {
+	bindRateBucketsMu.Lock()
+	l, ok := bindRateBuckets[ip]
+	if !ok {
+		l = newTPSLimiterBurst(bindRefillPerSec, bindBurst)
+		bindRateBuckets[ip] = l
+	}
+	bindRateBucketsMu.Unlock()
+	return l.Allow()
+}
+
 // inboundSession 表示一条已绑定的 SMPP 客户连接
 type inboundSession struct {
 	conn     net.Conn
@@ -129,6 +197,18 @@ func handleSession(conn net.Conn) {
 		return
 	}
 
+	// 1.5) 绑定限速（防 bind 风暴）：超速则慢拒绝，且不进入下方 DB 鉴权。
+	if !allowBindRate(remoteIP) {
+		n := atomic.AddInt64(&bindRejectCount, 1)
+		if n%1000 == 1 {
+			log.Printf("[INBOUND] 绑定限速生效: IP=%s system_id=%s 累计慢拒绝 %d 次（防 bind 风暴，未触发鉴权）",
+				remoteIP, bind.systemID, n)
+		}
+		time.Sleep(bindRejectDelay) // 持连 tarpit：把 per-IP 并发上限转成速率上限，瓦解紧重连循环
+		_ = s.writePDUSafe(bindRespCmdID(hdr.commandID), statusThrottled, hdr.sequenceNumber, buildBindResp(gwSystemID))
+		return
+	}
+
 	// 2) 鉴权
 	respStatus, account := authenticateBind(remoteIP, bind)
 	if respStatus != statusOK {
@@ -158,11 +238,12 @@ func handleSession(conn net.Conn) {
 	}
 
 	// 4) TPS 限流（依据 accounts.rate_limit；默认 1000）
+	// 用账号共享桶：同账号多条绑定共用一个令牌桶，防止开多连接绕过 per-account TPS 限制。
 	tpsCap := account.RateLimit
 	if tpsCap <= 0 {
 		tpsCap = 1000
 	}
-	s.tps = newTPSLimiter(float64(tpsCap))
+	s.tps = getAccountTPSLimiter(account.ID, float64(tpsCap))
 
 	// 5) 注册并响应 BIND_RESP ESME_ROK
 	inboundReg.Add(s)

@@ -178,8 +178,18 @@ type sequenceData struct {
 	payload    SMSLogData // 原始负载，供 ESME_RTHROTTLED(88) 限流重投回 sms_send_smpp 使用
 }
 
-func smppSeqMapKey(channelID int, seq int32) string {
-	return fmt.Sprintf("%d:%d", channelID, seq)
+// key 形如 "channelID:sessionPtr:seq"。加入会话指针身份是关键：gosmpp 每条 bind 会话的
+// 序列号各自从 1 递增，多会话(concurrency>1)同通道下仅用 channelID:seq 会撞车——
+// 一条会话的 SubmitSMResp 会匹配/删除另一条会话的条目，导致错号归属或永久 orphan。
+// 仍保留 "channelID:" 前缀开头，使按通道前缀统计在途(窗口限制/closeSessions)无需改动；
+// orphan 清理则用 "channelID:sessionPtr:" 前缀，只收割本会话的在途。
+func smppSeqMapKey(channelID int, session *gosmpp.Session, seq int32) string {
+	return fmt.Sprintf("%d:%p:%d", channelID, session, seq)
+}
+
+// smppSessionPrefix 返回某会话在 sequenceMap 中所有条目的 key 前缀，供 orphan 清理按会话隔离。
+func smppSessionPrefix(channelID int, session *gosmpp.Session) string {
+	return fmt.Sprintf("%d:%p:", channelID, session)
 }
 
 var manager *SMPPManager
@@ -773,7 +783,7 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 				case *pdu.SubmitSMResp:
 					log.Printf("[SMPP-DEBUG] SubmitSMResp reached: channel=%s, msgID=%s, sequence=%d, status=%d", cfg.ChannelCode, pd.MessageID, pd.SequenceNumber, pd.CommandStatus)
 
-					if val, ok := m.sequenceMap.LoadAndDelete(smppSeqMapKey(cfg.ID, pd.SequenceNumber)); ok {
+					if val, ok := m.sequenceMap.LoadAndDelete(smppSeqMapKey(cfg.ID, sessionPtr, pd.SequenceNumber)); ok {
 						seqData := val.(sequenceData)
 						log.Printf("[SMPP-DEBUG] Found matching sequence for msg: %s (internal log ID: %d)", seqData.messageID, seqData.logID)
 
@@ -915,10 +925,12 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 					}()
 				} // end if removedHere
 
-				// 3. 清理该通道所有 in-flight sequenceMap 条目（无论谁先移除都要做，避免 orphan）
+				// 3. 仅清理「本会话」的 in-flight sequenceMap 条目（按 channelID:sessionPtr: 前缀隔离）。
+				// 旧实现按 channelID: 前缀清整个通道，会把其它健康会话正在途的消息一并误倒成 orphan
+				// （concurrency>1 时一次关会话能殃及数百条），是批量假"已发"的放大器。现仅收割自己这条。
 				// 标为 sent 而非 failed：PDU 已送达 SMSC 网络层，SMSC 可能已接收（静默限流导致未返回 SubmitSMResp）
 				// 保持 sent 状态使 DLR 仍可匹配更新终态；若 SMSC 确实未收到，DLR 超时检查（72h）会兜底标 expired
-				prefix := fmt.Sprintf("%d:", cfg.ID)
+				prefix := smppSessionPrefix(cfg.ID, closedSession)
 				var orphanKeys []interface{}
 				m.sequenceMap.Range(func(k, v interface{}) bool {
 					if key, ok := k.(string); ok && len(key) > len(prefix) && key[:len(prefix)] == prefix {
@@ -1066,7 +1078,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 	// staleTTL=20s（SMSC 正常响应 <5s，20s 足够区分静默限流）。
 	// ticker=5s 使最坏情况死区时间 ≈ 25s（原 15s ticker+45s TTL → 60s 最坏）。
 	// 注意：不依赖 OnClosed 回调——gosmpp.Session.Close() 不保证同步触发 OnClosed。
-	monitorPrefix := fmt.Sprintf("%d:", cfg.ID)
+	// 仅监测「本会话」的在途条目（与 orphan 清理一致按会话隔离）：一条会话卡住只自愈自己，
+	// 不因别的会话有 stale 条目而误关本会话。
+	monitorPrefix := smppSessionPrefix(cfg.ID, session)
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -1285,9 +1299,11 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 	// 若超过阈值，说明 SMSC 已停止回包（静默限流/会话异常），阻塞等待窗口释放。
 	// 调用方（processSingleSMS）不应在此情况下写 DB failed；此处阻塞而非返回错误，
 	// 消息保持 pending/queued 状态，待 stale monitor（每 5s）关闭会话后窗口清空自动重试。
-	// max_inflight 可通过 config_json 按通道定制（默认 1000）。
+	// max_inflight 可通过 config_json 按通道定制（默认 100，与前端「在途窗口」留空提示一致）。
+	// 真实在途需求 ≈ 目标TPS × 上游回执秒数（实测 RTT≈0.1s，100TPS 仅需 ~10）；过大只增加
+	// 断连/自愈时被乐观标记「已发」的误杀当量，对吞吐无收益（吞吐受 max_tps 令牌桶约束）。
 	// inflightWaitInterval=200ms：stale monitor 清空条目后最快 200ms 内重新尝试（原 5s）。
-	inflightWindowMax := parseConfigJSONInt(cfg.ConfigJSON, "max_inflight", 1000)
+	inflightWindowMax := parseConfigJSONInt(cfg.ConfigJSON, "max_inflight", 100)
 	const inflightWaitInterval = 200 * time.Millisecond
 	const inflightWaitMax = 120 * time.Second
 	prefix := fmt.Sprintf("%d:", channelID)
@@ -1353,7 +1369,7 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 			s.RegisteredDelivery = 1
 			log.Printf("[SMPP-DEBUG] Submitting SM(Latin1单PDU): channel=%s dest=%s chars=%d bytes=%d",
 				cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
-			return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
+			return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
 		}
 	}
 
@@ -1373,7 +1389,7 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 					s.RegisteredDelivery = 1
 					log.Printf("[SMPP-DEBUG] Submitting SM(GSM7): channel=%s dest=%s chars=%d bytes=%d",
 						cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
-					return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
+					return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
 				}
 				// Encode 失败：落到下方 UCS2 兜底
 			} else if segs, sErr := sp.EncodeSplit(message, 153); sErr == nil && len(segs) > 0 {
@@ -1404,7 +1420,7 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 					psm.Message.SetUDH(pdu.UDH{pdu.InfoElement{ID: 0x00, Data: []byte{ref, total, part}}})
 					if i == 0 {
 						psm.RegisteredDelivery = 1
-						if err := m.submitOneAndTrack(psm, trans, channelID, messageID, logID, destDigits, cfg, len(seg), true, ref, total, part, payload); err != nil {
+						if err := m.submitOneAndTrack(psm, session, trans, channelID, messageID, logID, destDigits, cfg, len(seg), true, ref, total, part, payload); err != nil {
 							return err
 						}
 					} else {
@@ -1439,7 +1455,7 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 			s.RegisteredDelivery = 1
 			log.Printf("[SMPP-DEBUG] Submitting SM(Latin1单PDU/auto): channel=%s dest=%s chars=%d bytes=%d",
 				cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
-			return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
+			return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
 		}
 	}
 
@@ -1457,7 +1473,7 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 			return fmt.Errorf("short_message: %w", err)
 		}
 		s.RegisteredDelivery = 1
-		return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
+		return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
 	}
 
 	// 长消息：按通道配置选择 message_payload TLV 或 UDH 多段分段
@@ -1504,7 +1520,7 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 
 			if i == 0 {
 				psm.RegisteredDelivery = 1
-				if err := m.submitOneAndTrack(psm, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), true, byte(ref), total, part, payload); err != nil {
+				if err := m.submitOneAndTrack(psm, session, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), true, byte(ref), total, part, payload); err != nil {
 					return err
 				}
 			} else {
@@ -1539,20 +1555,20 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 	copy(mpData, encoded)
 	s.RegisterOptionalParam(pdu.Field{Tag: pdu.TagMessagePayload, Data: mpData})
 	s.RegisteredDelivery = 1
-	return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
+	return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
 }
 
 // submitOneAndTrack 注册 sequenceMap 后 Submit，统一处理 closing/closed 临时错误。
 // udhInfo 仅供日志，udhTotal=0 表示非 UDH。
 func (m *SMPPManager) submitOneAndTrack(
-	s *pdu.SubmitSM, trans gosmpp.Transmitter,
+	s *pdu.SubmitSM, session *gosmpp.Session, trans gosmpp.Transmitter,
 	channelID int, messageID string, logID int64,
 	destDigits string, cfg ChannelConfig,
 	utf16Len int,
 	udh bool, udhRef byte, udhTotal byte, udhPart byte,
 	payload SMSLogData,
 ) error {
-	m.sequenceMap.Store(smppSeqMapKey(channelID, s.SequenceNumber), sequenceData{
+	m.sequenceMap.Store(smppSeqMapKey(channelID, session, s.SequenceNumber), sequenceData{
 		messageID:  messageID,
 		logID:      logID,
 		submitTime: time.Now(),
@@ -1569,7 +1585,7 @@ func (m *SMPPManager) submitOneAndTrack(
 
 	err := trans.Submit(s)
 	if err != nil {
-		m.sequenceMap.Delete(smppSeqMapKey(channelID, s.SequenceNumber))
+		m.sequenceMap.Delete(smppSeqMapKey(channelID, session, s.SequenceNumber))
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "closing") || strings.Contains(errMsg, "closed") {
 			log.Printf("[SMPP-WARN] Submit temp error (session closing): channel=%s %v", cfg.ChannelCode, err)
