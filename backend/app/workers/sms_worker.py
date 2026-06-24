@@ -1463,6 +1463,35 @@ def dlr_timeout_check_task():
         return {"success": False, "error": str(e)}
 
 
+async def _expire_in_chunks(db, conditions, error_message, chunk=None):
+    """分批把匹配行标记为 expired，杜绝大事务锁一大片致死锁/慢查询。
+
+    做法：先用好索引做【无锁快照 SELECT】取 ≤chunk 个 id，再【按主键 UPDATE】+ 每批立即 commit。
+    单事务锁足迹恒 ≤chunk 行（按 PRIMARY 锁），与高频单行 DLR 更新不再死锁；锁等待也大幅下降。
+    UPDATE 后行 status 变 expired 不再被 SELECT 命中，循环自然收敛。返回总更新行数。
+    """
+    from sqlalchemy import and_, update, select as _select
+    if chunk is None:
+        chunk = int(os.getenv("WORKER_EXPIRE_CHUNK", "500"))
+    total = 0
+    while True:
+        ids = (await db.execute(
+            _select(SMSLog.id).where(and_(*conditions)).limit(chunk)
+        )).scalars().all()
+        if not ids:
+            break
+        r = await db.execute(
+            update(SMSLog).where(SMSLog.id.in_(ids)).values(
+                status='expired', error_message=error_message,
+            )
+        )
+        await db.commit()
+        total += r.rowcount
+        if len(ids) < chunk:
+            break
+    return total
+
+
 async def _dlr_timeout_check_async():
     """异步检查并标记超时的 sent 记录（按通道 dlr_sent_timeout_hours，否则用全局 DLR_SENT_TIMEOUT_HOURS）"""
     from datetime import timedelta
@@ -1488,23 +1517,16 @@ async def _dlr_timeout_check_async():
                 h = int(custom_h) if custom_h is not None and int(custom_h) > 0 else default_h
                 h = max(4, min(h, 720))
                 cutoff = datetime.now() - timedelta(hours=h)
-                stmt = (
-                    update(SMSLog)
-                    .where(
-                        and_(
-                            SMSLog.channel_id == ch_id,
-                            SMSLog.status == 'sent',
-                            SMSLog.sent_time < cutoff,
-                            SMSLog.sent_time.isnot(None),
-                        )
-                    )
-                    .values(
-                        status='expired',
-                        error_message=f'DLR 超时: 超过{h}小时未收到终态回执',
-                    )
+                expired_count += await _expire_in_chunks(
+                    db,
+                    [
+                        SMSLog.channel_id == ch_id,
+                        SMSLog.status == 'sent',
+                        SMSLog.sent_time < cutoff,
+                        SMSLog.sent_time.isnot(None),
+                    ],
+                    f'DLR 超时: 超过{h}小时未收到终态回执',
                 )
-                r = await db.execute(stmt)
-                expired_count += r.rowcount
 
             # 无 channel_id、或通道已删除/未在表中的记录，用全局默认小时数
             from sqlalchemy import or_, true as sql_true
@@ -1518,23 +1540,16 @@ async def _dlr_timeout_check_async():
             else:
                 misc_where = sql_true()
 
-            stmt_misc = (
-                update(SMSLog)
-                .where(
-                    and_(
-                        SMSLog.status == 'sent',
-                        SMSLog.sent_time < cutoff_default,
-                        SMSLog.sent_time.isnot(None),
-                        misc_where,
-                    )
-                )
-                .values(
-                    status='expired',
-                    error_message=f'DLR 超时: 超过{default_h}小时未收到终态回执',
-                )
+            expired_count += await _expire_in_chunks(
+                db,
+                [
+                    SMSLog.status == 'sent',
+                    SMSLog.sent_time < cutoff_default,
+                    SMSLog.sent_time.isnot(None),
+                    misc_where,
+                ],
+                f'DLR 超时: 超过{default_h}小时未收到终态回执',
             )
-            r2 = await db.execute(stmt_misc)
-            expired_count += r2.rowcount
 
             # --- SMPP SubmitSMResp 丢失处理 ---
             # queued + sent_time IS NULL = submit_sm 已写入 socket 但 SubmitSMResp 因会话断连而丢失。
@@ -1545,24 +1560,21 @@ async def _dlr_timeout_check_async():
             smpp_orphan_count = 0
             for ch_id, custom_h in channel_rows:
                 smpp_cutoff = datetime.now() - timedelta(hours=SMPP_SUBMIT_RESP_TIMEOUT_HOURS)
-                r_orphan = await db.execute(
-                    update(SMSLog)
-                    .where(
-                        and_(
-                            SMSLog.channel_id == ch_id,
-                            SMSLog.status.in_(['queued', 'pending']),
-                            SMSLog.sent_time.is_(None),
-                            SMSLog.submit_time < smpp_cutoff,
-                            SMSLog.submit_time.isnot(None),
-                        )
-                    )
-                    .values(
-                        status='expired',
-                        error_message='SMPP SubmitSMResp丢失: 会话断连或消费超时，超时标记',
-                    )
+                # 死锁根因修复：原整张 status 索引扫描会锁住全系统 queued/pending 数十万行，
+                # 与高频单行 DLR 更新死锁。分批按 PK 更新，单事务锁足迹 ≤chunk 行。
+                smpp_orphan_count += await _expire_in_chunks(
+                    db,
+                    [
+                        SMSLog.channel_id == ch_id,
+                        SMSLog.status.in_(['queued', 'pending']),
+                        SMSLog.sent_time.is_(None),
+                        SMSLog.submit_time < smpp_cutoff,
+                        SMSLog.submit_time.isnot(None),
+                    ],
+                    'SMPP SubmitSMResp丢失: 会话断连或消费超时，超时标记',
                 )
-                smpp_orphan_count += r_orphan.rowcount
 
+            # 各分批已逐批 commit，这里无未提交变更；保留以防御异常残留。
             await db.commit()
 
             if smpp_orphan_count > 0:
