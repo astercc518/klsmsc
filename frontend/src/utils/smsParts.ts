@@ -10,6 +10,22 @@ const GSM7_CHARSET =
 
 const GSM7_SET = new Set(GSM7_CHARSET)
 
+/** GSM-7 扩展表（escape）字符：仍是 GSM-7，但每个占 2 个 septet。
+ *  与 backend sms_segment._GSM7_EXT_CHARS 一致。 */
+const GSM7_EXT_SET = new Set('\f^{}\\[~]|€')
+
+/** 返回 GSM-7 编码所需 septet 数；含非 GSM-7 字符返回 null。
+ *  基本表 1 septet/字符，扩展表 2 septet/字符。 */
+function gsm7SeptetCount(norm: string): number | null {
+  let total = 0
+  for (const c of norm) {
+    if (GSM7_SET.has(c)) total += 1
+    else if (GSM7_EXT_SET.has(c)) total += 2
+    else return null
+  }
+  return total
+}
+
 /**
  * 与 backend app.utils.sms_segment.normalize_for_sms_segment_count 一致：
  * 仅做白名单字符替换（NBSP/零宽/弯引号/长破折/省略号），不做整段 NFKC ——
@@ -40,13 +56,27 @@ export function smsCodePointLength(message: string): number {
   return [...(effective || '')].length
 }
 
+/**
+ * 返回与「单段上限」同口径的长度：GSM-7 按 septet（扩展字符算 2），UCS-2 按码点。
+ * 用于判断正文是否超出单段（GSM-7 比 160 / UCS-2 比 70），避免含 [ ] 等扩展字符时
+ * 用码点数误判。自动识别 {{TRACK_URL=...}} 占位符。
+ */
+export function smsSegmentUnitLength(message: string): number {
+  const effective = (message && message.indexOf('{{TRACK_URL') !== -1)
+    ? substituteTrackUrlForCount(message)
+    : message
+  const norm = normalizeForSmsSegmentCount(effective || '')
+  const septets = gsm7SeptetCount(norm)
+  return septets !== null ? septets : [...norm].length
+}
+
 export function isGsm7Message(message: string): boolean {
   if (!message) return true
   const effective = (message.indexOf('{{TRACK_URL') !== -1)
     ? substituteTrackUrlForCount(message)
     : message
   const norm = normalizeForSmsSegmentCount(effective)
-  return [...norm].every((ch) => GSM7_SET.has(ch))
+  return gsm7SeptetCount(norm) !== null
 }
 
 // 短链占位符识别：{{TRACK_URL}} / {{TRACK_URL=target}} / {{TRACK_URL=target|base}}
@@ -79,10 +109,13 @@ export function countSmsParts(message: string): number {
   const norm = normalizeForSmsSegmentCount(effective)
   const len = [...norm].length
   if (len === 0) return 0
-  if ([...norm].every((ch) => GSM7_SET.has(ch))) {
-    if (len <= 160) return 1
-    return Math.floor((len + 152) / 153)
+  const septets = gsm7SeptetCount(norm)
+  if (septets !== null) {
+    // GSM-7：单段 160 septet，拼接每段 153
+    if (septets <= 160) return 1
+    return Math.floor((septets + 152) / 153)
   }
+  // UCS-2：单段 70 码点，拼接每段 67
   if (len <= 70) return 1
   return Math.floor((len + 66) / 67)
 }

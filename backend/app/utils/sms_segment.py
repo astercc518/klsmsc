@@ -15,6 +15,26 @@ _GSM7_CHARS: Final = frozenset(
     "¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"
 )
 
+# GSM-7 扩展表（escape 表）字符：仍是 GSM-7 编码，但每个需转义符前缀、占 2 个 septet。
+# 漏掉它们会导致含 [ ] { } \ ^ ~ | € 的纯英文短信被误判为 UCS-2、条数虚高、多扣费。
+_GSM7_EXT_CHARS: Final = frozenset("\f^{}\\[~]|€")
+
+
+def gsm7_septet_count(norm: str) -> "int | None":
+    """返回按 GSM-7 编码所需的 septet 数；若含任何非 GSM-7 字符返回 None。
+
+    基本表字符各占 1 个 septet，扩展表字符（escape）各占 2 个。
+    """
+    total = 0
+    for c in norm:
+        if c in _GSM7_CHARS:
+            total += 1
+        elif c in _GSM7_EXT_CHARS:
+            total += 2
+        else:
+            return None
+    return total
+
 
 def normalize_for_sms_segment_count(text: str) -> str:
     """分段计费前的规范化（不改变用户存储的正文，仅用于条数与编码判断）。
@@ -50,7 +70,7 @@ def normalize_for_sms_segment_count(text: str) -> str:
 
 def is_gsm7_message(message: str) -> bool:
     norm = normalize_for_sms_segment_count(message)
-    return all(c in _GSM7_CHARS for c in norm)
+    return gsm7_septet_count(norm) is not None
 
 
 # 短链占位符识别：{{TRACK_URL}}、{{TRACK_URL=target}}、{{TRACK_URL=target|base}}
@@ -93,13 +113,16 @@ def count_sms_parts(message: str) -> int:
     if message and "{{TRACK_URL" in message:
         message = substitute_track_url_for_count(message)
     norm = normalize_for_sms_segment_count(message)
-    length = len(norm)
-    if length == 0:
+    if len(norm) == 0:
         return 0
-    if all(c in _GSM7_CHARS for c in norm):
-        if length <= 160:
+    septets = gsm7_septet_count(norm)
+    if septets is not None:
+        # GSM-7：单段 160 septet，拼接长短信每段 153 septet
+        if septets <= 160:
             return 1
-        return (length + 152) // 153
+        return (septets + 152) // 153
+    # UCS-2：每码点 1 个 16-bit 单元，单段 70、拼接每段 67
+    length = len(norm)
     if length <= 70:
         return 1
     return (length + 66) // 67

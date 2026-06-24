@@ -118,10 +118,10 @@
               <div class="msg-meta-bar">
                 <span
                   class="char-counter"
-                  :class="{ 'over-limit': messageSmsLen > singleSegmentCharLimit }"
+                  :class="{ 'over-limit': messageSegmentUnits > singleSegmentCharLimit }"
                 >
                   {{ messageSmsLen }} 字符
-                  <template v-if="messageSmsLen > singleSegmentCharLimit">
+                  <template v-if="messageSegmentUnits > singleSegmentCharLimit">
                     （超过 {{ singleSegmentCharLimit }} 字符可能被拆分为多条）
                   </template>
                 </span>
@@ -1007,7 +1007,7 @@ import { getDataProducts, buyAndSend, getCarriers, getMyNumbersSummary, type Dat
 import { getAiConfig, generateSmsContent } from '@/api/ai'
 import request from '@/api/index'
 import { COUNTRY_LIST, findCountryByIso } from '@/constants/countries'
-import { smsCodePointLength, isGsm7Message, countSmsParts } from '@/utils/smsParts'
+import { smsCodePointLength, isGsm7Message, countSmsParts, smsSegmentUnitLength } from '@/utils/smsParts'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -1720,6 +1720,9 @@ const messageEffectiveForCount = computed(() =>
 const messageSmsLen = computed(() => smsCodePointLength(messageEffectiveForCount.value))
 const messageIsGsm7 = computed(() => isGsm7Message(messageEffectiveForCount.value))
 const singleSegmentCharLimit = computed(() => (messageIsGsm7.value ? 160 : 70))
+// 与单段上限同口径的长度（GSM-7 按 septet，扩展字符算 2）；用于判断是否超出单段，
+// 避免含 [ ] 等扩展字符时用码点数误判超限。
+const messageSegmentUnits = computed(() => smsSegmentUnitLength(messageEffectiveForCount.value))
 
 const estimatedParts = computed(() => countSmsParts(messageEffectiveForCount.value))
 
