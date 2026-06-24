@@ -97,6 +97,8 @@ curl -s http://127.0.0.1:8000/health
 
 ### 部署与队列说明
 
+**运行态整体架构(18 个服务、队列隔离、数据流、运维速查)见 [docs/RUNTIME_ARCHITECTURE.md](docs/RUNTIME_ARCHITECTURE.md)。**
+
 运维侧服务职责、Celery 队列与 SMPP 约束见 **[docs/运维/服务与队列矩阵.md](docs/运维/服务与队列矩阵.md)**。队列拆分与 DLQ 规划见 **[docs/运维/队列与DLQ说明.md](docs/运维/队列与DLQ说明.md)**；生产演进建议见 **[docs/运维/生产部署演进.md](docs/运维/生产部署演进.md)**。
 
 **本次版本上线**：请按 **[docs/运维/上线检查清单.md](docs/运维/上线检查清单.md)** 执行（含 **必须重启 `worker`**、RabbitMQ 插件与验证项）。
