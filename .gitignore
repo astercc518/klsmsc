@@ -75,3 +75,12 @@ backend/scripts/fonts/*.ttf
 
 # License 私钥等敏感文件,严禁入库
 .secrets/
+
+# DB 备份/导出,绝不入库(可能含配置/敏感数据)
+*.sql.gz
+
+# 带时间戳的代码备份残留(connector.go.bak_esmfix_* 等，上方 *.bak 抓不到)
+*.bak_*
+
+# omnihk.org 落地页部署源:保持 untracked,不入主仓
+/deploy/omnihk_landing/
