@@ -54,14 +54,6 @@
               <span class="info-value">{{ lowBalanceThreshold }} {{ currency }}</span>
             </div>
           </div>
-          
-          <button type="button" class="recharge-btn" @click="openSalesTelegram">
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-              <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/>
-              <path d="M9 6V12M6 9H12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-            {{ $t('balance.contactSales') }}
-          </button>
         </div>
       </div>
       
@@ -149,7 +141,7 @@
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { getBalance, getAccountInfo, getTransactions, type BalanceTransaction } from '@/api/account'
+import { getBalance, getTransactions, type BalanceTransaction } from '@/api/account'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -157,8 +149,6 @@ const balance = ref(0)
 const currency = ref('USD')
 const lowBalanceThreshold = ref(100)
 const accountId = ref('')
-/** 归属商务 Telegram 用户名（不含 @），来自 /account/info */
-const salesTgUsername = ref<string | null>(null)
 /** 近期交易（仅资金事件） */
 const transactions = ref<BalanceTransaction[]>([])
 
@@ -190,13 +180,6 @@ const loadData = async () => {
     accountId.value = String(res.account_id)
 
     try {
-      const info = await getAccountInfo()
-      salesTgUsername.value = info.sales_tg_username?.trim() || null
-    } catch {
-      salesTgUsername.value = null
-    }
-
-    try {
       const tx = await getTransactions(20)
       transactions.value = tx.items || []
     } catch {
@@ -207,21 +190,6 @@ const loadData = async () => {
   } finally {
     loading.value = false
   }
-}
-
-/** 打开归属商务的 Telegram，便于客户联系充值 */
-function openSalesTelegram() {
-  const raw = salesTgUsername.value
-  if (!raw) {
-    ElMessage.warning(t('balance.noSalesTg'))
-    return
-  }
-  const u = raw.replace(/^@+/, '').trim()
-  if (!u) {
-    ElMessage.warning(t('balance.noSalesTg'))
-    return
-  }
-  window.open(`https://t.me/${encodeURIComponent(u)}`, '_blank', 'noopener,noreferrer')
 }
 
 onMounted(() => {

@@ -22,7 +22,6 @@
       <el-descriptions-item :label="$t('dashboard.remainingSms')">
         {{ info.remaining_sms_estimate != null ? fmtNum(info.remaining_sms_estimate) : '—' }}
       </el-descriptions-item>
-      <el-descriptions-item :label="$t('dashboard.salesContactTg')">{{ formatTg(info.sales_tg_username) }}</el-descriptions-item>
       <el-descriptions-item :label="$t('accountInfo.accountId')">{{ info.id }}</el-descriptions-item>
       <el-descriptions-item :label="$t('accountInfo.accountStatus')">
         <el-tag :type="statusTag(info.status)" size="small">{{ statusText(info.status) }}</el-tag>
@@ -36,8 +35,7 @@
       <el-descriptions-item :label="$t('common.createdAt')" :span="2">{{ info.created_at }}</el-descriptions-item>
     </el-descriptions>
     <el-empty v-else :description="$t('common.noData')" />
-    <div v-if="info && salesTg" class="overview-actions">
-      <el-button type="success" plain size="small" @click="openSalesTg">{{ $t('accountManage.contactSalesBtn') }}</el-button>
+    <div v-if="info" class="overview-actions">
       <el-button size="small" @click="router.push('/account/balance')">{{ $t('menu.balance') }}</el-button>
       <el-button size="small" @click="router.push('/account/api-keys')">{{ $t('menu.apiKeys') }}</el-button>
       <el-button size="small" @click="router.push('/account/security')">{{ $t('menu.security') }}</el-button>
@@ -46,7 +44,6 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import type { AccountInfo } from '@/api/account'
@@ -58,11 +55,6 @@ const props = defineProps<{
 
 const router = useRouter()
 const { t } = useI18n()
-
-const salesTg = computed(() => {
-  const s = props.info?.sales_tg_username?.trim()
-  return s ? s.replace(/^@+/, '') : ''
-})
 
 function fmtNum(n: number) {
   const x = Number(n) || 0
@@ -108,11 +100,6 @@ function statusText(s: string) {
   if (s === 'suspended') return t('dashboard.accountSuspended')
   if (s === 'closed') return t('dashboard.accountClosed')
   return s || '—'
-}
-
-function openSalesTg() {
-  if (!salesTg.value) return
-  window.open(`https://t.me/${encodeURIComponent(salesTg.value)}`, '_blank', 'noopener,noreferrer')
 }
 </script>
 
