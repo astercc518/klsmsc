@@ -14,12 +14,21 @@ key 设计（per-field TTL，避免整 hash key TTL 到期清空全部积压）�
 新 DLR 不进来 → 整 key 过期 → 已积压上万条 DLR 全部丢失。
 新实现：每条 DLR 各自的 expire-at 写入 ZSet，flush 时主动按 score 清理过期项；
 worker 卡死也只丢真正超时的旧条目，未过期的随时可被 flush 接力恢复。
+
+事件循环约束（2026-06 修复）：本模块过去用 app.utils.cache.get_redis_client() 单例，
+其 redis.asyncio 连接绑定到首次创建它的 event loop。Celery worker 经 _run_async
+每个任务新建并关闭 loop，跨 loop 复用单例连接会抛
+'Future attached to a different loop' / 'Event loop is closed'，导致 flush 整批失败、
+未匹配 DLR 永久淤积、flush 任务软超时被杀致 worker 高频回收（WorkerLostError）。
+改为每次在当前 loop 新建短命 client（与 webhook_worker / record_link_click_task 同模式）；
+flush 路径通过可选 redis= 参数复用单个连接，避免逐条新建连接的握手开销又拖垮 25s 软超时。
 """
 import json
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional
 
-from app.utils.cache import get_redis_client
+import redis.asyncio as _aioredis
+from app.config import settings
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -33,9 +42,15 @@ def _now_ts() -> float:
     return datetime.now().timestamp()
 
 
+def _new_redis():
+    """按当前事件循环新建短命 redis 客户端（不可复用 get_redis_client 单例，见模块 docstring）。"""
+    return _aioredis.Redis.from_url(settings.REDIS_URL, decode_responses=False)
+
+
 async def buffer_unmatched_dlr(
     channel_id: int, upstream_id: str, new_status: str,
     stat: str, err: str, dest_addr: str, source_addr: str, receipted_message_id: str,
+    redis=None,
 ) -> bool:
     """
     将未找到 sms_log 的 DLR 写入 Redis 重试缓冲区。
@@ -43,8 +58,10 @@ async def buffer_unmatched_dlr(
     """
     if not upstream_id:
         return False
+    own = redis is None
+    if own:
+        redis = _new_redis()
     try:
-        redis = await get_redis_client()
         field = f"{channel_id}:{upstream_id}"
         payload = json.dumps({
             "channel_id": channel_id,
@@ -68,12 +85,20 @@ async def buffer_unmatched_dlr(
     except Exception as e:
         logger.warning(f"DLR 重试缓冲写入失败: {e}")
         return False
+    finally:
+        if own:
+            try:
+                await redis.aclose()
+            except Exception:
+                pass
 
 
-async def pop_retry_buffer(limit: int = 100) -> List[Dict]:
+async def pop_retry_buffer(limit: int = 100, redis=None) -> List[Dict]:
     """取出最多 limit 条待重试 DLR（不删除，由调用方按结果决定删除还是更新重试计数）"""
+    own = redis is None
+    if own:
+        redis = _new_redis()
     try:
-        redis = await get_redis_client()
         # 优先取最早 expire 的 N 条；若 ZSet 为空（兼容旧数据）回退扫 hash
         fields_b = await redis.zrange(_RETRY_EXPIRE_ZSET, 0, limit - 1)
         if fields_b:
@@ -111,22 +136,38 @@ async def pop_retry_buffer(limit: int = 100) -> List[Dict]:
     except Exception as e:
         logger.warning(f"DLR 重试缓冲读取失败: {e}")
         return []
+    finally:
+        if own:
+            try:
+                await redis.aclose()
+            except Exception:
+                pass
 
 
-async def remove_retry_item(field: str):
+async def remove_retry_item(field: str, redis=None):
     """处理成功后从缓冲区删除"""
+    own = redis is None
+    if own:
+        redis = _new_redis()
     try:
-        redis = await get_redis_client()
         await redis.hdel(_RETRY_KEY, field)
         await redis.zrem(_RETRY_EXPIRE_ZSET, field)
     except Exception as e:
         logger.warning(f"DLR 重试缓冲删除失败: {e}")
+    finally:
+        if own:
+            try:
+                await redis.aclose()
+            except Exception:
+                pass
 
 
-async def increment_retry_count(field: str, item: dict):
+async def increment_retry_count(field: str, item: dict, redis=None):
     """重试失败，增加计数；超过阈值则删除（放弃）"""
+    own = redis is None
+    if own:
+        redis = _new_redis()
     try:
-        redis = await get_redis_client()
         item["retry_count"] = item.get("retry_count", 0) + 1
         if item["retry_count"] >= 20:  # 最多重试 20 次（约 100s）
             await redis.hdel(_RETRY_KEY, field)
@@ -139,12 +180,20 @@ async def increment_retry_count(field: str, item: dict):
         await redis.hset(_RETRY_KEY, field, json.dumps(item, ensure_ascii=False))
     except Exception as e:
         logger.warning(f"DLR 重试计数更新失败: {e}")
+    finally:
+        if own:
+            try:
+                await redis.aclose()
+            except Exception:
+                pass
 
 
-async def cleanup_expired() -> int:
+async def cleanup_expired(redis=None) -> int:
     """清理 expire-at 已过期的条目，返回清理数量；建议在 flush 任务中调用一次。"""
+    own = redis is None
+    if own:
+        redis = _new_redis()
     try:
-        redis = await get_redis_client()
         now = _now_ts()
         # 取出所有过期 field（一次最多 500 条，避免长尾阻塞）
         expired_b = await redis.zrangebyscore(_RETRY_EXPIRE_ZSET, "-inf", now, start=0, num=500)
@@ -162,12 +211,26 @@ async def cleanup_expired() -> int:
     except Exception as e:
         logger.warning(f"DLR 重试缓冲过期清理失败: {e}")
         return 0
+    finally:
+        if own:
+            try:
+                await redis.aclose()
+            except Exception:
+                pass
 
 
-async def retry_buffer_size() -> int:
+async def retry_buffer_size(redis=None) -> int:
     """返回待重试 DLR 数量（监控用）"""
+    own = redis is None
+    if own:
+        redis = _new_redis()
     try:
-        redis = await get_redis_client()
         return await redis.hlen(_RETRY_KEY)
     except Exception:
         return -1
+    finally:
+        if own:
+            try:
+                await redis.aclose()
+            except Exception:
+                pass
