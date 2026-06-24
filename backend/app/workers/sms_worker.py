@@ -48,6 +48,36 @@ from app.modules.sms.sms_batch import SmsBatch
 from app.workers.webhook_worker import send_webhook_task
 
 
+# 已配置 webhook_url 的账户ID缓存（每进程本地，60s TTL）。
+# 背景：每条 DLR 原本都无条件入队一个 send_webhook 任务，但全站 438 个账户里通常只有个位数配了
+# webhook_url（如 account 252 两小时刷 10w+ DLR 却没配 URL），导致 webhook_tasks 堆几十万条
+# “查库→发现无 URL→跳过”的空任务、空转 CPU 并拖慢真实回执。在入队前用本缓存先判一次，从源头消灭空任务。
+_WEBHOOK_ACCT_CACHE: dict = {"ids": frozenset(), "exp": 0.0}
+_WEBHOOK_ACCT_TTL = 60.0
+
+
+async def _account_has_webhook(db, account_id) -> bool:
+    """账户是否配置了 webhook_url（带 60s 缓存）。查询失败时返回 True（放行入队，由任务内再兜底判），
+    宁可多入队也不丢真实回执。"""
+    if not account_id:
+        return False
+    now = time.monotonic()
+    if now >= _WEBHOOK_ACCT_CACHE["exp"]:
+        try:
+            from app.modules.common.account import Account
+            rows = await db.execute(
+                select(Account.id).where(
+                    Account.webhook_url.isnot(None), Account.webhook_url != ""
+                )
+            )
+            _WEBHOOK_ACCT_CACHE["ids"] = frozenset(r[0] for r in rows.all())
+            _WEBHOOK_ACCT_CACHE["exp"] = now + _WEBHOOK_ACCT_TTL
+        except Exception as e:
+            logger.warning(f"刷新 webhook 账户缓存失败，本次放行入队: {e}")
+            return True
+    return account_id in _WEBHOOK_ACCT_CACHE["ids"]
+
+
 
 
 
@@ -821,23 +851,25 @@ async def _process_dlr_async(dlr_data: dict):
 
             # 批次进度由 sync_processing_batch_progress_task 等定时汇总，避免每条 HTTP DLR 抢锁 sms_batches。
 
-            # Webhook / 注水：仅入队，秒结本任务，避免阻塞 sms_dlr
+            # Webhook：仅入队，秒结本任务，避免阻塞 sms_dlr。
+            # 仅对配置了 webhook_url 的账户入队，避免无 URL 账户刷出大量空任务。
             try:
-                send_webhook_task.apply_async(
-                    args=[
-                        sms_log.account_id,
-                        message_id,
-                        status,
-                        {
-                            "phone_number": sms_log.phone_number,
-                            "country_code": sms_log.country_code,
-                            "error_message": dlr_data.get("error_message")
-                            if status == "failed"
-                            else None,
-                        },
-                    ],
-                    queue="webhook_tasks",
-                )
+                if await _account_has_webhook(db, sms_log.account_id):
+                    send_webhook_task.apply_async(
+                        args=[
+                            sms_log.account_id,
+                            message_id,
+                            status,
+                            {
+                                "phone_number": sms_log.phone_number,
+                                "country_code": sms_log.country_code,
+                                "error_message": dlr_data.get("error_message")
+                                if status == "failed"
+                                else None,
+                            },
+                        ],
+                        queue="webhook_tasks",
+                    )
             except Exception as e:
                 logger.warning(f"Webhook 入队失败: {e}")
 
@@ -1053,19 +1085,20 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                 logger.warning(f"SMPP 入站 DLR 转发入队失败: {_dlr_fwd_err}")
 
             try:
-                send_webhook_task.apply_async(
-                    args=[
-                        sms_log.account_id,
-                        sms_log.message_id,
-                        new_status,
-                        {
-                            "phone_number": sms_log.phone_number,
-                            "country_code": sms_log.country_code,
-                            "error_message": sms_log.error_message,
-                        },
-                    ],
-                    queue="webhook_tasks",
-                )
+                if await _account_has_webhook(db, sms_log.account_id):
+                    send_webhook_task.apply_async(
+                        args=[
+                            sms_log.account_id,
+                            sms_log.message_id,
+                            new_status,
+                            {
+                                "phone_number": sms_log.phone_number,
+                                "country_code": sms_log.country_code,
+                                "error_message": sms_log.error_message,
+                            },
+                        ],
+                        queue="webhook_tasks",
+                    )
             except Exception as e:
                 logger.warning(f"Webhook 入队失败: {e}")
 
