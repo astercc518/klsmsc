@@ -121,6 +121,43 @@ celery_app.conf.task_queues = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Webhook 重试 DLX 拓扑（替代 Celery self.retry(countdown=...) 这个把消息挂 worker 内存、
+# 重启即丢、占 prefetch 的反模式）。下列队列【无消费者】，纯"延迟暂存"：消息躺到 x-message-ttl
+# 到期后被死信(dead-letter)回 webhook_tasks 交换机，重新投递给 worker-webhook。
+# 声明机制与上方 sms_inbound_dlr 完全一致（task_queues 的 queue_arguments 在首次 publish 时声明）。
+# ---------------------------------------------------------------------------
+_webhook_dlx_queues = {}
+# 失败重试阶梯：1m → 5m → 30m → 2h → 6h
+for _label, _ttl in [('1m', 60_000), ('5m', 300_000), ('30m', 1_800_000),
+                     ('2h', 7_200_000), ('6h', 21_600_000)]:
+    _webhook_dlx_queues[f'webhook.retry.{_label}'] = {
+        'exchange': f'webhook.retry.{_label}',
+        'routing_key': f'webhook.retry.{_label}',
+        'queue_arguments': {
+            'x-message-ttl': _ttl,
+            'x-dead-letter-exchange': 'webhook_tasks',
+            'x-dead-letter-routing-key': 'webhook_tasks',
+        },
+    }
+# 限流暂存：被令牌桶限流的消息在此停留 10s 再回投，不计入失败重试次数。
+_webhook_dlx_queues['webhook.throttle'] = {
+    'exchange': 'webhook.throttle',
+    'routing_key': 'webhook.throttle',
+    'queue_arguments': {
+        'x-message-ttl': 10_000,
+        'x-dead-letter-exchange': 'webhook_tasks',
+        'x-dead-letter-routing-key': 'webhook_tasks',
+    },
+}
+# 死信队列：穷尽重试仍失败的回执落此，保留 7 天供审计/手动重放（无消费者、无 DLX）。
+_webhook_dlx_queues['webhook.dlq'] = {
+    'exchange': 'webhook.dlq',
+    'routing_key': 'webhook.dlq',
+    'queue_arguments': {'x-message-ttl': 604_800_000},
+}
+celery_app.conf.task_queues.update(_webhook_dlx_queues)
+
 # 任务路由 - 数据业务
 celery_app.conf.task_routes.update({
     'data_refresh_all_product_stock': {'queue': 'data_tasks'},

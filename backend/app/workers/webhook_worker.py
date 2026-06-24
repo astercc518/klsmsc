@@ -9,6 +9,9 @@ import ipaddress
 import json
 import os
 import socket
+import time
+import redis as _redis_sync
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
@@ -101,12 +104,185 @@ def validate_webhook_url(url: str) -> Tuple[bool, str]:
     return True, ""
 
 
+# ---------------------------------------------------------------------------
+# P0 韧性加固：三段硬超时 + per-endpoint 熔断 + per-account 在途信号量（背压）
+# 目的：独立 worker 之上再叠一层「单个慢/死客户不耗尽整池」的弹性隔离。
+# 全部 fail-open：Redis 抖动时只是退化为不限流/不熔断，绝不阻断真实回执。
+# ---------------------------------------------------------------------------
+
+# 三段硬超时：替掉单一 timeout=10s。connect 快失败防 SYN 黑洞；read 限制慢响应钉死协程。
+_HTTP_TIMEOUT = httpx.Timeout(
+    connect=float(os.getenv("WEBHOOK_HTTP_CONNECT_TIMEOUT", "3")),
+    read=float(os.getenv("WEBHOOK_HTTP_READ_TIMEOUT", "5")),
+    write=float(os.getenv("WEBHOOK_HTTP_WRITE_TIMEOUT", "3")),
+    pool=float(os.getenv("WEBHOOK_HTTP_POOL_TIMEOUT", "2")),
+)
+
+# 熔断器：单账户(端点)累计失败 ≥ 阈值则 open，冷却期内直接快速失败、零网络连接。
+_CB_FAIL_THRESHOLD = int(os.getenv("WEBHOOK_CB_FAIL_THRESHOLD", "20"))
+_CB_OPEN_SECONDS = int(os.getenv("WEBHOOK_CB_OPEN_SECONDS", "300"))
+# 在途信号量：单账户最多 K 个在途推送，超过即背压（让该账户回执延迟重试，不抢占他人槽位）。
+_ACCT_MAX_INFLIGHT = int(os.getenv("WEBHOOK_ACCT_MAX_INFLIGHT", "8"))
+
+# 同步 redis 客户端：与 asyncio loop 无绑定，可在 Celery 每任务新建 loop 间安全复用（单例）。
+_sync_redis_client = None
+
+
+def _get_sync_redis():
+    global _sync_redis_client
+    if _sync_redis_client is None:
+        from app.config import settings as _s
+        _sync_redis_client = _redis_sync.Redis.from_url(
+            _s.REDIS_URL, decode_responses=True,
+            socket_timeout=1.0, socket_connect_timeout=1.0,
+        )
+    return _sync_redis_client
+
+
+class _BackpressureReject(Exception):
+    """单账户在途推送超限，触发背压（延迟重试，不丢）。"""
+
+
+def _cb_allow(account_id) -> bool:
+    """熔断闸门：open 且冷却未到 → 拒绝(快速失败)；冷却到期 → 放一个半开探针。Redis 故障 fail-open。"""
+    try:
+        r = _get_sync_redis()
+        key = f"wh:cb:{account_id}"
+        if r.hget(key, "state") == "open":
+            ou = r.hget(key, "open_until")
+            if ou and time.time() < float(ou):
+                return False
+            r.hset(key, "state", "half_open")  # 冷却到期，放探针试探对端是否恢复
+        return True
+    except Exception:
+        return True
+
+
+def _cb_record(account_id, ok: bool):
+    """记录一次推送结果：成功即关闭熔断；失败累加，达阈值则 open 并设冷却。Redis 故障静默。"""
+    try:
+        r = _get_sync_redis()
+        key = f"wh:cb:{account_id}"
+        if ok:
+            r.delete(key)
+        else:
+            n = r.hincrby(key, "fails", 1)
+            r.expire(key, _CB_OPEN_SECONDS + 60)
+            if n >= _CB_FAIL_THRESHOLD:
+                r.hset(key, mapping={"state": "open", "open_until": str(time.time() + _CB_OPEN_SECONDS)})
+    except Exception:
+        pass
+
+
+@contextmanager
+def _acct_slot(account_id):
+    """per-account 在途信号量。超限抛 _BackpressureReject；Redis 故障 fail-open（不限流）。"""
+    r = None
+    key = f"wh:inflight:{account_id}"
+    held = False
+    try:
+        r = _get_sync_redis()
+        n = r.incr(key)
+        held = True
+        if n == 1:
+            r.expire(key, 60)  # 防进程崩溃致计数泄漏的兜底过期
+        if n > _ACCT_MAX_INFLIGHT:
+            r.decr(key)
+            held = False
+            raise _BackpressureReject(account_id)
+    except _BackpressureReject:
+        raise
+    except Exception as e:
+        logger.debug(f"inflight 信号量 redis 异常，fail-open 放行: {e}")
+        held = False
+    try:
+        yield
+    finally:
+        if held and r is not None:
+            try:
+                r.decr(key)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# P1：DLX 延迟阶梯重试 + per-account 令牌桶限流
+# ---------------------------------------------------------------------------
+
+# 失败重试延迟阶梯，与 celery_app 的 webhook.retry.* 队列一一对应。穷尽后入 DLQ。
+_RETRY_QUEUES = ['webhook.retry.1m', 'webhook.retry.5m', 'webhook.retry.30m',
+                 'webhook.retry.2h', 'webhook.retry.6h']
+_DLQ_QUEUE = 'webhook.dlq'
+_THROTTLE_QUEUE = 'webhook.throttle'
+
+# 令牌桶限流（per-account）。WEBHOOK_RATE_PER_SEC<=0 时关闭。
+_RATE_PER_SEC = float(os.getenv("WEBHOOK_RATE_PER_SEC", "50"))
+_RATE_BURST = float(os.getenv("WEBHOOK_RATE_BURST", "100"))
+# 全局令牌桶（P2）：护住推送总出口——带宽/Redis/下游对端总压，兜底所有账户合计速率。
+_GLOBAL_RATE_PER_SEC = float(os.getenv("WEBHOOK_GLOBAL_RATE_PER_SEC", "500"))
+_GLOBAL_BURST = float(os.getenv("WEBHOOK_GLOBAL_BURST", "1000"))
+_RATE_LUA = """
+local data = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(data[1]); local ts = tonumber(data[2])
+local rate = tonumber(ARGV[1]); local burst = tonumber(ARGV[2]); local now = tonumber(ARGV[3])
+if tokens == nil then tokens = burst; ts = now end
+tokens = math.min(burst, tokens + math.max(0, now - ts) * rate)
+local allowed = 0
+if tokens >= 1 then tokens = tokens - 1; allowed = 1 end
+redis.call('HMSET', KEYS[1], 'tokens', tokens, 'ts', now)
+redis.call('EXPIRE', KEYS[1], math.ceil(burst / rate) + 10)
+return allowed
+"""
+_rate_script = None
+
+
+def _token_take(key: str, rate: float, burst: float) -> bool:
+    """通用令牌桶取一枚令牌。rate<=0 关闭；Redis 故障 fail-open。"""
+    if rate <= 0:
+        return True
+    try:
+        r = _get_sync_redis()
+        global _rate_script
+        if _rate_script is None:
+            _rate_script = r.register_script(_RATE_LUA)
+        return bool(_rate_script(keys=[key], args=[rate, burst, time.time()]))
+    except Exception:
+        return True
+
+
+def _rate_allow(account_id) -> bool:
+    """两道令牌桶：先全局(护总出口)后 per-account(护单客户公平)，任一不足即限流。"""
+    if not _token_take("wh:rate:__global__", _GLOBAL_RATE_PER_SEC, _GLOBAL_BURST):
+        return False
+    return _token_take(f"wh:rate:{account_id}", _RATE_PER_SEC, _RATE_BURST)
+
+
+def _requeue_delayed(args, queue_name):
+    """把任务重投到指定延迟队列（消息躺到 TTL 后死信回 webhook_tasks）。"""
+    try:
+        send_webhook_task.apply_async(args=args, queue=queue_name)
+    except Exception as e:
+        logger.error(f"Webhook 重投 {queue_name} 失败: {e}")
+
+
+def _to_dlq(account_id, message_id, status, data, error):
+    """穷尽重试 → 落 DLQ（retry_no 归零便于手动重放）+ 审计日志。"""
+    try:
+        send_webhook_task.apply_async(
+            args=[account_id, message_id, status, data, 0], queue=_DLQ_QUEUE)
+    except Exception as e:
+        logger.error(f"Webhook 入 DLQ 失败: {e}")
+    logger.warning(
+        f"Webhook 穷尽重试丢入 DLQ: account={account_id} mid={message_id} "
+        f"status={status} last_error={error}")
+
+
 @celery_app.task(
     name='send_webhook', bind=True, max_retries=3,
     soft_time_limit=int(os.getenv("WORKER_WEBHOOK_SOFT_TIMEOUT_SEC", "55")),
     time_limit=int(os.getenv("WORKER_WEBHOOK_HARD_TIMEOUT_SEC", "75")),
 )
-def send_webhook_task(self, account_id: int, message_id: str, status: str, data: Dict):
+def send_webhook_task(self, account_id: int, message_id: str, status: str, data: Dict, retry_no: int = 0):
     """
     发送Webhook回调任务
 
@@ -115,6 +291,10 @@ def send_webhook_task(self, account_id: int, message_id: str, status: str, data:
         message_id: 消息ID
         status: 状态 (sent/delivered/failed)
         data: 额外数据
+        retry_no: 当前重试序号（DLX 阶梯重投时递增；首次入队为 0）
+
+    重试不再用 Celery countdown，而是把消息投到 webhook.retry.* 延迟队列，
+    到 TTL 后死信回 webhook_tasks 重投——消息躺在 broker（落盘），不占 worker 内存、重启不丢。
     """
     # 只发终态：跳过 sent/accepted 等中间态（兜底拦截绕过 trigger_webhook 的直连 apply_async 调用）
     if not _webhook_status_worth_sending(status):
@@ -130,18 +310,27 @@ def send_webhook_task(self, account_id: int, message_id: str, status: str, data:
             )
         finally:
             loop.close()
-        
-        if not result['success'] and self.request.retries < self.max_retries:
-            # 重试延迟: 1分钟、5分钟、15分钟
-            retry_delays = [60, 300, 900]
-            delay = retry_delays[min(self.request.retries, len(retry_delays) - 1)]
-            logger.info(f"Webhook回调失败，将在 {delay} 秒后重试: {message_id}")
-            raise self.retry(countdown=delay, exc=Exception(result.get('error')))
-        
-        return result
     except Exception as e:
         logger.error(f"Webhook发送异常: {str(e)}", exc_info=e)
-        return {"success": False, "error": str(e)}
+        result = {"success": False, "error": str(e), "retriable": True}
+
+    # 限流：短延迟(10s)重投，不增加重试计数
+    if result.get("throttle"):
+        _requeue_delayed([account_id, message_id, status, data, retry_no], _THROTTLE_QUEUE)
+        return result
+
+    # 成功 / 跳过 / 明确不可重试（账户或短信记录不存在等）→ 直接返回，不重试
+    if result.get("success") or result.get("skipped") or not result.get("retriable"):
+        return result
+
+    # 失败且可重试 → DLX 延迟阶梯；穷尽 → DLQ
+    if retry_no < len(_RETRY_QUEUES):
+        q = _RETRY_QUEUES[retry_no]
+        _requeue_delayed([account_id, message_id, status, data, retry_no + 1], q)
+        logger.info(f"Webhook 第 {retry_no + 1} 次重试入延迟队列 {q}: mid={message_id} err={result.get('error')}")
+    else:
+        _to_dlq(account_id, message_id, status, data, result.get("error"))
+    return result
 
 
 async def _send_webhook_async(account_id: int, message_id: str, status: str, data: Dict) -> Dict:
@@ -191,7 +380,19 @@ async def _send_webhook_async(account_id: int, message_id: str, status: str, dat
                 "skipped": True,
                 "reason": f"webhook_url 被安全策略拒绝: {reason}",
             }
-        
+
+        # 令牌桶限流：超过 per-account 速率 → throttle，交由 10s 短延迟队列稍后重投（不计失败）。
+        # 防「已配 URL 的客户瞬间十万回执」把推送池/对端打爆——gate 拦不住这种有效流量过载。
+        if not _rate_allow(account_id):
+            logger.info(f"Webhook 限流(account={account_id})，10s 后重投 mid={message_id}")
+            return {"success": False, "throttle": True, "error": "rate_limited"}
+
+        # 熔断闸门：对端连续失败 → open，冷却期内直接快速失败，连 SMSLog 查询/签名/网络都不做，
+        # 给对端冷却、给自己省资源。返回 retriable=True 走既有重试延后再试。
+        if not _cb_allow(account_id):
+            logger.warning(f"Webhook 熔断中(open)，暂不推送 account={account_id} mid={message_id}")
+            return {"success": False, "error": "circuit_open", "retriable": True}
+
         # 查询短信记录获取详细信息
         result = await db.execute(
             select(SMSLog).where(SMSLog.message_id == message_id)
@@ -238,36 +439,44 @@ async def _send_webhook_async(account_id: int, message_id: str, status: str, dat
         # 用 content= 而不是 json= 把已序列化好的字节直接发出，确保收方对 body 重新计算 HMAC 时
         # 字节序列与我们签名时完全一致（避免 httpx 默认紧凑 separators 与 json.dumps 默认空格 separators 的差异）
         try:
-            # follow_redirects=False：防止 302 跳到内网（30x → http://127.0.0.1 仍是 SSRF）。
-            # 客户的合法 webhook 不应该重定向。
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-                response = await client.post(
-                    webhook_url,
-                    content=signature_payload.encode("utf-8"),
-                    headers={
-                        "Content-Type": "application/json; charset=utf-8",
-                        "X-Signature": f"sha256={signature}",
-                        "X-Timestamp": str(int(datetime.now().timestamp())),
-                        "User-Agent": "SMS-Gateway-Webhook/1.0"
-                    }
-                )
-                
-                if response.status_code == 200:
+            # 背压：限制单账户在途推送数，一个慢/卡的客户最多占 _ACCT_MAX_INFLIGHT 个槽，不波及他人。
+            with _acct_slot(account_id):
+                # follow_redirects=False：防止 302 跳到内网（30x → http://127.0.0.1 仍是 SSRF）。
+                # 三段硬超时：connect/read/write 分别限制，杜绝慢连接钉死协程/句柄。
+                async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=False) as client:
+                    response = await client.post(
+                        webhook_url,
+                        content=signature_payload.encode("utf-8"),
+                        headers={
+                            "Content-Type": "application/json; charset=utf-8",
+                            "X-Signature": f"sha256={signature}",
+                            "X-Timestamp": str(int(datetime.now().timestamp())),
+                            "User-Agent": "SMS-Gateway-Webhook/1.0"
+                        }
+                    )
+
+                ok = response.status_code == 200
+                _cb_record(account_id, ok)   # 成功→关闭熔断；非200→计入失败
+                if ok:
                     logger.info(f"Webhook回调成功: {message_id} -> {webhook_url}")
                     return {"success": True}
-                else:
-                    error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
-                    logger.warning(f"Webhook回调返回非200: {error_msg}")
-                    return {"success": False, "error": error_msg}
-                    
+                error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
+                logger.warning(f"Webhook回调返回非200: {error_msg}")
+                return {"success": False, "error": error_msg, "retriable": True}
+
+        except _BackpressureReject:
+            logger.info(f"Webhook 背压(账户在途超限)，延迟重试 account={account_id} mid={message_id}")
+            return {"success": False, "error": "backpressure", "retriable": True}
         except httpx.TimeoutException:
+            _cb_record(account_id, False)
             error_msg = "Webhook请求超时"
             logger.warning(f"{error_msg}: {webhook_url}")
-            return {"success": False, "error": error_msg}
+            return {"success": False, "error": error_msg, "retriable": True}
         except Exception as e:
+            _cb_record(account_id, False)
             error_msg = f"Webhook请求异常: {str(e)}"
             logger.error(error_msg, exc_info=e)
-            return {"success": False, "error": error_msg}
+            return {"success": False, "error": error_msg, "retriable": True}
     finally:
         await _eng.dispose()
 

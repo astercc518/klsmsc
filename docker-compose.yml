@@ -275,7 +275,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-8} --max-tasks-per-child=${WORKER_MAX_TASKS_PER_CHILD:-1000} -Q celery,data_tasks,webhook_tasks,integrations
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WORKER_CONCURRENCY:-8} --max-tasks-per-child=${WORKER_MAX_TASKS_PER_CHILD:-1000} -Q celery,data_tasks,integrations
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -361,6 +361,48 @@ services:
       rabbitmq:
         condition: service_healthy
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${RESULT_WORKER_CONCURRENCY:-12} --max-tasks-per-child=${RESULT_WORKER_MAX_TASKS_PER_CHILD:-2000} -Q sms_result_queue
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - smsc-network
+
+  # 专用：仅消费 webhook_tasks（客户 webhook 回调 + 短链点击记录 record_link_click_task）。
+  # webhook 是去敲“客户外部服务器”的网络等待型任务，延迟不可控；与 data_tasks/celery 物理隔离，
+  # 避免某客户回执洪峰（或慢/死的对端）挤占批量/结算任务的并发槽位。
+  worker-webhook:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: smsc-worker-webhook
+    environment:
+      TZ: Asia/Shanghai
+      APP_ENV: ${APP_ENV:-development}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
+      DATABASE_USER: ${MYSQL_USER:-smsuser}
+      DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+      DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+    volumes:
+      - ./backend:/app
+      - ./logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${WEBHOOK_WORKER_CONCURRENCY:-16} --max-tasks-per-child=${WEBHOOK_WORKER_MAX_TASKS_PER_CHILD:-500} -Q webhook_tasks
     restart: unless-stopped
     logging: *default-logging
     networks:
