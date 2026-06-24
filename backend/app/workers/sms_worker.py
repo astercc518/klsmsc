@@ -1145,41 +1145,70 @@ def flush_dlr_retry_buffer_task():
 async def _flush_dlr_retry_buffer_async():
     from app.utils.dlr_buffer import (
         pop_retry_buffer, remove_retry_item, increment_retry_count, retry_buffer_size,
-        cleanup_expired,
+        cleanup_expired, _new_redis,
     )
 
-    # 先把 expire-at 已过的条目清掉（per-field TTL 自管理，避免堆积无意义重试）
-    await cleanup_expired()
+    # 本任务 loop 内新建单个 redis 连接，贯穿整个 flush 复用——避免逐条新建连接的握手开销
+    # 拖垮 25s 软超时，也规避 get_redis_client 单例跨 loop 的 'different loop' 报错。
+    redis = _new_redis()
+    got_lock = False
+    try:
+        # 防重入锁：flush 每 5s 调度，但单次处理可能十几秒；多个 flush 并发会互抢 DB、
+        # 互撞 25s 软超时，软超时在 asyncmy/redis 读取中途注入异常撕裂连接，遗留跨 loop
+        # 残留连接致下次 'different loop'。只允许一个 flush 在跑，其余直接跳过。
+        got_lock = bool(await redis.set("dlr_flush:lock", "1", nx=True, ex=30))
+        if not got_lock:
+            return
 
-    size = await retry_buffer_size()
-    if size <= 0:
-        return
-    logger.info(f"DLR 重试缓冲: 当前积压 {size} 条，开始重试")
+        # 先把 expire-at 已过的条目清掉（per-field TTL 自管理，避免堆积无意义重试）
+        await cleanup_expired(redis=redis)
 
-    items = await pop_retry_buffer(limit=50)
-    for item in items:
-        field = item.get("_field", "")
+        size = await retry_buffer_size(redis=redis)
+        if size <= 0:
+            return
+        logger.info(f"DLR 重试缓冲: 当前积压 {size} 条，开始重试")
+
+        # 内部时间预算：主动在软超时(25s)前收尾，剩余下一轮接力——避免软超时打断 asyncmy 读取
+        _budget = float(os.getenv("WORKER_FLUSH_DLR_BUDGET_SEC", "18"))
+        _deadline = time.monotonic() + _budget
+
+        items = await pop_retry_buffer(limit=50, redis=redis)
+        for item in items:
+            if time.monotonic() > _deadline:
+                logger.info("DLR 重试缓冲: 达时间预算，本轮处理到此，剩余下轮接力")
+                break
+            field = item.get("_field", "")
+            try:
+                matched = await _process_smpp_dlr_async(
+                    channel_id=item["channel_id"],
+                    upstream_id=item["upstream_id"],
+                    new_status=item["new_status"],
+                    stat=item.get("stat", ""),
+                    err=item.get("err", ""),
+                    dest_addr=item.get("dest_addr", ""),
+                    source_addr=item.get("source_addr", ""),
+                    receipted_message_id=item.get("receipted_message_id", ""),
+                )
+                if matched:
+                    # 成功匹配并写入 DB，从缓冲区删除
+                    await remove_retry_item(field, redis=redis)
+                    logger.info(f"DLR 重试成功: field={field}")
+                else:
+                    # 仍未找到 sms_log，增加重试计数（超限后由 increment_retry_count 自动删除）
+                    await increment_retry_count(field, item, redis=redis)
+            except Exception as e:
+                logger.warning(f"DLR 重试处理异常: field={field}, {e}")
+                await increment_retry_count(field, item, redis=redis)
+    finally:
+        if got_lock:
+            try:
+                await redis.delete("dlr_flush:lock")
+            except Exception:
+                pass
         try:
-            matched = await _process_smpp_dlr_async(
-                channel_id=item["channel_id"],
-                upstream_id=item["upstream_id"],
-                new_status=item["new_status"],
-                stat=item.get("stat", ""),
-                err=item.get("err", ""),
-                dest_addr=item.get("dest_addr", ""),
-                source_addr=item.get("source_addr", ""),
-                receipted_message_id=item.get("receipted_message_id", ""),
-            )
-            if matched:
-                # 成功匹配并写入 DB，从缓冲区删除
-                await remove_retry_item(field)
-                logger.info(f"DLR 重试成功: field={field}")
-            else:
-                # 仍未找到 sms_log，增加重试计数（超限后由 increment_retry_count 自动删除）
-                await increment_retry_count(field, item)
-        except Exception as e:
-            logger.warning(f"DLR 重试处理异常: field={field}, {e}")
-            await increment_retry_count(field, item)
+            await redis.aclose()
+        except Exception:
+            pass
 
 
 # ============ 定时拉取 DLR 报告 ============
