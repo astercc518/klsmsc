@@ -1003,51 +1003,73 @@ async def send_batch_sms(
     # 否则「设了定时却立即发出」（任务 #710）。
     if total_numbers > ASYNC_THRESHOLD or _scheduled_at:
         # ========== 大批量 / 定时发送：异步分片处理 ==========
-        from app.workers.batch_worker import process_batch_chunk
-        from datetime import timedelta
-
         phones = request.phone_numbers
         rot = rot_messages if use_rotate else []
+        chunk_count = (total_numbers + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+        if _scheduled_at:
+            # 定时发送：不再用 eta 反模式（apply_async(eta=) 任务挂 worker 内存 unacked，eta 距
+            # 投递 >30min 必撞 RabbitMQ consumer_timeout 崩 worker、重启即丢、计划时间不落库无法
+            # 恢复）。改为：负载持久化到文件 + 落 scheduled_at，status=PENDING；到点由 beat
+            # dispatch_scheduled_batches 当下入队（无 eta）。见 docs/postmortem-2026-06-25-dlr-pipeline.md。
+            import os as _os
+            from app.api.v1.batches import UPLOAD_DIR
+            payload_file = _os.path.join(UPLOAD_DIR, f"scheduled_{batch_pk}_{uuid.uuid4().hex[:8]}.json")
+            _payload = {
+                "phones": phones,
+                "message": request.message,
+                "rot_messages": rot,
+                "channel_id": request.channel_id,
+                "sender_id": request.sender_id,
+                "account_id": account.id,
+            }
+
+            def _write_scheduled_payload():
+                _os.makedirs(UPLOAD_DIR, exist_ok=True)
+                with open(payload_file, "w", encoding="utf-8") as f:
+                    json.dump(_payload, f, ensure_ascii=False)
+
+            await asyncio.to_thread(_write_scheduled_payload)
+            sms_batch.scheduled_at = _scheduled_at
+            sms_batch.send_config = {
+                "chunks": chunk_count, "chunk_size": CHUNK_SIZE, "async": True,
+                "scheduled": True, "payload_file": payload_file,
+            }
+            # 私库取号成功 → 标记 use_count（与 batch 入同一事务，失败一起回滚）
+            await _mark_private_library_used(db, account.id, _private_library_db_nums)
+            await db.commit()
+            logger.info(f"定时发送已登记: batch_id={batch_pk}, total={total_numbers}, scheduled_at={_scheduled_at}")
+            return BatchSMSResponse(
+                success=True, total=total_numbers, succeeded=0, failed=0,
+                messages=[], batch_id=batch_pk, async_processing=True,
+            )
+
+        # 立即大批量：当下分片入队（countdown 错峰，不挂 eta）
+        from app.workers.batch_worker import process_batch_chunk
 
         def _enqueue_all_batch_chunks() -> int:
             """在线程中执行大量 .apply_async()，避免阻塞事件循环。"""
             n = 0
             for offset in range(0, total_numbers, CHUNK_SIZE):
                 chunk = phones[offset : offset + CHUNK_SIZE]
-                _kw: dict = dict(
+                # countdown 必须用浮点秒：旧代码 (n*100)//1000 整除把前 10 片全压成 0，错峰形同
+                # 虚设——15 片在同一秒并发 INSERT 压垮连接池触发 2013 整片丢失（事故 batch 1026：
+                # 7 片 2013 丢 14000）。改用浮点，真正每片错开 100ms。
+                process_batch_chunk.apply_async(
                     args=(
-                        batch_pk,
-                        account.id,
-                        chunk,
-                        request.message,
-                        rot,
-                        offset,
-                        request.channel_id,
-                        request.sender_id,
+                        batch_pk, account.id, chunk, request.message, rot,
+                        offset, request.channel_id, request.sender_id,
                     ),
+                    countdown=n * CHUNK_DISPATCH_INTERVAL_MS / 1000.0,
                 )
-                if _scheduled_at:
-                    # localize 到应用时区：否则 Celery 把 naive eta 当 UTC，定时被推迟 8 小时
-                    from app.utils.scheduling import localize_eta
-                    _kw["eta"] = localize_eta(_scheduled_at) + timedelta(milliseconds=n * CHUNK_DISPATCH_INTERVAL_MS)
-                else:
-                    # countdown 必须用浮点秒：旧代码 (n*100)//1000 整除把前 10 片全压成 0，
-                    # 错峰形同虚设——15 片在同一秒并发 INSERT 压垮连接池，触发 2013 整片丢失
-                    # (事故 batch 1026：7 片 2013 丢 14000)。改用浮点，真正每片错开 100ms。
-                    _kw["countdown"] = n * CHUNK_DISPATCH_INTERVAL_MS / 1000.0
-                process_batch_chunk.apply_async(**_kw)
                 n += 1
             return n
 
         chunk_count = await asyncio.to_thread(_enqueue_all_batch_chunks)
-
         sms_batch.send_config = {"chunks": chunk_count, "chunk_size": CHUNK_SIZE, "async": True}
-
         # 私库取号成功 → 标记 use_count（与 batch 入同一事务，失败一起回滚）
         await _mark_private_library_used(db, account.id, _private_library_db_nums)
-
         await db.commit()
-
         logger.info(f"批量发送已进入后台加速处理: batch_id={batch_pk}, total={total_numbers}, chunks={chunk_count}")
         return BatchSMSResponse(
             success=True,
