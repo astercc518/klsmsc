@@ -14,7 +14,8 @@ class SMSLog(Base):
     # (WHERE batch_id GROUP BY status) 会全表扫描，并发发送时拖垮 MySQL。务必随表创建。
     __table_args__ = (
         Index("idx_sms_logs_batch_status", "batch_id", "status"),
-        Index("idx_sms_logs_batch_id", "batch_id"),
+        # idx_sms_logs_batch_id(单列 batch_id) 已删——被 idx_sms_logs_batch_status 左前缀
+        # 完全覆盖(EXPLAIN 实测同 ref/key_len、仍 Using index),见迁移 e5f6a7b8c9d0。
         Index("idx_status", "status"),
         Index("idx_account_time", "account_id", "submit_time"),
         Index("idx_channel_id_submit", "channel_id", "submit_time"),
