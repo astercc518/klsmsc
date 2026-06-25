@@ -71,6 +71,12 @@ class ReportsService:
         elif time_range == "custom" and start_date and end_date:
             s = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
             e = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            # 前端日期选择器只传 YYYY-MM-DD（end 解析为当天 00:00）。聚合查询用
+            # `submit_time < end_dt` 半开区间，若不进位到次日零点，end_date 当天数据
+            # 会被整日排除（曾致报表只统计区间首日，与发送记录页相差一整天）。
+            # 仅当 end 是纯日期（零点、无时分秒）时进位，保留显式带时间的上界语义。
+            if e.hour == 0 and e.minute == 0 and e.second == 0 and e.microsecond == 0:
+                e = e + timedelta(days=1)
             return s, e
         
         return today, now
