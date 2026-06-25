@@ -110,6 +110,12 @@ type SMPPManager struct {
 	bindCoordMu     sync.Mutex
 	bindMu          map[int]*sync.Mutex
 	lastBindAttempt map[int]time.Time
+	// pendingBinds 记录每通道「在途的 bind 重试 goroutine 数」，四类 spawn 入口共用：
+	// reconcile 补齐 / OnClosed 重连 / watchdog 兜底 / stale-monitor 重连。
+	// reconcile 计算 diff 时必须扣除它——否则永不绑成的通道每轮 ReloadChannels(5min) 看到
+	// len(conns)=0 又 spawn 一个「仅通道被删才退出」的永生重试 goroutine，goroutine 数随运行
+	// 时长无界增长（2026-06 woId_kafa 实测 192 轮 reload 泄漏 ~192 个）。用 bindCoordMu 保护。
+	pendingBinds map[int]int
 	// liveness watchdog：gosmpp ReadTimeout 不保证触发 OnClosed (代码注释见 OnClosed 上方)；
 	// 上游静默断开(SocketHalfClose 或硅默限流)时 session 会"假活"——连接池里还在但 TCP 死了，
 	// 无流量则永不发现。每收到一个 PDU(含 gosmpp 自动收的 enquire_link_resp)更新 lastPDUAt，
@@ -169,6 +175,35 @@ func (m *SMPPManager) acquireBindSlot(channelID int) func() {
 	m.bindCoordMu.Unlock()
 
 	return mu.Unlock
+}
+
+// addPendingBind 在 spawn 一个 bind 重试 goroutine 前登记在途计数，返回的 done 必须在该
+// goroutine 退出时（任意 return 路径，建议 defer）调用一次。done 幂等。
+// reconcile 据 pendingBindCount 扣减 diff，避免对已有在途 bind 的通道重复补发 goroutine。
+func (m *SMPPManager) addPendingBind(channelID int) func() {
+	m.bindCoordMu.Lock()
+	m.pendingBinds[channelID]++
+	m.bindCoordMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.bindCoordMu.Lock()
+			if m.pendingBinds[channelID] > 0 {
+				m.pendingBinds[channelID]--
+			}
+			if m.pendingBinds[channelID] == 0 {
+				delete(m.pendingBinds, channelID)
+			}
+			m.bindCoordMu.Unlock()
+		})
+	}
+}
+
+// pendingBindCount 返回某通道当前在途的 bind 重试 goroutine 数。
+func (m *SMPPManager) pendingBindCount(channelID int) int {
+	m.bindCoordMu.Lock()
+	defer m.bindCoordMu.Unlock()
+	return m.pendingBinds[channelID]
 }
 
 type sequenceData struct {
@@ -467,6 +502,7 @@ func InitSMPPManager() {
 		tpsLimiters:       make(map[int]*tpsBucket),
 		bindMu:            make(map[int]*sync.Mutex),
 		lastBindAttempt:   make(map[int]time.Time),
+		pendingBinds:      make(map[int]int),
 		lastPDUAt:         make(map[*gosmpp.Session]time.Time),
 		throttleCoolUntil: make(map[int]time.Time),
 	}
@@ -585,7 +621,13 @@ func (m *SMPPManager) ReloadChannels() error {
 		}
 
 		if diff > 0 {
-			addTasks = append(addTasks, addTask{cfg: cfg, needed: diff})
+			// 扣除已在途的 bind 重试 goroutine（含上一轮 reconcile 及 OnClosed/watchdog/stale 重连）。
+			// 否则永不绑成的通道每轮都会重复 spawn，goroutine 无界泄漏。缩容(diff<0)只看真实连接，
+			// pending 不参与——pending>0 时通常 conns<Concurrency，不会误缩。
+			needed := diff - m.pendingBindCount(id)
+			if needed > 0 {
+				addTasks = append(addTasks, addTask{cfg: cfg, needed: needed})
+			}
 		} else if diff < 0 {
 			// Scale down: collect sessions to close with in-flight wait
 			shrink := -diff
@@ -608,7 +650,9 @@ func (m *SMPPManager) ReloadChannels() error {
 	// 4. Process additions asynchronously with exponential backoff on bind failure
 	for _, t := range addTasks {
 		for i := 0; i < t.needed; i++ {
-			go func(cfg ChannelConfig) {
+			done := m.addPendingBind(t.cfg.ID)
+			go func(cfg ChannelConfig, done func()) {
+				defer done()
 				backoff := 2 * time.Second
 				const maxBackoff = 60 * time.Second
 				for attempt := 1; ; attempt++ {
@@ -645,7 +689,7 @@ func (m *SMPPManager) ReloadChannels() error {
 					m.mu.Unlock()
 					return
 				}
-			}(t.cfg)
+			}(t.cfg, done)
 		}
 	}
 
@@ -872,7 +916,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 				// 2. 立即触发异步重绑（仅当本回调亲手移除了 session 时；否则 watchdog/stale-monitor
 				//    已或将 spawn rebind，本处再 spawn 会导致双重连）。
 				if removedHere {
+					done := m.addPendingBind(cfg.ID)
 					go func() {
+						defer done()
 						m.mu.RLock()
 						_, still := m.configs[cfg.ID]
 						m.mu.RUnlock()
@@ -1032,7 +1078,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 				log.Printf("[SMPP-WATCHDOG] channel %s OnClosed 未在 %v 内触发，watchdog 兜底重连",
 					cfg.ChannelCode, livenessCloseGracePeriod)
 				// 兜底 spawn rebind：与 OnClosed 内逻辑等价
+				done := m.addPendingBind(cfg.ID)
 				go func() {
+					defer done()
 					backoff := 2 * time.Second
 					const maxBackoff = 60 * time.Second
 					for attempt := 1; ; attempt++ {
@@ -1145,7 +1193,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 			go m.throttleChannel(cfg.ID, cfg)
 
 			// 5. 立即异步重绑，新 session 带自己的 stale monitor
+			done := m.addPendingBind(cfg.ID)
 			go func() {
+				defer done()
 				backoff := 2 * time.Second
 				const maxBackoff = 60 * time.Second
 				for attempt := 1; ; attempt++ {
