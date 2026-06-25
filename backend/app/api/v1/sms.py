@@ -1031,7 +1031,10 @@ async def send_batch_sms(
                     from app.utils.scheduling import localize_eta
                     _kw["eta"] = localize_eta(_scheduled_at) + timedelta(milliseconds=n * CHUNK_DISPATCH_INTERVAL_MS)
                 else:
-                    _kw["countdown"] = (n * CHUNK_DISPATCH_INTERVAL_MS) // 1000
+                    # countdown 必须用浮点秒：旧代码 (n*100)//1000 整除把前 10 片全压成 0，
+                    # 错峰形同虚设——15 片在同一秒并发 INSERT 压垮连接池，触发 2013 整片丢失
+                    # (事故 batch 1026：7 片 2013 丢 14000)。改用浮点，真正每片错开 100ms。
+                    _kw["countdown"] = n * CHUNK_DISPATCH_INTERVAL_MS / 1000.0
                 process_batch_chunk.apply_async(**_kw)
                 n += 1
             return n

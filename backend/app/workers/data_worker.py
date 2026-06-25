@@ -827,18 +827,40 @@ def data_buy_send_async(
     number_ids 可选；缺省时由 data_order_numbers 按 order_id 反查（与 buy_and_send 瘦消息体对齐）。
     channel_id 可选；指定时跳过自动路由，直接使用该通道。
     """
-    return _run_async(
-        _do_buy_send_async(
-            order_id,
-            batch_id,
-            account_id,
-            number_ids,
-            message,
-            messages,
-            sender_id,
-            channel_id,
+    # 内层 _run_async 默认仅 60s，对万级 buy-send（路由+定价+建记录+入队）远不够，
+    # 会在记录已建、入队未完成时被 wait_for 取消，导致 sms_logs 全 pending 卡死、批次永久 processing。
+    # 显式对齐 Celery soft_time_limit(600s)，留 20s 余量给终态写入。
+    _inner_timeout = float(os.getenv("WORKER_BUY_SEND_TIMEOUT_SEC", "580"))
+    try:
+        return _run_async(
+            _do_buy_send_async(
+                order_id,
+                batch_id,
+                account_id,
+                number_ids,
+                message,
+                messages,
+                sender_id,
+                channel_id,
+            ),
+            timeout=_inner_timeout,
         )
-    )
+    except asyncio.TimeoutError:
+        # wait_for 取消内层协程抛出的是 CancelledError(BaseException)，绕过了 _do_buy_send_async
+        # 里的 except Exception 兜底，批次/订单会永久卡 processing。这里用独立事件循环补写失败终态。
+        logger.error(
+            f"[buy-send-async] order={order_id} batch={batch_id} 整体超时(>{_inner_timeout}s)被中断，置失败终态"
+        )
+        try:
+            _run_async(
+                _finalize_buy_send_failure_state(
+                    order_id, batch_id, f"购数并发送整体超时(>{_inner_timeout}s)被中断",
+                ),
+                timeout=60,
+            )
+        except Exception as _fe:
+            logger.error(f"[buy-send-async] order={order_id} 超时后写失败终态仍异常: {_fe}", exc_info=True)
+        raise
 
 
 @celery_app.task(name='data_refresh_carriers_cache', soft_time_limit=600, time_limit=660)

@@ -110,6 +110,12 @@ type SMPPManager struct {
 	bindCoordMu     sync.Mutex
 	bindMu          map[int]*sync.Mutex
 	lastBindAttempt map[int]time.Time
+	// pendingBinds 记录每通道「在途的 bind 重试 goroutine 数」，四类 spawn 入口共用：
+	// reconcile 补齐 / OnClosed 重连 / watchdog 兜底 / stale-monitor 重连。
+	// reconcile 计算 diff 时必须扣除它——否则永不绑成的通道每轮 ReloadChannels(5min) 看到
+	// len(conns)=0 又 spawn 一个「仅通道被删才退出」的永生重试 goroutine，goroutine 数随运行
+	// 时长无界增长（2026-06 woId_kafa 实测 192 轮 reload 泄漏 ~192 个）。用 bindCoordMu 保护。
+	pendingBinds map[int]int
 	// liveness watchdog：gosmpp ReadTimeout 不保证触发 OnClosed (代码注释见 OnClosed 上方)；
 	// 上游静默断开(SocketHalfClose 或硅默限流)时 session 会"假活"——连接池里还在但 TCP 死了，
 	// 无流量则永不发现。每收到一个 PDU(含 gosmpp 自动收的 enquire_link_resp)更新 lastPDUAt，
@@ -171,6 +177,35 @@ func (m *SMPPManager) acquireBindSlot(channelID int) func() {
 	return mu.Unlock
 }
 
+// addPendingBind 在 spawn 一个 bind 重试 goroutine 前登记在途计数，返回的 done 必须在该
+// goroutine 退出时（任意 return 路径，建议 defer）调用一次。done 幂等。
+// reconcile 据 pendingBindCount 扣减 diff，避免对已有在途 bind 的通道重复补发 goroutine。
+func (m *SMPPManager) addPendingBind(channelID int) func() {
+	m.bindCoordMu.Lock()
+	m.pendingBinds[channelID]++
+	m.bindCoordMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.bindCoordMu.Lock()
+			if m.pendingBinds[channelID] > 0 {
+				m.pendingBinds[channelID]--
+			}
+			if m.pendingBinds[channelID] == 0 {
+				delete(m.pendingBinds, channelID)
+			}
+			m.bindCoordMu.Unlock()
+		})
+	}
+}
+
+// pendingBindCount 返回某通道当前在途的 bind 重试 goroutine 数。
+func (m *SMPPManager) pendingBindCount(channelID int) int {
+	m.bindCoordMu.Lock()
+	defer m.bindCoordMu.Unlock()
+	return m.pendingBinds[channelID]
+}
+
 type sequenceData struct {
 	messageID  string
 	logID      int64
@@ -178,8 +213,18 @@ type sequenceData struct {
 	payload    SMSLogData // 原始负载，供 ESME_RTHROTTLED(88) 限流重投回 sms_send_smpp 使用
 }
 
-func smppSeqMapKey(channelID int, seq int32) string {
-	return fmt.Sprintf("%d:%d", channelID, seq)
+// key 形如 "channelID:sessionPtr:seq"。加入会话指针身份是关键：gosmpp 每条 bind 会话的
+// 序列号各自从 1 递增，多会话(concurrency>1)同通道下仅用 channelID:seq 会撞车——
+// 一条会话的 SubmitSMResp 会匹配/删除另一条会话的条目，导致错号归属或永久 orphan。
+// 仍保留 "channelID:" 前缀开头，使按通道前缀统计在途(窗口限制/closeSessions)无需改动；
+// orphan 清理则用 "channelID:sessionPtr:" 前缀，只收割本会话的在途。
+func smppSeqMapKey(channelID int, session *gosmpp.Session, seq int32) string {
+	return fmt.Sprintf("%d:%p:%d", channelID, session, seq)
+}
+
+// smppSessionPrefix 返回某会话在 sequenceMap 中所有条目的 key 前缀，供 orphan 清理按会话隔离。
+func smppSessionPrefix(channelID int, session *gosmpp.Session) string {
+	return fmt.Sprintf("%d:%p:", channelID, session)
 }
 
 var manager *SMPPManager
@@ -335,6 +380,54 @@ func gsm7EnabledFromConfigJSON(raw string) bool {
 	return false
 }
 
+// latin1SingleFromConfigJSON：通道 config_json {"latin1_single":true} 时启用「拉丁文单 PDU
+// Latin1」模式(实验,逐通道 opt-in,默认关)。
+func latin1SingleFromConfigJSON(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return false
+	}
+	if v, ok := m["latin1_single"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+// isLatin1 判断文本是否可全部用 ISO-8859-1(Latin1)表示(每码点 ≤ 0xFF)。
+func isLatin1(text string) bool {
+	for _, r := range text {
+		if r > 0xFF {
+			return false
+		}
+	}
+	return true
+}
+
+// forceUCS2FromConfigJSON：通道 config_json {"force_ucs2":true} 时,禁用 GSM-7/Latin1 自动
+// 编码、一律走 UCS2(用于个别不认 DCS=0/DCS=3 的上游做逃生回退)。
+func forceUCS2FromConfigJSON(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return false
+	}
+	if v, ok := m["force_ucs2"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
 // splitUCS2ForUDH 把 UCS-2 编码后的字节流拆为多段，每段 ≤ 134 字节
 // （UCS-2 字符是 2 字节宽，按 67 字符 = 134 字节切，避免拆中一个字符）。
 // 调用方需自己加 6 字节 UDH 头到每段前面。
@@ -409,6 +502,7 @@ func InitSMPPManager() {
 		tpsLimiters:       make(map[int]*tpsBucket),
 		bindMu:            make(map[int]*sync.Mutex),
 		lastBindAttempt:   make(map[int]time.Time),
+		pendingBinds:      make(map[int]int),
 		lastPDUAt:         make(map[*gosmpp.Session]time.Time),
 		throttleCoolUntil: make(map[int]time.Time),
 	}
@@ -441,6 +535,20 @@ func (m *SMPPManager) closeSessions(channelID int, sessions []*gosmpp.Session, c
 		}
 		_ = session.Close()
 	}
+}
+
+// connParamsChanged 判断两份通道配置的「连接身份」是否变化——任一改变都需重新 bind。
+// 仅比较真正影响 dial/bind 的字段：SMSC 地址(host:port)、SystemID/Password/SystemType、
+// bind 模式、以及 TLS 开关。发送期字段(gsm7_enabled、throttle_tps、strip_leading_plus 等)
+// 变化不触发重连，避免无谓断流。
+func connParamsChanged(a, b ChannelConfig) bool {
+	return a.Host != b.Host ||
+		a.Port != b.Port ||
+		a.Username != b.Username ||
+		a.Password != b.Password ||
+		a.SystemType != b.SystemType ||
+		a.BindMode != b.BindMode ||
+		channelUsesTLS(a) != channelUsesTLS(b)
 }
 
 // ReloadChannels reloads configurations and establishes connections asynchronously.
@@ -487,9 +595,21 @@ func (m *SMPPManager) ReloadChannels() error {
 	var addTasks []addTask
 
 	for id, cfg := range newConfigs {
-		oldCfg := m.configs[id]
+		oldCfg, existed := m.configs[id]
 		m.configs[id] = cfg
 		currentConns := m.connections[id]
+
+		// 连接参数(host/port/凭据/bind模式/TLS)变化时强制重连：关闭全部旧会话，
+		// 让下方 diff 据此重新拉起 cfg.Concurrency 条指向新配置的会话。
+		// 原逻辑只看并发数差值，host 等变化时 diff=0 → 旧会话(可能仍连旧端点/旧 DC)
+		// 永不替换，导致「改了通道地址却不生效，必须手动重启网关」。
+		if existed && len(currentConns) > 0 && connParamsChanged(oldCfg, cfg) {
+			log.Printf("Channel %s connection params changed (host/port/cred/bind/tls), closing %d session(s) to reconnect", cfg.ChannelCode, len(currentConns))
+			toClose = append(toClose, closeTask{channelID: id, channelCode: cfg.ChannelCode, sessions: currentConns})
+			m.connections[id] = nil
+			currentConns = nil
+		}
+
 		diff := cfg.Concurrency - len(currentConns)
 
 		// 更新 TPS 限速器（TPS 变更时重建）
@@ -501,7 +621,13 @@ func (m *SMPPManager) ReloadChannels() error {
 		}
 
 		if diff > 0 {
-			addTasks = append(addTasks, addTask{cfg: cfg, needed: diff})
+			// 扣除已在途的 bind 重试 goroutine（含上一轮 reconcile 及 OnClosed/watchdog/stale 重连）。
+			// 否则永不绑成的通道每轮都会重复 spawn，goroutine 无界泄漏。缩容(diff<0)只看真实连接，
+			// pending 不参与——pending>0 时通常 conns<Concurrency，不会误缩。
+			needed := diff - m.pendingBindCount(id)
+			if needed > 0 {
+				addTasks = append(addTasks, addTask{cfg: cfg, needed: needed})
+			}
 		} else if diff < 0 {
 			// Scale down: collect sessions to close with in-flight wait
 			shrink := -diff
@@ -524,7 +650,9 @@ func (m *SMPPManager) ReloadChannels() error {
 	// 4. Process additions asynchronously with exponential backoff on bind failure
 	for _, t := range addTasks {
 		for i := 0; i < t.needed; i++ {
-			go func(cfg ChannelConfig) {
+			done := m.addPendingBind(t.cfg.ID)
+			go func(cfg ChannelConfig, done func()) {
+				defer done()
 				backoff := 2 * time.Second
 				const maxBackoff = 60 * time.Second
 				for attempt := 1; ; attempt++ {
@@ -561,7 +689,7 @@ func (m *SMPPManager) ReloadChannels() error {
 					m.mu.Unlock()
 					return
 				}
-			}(t.cfg)
+			}(t.cfg, done)
 		}
 	}
 
@@ -663,7 +791,7 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 	}
 
 	var connector gosmpp.Connector
-	dialer := gosmpp.NonTLSDialer
+	dialer := dialerForChannel(cfg)
 
 	// Default to Transceiver if not specified
 	if cfg.BindMode == "transmitter" {
@@ -699,7 +827,7 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 				case *pdu.SubmitSMResp:
 					log.Printf("[SMPP-DEBUG] SubmitSMResp reached: channel=%s, msgID=%s, sequence=%d, status=%d", cfg.ChannelCode, pd.MessageID, pd.SequenceNumber, pd.CommandStatus)
 
-					if val, ok := m.sequenceMap.LoadAndDelete(smppSeqMapKey(cfg.ID, pd.SequenceNumber)); ok {
+					if val, ok := m.sequenceMap.LoadAndDelete(smppSeqMapKey(cfg.ID, sessionPtr, pd.SequenceNumber)); ok {
 						seqData := val.(sequenceData)
 						log.Printf("[SMPP-DEBUG] Found matching sequence for msg: %s (internal log ID: %d)", seqData.messageID, seqData.logID)
 
@@ -788,7 +916,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 				// 2. 立即触发异步重绑（仅当本回调亲手移除了 session 时；否则 watchdog/stale-monitor
 				//    已或将 spawn rebind，本处再 spawn 会导致双重连）。
 				if removedHere {
+					done := m.addPendingBind(cfg.ID)
 					go func() {
+						defer done()
 						m.mu.RLock()
 						_, still := m.configs[cfg.ID]
 						m.mu.RUnlock()
@@ -841,10 +971,12 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 					}()
 				} // end if removedHere
 
-				// 3. 清理该通道所有 in-flight sequenceMap 条目（无论谁先移除都要做，避免 orphan）
+				// 3. 仅清理「本会话」的 in-flight sequenceMap 条目（按 channelID:sessionPtr: 前缀隔离）。
+				// 旧实现按 channelID: 前缀清整个通道，会把其它健康会话正在途的消息一并误倒成 orphan
+				// （concurrency>1 时一次关会话能殃及数百条），是批量假"已发"的放大器。现仅收割自己这条。
 				// 标为 sent 而非 failed：PDU 已送达 SMSC 网络层，SMSC 可能已接收（静默限流导致未返回 SubmitSMResp）
 				// 保持 sent 状态使 DLR 仍可匹配更新终态；若 SMSC 确实未收到，DLR 超时检查（72h）会兜底标 expired
-				prefix := fmt.Sprintf("%d:", cfg.ID)
+				prefix := smppSessionPrefix(cfg.ID, closedSession)
 				var orphanKeys []interface{}
 				m.sequenceMap.Range(func(k, v interface{}) bool {
 					if key, ok := k.(string); ok && len(key) > len(prefix) && key[:len(prefix)] == prefix {
@@ -946,7 +1078,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 				log.Printf("[SMPP-WATCHDOG] channel %s OnClosed 未在 %v 内触发，watchdog 兜底重连",
 					cfg.ChannelCode, livenessCloseGracePeriod)
 				// 兜底 spawn rebind：与 OnClosed 内逻辑等价
+				done := m.addPendingBind(cfg.ID)
 				go func() {
+					defer done()
 					backoff := 2 * time.Second
 					const maxBackoff = 60 * time.Second
 					for attempt := 1; ; attempt++ {
@@ -992,7 +1126,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 	// staleTTL=20s（SMSC 正常响应 <5s，20s 足够区分静默限流）。
 	// ticker=5s 使最坏情况死区时间 ≈ 25s（原 15s ticker+45s TTL → 60s 最坏）。
 	// 注意：不依赖 OnClosed 回调——gosmpp.Session.Close() 不保证同步触发 OnClosed。
-	monitorPrefix := fmt.Sprintf("%d:", cfg.ID)
+	// 仅监测「本会话」的在途条目（与 orphan 清理一致按会话隔离）：一条会话卡住只自愈自己，
+	// 不因别的会话有 stale 条目而误关本会话。
+	monitorPrefix := smppSessionPrefix(cfg.ID, session)
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
@@ -1057,7 +1193,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 			go m.throttleChannel(cfg.ID, cfg)
 
 			// 5. 立即异步重绑，新 session 带自己的 stale monitor
+			done := m.addPendingBind(cfg.ID)
 			go func() {
+				defer done()
 				backoff := 2 * time.Second
 				const maxBackoff = 60 * time.Second
 				for attempt := 1; ; attempt++ {
@@ -1211,9 +1349,11 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 	// 若超过阈值，说明 SMSC 已停止回包（静默限流/会话异常），阻塞等待窗口释放。
 	// 调用方（processSingleSMS）不应在此情况下写 DB failed；此处阻塞而非返回错误，
 	// 消息保持 pending/queued 状态，待 stale monitor（每 5s）关闭会话后窗口清空自动重试。
-	// max_inflight 可通过 config_json 按通道定制（默认 500）。
+	// max_inflight 可通过 config_json 按通道定制（默认 100，与前端「在途窗口」留空提示一致）。
+	// 真实在途需求 ≈ 目标TPS × 上游回执秒数（实测 RTT≈0.1s，100TPS 仅需 ~10）；过大只增加
+	// 断连/自愈时被乐观标记「已发」的误杀当量，对吞吐无收益（吞吐受 max_tps 令牌桶约束）。
 	// inflightWaitInterval=200ms：stale monitor 清空条目后最快 200ms 内重新尝试（原 5s）。
-	inflightWindowMax := parseConfigJSONInt(cfg.ConfigJSON, "max_inflight", 500)
+	inflightWindowMax := parseConfigJSONInt(cfg.ConfigJSON, "max_inflight", 100)
 	const inflightWaitInterval = 200 * time.Millisecond
 	const inflightWaitMax = 120 * time.Second
 	prefix := fmt.Sprintf("%d:", channelID)
@@ -1267,6 +1407,22 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 		return fmt.Errorf("session has no transmitter")
 	}
 
+	// 实验(a) latin1_single：给「能处理 UCS2 单 PDU,但不读 message_payload TLV、也不重组
+	// UDH 的上游(如 TS_zhilian)」用。Latin1 可表示且编码后 ≤254 字节的文案,用单个
+	// short_message 以 Latin1(DataCoding=3,1 字节/字符)发出,绕开长信 TLV/UDH 两个失败点。
+	// 逐通道 config_json {"latin1_single":true} opt-in;非拉丁文/超长则落到下方原逻辑。
+	if latin1SingleFromConfigJSON(cfg.ConfigJSON) && isLatin1(message) {
+		if enc, lErr := data.LATIN1.Encode(message); lErr == nil && len(enc) <= data.SM_MSG_LEN {
+			if err := s.Message.SetMessageDataWithEncoding(enc, data.LATIN1); err != nil {
+				return fmt.Errorf("latin1 short_message: %w", err)
+			}
+			s.RegisteredDelivery = 1
+			log.Printf("[SMPP-DEBUG] Submitting SM(Latin1单PDU): channel=%s dest=%s chars=%d bytes=%d",
+				cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
+			return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
+		}
+	}
+
 	// 方案A：GSM-7 可表示的文案优先用 GSM-7(DataCoding 0，最通用的标准编码)。纯拉丁文
 	// 绝大多数 ≤160 字符即单段短信，不进长信/message_payload TLV 路径——既避免「不读
 	// TLV 的上游」收到空白，又比 UCS2 省一半以上分段成本。个别上游若不兼容 packed GSM-7，
@@ -1283,7 +1439,7 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 					s.RegisteredDelivery = 1
 					log.Printf("[SMPP-DEBUG] Submitting SM(GSM7): channel=%s dest=%s chars=%d bytes=%d",
 						cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
-					return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
+					return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
 				}
 				// Encode 失败：落到下方 UCS2 兜底
 			} else if segs, sErr := sp.EncodeSplit(message, 153); sErr == nil && len(segs) > 0 {
@@ -1308,10 +1464,13 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 						}
 						continue
 					}
+					// 关键：显式置 esm_class UDHI 位(0x40)。gosmpp trans.Submit→Marshal 不自动置位
+					// (仅 .Split() 会)，漏置则收端把 UDH 头当正文 → 乱码且无法拼接(多条独立乱码)。
+					psm.EsmClass = data.SM_UDH_GSM
 					psm.Message.SetUDH(pdu.UDH{pdu.InfoElement{ID: 0x00, Data: []byte{ref, total, part}}})
 					if i == 0 {
 						psm.RegisteredDelivery = 1
-						if err := m.submitOneAndTrack(psm, trans, channelID, messageID, logID, destDigits, cfg, len(seg), true, ref, total, part, payload); err != nil {
+						if err := m.submitOneAndTrack(psm, session, trans, channelID, messageID, logID, destDigits, cfg, len(seg), true, ref, total, part, payload); err != nil {
 							return err
 						}
 					} else {
@@ -1334,6 +1493,22 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 		}
 	}
 
+	// 自动适配:凡纯拉丁文(含葡文重音,码点≤0xFF)且 Latin1 编码 ≤254 字节,一律优先 Latin1
+	// 单 PDU(DCS=3,1字节/字符)。放在 UCS2 之前——短信也走 Latin1,避免上游按 UCS2(70字/段)
+	// 把纯 ASCII 短信(>70 字符)多计成 2 段;Latin1 一字节一字符,同样内容上游按 1 段计。
+	// 个别不认 DCS=3 的上游用 config_json {"force_ucs2":true} 回退 UCS2。
+	if !forceUCS2FromConfigJSON(cfg.ConfigJSON) && isLatin1(message) {
+		if enc, lErr := data.LATIN1.Encode(message); lErr == nil && len(enc) <= data.SM_MSG_LEN {
+			if err := s.Message.SetMessageDataWithEncoding(enc, data.LATIN1); err != nil {
+				return fmt.Errorf("latin1 short_message: %w", err)
+			}
+			s.RegisteredDelivery = 1
+			log.Printf("[SMPP-DEBUG] Submitting SM(Latin1单PDU/auto): channel=%s dest=%s chars=%d bytes=%d",
+				cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
+			return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
+		}
+	}
+
 	encoded, encErr := data.UCS2.Encode(message)
 	if encErr != nil {
 		log.Printf("[SMPP-ERROR] UCS2 Encode failed: channel=%s, msg=%s err=%v", cfg.ChannelCode, messageID, encErr)
@@ -1348,7 +1523,7 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 			return fmt.Errorf("short_message: %w", err)
 		}
 		s.RegisteredDelivery = 1
-		return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
+		return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
 	}
 
 	// 长消息：按通道配置选择 message_payload TLV 或 UDH 多段分段
@@ -1388,12 +1563,14 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 				}
 				continue
 			}
+			// 关键：显式置 esm_class UDHI 位(0x40)，否则收端把 UDH 头当正文 → 多条乱码。
+			psm.EsmClass = data.SM_UDH_GSM
 			// 标准 16-bit ref concat UDH：UDHL=0x06, IEI=0x08, IEDL=0x04, [refHi, refLo, total, part]
 			psm.Message.SetUDH(pdu.UDH{pdu.InfoElement{ID: 0x08, Data: []byte{byte(ref >> 8), byte(ref), total, part}}})
 
 			if i == 0 {
 				psm.RegisteredDelivery = 1
-				if err := m.submitOneAndTrack(psm, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), true, byte(ref), total, part, payload); err != nil {
+				if err := m.submitOneAndTrack(psm, session, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), true, byte(ref), total, part, payload); err != nil {
 					return err
 				}
 			} else {
@@ -1428,20 +1605,20 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 	copy(mpData, encoded)
 	s.RegisterOptionalParam(pdu.Field{Tag: pdu.TagMessagePayload, Data: mpData})
 	s.RegisteredDelivery = 1
-	return m.submitOneAndTrack(s, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
+	return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
 }
 
 // submitOneAndTrack 注册 sequenceMap 后 Submit，统一处理 closing/closed 临时错误。
 // udhInfo 仅供日志，udhTotal=0 表示非 UDH。
 func (m *SMPPManager) submitOneAndTrack(
-	s *pdu.SubmitSM, trans gosmpp.Transmitter,
+	s *pdu.SubmitSM, session *gosmpp.Session, trans gosmpp.Transmitter,
 	channelID int, messageID string, logID int64,
 	destDigits string, cfg ChannelConfig,
 	utf16Len int,
 	udh bool, udhRef byte, udhTotal byte, udhPart byte,
 	payload SMSLogData,
 ) error {
-	m.sequenceMap.Store(smppSeqMapKey(channelID, s.SequenceNumber), sequenceData{
+	m.sequenceMap.Store(smppSeqMapKey(channelID, session, s.SequenceNumber), sequenceData{
 		messageID:  messageID,
 		logID:      logID,
 		submitTime: time.Now(),
@@ -1458,7 +1635,7 @@ func (m *SMPPManager) submitOneAndTrack(
 
 	err := trans.Submit(s)
 	if err != nil {
-		m.sequenceMap.Delete(smppSeqMapKey(channelID, s.SequenceNumber))
+		m.sequenceMap.Delete(smppSeqMapKey(channelID, session, s.SequenceNumber))
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "closing") || strings.Contains(errMsg, "closed") {
 			log.Printf("[SMPP-WARN] Submit temp error (session closing): channel=%s %v", cfg.ChannelCode, err)

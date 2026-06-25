@@ -242,16 +242,56 @@ def get_business_type_menu():
     keyboard = [
         [
             InlineKeyboardButton("📱 短信 SMS", callback_data="biz_sms"),
-            InlineKeyboardButton("📞 语音 Voice", callback_data="biz_voice"),
-        ],
-        [
-            InlineKeyboardButton("📊 数据 Data", callback_data="biz_data"),
         ],
         [
             InlineKeyboardButton("❌ 取消", callback_data="menu_main"),
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
+
+
+async def show_invite_country_selection(query, context, biz_type="sms"):
+    """展示开户邀请的国家选择（默认短信业务，跳过业务类型选择）"""
+    context.user_data['business_type'] = biz_type
+
+    biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
+
+    # 获取该业务类型下的所有国家
+    client = APIClient()
+    templates = await client.get_templates_internal(biz_type=biz_type)
+    raw_codes = [t.get("country_code") for t in templates]
+    country_codes = dedupe_country_codes_from_templates(raw_codes)
+
+    if not country_codes:
+        await query.edit_message_text(
+            f"❌ 暂无 {biz_label} 业务的可用模板\n\n请联系管理员在后台添加账户模板",
+            reply_markup=get_back_menu()
+        )
+        return
+
+    # 显示国家选择（全球 * 置顶）
+    keyboard = []
+    has_global = '*' in country_codes
+    if has_global:
+        keyboard.append([InlineKeyboardButton("🌍 全球（所有国家）", callback_data="country_*")])
+    row = []
+    for country_code in country_codes:
+        if country_code == '*':
+            continue
+        label = COUNTRY_NAMES.get(country_code, country_code)
+        row.append(InlineKeyboardButton(label, callback_data=f"country_{country_code}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_main")])
+
+    await query.edit_message_text(
+        f"🎯 创建开户邀请\n\n"
+        f"请选择国家/地区：",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 
 def get_back_menu():
@@ -485,11 +525,9 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         
         context.user_data['sales_id'] = user_info.get("user_id")
         context.user_data['sales_name'] = user_info.get("real_name")
-        
-        await query.edit_message_text(
-            "🎯 创建开户邀请\n\n请选择业务类型：",
-            reply_markup=get_business_type_menu()
-        )
+
+        # 简化步骤：直接进入短信业务的国家选择
+        await show_invite_country_selection(query, context, biz_type="sms")
         return
     
     # 处理业务类型选择（邀请流程）
@@ -503,47 +541,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         # 短信 → 继续走邀请码流程
-        context.user_data['business_type'] = biz_type
-        
-        biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
-        
-        # 获取该业务类型下的所有国家
-        client = APIClient()
-        templates = await client.get_templates_internal(biz_type=biz_type)
-        raw_codes = [t.get("country_code") for t in templates]
-        country_codes = dedupe_country_codes_from_templates(raw_codes)
-        
-        if not country_codes:
-            await query.edit_message_text(
-                f"❌ 暂无 {biz_label} 业务的可用模板\n\n请联系管理员在后台添加账户模板",
-                reply_markup=get_back_menu()
-            )
-            return
-        
-        # 显示国家选择（全球 * 置顶）
-        keyboard = []
-        has_global = '*' in country_codes
-        if has_global:
-            keyboard.append([InlineKeyboardButton("🌍 全球（所有国家）", callback_data="country_*")])
-        row = []
-        for country_code in country_codes:
-            if country_code == '*':
-                continue
-            label = COUNTRY_NAMES.get(country_code, country_code)
-            row.append(InlineKeyboardButton(label, callback_data=f"country_{country_code}"))
-            if len(row) == 2:
-                keyboard.append(row)
-                row = []
-        if row:
-            keyboard.append(row)
-        keyboard.append([InlineKeyboardButton("🔙 返回", callback_data="menu_invite")])
-        
-        await query.edit_message_text(
-            f"🎯 创建开户邀请\n\n"
-            f"业务类型: {biz_label}\n\n"
-            f"请选择国家/地区：",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await show_invite_country_selection(query, context, biz_type="sms")
         return
     
     # 我的客户（分类概览或全部）
@@ -2715,19 +2713,11 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             login_password = extra_info.get('login_password', '')
 
             msg = f"🎉 <b>开户成功！</b>\n\n"
-            if tpl_name:
-                msg += f"📋 模板: {tpl_name}\n"
             msg += (
-                f"📦 业务类型: {biz_label}\n"
-                f"🌍 国家/地区: {country_label}\n\n"
                 f"━━━ 📱 平台登录信息 ━━━\n"
                 f"🌐 平台地址: https://www.kaolach.com\n"
                 f"👤 登录账户: <code>{login_account}</code>\n"
                 f"🔒 登录密码: <code>{login_password}</code>\n\n"
-                f"━━━ 🔧 API 接口信息 ━━━\n"
-                f"🆔 账户ID: <code>{account.get('id')}</code>\n"
-                f"🔑 API Key: <code>{login_account}</code>\n"
-                f"🔐 API Secret: <code>{api_key}</code>\n\n"
                 f"⚠️ <i>请妥善保存以上信息，密码和密钥不会再次显示</i>\n\n"
                 f"请选择操作："
             )

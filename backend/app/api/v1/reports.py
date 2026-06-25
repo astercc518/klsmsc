@@ -119,6 +119,61 @@ async def get_statistics(
     )
 
 
+@router.get("/sent-summary")
+async def get_sent_summary(
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    """仪表盘今日/本周/本月发送条数（count-only，单次扫描）。
+
+    仪表盘原先分三次调用 /statistics（今日/本周/本月），每次都汇总价格列、
+    走宽覆盖索引 idx_sms_report_cov，高量账户单次本月查询达 ~9s。但仪表盘只用
+    total_sent 一个数。本接口只 COUNT，一次扫描派生三个数（走窄索引 index-only，
+    实测 ~1.3s），并加 60s Redis 缓存抵御每分钟自动刷新。
+    """
+    import json as _json
+    from app.utils.cache import get_redis_client
+
+    now = datetime.now()
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today - timedelta(days=today.weekday())  # 周一为一周起点（与前端一致）
+    month_start = today.replace(day=1)
+    scan_start = min(week_start, month_start)  # 月初附近本周可能跨上月，取更早者起扫
+
+    cache_key = f"reports:sent_summary:{account.id}:{today.date().isoformat()}"
+    redis_client = None
+    try:
+        redis_client = await get_redis_client()
+        cached = await redis_client.get(cache_key)
+        if cached:
+            return _json.loads(cached)
+    except Exception:
+        redis_client = None
+
+    q = select(
+        func.sum(case((SMSLog.submit_time >= today, 1), else_=0)).label("today"),
+        func.sum(case((SMSLog.submit_time >= week_start, 1), else_=0)).label("week"),
+        func.sum(case((SMSLog.submit_time >= month_start, 1), else_=0)).label("month"),
+    ).where(
+        and_(
+            SMSLog.account_id == account.id,
+            SMSLog.submit_time >= scan_start,
+        )
+    )
+    row = (await db.execute(q)).first()
+    result = {
+        "today_sent": int(row.today or 0),
+        "week_sent": int(row.week or 0),
+        "month_sent": int(row.month or 0),
+    }
+    if redis_client is not None:
+        try:
+            await redis_client.setex(cache_key, 60, _json.dumps(result))
+        except Exception:
+            pass
+    return result
+
+
 @router.get("/success-rate", response_model=SuccessRateResponse)
 async def get_success_rate(
     start_date: Optional[str] = Query(None, description="开始日期"),

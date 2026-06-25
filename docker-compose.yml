@@ -610,6 +610,7 @@ services:
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      CAPSOLVER_API_KEY: ${CAPSOLVER_API_KEY:-}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
@@ -622,7 +623,53 @@ services:
         condition: service_healthy
     # 注水点击/注册走 Playwright 真浏览器，单 context 数百 MB；prefork 下每子进程持一个
     # Chromium 单例 → concurrency 即最大并行浏览器数。收敛并发 + 勤回收子进程释放泄漏内存。
-    command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork --concurrency=${WEB_WORKER_CONCURRENCY:-2} --prefetch-multiplier=${WEB_WORKER_PREFETCH:-1} --max-tasks-per-child=${WEB_WORKER_MAX_TASKS_PER_CHILD:-200} -Q web_automation
+    command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork --concurrency=${WEB_WORKER_CONCURRENCY:-6} --prefetch-multiplier=${WEB_WORKER_PREFETCH:-1} --max-tasks-per-child=${WEB_WORKER_MAX_TASKS_PER_CHILD:-200} -Q web_automation
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - smsc-network
+
+  # 注水注册专用 worker：独立连接/QoS，消费 web_register 队列。
+  # 与 worker-web 分离后，注册任务不再被点击任务的超长 ETA(click_delay 最长14400s)占满
+  # prefetch 而饿死。注册命中稀疏(点击的百分比)，并发 2 足够。
+  worker-web-register:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.playwright
+    container_name: smsc-worker-web-register
+    environment:
+      TZ: Asia/Shanghai
+      APP_ENV: ${APP_ENV:-development}
+      APP_DEBUG: ${APP_DEBUG:-false}
+      DATABASE_HOST: proxysql
+      DATABASE_PORT: 6033
+      DATABASE_USER: ${MYSQL_USER:-smsuser}
+      DATABASE_PASSWORD: ${MYSQL_PASSWORD:-smspass123}
+      DATABASE_NAME: ${MYSQL_DATABASE:-sms_system}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-smsc_mq}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-smsc_mq_pass}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      CAPSOLVER_API_KEY: ${CAPSOLVER_API_KEY:-}
+      # 1win 系落地马甲域(会轮换):匹配中即走 _do_register_1win 专用表单路径,否则误入通用浏览器路径报"未发现表单"。
+      # 域名轮换时更新此处(逗号分隔,后缀匹配),改后须 docker compose up -d worker-web-register 重建生效。
+      WATER_ONEWIN_DOMAINS: ${WATER_ONEWIN_DOMAINS:-1wzbzs.life,rhrh888.com}
+    volumes:
+      - ./backend:/app
+      - ./logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork --concurrency=${WEB_REGISTER_CONCURRENCY:-2} --prefetch-multiplier=${WEB_REGISTER_PREFETCH:-1} --max-tasks-per-child=${WEB_WORKER_MAX_TASKS_PER_CHILD:-200} -Q web_register
     restart: unless-stopped
     logging: *default-logging
     networks:

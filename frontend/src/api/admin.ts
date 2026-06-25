@@ -302,6 +302,13 @@ export interface AdminServiceStatusItem {
   message?: string;
 }
 
+export interface AdminPeriodStat {
+  sent: number;
+  cost: number;
+  revenue: number;
+  profit: number;
+}
+
 export interface AdminDashboardResponse {
   success: boolean;
   admin_name: string;
@@ -309,12 +316,17 @@ export interface AdminDashboardResponse {
   statistics: {
     today_sent: number;
     today_delivered: number;
+    today_failed?: number;
     today_success_rate: number;
     today_cost: number;
+    today_revenue?: number;
+    today_profit?: number;
     active_channels: number;
     active_accounts: number;
     total_balance: number;
   };
+  /** 业绩概览：今日 / 本周 / 本月 聚合（后端 period_stats），旧后端可能不返回 */
+  period_stats?: Record<'today' | 'week' | 'month', AdminPeriodStat>;
   permissions?: {
     view_global?: boolean;
     view_finance?: boolean;
@@ -324,6 +336,10 @@ export interface AdminDashboardResponse {
   };
   server_metrics?: AdminServerMetrics | null;
   service_status?: AdminServiceStatusItem[] | null;
+  worst_channels?: { channel_name: string; sent: number; delivered: number; rate: number }[];
+  top_countries?: { country_code: string; sent: number; delivered: number; rate: number }[];
+  low_balance_accounts?: { id: number; account_name: string; balance: number; currency: string; threshold: number }[];
+  active_batches?: { id: number; batch_name: string; status: string; account_name: string; total: number; progress: number }[];
 }
 
 export async function getAdminDashboard(): Promise<AdminDashboardResponse> {

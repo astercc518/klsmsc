@@ -126,6 +126,10 @@ class Settings(BaseSettings):
     AI_API_URL: str = "https://api.deepseek.com/v1/chat/completions"
     AI_MODEL: str = "deepseek-chat"
 
+    # 注水注册验证码求解 (CapSolver — GeeTest v4)
+    CAPSOLVER_API_KEY: Optional[str] = None
+    CAPSOLVER_API_URL: str = "https://api.capsolver.com"
+
     # DLR 回调安全配置
     DLR_CALLBACK_TOKEN: Optional[str] = None
     DLR_CALLBACK_IP_WHITELIST: str = ""

@@ -83,6 +83,24 @@ func (r *inboundRegistry) Remove(s *inboundSession) {
 	}
 }
 
+// EvictOldest 从注册表移除并返回该 system_id 最旧的会话（满槽时给新绑定腾位）。
+// 仅移除注册；关闭连接由调用方负责（调用方调 old.close()）。Add 是 append，故 [0] 即最旧。
+func (r *inboundRegistry) EvictOldest(systemID string) *inboundSession {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	arr := r.bySystem[systemID]
+	if len(arr) == 0 {
+		return nil
+	}
+	oldest := arr[0]
+	if len(arr) == 1 {
+		delete(r.bySystem, systemID)
+	} else {
+		r.bySystem[systemID] = arr[1:]
+	}
+	return oldest
+}
+
 // PickReceiver 选择一个能接收 deliver_sm 的会话（RX/TRX 优先）
 func (r *inboundRegistry) PickReceiver(systemID string) *inboundSession {
 	r.mu.RLock()

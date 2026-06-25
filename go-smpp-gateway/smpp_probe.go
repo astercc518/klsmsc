@@ -30,7 +30,7 @@ func smppOneShotBind(cfg ChannelConfig) error {
 	}
 
 	var connector gosmpp.Connector
-	dialer := gosmpp.NonTLSDialer
+	dialer := dialerForChannel(cfg)
 	bm := strings.ToLower(strings.TrimSpace(cfg.BindMode))
 	switch bm {
 	case "transmitter":

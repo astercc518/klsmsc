@@ -59,6 +59,74 @@ func (l *tpsLimiter) Allow() bool {
 	return false
 }
 
+// updateRate 在复用账号共享桶时把速率上限刷新为最新 cap（管理员改 accounts.rate_limit 后，
+// 该账号新绑定时生效）。不重置当前 tokens，避免改配置瞬间放量。
+func (l *tpsLimiter) updateRate(rps float64) {
+	l.mu.Lock()
+	l.rate = rps
+	l.maxTok = rps
+	if l.tokens > l.maxTok {
+		l.tokens = l.maxTok
+	}
+	l.mu.Unlock()
+}
+
+// 每账号共享一个令牌桶：同一账号的多条绑定会话共用同一个桶，防止"开多条绑定 = N×TPS"
+// 绕过 per-account 限流（accounts.rate_limit 是账号级合约速率，不是单连接速率）。
+// tpsLimiter 自带 mutex，可安全被该账号的多条会话 goroutine 并发调用。
+var (
+	accountTPSBuckets   = make(map[int]*tpsLimiter)
+	accountTPSBucketsMu sync.Mutex
+)
+
+// getAccountTPSLimiter 返回账号共享的令牌桶：首次创建，后续复用并刷新速率。
+func getAccountTPSLimiter(accountID int, rps float64) *tpsLimiter {
+	accountTPSBucketsMu.Lock()
+	defer accountTPSBucketsMu.Unlock()
+	if l, ok := accountTPSBuckets[accountID]; ok {
+		l.updateRate(rps)
+		return l
+	}
+	l := newTPSLimiter(rps)
+	accountTPSBuckets[accountID] = l
+	return l
+}
+
+// newTPSLimiterBurst 构造突发容量与补充速率分离的令牌桶（用于 bind 限速：
+// 突发给足正常启动的并发绑定，之后按低速率补）。
+func newTPSLimiterBurst(rate, burst float64) *tpsLimiter {
+	return &tpsLimiter{tokens: burst, maxTok: burst, rate: rate, lastTime: time.Now()}
+}
+
+// —— 绑定限速 / 防 bind 风暴 ——
+// 按来源 IP 限制 bind 速率：合法客户端启动期一次性绑满(≤突发额度)即停；异常客户端
+// 狂重绑会迅速耗尽突发额度，之后被慢拒绝（持连 bindRejectDelay 再回 RTHROTTLED）。
+// 配合 per-IP 并发连接上限(默认 20)，把风暴速率硬压到 maxConnsPerIP / bindRejectDelay。
+// 放在 authenticateBind 之前，超限的 bind 不再查 DB，顺带护住鉴权数据源。
+const (
+	bindBurst        = 32              // 突发容量：足够任何合法客户端启动期并发绑定
+	bindRefillPerSec = 2.0             // 稳态补充速率：合法重连绰绰有余
+	bindRejectDelay  = 1 * time.Second // 慢拒绝持连时长：把 per-IP 并发上限转成速率上限
+)
+
+var (
+	bindRateBuckets   = make(map[string]*tpsLimiter)
+	bindRateBucketsMu sync.Mutex
+	bindRejectCount   int64 // atomic：累计慢拒绝次数，用于节流日志
+)
+
+// allowBindRate 返回该 IP 是否允许本次 bind（令牌桶）。
+func allowBindRate(ip string) bool {
+	bindRateBucketsMu.Lock()
+	l, ok := bindRateBuckets[ip]
+	if !ok {
+		l = newTPSLimiterBurst(bindRefillPerSec, bindBurst)
+		bindRateBuckets[ip] = l
+	}
+	bindRateBucketsMu.Unlock()
+	return l.Allow()
+}
+
 // inboundSession 表示一条已绑定的 SMPP 客户连接
 type inboundSession struct {
 	conn     net.Conn
@@ -129,6 +197,18 @@ func handleSession(conn net.Conn) {
 		return
 	}
 
+	// 1.5) 绑定限速（防 bind 风暴）：超速则慢拒绝，且不进入下方 DB 鉴权。
+	if !allowBindRate(remoteIP) {
+		n := atomic.AddInt64(&bindRejectCount, 1)
+		if n%1000 == 1 {
+			log.Printf("[INBOUND] 绑定限速生效: IP=%s system_id=%s 累计慢拒绝 %d 次（防 bind 风暴，未触发鉴权）",
+				remoteIP, bind.systemID, n)
+		}
+		time.Sleep(bindRejectDelay) // 持连 tarpit：把 per-IP 并发上限转成速率上限，瓦解紧重连循环
+		_ = s.writePDUSafe(bindRespCmdID(hdr.commandID), statusThrottled, hdr.sequenceNumber, buildBindResp(gwSystemID))
+		return
+	}
+
 	// 2) 鉴权
 	respStatus, account := authenticateBind(remoteIP, bind)
 	if respStatus != statusOK {
@@ -144,18 +224,26 @@ func handleSession(conn net.Conn) {
 	if maxBinds <= 0 {
 		maxBinds = getMaxBindsPerAccount()
 	}
-	if inboundReg.CountBySystem(s.systemID) >= maxBinds {
-		_ = s.writePDUSafe(bindRespCmdID(hdr.commandID), statusBindFail, hdr.sequenceNumber, buildBindResp(gwSystemID))
-		log.Printf("[INBOUND] %s BIND 拒绝（超过最大绑定数）: system_id=%s", remoteIP, s.systemID)
-		return
+	// 满槽时不再硬拒,而是踢掉最旧的会话给新绑定腾位(LRU 驱逐)。根治"对端反复重连留下的
+	// 孤儿连接(仍自动回 enquire_link,90s idle 清理抓不到)占满槽位致合法新绑定永久被拒、
+	// 通道永久离线"。新绑定恒为最新、孤儿恒为最旧 → 新绑定优先挤掉孤儿;关掉孤儿 TCP 也会
+	// 触发对端 OnClosed 把它清掉(双向收敛)。循环驱逐防并发下计数瞬时超额。
+	for inboundReg.CountBySystem(s.systemID) >= maxBinds {
+		old := inboundReg.EvictOldest(s.systemID)
+		if old == nil {
+			break
+		}
+		old.close()
+		log.Printf("[INBOUND] %s 满槽驱逐最旧会话给新绑定腾位: system_id=%s (max=%d)", remoteIP, s.systemID, maxBinds)
 	}
 
 	// 4) TPS 限流（依据 accounts.rate_limit；默认 1000）
+	// 用账号共享桶：同账号多条绑定共用一个令牌桶，防止开多连接绕过 per-account TPS 限制。
 	tpsCap := account.RateLimit
 	if tpsCap <= 0 {
 		tpsCap = 1000
 	}
-	s.tps = newTPSLimiter(float64(tpsCap))
+	s.tps = getAccountTPSLimiter(account.ID, float64(tpsCap))
 
 	// 5) 注册并响应 BIND_RESP ESME_ROK
 	inboundReg.Add(s)
@@ -325,6 +413,41 @@ func (s *inboundSession) handleSubmitSM(hdr pduHeader, body []byte) {
 	if v, ok := sm.tlvs[0x0424]; ok && len(v) > 0 {
 		rawMsg = v
 	}
+
+	// UDH 多段重组：esm_class 含 UDHI 位(0x40)时 short_message 前缀是 UDH 头。
+	// 剥头取拼接信息(ref/total/part)，按 (account,src,dst,ref,total) 缓冲，集齐后合并成一条转发。
+	// 仅在 UDHI 置位且走 short_message 时介入(message_payload 与 UDH 互斥)；普通短信路径不变。
+	if sm.esmClass&udhiBit != 0 && len(sm.shortMessage) > 0 {
+		ci, payload := parseUDH(sm.shortMessage)
+		segText := decodeShortMessage(payload, sm.dataCoding)
+		if sm.dataCoding == 0 {
+			log.Printf("[INBOUND-UDH] WARN dc=0(packed GSM7)+UDHI system_id=%s：fill-bit 解码暂不支持，中继通道请发 UCS-2", s.systemID)
+		}
+		if ci.hasConcat && ci.total > 1 && ci.part >= 1 && ci.part <= ci.total {
+			tmpl := submitJob{
+				AccountID:          s.account.ID,
+				SystemID:           s.systemID,
+				SourceAddr:         sm.sourceAddr,
+				DestAddr:           normalizeDestAddr(sm.destAddr),
+				IP:                 s.remoteIP,
+				RegisteredDelivery: int(sm.registeredDelivery & 0x01),
+			}
+			key := reassemblyKey(s.account.ID, sm.sourceAddr, sm.destAddr, ci.ref, ci.total)
+			ready, respMsgID := udhStore.addSegment(key, ci, segText, tmpl)
+			_ = InsertInboundSubmission(respMsgID, s.account.ID, s.systemID, sm.sourceAddr, tmpl.DestAddr)
+			if ready != nil {
+				if queued, _ := trySubmit(*ready); !queued {
+					// 集齐却入不了队(高水位)：整条发 REJECTD DLR，不阻塞客户后续段
+					publishRejectDLR(*ready, "reassembly enqueue: queue full")
+				}
+			}
+			_ = s.writePDUSafe(cmdSubmitSMResp, statusOK, hdr.sequenceNumber, buildSubmitSMResp(respMsgID))
+			return
+		}
+		// 非拼接 UDH 或单段 UDH：剥头后按普通单条继续
+		rawMsg = payload
+	}
+
 	text := decodeShortMessage(rawMsg, sm.dataCoding)
 
 	msgID := generateMessageID()

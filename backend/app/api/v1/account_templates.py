@@ -139,6 +139,11 @@ async def create_template(
     db: AsyncSession = Depends(get_db),
 ):
     """创建开户模板"""
+    # 入库 country_code 统一规范为 ISO2（管理员可能误填区号如 381，需转为 RS，
+    # 否则 TG 开户列表显示裸代码、账户 country_code 入库为区号致发送被国家限制拦截）
+    from app.utils.country_code import normalize_country_code
+    request.country_code = normalize_country_code(request.country_code) or request.country_code
+
     # 自动生成模板编码（如果未提供）
     template_code = request.template_code
     if not template_code:

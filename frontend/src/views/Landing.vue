@@ -65,7 +65,7 @@
         <div class="hero-left animate-fade-left">
           <div class="hero-tag animate-slide-up">{{ $t('landing.hero.subtitle') }}</div>
           <h1 class="hero-title animate-slide-up" style="animation-delay: 0.1s">
-            <span class="text-gradient tactile-text">{{ $t('brand.name') }}</span>
+            <span class="text-gradient tactile-text">{{ brandName || $t('brand.name') }}</span>
             <br />
             <span class="text-secondary">{{ $t('landing.hero.titleHighlight') }}</span>
           </h1>
@@ -405,7 +405,7 @@
         </div>
       </div>
       <div class="w footer-bottom">
-        <p>© {{ new Date().getFullYear() }} {{ $t('brand.name') }}. All Rights Reserved.</p>
+        <p>© {{ new Date().getFullYear() }} {{ brandName || $t('brand.name') }}. All Rights Reserved.</p>
         <div class="f-bottom-links">
           <a href="#faq">{{ $t('landing.footerSupport') }}</a>
           <a href="#about">{{ $t('landing.footerTerms') }}</a>
@@ -419,6 +419,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { setLocale, getLocale } from '@/i18n'
+import { brandName } from '@/composables/useBrand'
 import RateSearch from '@/components/landing/RateSearch.vue'
 import DIDShowcase from '@/components/landing/DIDShowcase.vue'
 

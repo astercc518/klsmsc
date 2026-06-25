@@ -5,6 +5,9 @@ export interface AdminBatchItem {
   account_id: number
   account_name?: string
   batch_name: string
+  content?: string | null
+  channel_code?: string | null
+  channel_name?: string | null
   total_count: number
   success_count: number
   delivered_count: number
@@ -47,7 +50,10 @@ export interface PreviewSwitchResult {
 
 export interface ListBatchesParams {
   account_id?: number
+  account?: string
   channel_id?: number
+  batch_id?: number
+  content?: string
   status?: string
   keyword?: string
   start_date?: string

@@ -50,6 +50,48 @@ async def get_balance(
     )
 
 
+@router.get("/transactions")
+async def get_transactions(
+    limit: int = 20,
+    account: Account = Depends(get_current_account),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    客户近期交易（余额变动流水）。
+
+    仅返回**资金事件**（充值/退款/调整/退补充值/提现），**不含逐条 SMS 扣费**——
+    大客户的 charge 行可能上万条，混进来会刷屏并把充值记录挤掉，客户在充值页最关心的
+    是自己的充值/退款。倒序最近 limit 条。
+    """
+    from app.modules.common.balance_log import BalanceLog
+
+    limit = max(1, min(int(limit or 20), 100))
+    rows = (
+        await db.execute(
+            select(BalanceLog)
+            .where(
+                BalanceLog.account_id == account.id,
+                BalanceLog.change_type != "charge",
+            )
+            .order_by(BalanceLog.id.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "type": r.change_type,
+                "amount": float(r.amount),
+                "balance_after": float(r.balance_after),
+                "description": r.description or "",
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    }
+
+
 @router.get("/info", response_model=AccountInfoResponse)
 async def get_account_info(
     account: Account = Depends(get_current_account),

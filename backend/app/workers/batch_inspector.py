@@ -26,6 +26,56 @@ logger = get_logger(__name__)
 # 默认 30 分钟：与 Go 异步回写、万级队列积压相匹配；过短会误判「卡死」或把仍在队列中的 SMPP 标为过期
 _STUCK_BATCH_MINUTES = int(os.environ.get("BATCH_INSPECT_STUCK_MINUTES", "30"))
 _SMPP_ORPHAN_MINUTES = int(os.environ.get("BATCH_INSPECT_SMPP_ORPHAN_MINUTES", "30"))
+# SMPP pending 重派发阈值：消息卡 pending 超过此分钟数（且未达 orphan 过期阈值）即视为派发阶段丢失，
+# 重新投递回 sms_send_smpp 真正发出去。比 orphan 过期更早介入，把"静默丢失→expired"变为"自动补发"。
+_SMPP_REDISPATCH_MINUTES = int(os.environ.get("BATCH_INSPECT_SMPP_REDISPATCH_MINUTES", "5"))
+# 派发丢行(分片插库时撞死锁1213/掉线2013整片不入库)对齐 total_count 的空闲阈值。
+# 该场景判据强(全部 sms_logs 终态 + 无 pending/queued + log_total<total),远比"杀 pending"安全,
+# 故用短得多的空闲即可触发,把"卡 99% 等 30 分钟"缩短到 ~5 分钟自愈。
+_LOSTROW_RECONCILE_MINUTES = int(os.environ.get("BATCH_INSPECT_LOSTROW_MINUTES", "5"))
+
+# SMPP 发送队列名（所有 SMPP 通道共用单一 FIFO，由 Go 网关消费）。
+_SMPP_SEND_QUEUE = "sms_send_smpp"
+# 在途守门阈值：sms_send_smpp 堆积超过此数量时，认定网关仍在排空、SMPP pending/queued 仍在途，
+# 暂缓一切对 SMPP 记录的斩杀/过期。0 = 只要队列非空就守门。
+# [事故根因] 批次 1118-1120 共 9 万条排在共用队列尾部，30 分钟内未轮到网关消费，
+# 却被「30 分钟空闲即斩杀」当成卡死全标 failed——比网关真正取到只早了约 30 秒。
+_SMPP_QUEUE_ALIVE_THRESHOLD = int(os.environ.get("BATCH_INSPECT_SMPP_QUEUE_ALIVE", "0"))
+
+
+def _smpp_send_queue_depth() -> int:
+    """读取 sms_send_smpp 队列堆积条数；-1 表示探测失败（未知）。
+
+    用于区分『消息仍在网关队列排队在途』与『真卡死/丢失』：队列非空时网关只是积压、并未死，
+    此时绝不能把排队中的 SMPP pending/queued 误判为超时。探测失败回退旧行为（按时间斩杀）。
+    """
+    try:
+        with celery_app.connection_for_read() as conn:
+            q = conn.default_channel.queue_declare(queue=_SMPP_SEND_QUEUE, passive=True)
+            return int(q.message_count)
+    except Exception as e:
+        logger.debug(f"inspect: 读取 {_SMPP_SEND_QUEUE} 队列深度失败: {e}")
+        return -1
+
+
+async def _batch_has_smpp_pending(db, batch_id) -> bool:
+    """批次是否还有 SMPP 通道的 pending/queued 记录（用于在途守门时判断要不要暂缓斩杀）。"""
+    from app.modules.sms.channel import Channel as _Ch
+    cnt = (
+        await db.execute(
+            select(func.count(SMSLog.id))
+            .select_from(SMSLog)
+            .join(_Ch, SMSLog.channel_id == _Ch.id)
+            .where(
+                and_(
+                    SMSLog.batch_id == batch_id,
+                    SMSLog.status.in_(["pending", "queued"]),
+                    _Ch.protocol == "SMPP",
+                )
+            )
+        )
+    ).scalar() or 0
+    return cnt > 0
 
 
 @celery_app.task(name='sync_processing_batch_progress_task')
@@ -95,15 +145,19 @@ async def _do_inspect_batches():
     eng, Session = _make_session()
     try:
         async with Session() as db:
-            # 1. 停滞 processing 批次：updated_at 早于阈值（依赖 batch_utils 防抖后「真变才刷」）
-            cutoff = datetime.now() - timedelta(minutes=_STUCK_BATCH_MINUTES)
+            # 1. 停滞 processing 批次：updated_at 早于阈值（依赖 batch_utils 防抖后「真变才刷」）。
+            #    两档:派发丢行对齐 total_count 用短空闲(_LOSTROW_RECONCILE_MINUTES)快速自愈;
+            #    杀 pending/queued 等激进操作仍需长空闲(_STUCK_BATCH_MINUTES),避免误杀在途 SMPP。
+            now_ = datetime.now()
+            scan_cutoff = now_ - timedelta(minutes=min(_STUCK_BATCH_MINUTES, _LOSTROW_RECONCILE_MINUTES))
+            stuck_cutoff = now_ - timedelta(minutes=_STUCK_BATCH_MINUTES)
 
             result = await db.execute(
                 select(SmsBatch).where(
                     and_(
                         SmsBatch.status == BatchStatus.PROCESSING,
                         SmsBatch.is_deleted == False,
-                        SmsBatch.updated_at < cutoff,
+                        SmsBatch.updated_at < scan_cutoff,
                     )
                 ).limit(200)
             )
@@ -114,10 +168,23 @@ async def _do_inspect_batches():
             else:
                 logger.info(f"发现 {len(stuck_batches)} 个疑似卡死的批次，开始校准...")
 
+            # 在途守门信号（每轮巡检读一次）：sms_send_smpp 仍有积压时，网关只是排空慢、并未死，
+            # 排队中的 SMPP pending/queued 不得被斩杀/过期。-1=探测失败→回退旧的按时间收割。
+            _smpp_backlog = _smpp_send_queue_depth()
+            _smpp_inflight = _smpp_backlog > _SMPP_QUEUE_ALIVE_THRESHOLD
+            if _smpp_inflight:
+                logger.info(
+                    f"inspect: sms_send_smpp 仍积压 {_smpp_backlog} 条，本轮暂缓斩杀/过期 SMPP 在途记录"
+                )
+
             reconciled = 0
             stuck_force_failed = 0
             for batch in stuck_batches:
                 try:
+                    # 选中时的空闲程度(用于区分短空闲快速对齐 vs 长空闲才允许激进斩杀)
+                    orig_updated = batch.updated_at
+                    idle_long = orig_updated is not None and orig_updated < stuck_cutoff
+
                     # 调用统一的进度校准逻辑
                     await update_batch_progress(db, batch.id)
 
@@ -126,6 +193,7 @@ async def _do_inspect_batches():
 
                     # 绝对斩杀：停滞超过 BATCH_INSPECT_STUCK_MINUTES 的批次，无视 batch_utils 内 2% 虚拟兜底限制，
                     # 将仍卡在 pending/queued 的记录标为 failed，避免进度永久卡在 ~97%。
+                    # 仅长空闲档执行(短空闲可能仍在队列在途,误杀会丢消息)。
                     pend_q = (
                         await db.execute(
                             select(func.count(SMSLog.id)).where(
@@ -136,7 +204,21 @@ async def _do_inspect_batches():
                             )
                         )
                     ).scalar() or 0
-                    if pend_q > 0 and batch.status == BatchStatus.PROCESSING:
+                    # 在途守门：网关发送队列仍有积压时，本批的 SMPP pending/queued 极可能仍排队等消费，
+                    # 并非真卡死。跳过斩杀，留给队列自然排空（或排空后再由下方 orphan 兜底）。
+                    _smpp_inflight_guard = (
+                        pend_q > 0
+                        and batch.status == BatchStatus.PROCESSING
+                        and idle_long
+                        and _smpp_inflight
+                        and await _batch_has_smpp_pending(db, batch.id)
+                    )
+                    if _smpp_inflight_guard:
+                        logger.warning(
+                            f"inspect: 批次 {batch.id} 有 SMPP pending/queued，但 sms_send_smpp 仍积压 "
+                            f"{_smpp_backlog} 条，判定为在途、暂缓斩杀（等队列排空）"
+                        )
+                    elif pend_q > 0 and batch.status == BatchStatus.PROCESSING and idle_long:
                         _timeout_msg = "Timeout or dropped by gateway"
                         _now_ts = datetime.now()
                         await db.execute(
@@ -284,6 +366,64 @@ async def _do_inspect_batches():
                 except Exception as e:
                     logger.error(f"检查COMPLETED批次 {batch.id} 虚拟DLR积压失败: {e}")
 
+            # 2.5 SMPP pending 重派发（修复"派发阶段丢失致整批卡 99%/100 条静默 pending"）：
+            # pending 可靠地等价于"从未成功 submit 到上游"——submit 到 socket 成功的消息在会话断连时
+            # 会被 Go 网关 OnClosed 标为 sent（非 pending），故 pending 重发安全、无重复风险；
+            # 与下方 expire 的本质区别：① 直接针对消息、不等整批 updated_at 停滞（854 因回执持续刷新
+            # updated_at 拖了 2 小时才被 expire，正是此门控之过）；② 只补 pending、绝不碰 queued
+            # （queued 可能已提交，重发有重复风险）。Redis NX 保证每条在可恢复窗口内至多重派发一次，
+            # 超 _SMPP_ORPHAN_MINUTES 仍 pending 才由下方 expire 兜底。
+            try:
+                _rd_hi = datetime.now() - timedelta(minutes=_SMPP_REDISPATCH_MINUTES)  # 卡超此才补（避开在途新消息）
+                _rd_lo = datetime.now() - timedelta(minutes=_SMPP_ORPHAN_MINUTES)      # 早于此放弃补发，交 expire
+                from app.modules.sms.channel import Channel as _RDCh
+                from app.utils.smpp_payload import smpp_payload_public_dict as _rd_pl
+
+                _rd_rows = (await db.execute(
+                    select(SMSLog, SmsBatch.status)
+                    .select_from(SMSLog)
+                    .join(_RDCh, SMSLog.channel_id == _RDCh.id)
+                    .join(SmsBatch, SMSLog.batch_id == SmsBatch.id)
+                    .where(
+                        and_(
+                            _RDCh.protocol == "SMPP",
+                            SMSLog.status == "pending",
+                            SMSLog.sent_time.is_(None),
+                            SMSLog.submit_time.isnot(None),
+                            SMSLog.submit_time < _rd_hi,
+                            SMSLog.submit_time >= _rd_lo,
+                            SmsBatch.status == BatchStatus.PROCESSING,
+                            SmsBatch.is_deleted == False,
+                        )
+                    )
+                    .limit(2000)
+                )).all()
+
+                if _rd_rows:
+                    from app.utils.cache import get_redis_client
+                    from app.utils.queue import QueueManager
+                    _rc = await get_redis_client()
+                    _rd_payloads = []
+                    for _rd_row, _rd_bstat in _rd_rows:
+                        try:
+                            # NX + 30min TTL：每条在可恢复窗口内至多补发一次，杜绝慢/挂网关下的重复 submit
+                            _rd_fresh = await _rc.set(
+                                f"smsc:smpp_redispatch:{_rd_row.message_id}", "1",
+                                nx=True, ex=_SMPP_ORPHAN_MINUTES * 60,
+                            )
+                        except Exception:
+                            _rd_fresh = True  # Redis 故障不阻断补发
+                        if _rd_fresh:
+                            _rd_payloads.append(_rd_pl(_rd_row, getattr(_rd_bstat, "value", str(_rd_bstat or ""))))
+                    if _rd_payloads:
+                        for _rd_i in range(0, len(_rd_payloads), 500):
+                            QueueManager.queue_sms_batch_smpp(_rd_payloads[_rd_i:_rd_i + 500])
+                        logger.warning(
+                            f"inspect: SMPP pending 重派发 {len(_rd_payloads)} 条 → sms_send_smpp（派发阶段丢失自动补发）"
+                        )
+            except Exception as _rd_err:
+                logger.error(f"inspect: SMPP pending 重派发异常: {_rd_err}")
+
             # 3. SMPP SubmitSMResp 丢失清理（兜底，Go 网关 OnClosed 应已处理大部分）
             # 仅清理「批次本身已停滞（updated_at 早于阈值）」的孤儿 queued/pending 记录，
             # 且 submit_time 早于阈值：兼容 pending→sent 不经 queued 的新路径，窗口须与队列积压一致。
@@ -303,6 +443,13 @@ async def _do_inspect_batches():
             stale_batch_ids = stale_batch_ids_res.scalars().all()
 
             smpp_orphan_cleaned = 0
+            if _smpp_inflight:
+                # 在途守门：发送队列仍积压时，pending/queued 大多仍排队等网关消费，不做过期收割，
+                # 避免与第 1 步同样的「排队中被误判超时」。待队列排空后下一轮再兜底。
+                logger.info(
+                    f"inspect: sms_send_smpp 积压 {_smpp_backlog} 条，跳过本轮 SMPP 孤儿过期清理"
+                )
+                stale_batch_ids = []
             if stale_batch_ids:
                 r_smpp = await db.execute(
                     _sa_upd2(SMSLog)
@@ -323,23 +470,25 @@ async def _do_inspect_batches():
                 smpp_orphan_cleaned = r_smpp.rowcount
 
             # 无批次归属的孤儿单条消息（batch_id IS NULL），继续用时间兜底清理
-            r_smpp_standalone = await db.execute(
-                _sa_upd2(SMSLog)
-                .where(
-                    and_(
-                        SMSLog.batch_id.is_(None),
-                        SMSLog.status.in_(['queued', 'pending']),
-                        SMSLog.sent_time.is_(None),
-                        SMSLog.submit_time < smpp_orphan_cutoff,
-                        SMSLog.submit_time.isnot(None),
+            # 同样受在途守门：队列仍积压时这些消息可能仍排队，不收割。
+            if not _smpp_inflight:
+                r_smpp_standalone = await db.execute(
+                    _sa_upd2(SMSLog)
+                    .where(
+                        and_(
+                            SMSLog.batch_id.is_(None),
+                            SMSLog.status.in_(['queued', 'pending']),
+                            SMSLog.sent_time.is_(None),
+                            SMSLog.submit_time < smpp_orphan_cutoff,
+                            SMSLog.submit_time.isnot(None),
+                        )
+                    )
+                    .values(
+                        status='expired',
+                        error_message='SMPP SubmitSMResp丢失: 会话断连导致提交回执未收到，超时标记',
                     )
                 )
-                .values(
-                    status='expired',
-                    error_message='SMPP SubmitSMResp丢失: 会话断连导致提交回执未收到，超时标记',
-                )
-            )
-            smpp_orphan_cleaned += r_smpp_standalone.rowcount
+                smpp_orphan_cleaned += r_smpp_standalone.rowcount
 
             if smpp_orphan_cleaned > 0:
                 await db.commit()

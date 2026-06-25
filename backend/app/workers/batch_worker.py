@@ -529,7 +529,7 @@ async def _queue_commit_batch(
 
 # ============ 大批量分片处理 ============
 
-@celery_app.task(name='process_batch_chunk', bind=True, max_retries=3,
+@celery_app.task(name='process_batch_chunk', bind=True, max_retries=6,
                  soft_time_limit=15 * 60, time_limit=20 * 60,
                  acks_late=True, reject_on_worker_lost=True)
 def process_batch_chunk(
@@ -542,6 +542,7 @@ def process_batch_chunk(
     start_offset: int,
     channel_id: int = None,
     sender_id: str = None,
+    rescue_depth: int = 0,
 ):
     """处理一个分片（规模由 API 的 CHUNK_SIZE 决定，通常 ≤5000）：校验 → 计费 → 写库 → 入队"""
     logger.info(f"分片处理开始: batch={batch_id}, offset={start_offset}, count={len(phone_numbers)}")
@@ -558,16 +559,57 @@ def process_batch_chunk(
         # （重跑顶部 already_done 幂等去重已落库的号码，退款后重新扣费，账目一致）。
         # 绝不让分片静默丢失（batch 813 事故：3 片 INSERT 死锁直接 raise，6000 条蒸发）。
         import random as _rnd
-        from sqlalchemy.exc import OperationalError as _OpErr
-        _is_lock_err = isinstance(e, _OpErr) and (
-            (getattr(e.orig, 'args', None) or [None])[0] in (1205, 1213)
+        from sqlalchemy.exc import OperationalError as _OpErr, InterfaceError as _IfErr
+        # 可任务级重试的瞬时 DB 错误：
+        #   1205 lock_wait_timeout / 1213 deadlock —— 事务被回滚，连接存活
+        #   2006 server has gone away / 2013 lost connection during query ——
+        #       连接被掐断（ProxySQL/MySQL 在高并发下超时杀连接），服务端回滚未提交事务
+        # 三者回滚语义一致：整片未落库（chunk≤单次 commit 体积，原子提交），
+        # 重跑靠顶部 already_done 幂等去重 + succeeded==0 退款，账目干净。
+        # 线上事故 batch 1026：15 片瞬间并发压垮连接池，7 片 2013 直接 raise→14000 蒸发。
+        _err_code = (getattr(e.orig, 'args', None) or [None])[0]
+        _is_retryable_db_err = (
+            isinstance(e, _IfErr)
+            or (isinstance(e, _OpErr) and _err_code in (1205, 1213, 2006, 2013))
         )
-        if _is_lock_err and self.request.retries < self.max_retries:
+        if _is_retryable_db_err and self.request.retries < self.max_retries:
+            # 指数退避 + 抖动：扁平 2-5s 退避会把全部重试挤进同一个「连接风暴」窗口——
+            # N 个分片并发 INSERT 持续压垮 ProxySQL 连接(2013)，重试也一起撞，预算耗尽风暴还没散
+            # （batch 1036 offset 6000/8000：4 次尝试全困在 22:11-22:13 同一风暴 → 整片丢失 4000 条）。
+            # 指数退避让靠后的重试落到风暴散去之后(批次有限，DB 终会空闲)，命中即成功。
+            _base = float(os.getenv("CHUNK_RETRY_BASE_SEC", "8"))
+            _cap = float(os.getenv("CHUNK_RETRY_MAX_SEC", "300"))
+            _backoff = min(_cap, _base * (2 ** self.request.retries))
+            _backoff += _rnd.uniform(0, _backoff * 0.5)
             logger.warning(
-                f"分片整体撞锁，任务级重试 {self.request.retries + 1}/{self.max_retries}: "
-                f"batch={batch_id}, offset={start_offset}, err={e}"
+                f"分片瞬时DB错误({_err_code})，任务级重试 {self.request.retries + 1}/{self.max_retries} "
+                f"(退避 {_backoff:.0f}s): batch={batch_id}, offset={start_offset}, err={e}"
             )
-            raise self.retry(exc=e, countdown=2 + _rnd.uniform(0, 3))
+            raise self.retry(exc=e, countdown=_backoff)
+        if _is_retryable_db_err:
+            # 重试预算耗尽：绝不裸 raise 让整片静默蒸发(历史上 batch 813/1026/1036 都栽在这)。
+            # 整片作为全新任务延后「救援」重投——此时风暴几乎必已散；phone_numbers 仍在 payload 里，
+            # _do_process_chunk 顶部 already_done 幂等去重 + succeeded==0 退款，重投账目干净。
+            # rescue_depth 兜底防无限循环；上限仍失败则 CRITICAL 告警转人工。
+            _rescue_max = int(os.getenv("CHUNK_RESCUE_MAX", "5"))
+            if rescue_depth < _rescue_max:
+                _delay = float(os.getenv("CHUNK_RESCUE_DELAY_SEC", "600")) * (rescue_depth + 1)
+                logger.error(
+                    f"分片重试耗尽，延后救援重投 rescue={rescue_depth + 1}/{_rescue_max} "
+                    f"(延迟 {_delay:.0f}s): batch={batch_id}, offset={start_offset}, count={len(phone_numbers)}, err={e}"
+                )
+                process_batch_chunk.apply_async(
+                    args=(batch_id, account_id, phone_numbers, message,
+                          rot_messages, start_offset, channel_id, sender_id),
+                    kwargs={"rescue_depth": rescue_depth + 1},
+                    countdown=_delay,
+                )
+                return {"succeeded": 0, "failed": 0, "rescued": True,
+                        "rescue_depth": rescue_depth + 1}
+            logger.critical(
+                f"分片救援达上限({_rescue_max})仍失败，需人工补发: "
+                f"batch={batch_id}, offset={start_offset}, count={len(phone_numbers)}"
+            )
         raise
 
 
@@ -764,6 +806,11 @@ async def _do_process_chunk(
                             if _rows:
                                 db.add_all(_rows)
                                 await db.flush()
+                                # 短链替换：把 {{TRACK_URL=...}} 换成真实可追踪短链(66c.eu/TOKEN)
+                                # 并建 short_link_logs token。必须在 flush(拿到 sms_log.id) 后。
+                                # 虚拟快速路径此前唯独漏这步 → 注水点击无 token 可计 → 点击恒 0
+                                # （事故 batch 1026/1029：同虚拟通道 988 走旧路径正常有点击）。
+                                await _replace_track_urls_for_logs(db, _rows)
                                 await db.commit()
 
             else:
@@ -1331,7 +1378,7 @@ def retry_batch_as_new(self, new_batch_id: int, src_batch_id: int, account_id: i
     logger.info(f"失败重发任务开始: new_batch={new_batch_id}, src={src_batch_id}, account={account_id}")
     return _run_async(
         _do_retry_batch_as_new(new_batch_id, src_batch_id, account_id),
-        timeout=None,  # 大批量，禁用 _run_async 默认 60s 上限，靠 celery soft/hard time limit 兜底
+        timeout=0,  # 大批量：0 才真正禁用 _run_async 超时（None 会被当成默认 60s！）；靠 celery soft/hard time limit 兜底
     )
 
 
@@ -1394,6 +1441,13 @@ async def _do_retry_batch_as_new(new_batch_id: int, src_batch_id: int, account_i
                     SMSLog.batch_id == src_batch_id,
                     SMSLog.account_id == account_id,
                     or_(SMSLog.status == "failed", SMSLog.status == "expired"),
+                    # 跳过本批次已重发过的源行(error_message 已打 #N 标记)——使失败重发可断点续传:
+                    # 任务被超时/重启中断后重跑只补未发的,不重复发已发的。NULL 兜底:无 error_message
+                    # 的行(NOT LIKE 对 NULL 判 NULL 会被误排除)须显式纳入。
+                    or_(
+                        SMSLog.error_message.is_(None),
+                        SMSLog.error_message.op("NOT LIKE")(f"%已转批次 #{new_batch_id} 重发%"),
+                    ),
                     SMSLog.id > last_id,
                 ).order_by(SMSLog.id.asc()).limit(PAGE)
             )).scalars().all()

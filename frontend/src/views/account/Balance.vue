@@ -54,14 +54,6 @@
               <span class="info-value">{{ lowBalanceThreshold }} {{ currency }}</span>
             </div>
           </div>
-          
-          <button type="button" class="recharge-btn" @click="openSalesTelegram">
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-              <circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/>
-              <path d="M9 6V12M6 9H12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-            {{ $t('balance.contactSales') }}
-          </button>
         </div>
       </div>
       
@@ -112,12 +104,26 @@
       </div>
     </div>
     
-    <!-- 近期交易（预留） -->
+    <!-- 近期交易（仅资金事件：充值/退款/调整等，不含逐条 SMS 扣费） -->
     <div class="transactions-section">
       <div class="section-header">
         <h2 class="section-title">近期交易</h2>
       </div>
-      <div class="empty-transactions">
+      <div v-if="transactions.length" class="transactions-list">
+        <div v-for="tx in transactions" :key="tx.id" class="transaction-row">
+          <div class="tx-left">
+            <span class="tx-type" :class="txAmountClass(tx.amount)">{{ txTypeLabel(tx.type) }}</span>
+            <span class="tx-desc">{{ tx.description }}</span>
+          </div>
+          <div class="tx-right">
+            <span class="tx-amount" :class="txAmountClass(tx.amount)">
+              {{ tx.amount > 0 ? '+' : '' }}{{ tx.amount.toFixed(2) }} {{ currency }}
+            </span>
+            <span class="tx-time">{{ formatTime(tx.created_at) }}</span>
+          </div>
+        </div>
+      </div>
+      <div v-else class="empty-transactions">
         <div class="empty-icon">
           <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
             <rect x="6" y="10" width="28" height="20" rx="3" stroke="currentColor" stroke-width="2"/>
@@ -135,7 +141,7 @@
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { getBalance, getAccountInfo } from '@/api/account'
+import { getBalance, getTransactions, type BalanceTransaction } from '@/api/account'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -143,8 +149,26 @@ const balance = ref(0)
 const currency = ref('USD')
 const lowBalanceThreshold = ref(100)
 const accountId = ref('')
-/** 归属商务 Telegram 用户名（不含 @），来自 /account/info */
-const salesTgUsername = ref<string | null>(null)
+/** 近期交易（仅资金事件） */
+const transactions = ref<BalanceTransaction[]>([])
+
+const TX_TYPE_LABELS: Record<string, string> = {
+  deposit: '充值',
+  refund: '退款',
+  refund_recharge: '退补充值',
+  adjustment: '调整',
+  withdraw: '提现',
+  charge: '扣费',
+}
+const txTypeLabel = (type: string) => TX_TYPE_LABELS[type] || type
+const txAmountClass = (amount: number) => (amount >= 0 ? 'tx-positive' : 'tx-negative')
+const formatTime = (iso: string | null) => {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
 
 const loadData = async () => {
   loading.value = true
@@ -156,31 +180,16 @@ const loadData = async () => {
     accountId.value = String(res.account_id)
 
     try {
-      const info = await getAccountInfo()
-      salesTgUsername.value = info.sales_tg_username?.trim() || null
+      const tx = await getTransactions(20)
+      transactions.value = tx.items || []
     } catch {
-      salesTgUsername.value = null
+      transactions.value = []
     }
   } catch (error: any) {
     ElMessage.error(t('common.loadFailed'))
   } finally {
     loading.value = false
   }
-}
-
-/** 打开归属商务的 Telegram，便于客户联系充值 */
-function openSalesTelegram() {
-  const raw = salesTgUsername.value
-  if (!raw) {
-    ElMessage.warning(t('balance.noSalesTg'))
-    return
-  }
-  const u = raw.replace(/^@+/, '').trim()
-  if (!u) {
-    ElMessage.warning(t('balance.noSalesTg'))
-    return
-  }
-  window.open(`https://t.me/${encodeURIComponent(u)}`, '_blank', 'noopener,noreferrer')
 }
 
 onMounted(() => {
@@ -524,6 +533,70 @@ onMounted(() => {
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
+}
+
+.transactions-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.transaction-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 4px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.transaction-row:last-child {
+  border-bottom: none;
+}
+
+.tx-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.tx-type {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--bg-hover, rgba(255, 255, 255, 0.06));
+  color: var(--text-secondary);
+}
+
+.tx-desc {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tx-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.tx-amount {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.tx-positive { color: #22c55e; }
+.tx-negative { color: #f97316; }
+
+.tx-time {
+  font-size: 12px;
+  color: var(--text-quaternary);
 }
 
 .empty-transactions {

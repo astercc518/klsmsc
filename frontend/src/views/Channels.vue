@@ -135,7 +135,7 @@
           <template #default="{ row }">
             <div class="rate-info">
               <span class="rate-text">{{ row.max_tps || 100 }} TPS</span>
-              <span class="rate-sub">{{ row.concurrency || 1 }}C / {{ row.rate_control_window || 1000 }}ms</span>
+              <span class="rate-sub">{{ row.concurrency || 1 }}C</span>
             </div>
           </template>
         </el-table-column>
@@ -412,29 +412,43 @@
 
         <el-divider content-position="left">{{ $t('channels.rateControl') }}</el-divider>
         <el-row :gutter="24">
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item :label="$t('channels.maxTps')" prop="max_tps">
               <el-input-number v-model="form.max_tps" :min="1" :max="10000" controls-position="right" style="width: 100%">
                 <template #suffix>{{ $t('channels.perSecond') }}</template>
               </el-input-number>
             </el-form-item>
           </el-col>
-          <el-col :span="8">
+          <el-col :span="12">
             <el-form-item :label="$t('channels.concurrency')" prop="concurrency">
               <el-input-number v-model="form.concurrency" :min="1" :max="100" controls-position="right" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item :label="$t('channels.rateControlWindow')" prop="rate_control_window">
-              <el-input-number v-model="form.rate_control_window" :min="10" :max="600000" :step="10" controls-position="right" style="width: 100%">
-                <template #suffix>ms</template>
-              </el-input-number>
             </el-form-item>
           </el-col>
         </el-row>
         <div class="form-tip">
           {{ $t('channels.rateControlTip') }}
         </div>
+
+        <el-row v-if="form.protocol === 'SMPP'" :gutter="24">
+          <el-col :span="8">
+            <el-form-item :label="$t('channels.maxInflight')" prop="max_inflight">
+              <el-input-number
+                v-model="form.max_inflight"
+                :min="1"
+                :max="100000"
+                :step="100"
+                :placeholder="$t('channels.maxInflightDefault')"
+                controls-position="right"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="16">
+            <div class="form-tip" style="margin-top: 6px;">
+              {{ $t('channels.maxInflightTip') }}
+            </div>
+          </el-col>
+        </el-row>
 
         <template v-if="form.protocol !== 'VIRTUAL'">
           <el-row :gutter="24">
@@ -949,6 +963,9 @@ const detailVisible = ref(false)
 const formVisible = ref(false)
 const submitting = ref(false)
 const isEdit = ref(false)
+// 编辑时是否成功拉到完整 gateway_config（config_json）。仅在已成功加载后才允许整体回传，
+// 避免 GET 失败时用空 config 误抹掉 long_message_mode 等既有键。
+const gatewayConfigLoaded = ref(false)
 const currentChannel = ref<any>(null)
 const channels = ref<any[]>([])
 const formRef = ref()
@@ -1129,6 +1146,11 @@ const form = reactive({
   max_tps: 100,
   concurrency: 1,
   rate_control_window: 1000,
+  // SMPP 通道级在途窗口（config_json.max_inflight）：一次最多多少条 submit 未回执；空=网关默认 500。
+  // 调大可提升上游回执慢时的吞吐，但会放大断连时「乐观标 sent」的波及面，须按通道与上游共用情况权衡。
+  max_inflight: null as number | null,
+  // 完整 config_json，编辑时回填以保留 long_message_mode 等其它键，保存时合并 max_inflight 后整体回传。
+  gateway_config: {} as Record<string, any>,
   supplier_id: null as number | null,
   banned_words: '',
   remark: '',
@@ -1257,8 +1279,11 @@ const handleEdit = async (row: any) => {
     banned_words: row.banned_words ?? '',
     remark: row.remark ?? '',
     dlr_sent_timeout_hours: null,
+    max_inflight: null,
+    gateway_config: {},
     virtual_config: row.virtual_config ? { ...defaultVirtualConfig(), ...row.virtual_config } : defaultVirtualConfig(),
   })
+  gatewayConfigLoaded.value = false
   formVisible.value = true
 
   try {
@@ -1287,8 +1312,11 @@ const handleEdit = async (row: any) => {
         banned_words: ch.banned_words ?? '',
         remark: ch.remark ?? '',
         dlr_sent_timeout_hours: ch.dlr_sent_timeout_hours ?? null,
+        gateway_config: ch.gateway_config && typeof ch.gateway_config === 'object' ? { ...ch.gateway_config } : {},
+        max_inflight: ch.gateway_config?.max_inflight ?? null,
         virtual_config: ch.virtual_config ? { ...defaultVirtualConfig(), ...ch.virtual_config } : defaultVirtualConfig(),
       })
+      gatewayConfigLoaded.value = true
     } else {
       form.supplier_id = row.supplier?.id ?? null
     }
@@ -1554,6 +1582,17 @@ const submitForm = async () => {
       if (form.protocol === 'VIRTUAL') {
         updatePayload.virtual_config = form.virtual_config
       }
+      // SMPP 在途窗口：把 max_inflight 合并进既有 config_json 后整体回传（后端整体覆盖）。
+      // 仅在已成功加载 gateway_config（不会误抹其它键）或用户显式填了值时才回传。
+      if (form.protocol === 'SMPP' && (gatewayConfigLoaded.value || (typeof form.max_inflight === 'number' && form.max_inflight > 0))) {
+        const gw: Record<string, any> = { ...(form.gateway_config || {}) }
+        if (typeof form.max_inflight === 'number' && form.max_inflight > 0) {
+          gw.max_inflight = form.max_inflight
+        } else {
+          delete gw.max_inflight
+        }
+        updatePayload.gateway_config = gw
+      }
       await updateChannel(form.id, updatePayload)
       ElMessage.success(t('common.updateSuccess'))
     } else {
@@ -1602,6 +1641,9 @@ const submitForm = async () => {
       }
       if (form.protocol === 'VIRTUAL') {
         createPayload.virtual_config = form.virtual_config
+      }
+      if (form.protocol === 'SMPP' && typeof form.max_inflight === 'number' && form.max_inflight > 0) {
+        createPayload.gateway_config = { max_inflight: form.max_inflight }
       }
       const created = await createChannel(createPayload)
 
