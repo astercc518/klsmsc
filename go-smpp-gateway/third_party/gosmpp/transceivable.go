@@ -1,6 +1,7 @@
 package gosmpp
 
 import (
+	"log"
 	"sync/atomic"
 
 	"github.com/linxGnu/gosmpp/pdu"
@@ -70,7 +71,12 @@ func newTransceivable(conn *Connection, settings Settings) *transceivable {
 		},
 
 		response: func(p pdu.PDU) {
-			_ = t.Submit(p)
+			// [KAOLACH PATCH] 原版静默丢弃 Submit 错误。deliver_sm_resp/enquire_resp 发送失败
+			// （通常 ErrConnectionClosing：会话正在关闭/重绑）是上游对 DLR 重传的直接前兆，
+			// 记日志以便观测 ACK 丢失、定位重传根因（详见事故复盘）。
+			if err := t.Submit(p); err != nil {
+				log.Printf("[gosmpp][KAOLACH] auto-response send FAILED (%T, conn closing?): %v", p, err)
+			}
 		},
 	})
 
