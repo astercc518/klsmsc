@@ -42,6 +42,11 @@ func main() {
         RunConsumerForever(rootCtx, rabbitURL)
     }()
 
+    // 3a. 每通道独立队列消费者(SMPP_PER_CHANNEL_QUEUES=1 启用)：消除单一 sms_send_smpp
+    //     FIFO 的 head-of-line 阻塞，使被限流的慢通道不再饿死其它通道。未启用时为 no-op，
+    //     legacy 单队列消费者(上面 RunConsumerForever)始终运行。
+    StartPerChannelSupervisor(rootCtx, rabbitURL)
+
     // 3c. SMPP 入站服务器（客户接入）
     inboundListen := os.Getenv("INBOUND_LISTEN")
     if inboundListen == "" {

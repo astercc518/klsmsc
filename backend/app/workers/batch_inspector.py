@@ -12,6 +12,7 @@ Go 网关全异步后：SMPP 条目不再在网关内同步改库，pending 可�
 停滞批次巡检恢复为高效的 **sms_batches.updated_at** 条件；若仍有 pending/queued 则执行超时斩杀。
 """
 import os
+from typing import Optional
 from datetime import datetime, timedelta
 from sqlalchemy import select, and_, func, update as _sa_upd_log
 from app.workers.celery_app import celery_app
@@ -34,8 +35,14 @@ _SMPP_REDISPATCH_MINUTES = int(os.environ.get("BATCH_INSPECT_SMPP_REDISPATCH_MIN
 # 故用短得多的空闲即可触发,把"卡 99% 等 30 分钟"缩短到 ~5 分钟自愈。
 _LOSTROW_RECONCILE_MINUTES = int(os.environ.get("BATCH_INSPECT_LOSTROW_MINUTES", "5"))
 
-# SMPP 发送队列名（所有 SMPP 通道共用单一 FIFO，由 Go 网关消费）。
+# SMPP 发送队列名（legacy 共用 FIFO，由 Go 网关消费）。
 _SMPP_SEND_QUEUE = "sms_send_smpp"
+# 每通道队列开关：开启后在途守门必须把各 sms_send_smpp.{id} 队列深度一并计入，
+# 否则 backlog 全在每通道队列、legacy 为空 → 守门失效 → 在途批次被误判卡死斩杀(丢消息)。
+_SMPP_PER_CHANNEL_QUEUES = os.environ.get("SMPP_PER_CHANNEL_QUEUES", "0").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+_SMPP_QUEUE_PREFIX = "sms_send_smpp."
 # 在途守门阈值：sms_send_smpp 堆积超过此数量时，认定网关仍在排空、SMPP pending/queued 仍在途，
 # 暂缓一切对 SMPP 记录的斩杀/过期。0 = 只要队列非空就守门。
 # [事故根因] 批次 1118-1120 共 9 万条排在共用队列尾部，30 分钟内未轮到网关消费，
@@ -43,19 +50,46 @@ _SMPP_SEND_QUEUE = "sms_send_smpp"
 _SMPP_QUEUE_ALIVE_THRESHOLD = int(os.environ.get("BATCH_INSPECT_SMPP_QUEUE_ALIVE", "0"))
 
 
-def _smpp_send_queue_depth() -> int:
-    """读取 sms_send_smpp 队列堆积条数；-1 表示探测失败（未知）。
+def _smpp_send_queue_depth(extra_queues: Optional[list] = None) -> int:
+    """读取 SMPP 发送队列总堆积条数（legacy + 传入的每通道队列）；-1 表示探测失败（未知）。
 
     用于区分『消息仍在网关队列排队在途』与『真卡死/丢失』：队列非空时网关只是积压、并未死，
     此时绝不能把排队中的 SMPP pending/queued 误判为超时。探测失败回退旧行为（按时间斩杀）。
+
+    extra_queues — 每通道队列名列表(sms_send_smpp.{id})；逐个 passive 探测求和，
+    单个不存在(尚无消息→未声明)按 0 计，不影响其它队列。
     """
-    try:
-        with celery_app.connection_for_read() as conn:
-            q = conn.default_channel.queue_declare(queue=_SMPP_SEND_QUEUE, passive=True)
-            return int(q.message_count)
-    except Exception as e:
-        logger.debug(f"inspect: 读取 {_SMPP_SEND_QUEUE} 队列深度失败: {e}")
-        return -1
+    queues = [_SMPP_SEND_QUEUE] + list(extra_queues or [])
+    total = 0
+    probed_any = False
+    for qname in queues:
+        try:
+            with celery_app.connection_for_read() as conn:
+                q = conn.default_channel.queue_declare(queue=qname, passive=True)
+                total += int(q.message_count)
+                probed_any = True
+        except Exception as e:
+            # legacy 队列探测失败=未知，回退旧行为；每通道队列不存在(未声明)按 0 计入。
+            if qname == _SMPP_SEND_QUEUE:
+                logger.debug(f"inspect: 读取 {qname} 队列深度失败: {e}")
+                return -1
+            logger.debug(f"inspect: 每通道队列 {qname} 不存在/探测失败，按 0 计: {e}")
+    return total if probed_any else -1
+
+
+async def _active_smpp_channel_queue_names(db) -> list:
+    """每通道队列开启时，列出活跃 SMPP 通道对应的 sms_send_smpp.{id} 队列名(供在途守门求和)。"""
+    if not _SMPP_PER_CHANNEL_QUEUES:
+        return []
+    from app.modules.sms.channel import Channel as _Ch
+    rows = (
+        await db.execute(
+            select(_Ch.id).where(
+                and_(_Ch.protocol == "SMPP", _Ch.status == "active", _Ch.is_deleted == False)
+            )
+        )
+    ).scalars().all()
+    return [f"{_SMPP_QUEUE_PREFIX}{cid}" for cid in rows]
 
 
 async def _batch_has_smpp_pending(db, batch_id) -> bool:
@@ -168,9 +202,12 @@ async def _do_inspect_batches():
             else:
                 logger.info(f"发现 {len(stuck_batches)} 个疑似卡死的批次，开始校准...")
 
-            # 在途守门信号（每轮巡检读一次）：sms_send_smpp 仍有积压时，网关只是排空慢、并未死，
+            # 在途守门信号（每轮巡检读一次）：SMPP 发送队列仍有积压时，网关只是排空慢、并未死，
             # 排队中的 SMPP pending/queued 不得被斩杀/过期。-1=探测失败→回退旧的按时间收割。
-            _smpp_backlog = _smpp_send_queue_depth()
+            # 每通道队列开启时把各 sms_send_smpp.{id} 一并计入，否则 backlog 全在每通道队列、
+            # legacy 为空会导致守门失效、在途批次被误杀。
+            _smpp_extra_queues = await _active_smpp_channel_queue_names(db)
+            _smpp_backlog = _smpp_send_queue_depth(_smpp_extra_queues)
             _smpp_inflight = _smpp_backlog > _SMPP_QUEUE_ALIVE_THRESHOLD
             if _smpp_inflight:
                 logger.info(

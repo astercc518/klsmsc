@@ -47,6 +47,25 @@ def _new_redis():
     return _aioredis.Redis.from_url(settings.REDIS_URL, decode_responses=False)
 
 
+async def _dlr_is_owned(redis, channel_id: int, upstream_id: str) -> bool:
+    """复核 Go 网关写的归属键，判断这条未匹配 DLR 是否本系统发送。
+
+    键存在 = 自家（多为「DLR 早于 SubmitSMResp/落库」竞态，应缓冲重试）；
+    键不存在 = 外来（共用上游账号的别家系统回执，网关 IsOwned fail-open 漏进来），应丢弃；
+    Redis 异常 → True(fail-open，与网关 IsOwned 一致，绝不误丢自家)。
+
+    仅在 settings.DLR_OWNERSHIP_FILTER 启用时由调用方触发。归属键由网关
+    MarkOwned/backfill 写入：dlr_owned:{channel_id}:{upstream_id}（TTL 7 天）。
+    """
+    try:
+        for uid in {upstream_id, upstream_id.upper(), upstream_id.lower()}:
+            if uid and await redis.exists(f"dlr_owned:{channel_id}:{uid}"):
+                return True
+        return False
+    except Exception:
+        return True  # fail-open：Redis 抖动时不丢自家
+
+
 async def buffer_unmatched_dlr(
     channel_id: int, upstream_id: str, new_status: str,
     stat: str, err: str, dest_addr: str, source_addr: str, receipted_message_id: str,
@@ -63,6 +82,17 @@ async def buffer_unmatched_dlr(
         redis = _new_redis()
     try:
         field = f"{channel_id}:{upstream_id}"
+        # 治本:外来回执(共用上游账号、非本系统发送)不进重试缓冲,直接丢弃,避免其 churn 满
+        # 1h 缓冲放大成 sms_dlr 积压。判据=网关归属键复核;Redis 异常 fail-open(仍缓冲)。
+        # 同时清掉可能已存在的同 field 旧缓冲(flush 回放路径会复用本函数,借此逐步清空历史外来)。
+        if settings.DLR_OWNERSHIP_FILTER and not await _dlr_is_owned(redis, channel_id, upstream_id):
+            try:
+                await redis.hdel(_RETRY_KEY, field)
+                await redis.zrem(_RETRY_EXPIRE_ZSET, field)
+            except Exception:
+                pass
+            logger.info(f"DLR 外来回执丢弃(非本系统,不进重试缓冲): channel={channel_id}, upstream_id={upstream_id}")
+            return False
         payload = json.dumps({
             "channel_id": channel_id,
             "upstream_id": upstream_id,
