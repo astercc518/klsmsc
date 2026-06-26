@@ -18,7 +18,7 @@ kombu==5.3.4
 orjson==3.10.7
 
 # 电话号码解析
-phonenumbers==8.13.26
+phonenumbers>=9.0,<10.0
 
 # 安全和加密
 PyJWT==2.9.0
