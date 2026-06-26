@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  @page {
+    size: A4;
+    margin: 18mm 15mm 16mm 15mm;
+    @bottom-center {
+      content: "考拉出海 · 国际短信网关系统  |  商务材料  第 " counter(page) " 页";
+      font-size: 8pt; color: #94a3b8;
+    }
+  }
+  @page :first { margin: 0; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "WenQuanYi Zen Hei", sans-serif;
+    color: #1e293b; font-size: 10.5pt; line-height: 1.65; margin: 0;
+  }
+  h1,h2,h3 { color: #0f172a; line-height: 1.3; }
+  h2 {
+    font-size: 16pt; margin: 22px 0 10px;
+    padding-left: 10px; border-left: 5px solid #14b8a6;
+  }
+  h3 { font-size: 12pt; margin: 16px 0 6px; color: #0f766e; }
+  p { margin: 6px 0; }
+  a { color: #0d9488; }
+  .lead { color: #475569; font-size: 11pt; }
+  ul { margin: 6px 0; padding-left: 20px; }
+  li { margin: 3px 0; }
+
+  /* 封面 */
+  .cover {
+    height: 297mm; padding: 40mm 24mm 0;
+    background: linear-gradient(160deg, #0f172a 0%, #134e4a 55%, #0d9488 100%);
+    color: #fff; page-break-after: always; position: relative;
+  }
+  .cover .badge { display:inline-block; font-size:9pt; letter-spacing:2px;
+    border:1px solid rgba(255,255,255,.4); padding:4px 12px; border-radius:20px; color:#a7f3d0;}
+  .cover h1 { color:#fff; font-size: 34pt; margin: 26px 0 6px; }
+  .cover .sub { font-size: 14pt; color:#5eead4; }
+  .cover .desc { margin-top: 22px; font-size: 11pt; color:#cbd5e1; max-width: 130mm; line-height:1.8;}
+  .cover .foot { position:absolute; bottom: 26mm; left:24mm; right:24mm;
+    font-size: 9.5pt; color:#94a3b8; border-top:1px solid rgba(255,255,255,.15); padding-top:10px;}
+  .cover .pills { margin-top: 26px; }
+  .cover .pills span { display:inline-block; background:rgba(255,255,255,.1); color:#e2e8f0;
+    font-size:9pt; padding:5px 12px; border-radius:6px; margin:0 6px 8px 0;}
+
+  /* 概述条 */
+  .oneliner { background:#f0fdfa; border:1px solid #99f6e4; border-radius:10px;
+    padding:14px 18px; font-size:11pt; color:#115e59; margin:10px 0 4px;}
+
+  /* 模块卡片 */
+  .feature { page-break-inside: avoid; margin: 14px 0 6px; }
+  .feature .cap { font-size:9pt; color:#64748b; margin:4px 0 14px; }
+  figure { margin: 8px 0 4px; page-break-inside: avoid; }
+  figure img { width: 100%; border:1px solid #e2e8f0; border-radius:8px;
+    box-shadow: 0 2px 8px rgba(15,23,42,.10); }
+  figcaption { font-size:8.5pt; color:#64748b; text-align:center; margin-top:5px; }
+
+  /* 表格 */
+  table { width:100%; border-collapse: collapse; margin:10px 0 6px; font-size:9.5pt;
+    page-break-inside: avoid; }
+  th,td { border:1px solid #e2e8f0; padding:7px 9px; text-align:left; vertical-align: top;}
+  th { background:#0f766e; color:#fff; font-weight: normal; }
+  tr:nth-child(even) td { background:#f8fafc; }
+  .ok { color:#0d9488; font-weight:bold; }
+  .no { color:#cbd5e1; }
+  .hl { background:#fef9c3 !important; }
+
+  .note { font-size:9pt; color:#64748b; background:#f8fafc; border-left:3px solid #cbd5e1;
+    padding:8px 12px; margin:10px 0; }
+  .priv { font-size:8.5pt; color:#94a3b8; font-style: italic; }
+  .pagebreak { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<!-- ============ 封面 ============ -->
+<section class="cover">
+  <span class="badge">PRODUCT  ·  OVERVIEW</span>
+  <h1>考拉出海<br>国际短信网关系统</h1>
+  <div class="sub">Multi-tenant SMS Gateway Platform</div>
+  <div class="desc">
+    面向运营商 / 短信服务商 / 出海企业的多租户国际短信网关平台。<br>
+    SMPP 上游直连 · 多通道智能路由 · 客户自助门户 · Telegram 商务机器人 · 全链路计费风控审计。
+  </div>
+  <div class="pills">
+    <span>190+ 国家覆盖</span><span>多通道智能路由</span><span>多租户计费</span>
+    <span>API / 批量 / 定时</span><span>实时回执 DLR</span><span>企业级审计</span>
+  </div>
+  <div class="foot">商务沟通材料 · 最终以正式合同条款为准 &nbsp;|&nbsp; 文档含系统真实界面截图（隐私信息已打码）</div>
+</section>
+
+<!-- ============ 一、系统概述 ============ -->
+<h2>一、系统能做什么</h2>
+<div class="oneliner">
+  把上游 SMPP / 接口通道接进来，按客户、按价格、按国家智能分发短信；客户自助充值发送，平台全程计费、回执、风控、对账。
+</div>
+<p class="lead">下文每个核心模块均附系统真实运行界面截图。出于隐私保护，客户名称、手机号、账号、余额、价格、供应商等敏感字段已做模糊处理；规模类统计数字予以保留。</p>
+
+<!-- ============ 二、核心功能模块 ============ -->
+<h2>二、核心功能模块（管理控制台）</h2>
+<p class="lead" style="margin-top:-2px">以下为<b>运营方 / 平台管理员</b>视角的控制台界面。</p>
+
+<div class="feature">
+  <h3>1. 多租户客户体系</h3>
+  <p>主账户 + 子账户分权分额，API Key 多 Key 独立限额，灵活套餐资费，实时余额计费与预警，客户自助门户。支持短信 / 语音 / 数据多业务线统一管理。</p>
+  <figure><img src="screenshots/01-admin-accounts.png"><figcaption>客户账户管理 —— 统一管理全部业务客户、余额、通道、计费方式与归属销售</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>2. 多通道接入与智能路由</h3>
+  <p>内置 Go 语言 SMPP 网关（长连接 / 心跳保活 / 自动重连）；多供应商多通道并存；按国家、价格、优先级、客户分组自动选路；通道-客户专属绑定；SMPP / HTTP 双路实时回执（DLR）。</p>
+  <figure><img src="screenshots/02-admin-suppliers.png"><figcaption>供应商 / 上游资源报价 —— 多供应商、多业务线（短信 / 语音 / 数据）成本与覆盖管理</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>3. 短信发送引擎</h3>
+  <p>标准 HTTP API + API Key 鉴权；CSV 批量发送（自动分片 / 排队 / 限速，支持几十万级）；定时发送；平台与私有模板；短链追踪与点击统计；失败可沿原通道重发。</p>
+  <figure><img src="screenshots/03-admin-tasks.png"><figcaption>批量任务管理（管理端）—— 任务进度、成功率、通道分布全程可视</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>4. 数据报表与经营分析</h3>
+  <p>多维度（客户 / 员工 / 供应商 / 通道 / 国家）业务统计；发送量、收入、利润、成功率趋势分析；可导出。</p>
+  <figure><img src="screenshots/04-admin-bizreport.png"><figcaption>业务报表 —— 总量 / 收入 / 利润 / 成功率 KPI 与多维趋势图表</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>5. 数据号码增值业务</h3>
+  <p>号码库 / 私有号码库管理，商品、订单、销售体系，支持号码数据交易场景的全流程运营。</p>
+  <figure><img src="screenshots/05-admin-products.png"><figcaption>数据号码业务 —— 商品与号码资源管理</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>6. 工单系统</h3>
+  <p>客户咨询、故障申报、需求对接的工单化处理，支持附件与状态流转。</p>
+  <figure><img src="screenshots/06-admin-tickets.png"><figcaption>工单系统 —— 客户问题受理与处理跟踪</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>7. 知识库</h3>
+  <p>业务知识沉淀与检索，配合 Telegram 商务机器人提供智能问答支撑。</p>
+  <figure><img src="screenshots/07-admin-knowledge.png"><figcaption>业务知识库 —— 知识沉淀与机器人问答支撑</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>8. 员工与角色管理</h3>
+  <p>三级管理员角色（super_admin &gt; admin &gt; staff），细粒度权限控制，员工归属与客户分配。</p>
+  <figure><img src="screenshots/08-admin-staff.png"><figcaption>员工与角色 —— 分级权限与团队管理</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>9. 账户模板</h3>
+  <p>预设账户配置模板，一键套用通道、资费、限额，快速批量开户。</p>
+  <figure><img src="screenshots/09-admin-templates.png"><figcaption>账户模板 —— 标准化快速开户</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>10. 系统配置与安全审计</h3>
+  <p>33 项系统配置集中管理；敏感配置默认锁定、二次确认才可改；全量操作审计与配置变更时间线；登录日志与安全日志；JWT + API Key 双鉴权体系。</p>
+  <figure><img src="screenshots/10-admin-config.png"><figcaption>系统配置中心 —— 分组配置、敏感项保护与审计追溯</figcaption></figure>
+</div>
+
+<p style="margin-top:10px;color:#475569">此外系统还内置 <b>Telegram 商务机器人</b>（商务对接 / 客户咨询 / 发送辅助）与 <b>AI 辅助接口</b>，业务流程可在 IM 内闭环。</p>
+
+<!-- ============ 三、客户自助门户 ============ -->
+<h2 class="pagebreak">三、客户自助门户（终端客户视角）</h2>
+<p class="lead" style="margin-top:-2px">每个客户拥有独立的自助门户：自助发送、查记录、看统计、管理通道与余额，无需平台人工介入。下图以演示账号呈现。</p>
+
+<div class="feature">
+  <h3>1. 客户控制台</h3>
+  <p>今日 / 本周 / 本月发送量、账户余额、剩余条数、最近发送一目了然；快捷入口直达发送、记录、统计。</p>
+  <figure><img src="screenshots/20-cust-dashboard.png"><figcaption>客户控制台 —— 发送概览、账户信息与快捷操作</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>2. 短信发送</h3>
+  <p>在线编辑短信内容，支持变量（序号 / 号码 / 国家 / 日期 / 随机码 / 自定义）、模板、短链转换、智能生成；手动录号 / 数据商店购买 / 私有库载入多种取号方式；实时手机预览与计费预估。</p>
+  <figure><img src="screenshots/21-cust-send.png"><figcaption>短信发送 —— 内容编辑、变量与实时预览</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>3. 批量发送</h3>
+  <p>上传号码文件批量发送，任务自动分片、排队、限速，进度与结果实时跟踪。</p>
+  <figure><img src="screenshots/22-cust-batch.png"><figcaption>批量发送 —— 大批量任务管理</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>4. 发送记录与统计</h3>
+  <p>逐条发送记录（状态 / 通道 / 国家 / 回执 / 费用 / 时间）可检索可导出；多维发送统计与成功率分析。</p>
+  <figure><img src="screenshots/23-cust-records.png"><figcaption>发送记录 —— 全量明细、状态与回执追踪</figcaption></figure>
+  <figure><img src="screenshots/24-cust-stats.png"><figcaption>发送统计 —— 发送量与成功率多维分析</figcaption></figure>
+</div>
+
+<div class="feature">
+  <h3>5. 通道与价格</h3>
+  <p>客户可查看可用通道、协议、速率与价格，透明可控。</p>
+  <figure><img src="screenshots/26-cust-channels.png"><figcaption>通道管理 —— 通道、协议、速率与定价</figcaption></figure>
+</div>
+
+<!-- ============ 四、技术架构 ============ -->
+<h2 class="pagebreak">四、技术架构</h2>
+<table>
+  <tr><th style="width:26%">层</th><th>技术选型</th></tr>
+  <tr><td>后端 API</td><td>Python FastAPI（全异步）</td></tr>
+  <tr><td>任务调度</td><td>Celery + RabbitMQ（发送 / 回执 / 结果 / 数据 / Webhook 多队列）</td></tr>
+  <tr><td>前端</td><td>Vue 3 + Vite（中英双语、响应式、深浅色主题）</td></tr>
+  <tr><td>数据库</td><td>MySQL 8 + ProxySQL 连接池（发送日志按月分区，支持亿级）</td></tr>
+  <tr><td>缓存</td><td>Redis 7</td></tr>
+  <tr><td>SMPP 网关</td><td>Go 独立高并发长连接服务</td></tr>
+  <tr><td>部署</td><td>Docker Compose 一键编排，全容器化</td></tr>
+</table>
+<p class="note"><b>特点：</b>全容器化交付、水平可扩展、读写分离、消息队列削峰、关键表分区。单机即可起步，业务增长后平滑横向扩容。</p>
+
+<!-- ============ 五、购买方案 ============ -->
+<h2>五、三种购买方案对比</h2>
+<table>
+  <tr>
+    <th style="width:22%">维度</th>
+    <th>方案① 源码出售</th>
+    <th>方案② 部署 + 永久授权</th>
+    <th>方案③ 部署 + 1 年授权</th>
+  </tr>
+  <tr><td>交付物</td><td>全部源代码 + 部署文档</td><td>部署好的运行环境</td><td>部署好的运行环境</td></tr>
+  <tr><td>源代码</td><td class="ok">✓ 完整拥有，可二次开发</td><td class="no">✗ 不含源码</td><td class="no">✗ 不含源码</td></tr>
+  <tr><td>使用期限</td><td>永久</td><td>永久</td><td>1 年（可续费）</td></tr>
+  <tr><td>授权绑定</td><td>无锁，完全自主</td><td>绑定服务器 / 域名，永久有效</td><td>绑定服务器 / 域名，1 年到期</td></tr>
+  <tr><td>二次开发</td><td class="ok">✓ 自由</td><td>需由我方进行</td><td>需由我方进行</td></tr>
+  <tr><td>转售 / 分发</td><td>可协商（建议授权约束）</td><td class="no">✗ 不可</td><td class="no">✗ 不可</td></tr>
+  <tr><td>后续升级</td><td>自行维护（可选维保）</td><td>视协议（建议另签维保）</td><td>授权期内含安全更新</td></tr>
+  <tr><td>技术支持</td><td>交付期支持</td><td>可选维保</td><td>授权期内含支持</td></tr>
+  <tr><td>适合客户</td><td>有技术团队、要长期自主可控</td><td>长期使用、不碰代码</td><td>小成本试跑 / 短期项目</td></tr>
+  <tr class="hl"><td>价格定位</td><td>最高（买断核心资产）</td><td>中（永久使用权）</td><td>入门（年费门槛最低）</td></tr>
+</table>
+<p class="note">报价梯度建议：<b>源码 ≫ 永久授权 ＞ 1 年授权</b>。1 年授权形成持续年费收入；到期可补差价平滑升级为永久授权。</p>
+
+<!-- ============ 六、交付与服务 ============ -->
+<h2>六、交付与服务</h2>
+<ul>
+  <li><b>交付周期：</b>方案②③ 通常数个工作日内完成部署上线；方案① 含源码移交与一次部署指导。</li>
+  <li><b>环境要求：</b>1 台 Linux 服务器（建议 4C8G 起步，按量扩容），Docker 环境。</li>
+  <li><b>上游通道：</b>客户自备 SMPP 上游账号，或由我方协助对接。</li>
+  <li><b>培训：</b>提供管理后台与 API 使用培训文档。</li>
+</ul>
+
+<p class="priv">说明：本文档所有界面均为系统真实运行截图；客户名称、手机号、账号、余额、价格、供应商等隐私 / 敏感信息已做模糊处理。</p>
+
+</body>
+</html>

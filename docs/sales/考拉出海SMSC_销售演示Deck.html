@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  @page { size: 1280px 720px; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background:#0a0f1c; }
+  body {
+    font-family: "WenQuanYi Zen Hei", "PingFang SC", sans-serif;
+    color:#e2e8f0;
+  }
+  .slide {
+    width:1280px; height:720px; position:relative; overflow:hidden;
+    page-break-after: always; background:#0b1220;
+  }
+  .slide:last-child { page-break-after: auto; }
+
+  /* 通用网格背景 */
+  .grid-bg::before{
+    content:""; position:absolute; top:0; left:0; right:0; bottom:0;
+    background-image:linear-gradient(rgba(20,184,166,.05) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(20,184,166,.05) 1px,transparent 1px);
+    background-size:48px 48px; pointer-events:none;
+  }
+  /* weasyprint 不支持 filter:blur，用 radial-gradient 模拟柔光 */
+  .glow{ position:absolute; border-radius:50%; }
+  .glow.teal{ background:radial-gradient(circle, rgba(13,148,136,.55) 0%, rgba(13,148,136,.18) 45%, rgba(13,148,136,0) 72%); }
+  .glow.blue{ background:radial-gradient(circle, rgba(37,99,235,.45) 0%, rgba(30,58,138,.16) 45%, rgba(30,58,138,0) 72%); }
+
+  /* 页眉/页脚 */
+  .kicker{ font-size:15px; letter-spacing:6px; color:#5eead4; text-transform:uppercase; }
+  .pageno{ position:absolute; bottom:30px; right:46px; font-size:14px; color:#475569; letter-spacing:2px;}
+  .brandfoot{ position:absolute; bottom:30px; left:46px; font-size:14px; color:#475569; letter-spacing:1px;}
+  .brandfoot b{ color:#0d9488; }
+
+  /* 标题体系 */
+  h1{ font-size:62px; font-weight:800; color:#fff; line-height:1.15; letter-spacing:1px;}
+  h2{ font-size:42px; font-weight:800; color:#fff; line-height:1.2;}
+  .lead{ font-size:21px; color:#94a3b8; line-height:1.7;}
+  .accent{ color:#5eead4; }
+  .pad{ padding:50px 70px; }
+
+  /* 标题左侧竖条 */
+  .h2wrap{ display:flex; align-items:center; gap:18px; margin-bottom:8px;}
+  .h2wrap .bar{ width:7px; height:46px; background:linear-gradient(#2dd4bf,#0d9488); border-radius:4px;}
+
+  /* 卡片 */
+  .card{ background:rgba(255,255,255,.04); border:1px solid rgba(148,163,184,.18);
+    border-radius:18px; padding:26px 28px; }
+  .card .ic{ font-size:34px; }
+  .card h3{ font-size:23px; color:#fff; font-weight:700; margin:10px 0 8px;}
+  .card p{ font-size:16px; color:#94a3b8; line-height:1.6;}
+
+  /* 数据大字 */
+  .stat .num{ font-size:52px; font-weight:800; color:#2dd4bf; line-height:1;}
+  .stat .lab{ font-size:16px; color:#94a3b8; margin-top:10px;}
+
+  /* 截图框 */
+  .shot{ border-radius:14px; border:1px solid rgba(45,212,191,.3); overflow:hidden;
+    background:#0f172a;}
+  .shot img{ width:100%; display:block; max-height:300px; object-fit:cover; object-position:top; }
+  .shotcap{ font-size:14px; color:#64748b; margin-top:12px; }
+
+  .chip{ display:inline-block; background:rgba(13,148,136,.15); border:1px solid rgba(45,212,191,.35);
+    color:#5eead4; font-size:15px; padding:7px 16px; border-radius:30px; margin:0 8px 10px 0;}
+  .pill{ display:inline-block; background:rgba(255,255,255,.06); color:#cbd5e1;
+    font-size:15px; padding:8px 16px; border-radius:8px; margin:0 8px 10px 0;}
+</style>
+</head>
+<body>
+
+<!-- ============ 1. 封面 ============ -->
+<section class="slide grid-bg">
+  <div class="glow teal" style="width:520px;height:520px;top:-160px;right:-120px;"></div>
+  <div class="glow blue" style="width:480px;height:480px;bottom:-200px;left:-140px;"></div>
+  <div class="pad" style="position:relative;height:100%;display:flex;flex-direction:column;justify-content:center;">
+    <div class="kicker">PRIVATE&nbsp;·&nbsp;DEPLOYMENT&nbsp;·&nbsp;SMSC</div>
+    <h1 style="margin:26px 0 4px;">考拉出海</h1>
+    <h1 style="font-size:46px;color:#5eead4;">企业级国际短信网关系统</h1>
+    <div class="lead" style="margin-top:26px;max-width:760px;font-size:23px;">
+      一套<span class="accent">可私有化部署</span>的国际短信网关，<br>
+      把"发全球短信"这件事，<span class="accent">彻底变成你自己的核心资产</span>。
+    </div>
+    <div style="margin-top:40px;">
+      <span class="chip">🧠 智能路由</span>
+      <span class="chip">💴 三级计费</span>
+      <span class="chip">🌐 全球合规 Sender ID</span>
+      <span class="chip">🤖 Telegram 深度集成</span>
+      <span class="chip">📦 源码级交付</span>
+    </div>
+  </div>
+  <div class="brandfoot"><b>KAOLACH SMSC</b> · 商业解决方案演示</div>
+  <div class="pageno">01</div>
+</section>
+
+<!-- ============ 2. 痛点 ============ -->
+<section class="slide grid-bg pad">
+  <div class="h2wrap"><span class="bar"></span><div class="kicker">THE PROBLEM</div></div>
+  <h2>出海通信，你正在为<span class="accent">看不见的损耗</span>买单</h2>
+  <p class="lead" style="margin:18px 0 34px;">短信是全球触达成本最低、覆盖最广的通道——但"发短信"这件小事，藏着四个让人血压飙升的坑。</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:22px;">
+    <div class="card" style="border-color:rgba(239,68,68,.3);">
+      <div class="ic">💸</div><h3>价格是一笔糊涂账</h3>
+      <p>上游层层加价，国家与运营商差价巨大，月底对账永远对不平——到底亏在哪，没人说得清。</p>
+    </div>
+    <div class="card" style="border-color:rgba(239,68,68,.3);">
+      <div class="ic">📦</div><h3>送达率是一个黑盒</h3>
+      <p>钱花了，用户没收到。通道一抖动，验证码大面积超时，客诉爆炸，却查不到卡在哪一跳。</p>
+    </div>
+    <div class="card" style="border-color:rgba(239,68,68,.3);">
+      <div class="ic">🧮</div><h3>计费复杂到无法自助</h3>
+      <p>长短信怎么拆？多币种怎么结算？逐运营商定价靠 Excel 人肉算账，根本无法规模化。</p>
+    </div>
+    <div class="card" style="border-color:rgba(239,68,68,.3);">
+      <div class="ic">🧱</div><h3>对接门槛劝退一切</h3>
+      <p>SMPP 协议、长连接保活、DLR 回执、各国合规——每项都是墙，上线动辄数月。</p>
+    </div>
+  </div>
+  <p style="margin-top:30px;font-size:21px;color:#fff;font-weight:700;">
+    本质不是"短信"，而是<span class="accent">你没有一套真正属于自己的、透明可控的通信基础设施。</span>
+  </p>
+  <div class="brandfoot"><b>KAOLACH SMSC</b></div><div class="pageno">02</div>
+</section>
+
+<!-- ============ 3. 产品定位 ============ -->
+<section class="slide grid-bg">
+  <div class="glow teal" style="width:460px;height:460px;top:-160px;left:-120px;"></div>
+  <div class="pad" style="position:relative;height:100%;">
+    <div class="h2wrap"><span class="bar"></span><div class="kicker">THE SOLUTION</div></div>
+    <h2>把通信能力，<span class="accent">变成你自己的资产</span></h2>
+    <p class="lead" style="margin:22px 0 28px;max-width:900px;font-size:22px;">
+      考拉出海 SMSC <b style="color:#fff;">不是又一个"短信 API 中间商"</b>——
+      而是一套<span class="accent">可完整私有化部署、源码级交付</span>的企业级国际短信网关。
+    </p>
+    <div class="card" style="background:rgba(13,148,136,.1);border-color:rgba(45,212,191,.4);margin-bottom:30px;">
+      <p style="font-size:21px;color:#e2e8f0;line-height:1.7;">
+        <b class="accent">一句话定位：</b>把上游通道接进来，按客户 / 价格 / 国家智能分发，
+        客户自助充值发送，平台全程计费、回执、风控、对账——<b style="color:#fff;">一切，都在你自己的服务器里。</b>
+      </p>
+    </div>
+    <p style="font-size:20px;color:#94a3b8;">你买到的不是"用量"，是<span class="accent" style="font-weight:700;">一整条护城河</span>：</p>
+    <div style="margin-top:18px;">
+      <span class="pill">🔑 定价权</span><span class="pill">📊 数据权</span>
+      <span class="pill">🛡️ 合规掌控权</span><span class="pill">🧬 二次开发权</span>
+      <span class="pill">—— 全部回到自己手中</span>
+    </div>
+  </div>
+  <div class="brandfoot"><b>KAOLACH SMSC</b></div><div class="pageno">03</div>
+</section>
+
+<!-- ============ 4. 章节分隔：四大杀手锏 ============ -->
+<section class="slide grid-bg">
+  <div class="glow teal" style="width:560px;height:560px;top:50%;left:50%;transform:translate(-50%,-50%);opacity:.35;"></div>
+  <div class="pad" style="position:relative;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;">
+    <div class="kicker">CORE&nbsp;CAPABILITIES</div>
+    <h1 style="margin:24px 0 18px;font-size:56px;">四大核心杀手锏</h1>
+    <p class="lead" style="font-size:22px;max-width:720px;">智能路由 · 三级计费 · 全球合规 Sender ID · 业内首创 Telegram 深度集成</p>
+    <div style="margin-top:40px;display:flex;gap:18px;">
+      <span class="chip" style="font-size:18px;padding:12px 22px;">🧠 01</span>
+      <span class="chip" style="font-size:18px;padding:12px 22px;">💴 02</span>
+      <span class="chip" style="font-size:18px;padding:12px 22px;">🌐 03</span>
+      <span class="chip" style="font-size:18px;padding:12px 22px;">🤖 04</span>
+    </div>
+  </div>
+  <div class="brandfoot"><b>KAOLACH SMSC</b></div><div class="pageno">04</div>
+</section>
+
+<!-- ============ 5. 杀手锏1 智能路由（左文右图） ============ -->
+<section class="slide grid-bg pad">
+  <div class="h2wrap"><span class="bar"></span><div class="kicker">KILLER #01 · SMART ROUTING</div></div>
+  <h2 style="font-size:38px;">🧠 智能路由引擎 —— 让每条短信走最聪明的路</h2>
+  <div style="display:grid;grid-template-columns:1fr 1.15fr;gap:38px;margin-top:26px;align-items:center;">
+    <div>
+      <p class="lead" style="font-size:18px;margin-bottom:18px;">短信成本与质量，<span class="accent">70% 由"选路"决定</span>。四种策略一键切换、自动决策：</p>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div class="card" style="padding:16px 20px;"><h3 style="font-size:19px;margin:0;">⚡ 成本优先 <span style="color:#94a3b8;font-size:15px;font-weight:400;">→ 自动选最便宜合规通道，直接降本</span></h3></div>
+        <div class="card" style="padding:16px 20px;"><h3 style="font-size:19px;margin:0;">🎯 质量优先 <span style="color:#94a3b8;font-size:15px;font-weight:400;">→ 自动选送达率最高通道，拉高转化</span></h3></div>
+        <div class="card" style="padding:16px 20px;"><h3 style="font-size:19px;margin:0;">🥇 优先级优先 <span style="color:#94a3b8;font-size:15px;font-weight:400;">→ 核心通道优先跑量</span></h3></div>
+        <div class="card" style="padding:16px 20px;"><h3 style="font-size:19px;margin:0;">⚖️ 负载均衡 <span style="color:#94a3b8;font-size:15px;font-weight:400;">→ 多通道分摊，避免拥塞限速</span></h3></div>
+      </div>
+      <div class="card" style="margin-top:16px;background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.4);padding:16px 20px;">
+        <p style="color:#fcd34d;font-size:16px;">💰 <b>主通道异常？毫秒级自动容灾切换，用户无感、业务不断。</b>省下的每分通道费，都是净利润。</p>
+      </div>
+    </div>
+    <div>
+      <div class="shot"><img src="screenshots/02-admin-suppliers.png"></div>
+      <div class="shotcap">供应商 / 上游资源管理 —— 多供应商多通道并存，成本与覆盖一目了然（敏感信息已打码）</div>
+    </div>
+  </div>
+  <div class="brandfoot"><b>KAOLACH SMSC</b></div><div class="pageno">05</div>
+</section>
+
+<!-- ============ 6. 杀手锏2 三级计费 ============ -->
+<section class="slide grid-bg pad">
+  <div class="h2wrap"><span class="bar"></span><div class="kicker">KILLER #02 · BILLING</div></div>
+  <h2 style="font-size:38px;">💴 精细化三级计费 —— 把每一分钱算到底</h2>
+  <div style="display:grid;grid-template-columns:1.15fr 1fr;gap:38px;margin-top:26px;align-items:center;">
+    <div>
+      <div class="card" style="background:rgba(13,148,136,.12);border-color:rgba(45,212,191,.45);text-align:center;padding:22px;">
+        <p style="font-size:24px;color:#fff;font-weight:800;letter-spacing:1px;">通道 Channel × 国家 Country × 运营商 MCC/MNC</p>
+        <p style="color:#5eead4;font-size:15px;margin-top:8px;">行业领先的三维定价颗粒度</p>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px;margin-top:18px;">
+        <div class="card" style="padding:15px 20px;"><p style="font-size:16px;color:#cbd5e1;">✅ <b style="color:#fff;">三维定价</b>：精确到哪个通道、发往哪国、落在哪个运营商</p></div>
+        <div class="card" style="padding:15px 20px;"><p style="font-size:16px;color:#cbd5e1;">✅ <b style="color:#fff;">长短信自动拆分计费</b>：按段拆、按段计，不多收、不漏算</p></div>
+        <div class="card" style="padding:15px 20px;"><p style="font-size:16px;color:#cbd5e1;">✅ <b style="color:#fff;">多币种结算</b>：原生支持 USD / CNY / EUR</p></div>
+        <div class="card" style="padding:15px 20px;"><p style="font-size:16px;color:#cbd5e1;">✅ <b style="color:#fff;">多级套餐</b>：按客户/通道差异化，主账户+子账户分权分额</p></div>
+      </div>
+    </div>
+    <div>
+      <div class="card" style="background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.4);margin-bottom:18px;">
+        <p style="color:#fcd34d;font-size:18px;line-height:1.6;">💰 <b>对集成商，这套计费引擎就是"印钞机"</b>——基于成本价对下游差异化加价，稳赚通道差价，每笔都对得平、查得清。</p>
+      </div>
+      <div class="shot"><img src="screenshots/04-admin-bizreport.png"></div>
+      <div class="shotcap">业务报表 —— 发送量 / 收入 / 利润 / 成功率多维 KPI（敏感数字已打码）</div>
+    </div>
+  </div>
+  <div class="brandfoot"><b>KAOLACH SMSC</b></div><div class="pageno">06</div>
+</section>
+
+<!-- ============ 7. 杀手锏3 Sender ID 合规 ============ -->
+<section class="slide grid-bg pad">
+  <div class="h2wrap"><span class="bar"></span><div class="kicker">KILLER #03 · COMPLIANCE</div></div>
+  <h2 style="font-size:38px;">🌐 Sender ID 动态合规 —— 一套系统搞定全球</h2>
+  <p class="lead" style="margin:22px 0 26px;max-width:980px;font-size:19px;">
+    美国要字母 SID、印度要 DLT 注册，各国规则天差地别——<span class="accent">做错一步，整批被运营商拦截。</span>
+    考拉出海用 <b style="color:#fff;">4 级优先级智能匹配</b>把这道墙拆掉：
+  </p>
+  <div style="display:flex;align-items:stretch;gap:14px;margin-bottom:30px;">
+    <div class="card" style="flex:1;text-align:center;background:rgba(45,212,191,.12);border-color:rgba(45,212,191,.5);">
+      <div style="font-size:30px;">①</div><h3 style="font-size:20px;">用户指定</h3><p style="font-size:14px;">客户自定义 SID 最高优先</p>
+    </div>
+    <div style="display:flex;align-items:center;color:#2dd4bf;font-size:28px;">›</div>
+    <div class="card" style="flex:1;text-align:center;">
+      <div style="font-size:30px;">②</div><h3 style="font-size:20px;">专属</h3><p style="font-size:14px;">客户专属 Sender ID</p>
+    </div>
+    <div style="display:flex;align-items:center;color:#2dd4bf;font-size:28px;">›</div>
+    <div class="card" style="flex:1;text-align:center;">
+      <div style="font-size:30px;">③</div><h3 style="font-size:20px;">通用</h3><p style="font-size:14px;">平台通用合规 SID</p>
+    </div>
+    <div style="display:flex;align-items:center;color:#2dd4bf;font-size:28px;">›</div>
+    <div class="card" style="flex:1;text-align:center;">
+      <div style="font-size:30px;">④</div><h3 style="font-size:20px;">系统默认</h3><p style="font-size:14px;">兜底默认值</p>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:22px;">
+    <div class="card"><p style="font-size:17px;color:#cbd5e1;">🇺🇸 <b style="color:#fff;">完美适配美国字母 SID</b>，符合北美运营商要求</p></div>
+    <div class="card"><p style="font-size:17px;color:#cbd5e1;">🇮🇳 <b style="color:#fff;">适配印度 DLT</b> 等全球各国合规政策</p></div>
+  </div>
+  <div class="card" style="margin-top:22px;background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.4);">
+    <p style="color:#6ee7b7;font-size:18px;">✅ 别人还在为单个国家合规焦头烂额，你已一套系统覆盖全球——<b style="color:#fff;">合规，从此是你的竞争优势，而不是拦路虎。</b></p>
+  </div>
+  <div class="brandfoot"><b>KAOLACH SMSC</b></div><div class="pageno">07</div>
+</section>
+
+<!-- ============ 8. 杀手锏4 Telegram Bot ============ -->
+<section class="slide grid-bg pad">
+  <div class="h2wrap"><span class="bar"></span><div class="kicker">KILLER #04 · TELEGRAM</div></div>
+  <h2 style="font-size:38px;">🤖 业内首创 Telegram Bot 深度集成</h2>
+  <p class="lead" style="margin:22px 0 30px;max-width:980px;font-size:19px;">
+    打破"短信平台必须用 Web 后台"的枷锁——<b style="color:#fff;">一个 TG 机器人，业务全流程在聊天框里闭环。</b>
+  </p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+    <div class="card" style="padding:20px 24px;"><div class="ic">🚀</div><h3>零门槛注册开户</h3><p>TG 里即可完成账号注册，无需打开任何网页。</p></div>
+    <div class="card" style="padding:20px 24px;"><div class="ic">💰</div><h3>实时余额查询</h3><p>随时一句话查余额、查流水，账目随身。</p></div>
+    <div class="card" style="padding:20px 24px;"><div class="ic">📩</div><h3>单发 / 批量发送</h3><p>在聊天框里直接发短信、跑批量任务。</p></div>
+    <div class="card" style="padding:20px 24px;"><div class="ic">🔔</div><h3>实时回执推送</h3><p>发送结果、DLR 回执主动推送到 TG。</p></div>
+  </div>
+  <div class="card" style="margin-top:18px;background:rgba(59,130,246,.12);border-color:rgba(96,165,250,.4);padding:18px 24px;">
+    <p style="color:#93c5fd;font-size:18px;">📱 <b>你的销售、你的客户，再也不用守着电脑。</b>手机上、聊天里随时完成发送与对账——这是拿下客户的"惊艳一击"。</p>
+  </div>
+  <div class="brandfoot"><b>KAOLACH SMSC</b></div><div class="pageno">08</div>
+</section>
+
+<!-- ============ 9. 特有差异化功能 ============ -->
+<section class="slide grid-bg pad">
+  <div class="h2wrap"><span class="bar"></span><div class="kicker">SIGNATURE FEATURES</div></div>
+  <h2 style="font-size:36px;">不止于"能发"——把<span class="accent">合规、转化、私域</span>一并交付</h2>
+  <p class="lead" style="margin:14px 0 22px;max-width:1000px;font-size:17px;">
+    通用网关只解决"把短信发出去"。考拉出海把出海运营真正头疼的环节，<b style="color:#fff;">做成了开箱即用的内建能力。</b>
+  </p>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;">
+
+    <div class="card" style="border-color:rgba(45,212,191,.3);padding:22px 24px;">
+      <div class="ic">🛡️</div>
+      <h3 style="margin:8px 0 6px;">违禁词检测 · 发送前拦截</h3>
+      <p style="line-height:1.6;font-size:15px;">
+        <b style="color:#fff;">全局 + 通道 + 国家路由</b>三级词表按优先级合并，发送前实时校验，命中立即拦截。Redis 缓存零延迟。
+      </p>
+      <p style="font-size:14px;color:#5eead4;margin-top:10px;">→ 从源头规避运营商罚单与封号</p>
+    </div>
+
+    <div class="card" style="border-color:rgba(45,212,191,.3);padding:22px 24px;">
+      <div class="ic">🔗</div>
+      <h3 style="margin:8px 0 6px;">短链转换 · 点击可追踪</h3>
+      <p style="line-height:1.6;font-size:15px;">
+        文案内链接<b style="color:#fff;">自动识别替换</b>为短链；<b style="color:#fff;">专属短链域名 + 自定义 SSL 证书</b>；点击计数、IP/UA 记录、<b style="color:#fff;">Bot 识别</b>。
+      </p>
+      <p style="font-size:14px;color:#5eead4;margin-top:10px;">→ 营销短信也能像广告一样看转化</p>
+    </div>
+
+    <div class="card" style="border-color:rgba(45,212,191,.3);padding:22px 24px;">
+      <div class="ic">🗂️</div>
+      <h3 style="margin:8px 0 6px;">私有库发送 · 私域沉淀</h3>
+      <p style="line-height:1.6;font-size:15px;">
+        客户专属<b style="color:#fff;">私有号码库</b>，批量导入、统一管理；发送时直接<b style="color:#fff;">从私有库取号</b>，号码资产沉淀在自己手里。
+      </p>
+      <p style="font-size:14px;color:#5eead4;margin-top:10px;">→ 复购客群可反复触达，越用越值钱</p>
+    </div>
+
+  </div>
+  <div class="card" style="background:rgba(13,148,136,.1);border-color:rgba(45,212,191,.4);margin-top:22px;padding:20px 26px;">
+    <p style="color:#6ee7b7;font-size:18px;line-height:1.6;">
+      💡 这三件事，<b style="color:#fff;">竞品要么没有、要么靠人肉做</b>。在考拉出海里，它们是<b style="color:#fff;">发送链路上的标准动作</b>——合规自动卡、链接自动转、号码自动沉淀，全部在一个发送页里完成。
+    </p>
+  </div>
+  <div class="brandfoot"><b>KAOLACH SMSC</b></div><div class="pageno">09</div>
+</section>
+
+<!-- ============ 10. 技术架构 + 性能 ============ -->
+<section class="slide grid-bg pad">
+  <div class="h2wrap"><span class="bar"></span><div class="kicker">ENGINEERING & PERFORMANCE</div></div>
+  <h2 style="font-size:38px;">硬核技术与性能保障 —— 用数据说话</h2>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin:28px 0;">
+    <div class="card stat" style="text-align:center;"><div class="num">10,000+</div><div class="lab">TPS 高并发处理</div></div>
+    <div class="card stat" style="text-align:center;"><div class="num">&lt;200ms</div><div class="lab">API 响应 P95</div></div>
+    <div class="card stat" style="text-align:center;"><div class="num">99.9%</div><div class="lab">系统可用性</div></div>
+    <div class="card stat" style="text-align:center;"><div class="num">95%+</div><div class="lab">短信送达率</div></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:22px;">
+    <div class="card">
+      <h3 style="margin-bottom:14px;">现代化技术栈</h3>
+      <p style="font-size:16px;line-height:2;color:#cbd5e1;">
+        后端 <b style="color:#fff;">Python FastAPI</b>（全异步）<br>
+        网关 <b style="color:#fff;">Go SMPP</b>（长连接 / 保活 / 重连）<br>
+        前端 <b style="color:#fff;">Vue 3 + Vite</b>（中英双语）<br>
+        队列 <b style="color:#fff;">RabbitMQ + Celery</b>（多队列削峰）<br>
+        存储 <b style="color:#fff;">MySQL 8 + ProxySQL</b>（按月分区·亿级）+ <b style="color:#fff;">Redis 7</b><br>
+        部署 <b style="color:#fff;">Docker / K8s</b> 全容器化
+      </p>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:14px;">为什么扛得住 & 安全内建</h3>
+      <p style="font-size:16px;line-height:1.8;color:#cbd5e1;">
+        全异步 + 队列削峰 + 关键表分区 + 读写分离 + Go 高性能长连接。单机起步，平滑横向扩容。
+      </p>
+      <p style="font-size:15px;line-height:1.8;color:#94a3b8;margin-top:12px;">
+        🔒 JWT + API Key 双鉴权 · 全量操作审计 · 配置变更时间线 · 敏感配置默认锁定二次确认 · 登录与安全日志。<b style="color:#5eead4;">每次改动可追溯、可问责。</b>
+      </p>
+    </div>
+  </div>
+  <p style="margin-top:18px;font-size:13px;color:#475569;">* 性能指标为系统架构设计目标，实际表现受上游通道质量、网络环境与部署规格影响。</p>
+  <div class="brandfoot"><b>KAOLACH SMSC</b></div><div class="pageno">10</div>
+</section>
+
+<!-- ============ 11. 资产级交付 ============ -->
+<section class="slide grid-bg pad">
+  <div class="h2wrap"><span class="bar"></span><div class="kicker">ASSET-GRADE DELIVERY</div></div>
+  <h2 style="font-size:38px;">资产级交付清单 —— 零障碍接手</h2>
+  <p class="lead" style="margin:20px 0 28px;max-width:980px;font-size:19px;">
+    很多"系统"卖的是黑盒，出问题只能求原厂。<b style="color:#fff;">考拉出海交付的，是一份能让你团队独立掌控的完整技术资产。</b>
+  </p>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:22px;">
+    <div class="card"><div class="ic">💻</div><h3>完整前后端源码</h3><p>FastAPI 后端 + Vue3 前端 + Go SMPP 网关，全部可读、可改、可二次开发。</p></div>
+    <div class="card"><div class="ic">🐳</div><h3>全套部署脚本</h3><p>Docker Compose / K8s 编排文件，一键拉起，环境一致。</p></div>
+    <div class="card"><div class="ic">📚</div><h3>10 万字 · 9 份文档</h3><p>PRD、架构、数据字典、API、前后端方案、部署、TG 集成、路由计费…… 交接零障碍。</p></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1.25fr 1fr;gap:30px;margin-top:22px;align-items:center;">
+    <div>
+      <div class="card" style="background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.4);">
+        <p style="color:#6ee7b7;font-size:19px;line-height:1.6;">🎁 你不再被任何供应商绑架。团队能看懂、能改、能扩展。<b style="color:#fff;">无论自用还是转售给下游客户，主动权 100% 在你手里。</b></p>
+      </div>
+    </div>
+    <div>
+      <div class="shot"><img src="screenshots/10-admin-config.png" style="max-height:210px;"></div>
+      <div class="shotcap">系统配置中心 —— 分组配置、敏感项保护与审计追溯</div>
+    </div>
+  </div>
+  <div class="brandfoot"><b>KAOLACH SMSC</b></div><div class="pageno">11</div>
+</section>
+
+<!-- ============ 12. 目标客户 + 购买方案 ============ -->
+<section class="slide grid-bg pad">
+  <div class="h2wrap"><span class="bar"></span><div class="kicker">WHO IT'S FOR · HOW TO BUY</div></div>
+  <h2 style="font-size:38px;">谁最该拥有它 & 三种购买方案</h2>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:24px 0 26px;">
+    <div class="card" style="padding:18px 22px;"><p style="font-size:17px;color:#cbd5e1;">🌍 <b style="color:#fff;">出海互联网企业</b> —— 全球验证码/通知，送达与合规双保障</p></div>
+    <div class="card" style="padding:18px 22px;"><p style="font-size:17px;color:#cbd5e1;">🛒 <b style="color:#fff;">跨境电商平台</b> —— 订单/物流/大促批量群发，降本增效</p></div>
+    <div class="card" style="padding:18px 22px;"><p style="font-size:17px;color:#cbd5e1;">🏦 <b style="color:#fff;">金融科技公司</b> —— 高可用+高送达+全审计，满足强合规</p></div>
+    <div class="card" style="padding:18px 22px;"><p style="font-size:17px;color:#cbd5e1;">🔧 <b style="color:#fff;">短信/营销集成商</b> —— 现成通道调度+三级计费，加价变现</p></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;">
+    <div class="card" style="text-align:center;">
+      <div class="kicker" style="font-size:13px;">方案 ①</div>
+      <h3 style="font-size:22px;margin:10px 0;">源码买断</h3>
+      <p style="font-size:15px;">全部源代码 + 部署文档，永久自主、自由二次开发、可协商转售。<br><b class="accent">最高 · 买断核心资产</b></p>
+    </div>
+    <div class="card" style="text-align:center;background:rgba(13,148,136,.12);border-color:rgba(45,212,191,.45);">
+      <div class="kicker" style="font-size:13px;color:#5eead4;">方案 ②</div>
+      <h3 style="font-size:22px;margin:10px 0;">永久授权部署</h3>
+      <p style="font-size:15px;">部署好的运行环境，绑定服务器/域名，永久有效。<br><b class="accent">中 · 永久使用权</b></p>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div class="kicker" style="font-size:13px;">方案 ③</div>
+      <h3 style="font-size:22px;margin:10px 0;">1 年授权部署</h3>
+      <p style="font-size:15px;">部署好的运行环境，授权期内含支持与安全更新，可续费。<br><b class="accent">入门 · 门槛最低</b></p>
+    </div>
+  </div>
+  <div class="brandfoot"><b>KAOLACH SMSC</b></div><div class="pageno">12</div>
+</section>
+
+<!-- ============ 13. CTA 结尾 ============ -->
+<section class="slide grid-bg">
+  <div class="glow teal" style="width:620px;height:620px;top:-180px;right:-160px;"></div>
+  <div class="glow blue" style="width:520px;height:520px;bottom:-220px;left:-160px;"></div>
+  <div class="pad" style="position:relative;height:100%;display:flex;flex-direction:column;justify-content:center;">
+    <div class="kicker">LET'S TALK</div>
+    <h1 style="margin:22px 0 16px;font-size:52px;">让我们用一场演示，<span class="accent">证明给你看</span></h1>
+    <p class="lead" style="font-size:21px;max-width:880px;">
+      通信基础设施的主动权，越早拿回越值钱。<br>每多依赖一天第三方黑盒，你就多付一天<span class="accent">看不见的损耗</span>。
+    </p>
+    <div style="display:flex;gap:18px;margin:36px 0 30px;">
+      <div class="card" style="flex:1;"><div class="ic">📞</div><h3 style="font-size:19px;">预约 30 分钟演示</h3><p>看智能路由与 TG Bot 实跑</p></div>
+      <div class="card" style="flex:1;"><div class="ic">📄</div><h3 style="font-size:19px;">索取文档与报价</h3><p>完整技术文档 + 购买方案</p></div>
+      <div class="card" style="flex:1;"><div class="ic">🚀</div><h3 style="font-size:19px;">申请试部署</h3><p>用你自己的上游跑真实流量</p></div>
+    </div>
+    <div class="card" style="background:rgba(13,148,136,.14);border-color:rgba(45,212,191,.5);">
+      <p style="font-size:20px;color:#fff;line-height:1.9;">
+        <b class="accent">立即联系我们</b>
+        Telegram <b style="color:#fff;">@____________</b>　·
+        微信 <b style="color:#fff;">____________</b>　·
+        邮箱 <b style="color:#fff;">____________</b>
+      </p>
+    </div>
+    <p style="margin-top:24px;font-size:18px;color:#5eead4;">考拉出海 · 企业级国际短信网关系统（SMSC）—— 把全球通信能力，变成你自己的核心资产。</p>
+  </div>
+  <div class="pageno" style="color:#5eead4;">13</div>
+</section>
+
+</body>
+</html>

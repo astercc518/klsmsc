@@ -307,6 +307,9 @@ services:
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
       SMPP_PROBE_TOKEN: ${SMPP_PROBE_TOKEN:-}
       DLR_SENT_TIMEOUT_HOURS: ${DLR_SENT_TIMEOUT_HOURS:-72}
+      # unmatched DLR(ch82 dest='' 洪水)别空等 10×0.2s=1.8s/条,砍到 3×0.1s=0.3s,余下交 dlr_buffer flush 接力
+      WORKER_DLR_MATCH_RETRY_ATTEMPTS: ${WORKER_DLR_MATCH_RETRY_ATTEMPTS:-3}
+      WORKER_DLR_MATCH_RETRY_SLEEP_SEC: ${WORKER_DLR_MATCH_RETRY_SLEEP_SEC:-0.1}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
@@ -317,7 +320,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${DLR_WORKER_CONCURRENCY:-8} --max-tasks-per-child=${DLR_WORKER_MAX_TASKS_PER_CHILD:-2000} -Q sms_dlr
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${DLR_WORKER_CONCURRENCY:-16} --max-tasks-per-child=${DLR_WORKER_MAX_TASKS_PER_CHILD:-2000} -Q sms_dlr
     restart: unless-stopped
     logging: *default-logging
     networks:
