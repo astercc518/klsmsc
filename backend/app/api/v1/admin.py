@@ -1865,6 +1865,10 @@ async def delete_account_admin(
     account.is_deleted = True
     account.tg_id = None
     account.tg_username = None
+    # 清空 webhook 配置：残留的 webhook_url 会被 _account_has_webhook 当成有效配置，
+    # 导致已删除客户的回执仍被推送到其端点（数据/隐私隐患）。
+    account.webhook_url = None
+    account.webhook_secret = None
     # 解除 TG 业务助手绑定，避免 telegram_bindings 仍指向已删除账户
     await db.execute(
         delete(TelegramBinding).where(TelegramBinding.account_id == account_id)
@@ -5416,6 +5420,9 @@ async def delete_business_account(
     if not account:
         raise HTTPException(status_code=404, detail="账户不存在")
     account.is_deleted = True
+    # 清空 webhook 配置：避免残留 webhook_url 仍被当成有效配置触发回执推送（同 delete_account_admin）。
+    account.webhook_url = None
+    account.webhook_secret = None
     await db.commit()
     return {"success": True, "message": "已删除"}
 

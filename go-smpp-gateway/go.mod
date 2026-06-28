@@ -19,3 +19,7 @@ require (
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	golang.org/x/text v0.14.0 // indirect
 )
+
+// [KAOLACH PATCH] 用本地 fork 替换 gosmpp：把发送端缓冲 1→256，修复高峰期 deliver_sm_resp
+// 被出站流量堵死导致上游对 DLR 4 倍重传（仅改 transmittable.go 一处，其余与 v0.2.1 一致）。
+replace github.com/linxGnu/gosmpp => ./third_party/gosmpp

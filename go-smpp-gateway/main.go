@@ -23,6 +23,11 @@ func main() {
     // 1c. 批次取消运行期标记（Redis）：消费 sms_send_smpp 单条短信前查询，跳过已取消批次
     InitBatchCancel()
 
+    // 1d. 出站每通道每日计数器（Redis，按 China 日期累加）：submit_sm/ROK/88限流/88重投/其它失败。
+    //     用于和上游"提交量"对账——重投会让 submit 数 > 客户消息数(按提交计费即多计成本)。
+    //     跨重启可查，根治"上游报数对不上又查不了"。
+    InitChannelStats()
+
     // 2. Initialize SMPP Manager
     InitSMPPManager()
     go func() {
@@ -41,6 +46,11 @@ func main() {
         defer consumerWg.Done()
         RunConsumerForever(rootCtx, rabbitURL)
     }()
+
+    // 3a. 每通道独立队列消费者(SMPP_PER_CHANNEL_QUEUES=1 启用)：消除单一 sms_send_smpp
+    //     FIFO 的 head-of-line 阻塞，使被限流的慢通道不再饿死其它通道。未启用时为 no-op，
+    //     legacy 单队列消费者(上面 RunConsumerForever)始终运行。
+    StartPerChannelSupervisor(rootCtx, rabbitURL)
 
     // 3c. SMPP 入站服务器（客户接入）
     inboundListen := os.Getenv("INBOUND_LISTEN")

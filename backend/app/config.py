@@ -219,8 +219,23 @@ class Settings(BaseSettings):
     # SMPP 窗口化批量发送：一次持锁内连续发出的 submit_sm 条数（建议 10-50）
     SMPP_WINDOW_SIZE: int = Field(default=50, ge=1, le=100)
 
+    # 每通道独立发送队列：True 时 SMPP 整包/单条按 channel_id 投到 sms_send_smpp.{id}，
+    # Go 网关每通道独立 consumer 消费，消除单一 sms_send_smpp FIFO 的 head-of-line 阻塞
+    # （一个被上游限流的慢通道不再饿死其它通道）。默认 False，行为与改造前一致。
+    # 灰度：先在 smpp-gateway 容器设 SMPP_PER_CHANNEL_QUEUES=1（消费者就绪），再在 api/worker
+    # 容器设同名 env（生产端开始投递每通道队列）。queue.py / batch_inspector.py 直接读同名 env。
+    SMPP_PER_CHANNEL_QUEUES: bool = False
+
     # sent 状态超过此时长未收到终态 DLR 则标记为 expired（快通道可改短；慢通道可设 72～168；最大 720h≈30 天）
     DLR_SENT_TIMEOUT_HOURS: int = Field(default=72, ge=4, le=720)
+
+    # DLR 归属过滤（Python 侧，与 Go 网关 DLR_OWNERSHIP_FILTER 同名同义）：
+    # =True 时，未匹配到 sms_log 的 DLR 在写入重试缓冲前，用网关写的归属键
+    # dlr_owned:{channel_id}:{upstream_id} 复核——键不存在=共用上游账号的「外来回执」，
+    # 直接丢弃不进缓冲，避免网关 IsOwned fail-open 窗口漏进来的外来回执 churn 满 1h 缓冲、
+    # 放大成 sms_dlr 积压（2026-06 ch64/ch82 事故）。Redis 异常时 fail-open（仍缓冲，不误丢自家）。
+    # 默认 False：行为与改造前一致；启用前须确认网关 DLR_OWNERSHIP_FILTER 已开且归属键已回填。
+    DLR_OWNERSHIP_FILTER: bool = False
 
     # 定时拉取上游 DLR 报告的 HTTP 超时（秒）
     DLR_PULL_HTTP_TIMEOUT_SECONDS: float = Field(default=60.0, ge=10.0, le=300.0)

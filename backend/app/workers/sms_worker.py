@@ -67,7 +67,10 @@ async def _account_has_webhook(db, account_id) -> bool:
             from app.modules.common.account import Account
             rows = await db.execute(
                 select(Account.id).where(
-                    Account.webhook_url.isnot(None), Account.webhook_url != ""
+                    Account.webhook_url.isnot(None), Account.webhook_url != "",
+                    # 排除软删除/已关闭账户：删除客户残留的 webhook_url 不应再触发回执推送。
+                    Account.is_deleted == False,
+                    Account.status != "closed",
                 )
             )
             _WEBHOOK_ACCT_CACHE["ids"] = frozenset(r[0] for r in rows.all())
@@ -76,6 +79,40 @@ async def _account_has_webhook(db, account_id) -> bool:
             logger.warning(f"刷新 webhook 账户缓存失败，本次放行入队: {e}")
             return True
     return account_id in _WEBHOOK_ACCT_CACHE["ids"]
+
+
+# 注水账户缓存（仿 _account_has_webhook）：仅配置了 enabled 注水任务的账户才入队
+# dlr_water_followup，避免每条 delivered 都派生一个「进去查配置即空转」的注水任务。
+_WATER_ACCT_CACHE: dict = {"ids": frozenset(), "exp": 0.0}
+_WATER_ACCT_TTL = 60.0
+
+
+async def _account_has_water_config(db, account_id) -> bool:
+    """账户是否配置了 enabled 的注水任务（带 60s 缓存）。查询失败时返回 True（fail-open，
+    与 webhook 同策略：宁可多入队由任务内兜底，也不因缓存故障漏掉真实注水）。"""
+    if not account_id:
+        return False
+    now = time.monotonic()
+    if now >= _WATER_ACCT_CACHE["exp"]:
+        try:
+            from app.modules.water.models import WaterTaskConfig
+            from app.modules.common.account import Account
+            rows = await db.execute(
+                select(WaterTaskConfig.account_id)
+                .join(Account, Account.id == WaterTaskConfig.account_id)
+                .where(
+                    WaterTaskConfig.enabled == True,
+                    # 排除软删除/已关闭账户的残留注水配置。
+                    Account.is_deleted == False,
+                    Account.status != "closed",
+                )
+            )
+            _WATER_ACCT_CACHE["ids"] = frozenset(r[0] for r in rows.all())
+            _WATER_ACCT_CACHE["exp"] = now + _WATER_ACCT_TTL
+        except Exception as e:
+            logger.warning(f"刷新注水账户缓存失败，本次放行入队: {e}")
+            return True
+    return account_id in _WATER_ACCT_CACHE["ids"]
 
 
 
@@ -1061,6 +1098,24 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
 
             # 批次进度由 sync_processing_batch_progress_task 等定时汇总，避免海量 DLR 并发抢锁 sms_batches。
 
+            # —— 副作用幂等去重 ——
+            # 上游对同一条回执常重传多次（实测 TS_066 每条 DLR 被重传约 4 次）。状态更新本身幂等
+            # （already_correct 跳过），但下面三个副作用（SMPP 入站转发 / webhook / 注水）原先对每个
+            # 重复回执都重复派发，导致注水点击/注册被刷 4 倍、代理商收 4 次重复回执。这里用 Redis
+            # SETNX 按 (message_id, 终态) 去重：首个回执派发，重传的后续直接跳过。
+            try:
+                _fx_ttl = int(os.getenv("DLR_FX_DEDUP_TTL_SEC", "7200"))
+                _fx_rds = _redis_sync_client()
+                _fx_first = bool(_fx_rds.set(
+                    f"dlr_fx:{sms_log.message_id}:{new_status}", 1, nx=True, ex=_fx_ttl
+                ))
+            except Exception as _fx_err:
+                _fx_first = True  # fail-open：去重故障时放行派发，宁可偶发重复也不漏
+                logger.warning(f"DLR 副作用去重检查失败，放行派发: {_fx_err}")
+            if not _fx_first:
+                logger.debug(f"重复 DLR 副作用已派发过，跳过: {sms_log.message_id} -> {new_status}")
+                return True
+
             # SMPP 入站账户：将 DLR 转发给在线客户端（或落库等待补发）
             try:
                 from app.modules.common.account import Account
@@ -1104,17 +1159,22 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
 
             if new_status == "delivered" and sms_log.account_id:
                 try:
-                    celery_app.send_task(
-                        "dlr_water_followup_task",
-                        args=[
-                            sms_log.id,
-                            sms_log.message or "",
-                            sms_log.country_code or "",
-                            sms_log.account_id,
-                            sms_log.channel_id or 0,
-                        ],
-                        queue="data_tasks",
-                    )
+                    from app.utils.url_extractor import extract_urls as _extract_urls
+                    # 入队预检（仿 webhook）：仅当消息含 URL 且账户配了启用的注水任务才入队，
+                    # 避免每条 delivered 都派生一个「进去查配置即空转」的注水任务。
+                    if (_extract_urls(sms_log.message or "")
+                            and await _account_has_water_config(db, sms_log.account_id)):
+                        celery_app.send_task(
+                            "dlr_water_followup_task",
+                            args=[
+                                sms_log.id,
+                                sms_log.message or "",
+                                sms_log.country_code or "",
+                                sms_log.account_id,
+                                sms_log.channel_id or 0,
+                            ],
+                            queue="data_tasks",
+                        )
                 except Exception as e:
                     logger.warning(f"注水任务入队失败: {e}")
 

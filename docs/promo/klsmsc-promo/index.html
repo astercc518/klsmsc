@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=1080, height=1920" />
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+<style>
+@font-face{font-family:"KL";src:url("assets/fonts/KLSans-Regular.woff2") format("woff2");font-weight:400;font-display:block}
+@font-face{font-family:"KL";src:url("assets/fonts/KLSans-Bold.woff2") format("woff2");font-weight:800;font-display:block}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:1080px;height:1920px;overflow:hidden;background:#070d22}
+body{font-family:"KL",sans-serif;color:#fff}
+.scene{position:absolute;inset:0;width:1080px;height:1920px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:90px;opacity:0}
+.teal{color:#00C2A8}.blue{color:#3E8BFF}.muted{color:#8aa0c8}.red{color:#ff5b6e}
+.kicker{font-size:38px;letter-spacing:6px;color:#00C2A8;font-weight:800;margin-bottom:30px}
+.big{font-size:100px;font-weight:800;line-height:1.25;text-align:center}
+.sub{font-size:46px;color:#9fb3d8;text-align:center;line-height:1.5;margin-top:30px}
+.stamp{margin-top:60px;font-size:64px;font-weight:800;border:6px solid #00C2A8;color:#00C2A8;padding:18px 46px;border-radius:20px;transform:rotate(-4deg)}
+.panel{width:840px;background:#0e1838;border:2px solid #1f2f5c;border-radius:28px;padding:46px;box-shadow:0 30px 80px rgba(0,0,0,.5)}
+.row{display:flex;align-items:center;justify-content:space-between;font-size:40px;padding:24px 30px;border-radius:16px;margin:14px 0;background:#0a132e}
+.tag{font-size:32px;font-weight:800;padding:8px 24px;border-radius:999px}
+.tag.fail{background:rgba(255,91,110,.16);color:#ff5b6e}
+.tag.ok{background:rgba(0,194,168,.16);color:#00C2A8}
+.costline{display:flex;justify-content:space-between;align-items:baseline;margin-top:34px}
+.ratebar{height:26px;width:100%;background:#0a132e;border-radius:999px;overflow:hidden;margin-top:30px}
+.ratefill{height:100%;width:0;background:linear-gradient(90deg,#00C2A8,#3E8BFF);border-radius:999px}
+.bignum{font-size:120px;font-weight:800}
+.globe{width:520px;height:520px;border-radius:50%;border:3px solid rgba(62,139,255,.5);position:relative;box-shadow:0 0 120px rgba(62,139,255,.35) inset,0 0 80px rgba(0,194,168,.25)}
+.globe::before,.globe::after{content:"";position:absolute;inset:0;border-radius:50%;border:2px solid rgba(0,194,168,.35)}
+.globe::before{transform:scaleX(.45)}.globe::after{transform:scaleY(.45)}
+.dot{position:absolute;width:18px;height:18px;border-radius:50%;background:#00C2A8;box-shadow:0 0 24px #00C2A8}
+.map{position:relative;width:900px;height:620px}
+.hub{position:absolute;left:50%;top:50%;width:34px;height:34px;border-radius:50%;background:#3E8BFF;box-shadow:0 0 40px #3E8BFF;transform:translate(-50%,-50%);z-index:3}
+.node{position:absolute;display:flex;flex-direction:column;align-items:center;gap:8px;opacity:0}
+.node i{width:20px;height:20px;border-radius:50%;background:#00C2A8;box-shadow:0 0 22px #00C2A8;display:block}
+.node span{font-size:30px;color:#cfe0ff}
+.line{position:absolute;left:50%;top:50%;height:3px;background:linear-gradient(90deg,rgba(62,139,255,.1),#00C2A8);transform-origin:left center;opacity:0}
+.phone{width:520px;height:980px;border-radius:60px;background:#0e1838;border:8px solid #24345f;padding:40px 34px;display:flex;flex-direction:column;gap:26px;box-shadow:0 40px 100px rgba(0,0,0,.6)}
+.bubble{max-width:80%;font-size:36px;padding:26px 30px;border-radius:26px;line-height:1.4;opacity:0}
+.bubble.me{align-self:flex-end;background:#2b6cff;color:#fff;border-bottom-right-radius:8px}
+.bubble.bot{align-self:flex-start;background:#1c2a52;color:#dbe6ff;border-bottom-left-radius:8px}
+.ok-card{align-self:center;font-size:38px;font-weight:800;color:#00C2A8;background:rgba(0,194,168,.14);padding:22px 40px;border-radius:18px;opacity:0}
+.chips{display:flex;flex-wrap:wrap;gap:30px;justify-content:center;max-width:920px}
+.chip{font-size:50px;font-weight:800;padding:30px 46px;border-radius:24px;background:#0e1838;border:2px solid #24345f;opacity:0}
+.chip b{color:#00C2A8}
+.logo{font-size:140px;font-weight:800;letter-spacing:2px}
+.slogan{font-size:54px;color:#cfe0ff;margin-top:36px;text-align:center}
+.contact{font-size:42px;color:#8aa0c8;margin-top:70px;text-align:center;line-height:1.6}
+.bgwrap{position:absolute;inset:0;background:radial-gradient(1200px 800px at 50% 30%,rgba(62,139,255,.14),transparent 60%)}
+</style>
+</head>
+<body>
+<div id="root" data-composition-id="main" data-start="0" data-duration="45" data-width="1080" data-height="1920">
+<div class="bgwrap"></div>
+
+<!-- S1 0-5 hook -->
+<div id="s1" class="scene clip" data-start="0" data-duration="5" data-track-index="1">
+  <div class="big" id="s1a">想做<span class="teal">国际短信</span>生意，<br>却卡在「从零搭系统」？</div>
+  <div class="stamp" id="s1b">整套系统 · 直接交付</div>
+</div>
+
+<!-- S2 5-9 pain: build from scratch -->
+<div id="s2" class="scene clip" data-start="5" data-duration="4" data-track-index="1">
+  <div class="kicker" id="s2k">自己从零写？</div>
+  <div class="panel" id="s2p">
+    <div class="row"><span>SMPP 多通道对接</span><span class="tag fail">自研</span></div>
+    <div class="row"><span>计费 · 余额 · 风控</span><span class="tag fail">自研</span></div>
+    <div class="row"><span>批量群发引擎</span><span class="tag fail">自研</span></div>
+    <div class="row"><span>回执 · 多租户后台</span><span class="tag fail">自研</span></div>
+    <div class="costline"><span class="muted" style="font-size:40px">预计成本</span><span class="bignum red" id="s2cost">数月·数十万</span></div>
+  </div>
+  <div class="sub" id="s2s">全都要自己从头写</div>
+</div>
+
+<!-- S3 9-14 brand -->
+<div id="s3" class="scene clip" data-start="9" data-duration="5" data-track-index="1">
+  <div class="globe" id="s3g">
+    <span class="dot" style="left:30%;top:38%"></span>
+    <span class="dot" style="left:62%;top:30%"></span>
+    <span class="dot" style="left:54%;top:62%"></span>
+    <span class="dot" style="left:38%;top:70%"></span>
+    <span class="dot" style="left:72%;top:54%"></span>
+  </div>
+  <div class="big" id="s3t" style="margin-top:70px">sms1<span class="teal">.site</span></div>
+  <div class="sub" id="s3s">整套国际短信系统 · 开箱即用</div>
+</div>
+
+<!-- S4 14-20 built-in global routing -->
+<div id="s4" class="scene clip" data-start="14" data-duration="6" data-track-index="1">
+  <div class="kicker" id="s4k">系统内置</div>
+  <div class="map" id="s4map">
+    <div class="hub"></div>
+    <div class="line" data-w="300" style="transform:rotate(-20deg)"></div>
+    <div class="line" data-w="340" style="transform:rotate(28deg)"></div>
+    <div class="line" data-w="280" style="transform:rotate(150deg)"></div>
+    <div class="line" data-w="320" style="transform:rotate(205deg)"></div>
+    <div class="line" data-w="300" style="transform:rotate(95deg)"></div>
+    <div class="node" style="left:78%;top:30%"><i></i><span>泰国</span></div>
+    <div class="node" style="left:84%;top:64%"><i></i><span>印尼</span></div>
+    <div class="node" style="left:16%;top:70%"><i></i><span>巴西</span></div>
+    <div class="node" style="left:10%;top:34%"><i></i><span>沙特</span></div>
+    <div class="node" style="left:50%;top:90%"><i></i><span>尼日利亚</span></div>
+  </div>
+  <div class="big" id="s4t" style="font-size:74px">多通道运营商直连</div>
+  <div class="sub" id="s4s">内置 <span class="teal" style="font-weight:800">200+</span> 国家路由</div>
+</div>
+
+<!-- S5 20-26 built-in TG bot -->
+<div id="s5" class="scene clip" data-start="20" data-duration="6" data-track-index="1">
+  <div class="kicker" id="s5k">自带开户机器人</div>
+  <div class="phone" id="s5p">
+    <div class="bubble me" id="s5b1">我要开通账号</div>
+    <div class="bubble bot" id="s5b2">已为你创建账号 ✓<br>API Key：ak_••••••</div>
+    <div class="ok-card" id="s5b3">⚡ 客户秒级自助开通</div>
+  </div>
+  <div class="sub" id="s5s" style="margin-top:50px">Telegram 自助开户 · 自动化运营</div>
+</div>
+
+<!-- S6 26-32 admin + bulk + dlr -->
+<div id="s6" class="scene clip" data-start="26" data-duration="6" data-track-index="1">
+  <div class="kicker" id="s6k">内置管理后台</div>
+  <div class="panel" id="s6p">
+    <div style="display:flex;justify-content:space-between;align-items:baseline">
+      <span class="muted" style="font-size:38px">已发送</span>
+      <span class="bignum teal" id="s6n" style="font-size:120px">0</span>
+    </div>
+    <div class="ratebar"><div class="ratefill" id="s6bar"></div></div>
+    <div class="row" id="s6r1"><span>批次 #2061 · 泰国</span><span class="tag ok">DELIVRD</span></div>
+    <div class="row" id="s6r2"><span>批次 #2061 · 印尼</span><span class="tag ok">DELIVRD</span></div>
+    <div class="row" id="s6r3"><span>批次 #2061 · 巴西</span><span class="tag ok">DELIVRD</span></div>
+  </div>
+  <div class="sub" id="s6s">万级群发 · 实时回执看得见</div>
+</div>
+
+<!-- S7 32-38 system features -->
+<div id="s7" class="scene clip" data-start="32" data-duration="6" data-track-index="1">
+  <div class="kicker" id="s7k">整套交付</div>
+  <div class="chips">
+    <div class="chip" id="c1"><b>多租户</b>多品牌</div>
+    <div class="chip" id="c2"><b>按量</b>计费</div>
+    <div class="chip" id="c3"><b>API</b> 对接</div>
+    <div class="chip" id="c4"><b>私有</b>部署</div>
+    <div class="chip" id="c5"><b>专属</b>通道</div>
+  </div>
+</div>
+
+<!-- S8 38-45 cta -->
+<div id="s8" class="scene clip" data-start="38" data-duration="7" data-track-index="1">
+  <div class="logo" id="s8l">sms1<span class="teal">.site</span></div>
+  <div class="slogan" id="s8s">拥有你自己的国际短信平台</div>
+  <div class="contact" id="s8c">整套系统出售 · 私有部署<br>Telegram @你的客服</div>
+</div>
+
+</div>
+<script>
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+function show(sel,t,d){d=d||4.4;tl.fromTo(sel,{opacity:0},{opacity:1,duration:.5,ease:"power2.out"},t).to(sel,{opacity:0,duration:.4},t+d);tl.set(sel,{opacity:0},t+d+0.4);}
+
+// S1
+show("#s1",0,4.6);
+tl.from("#s1a",{y:50,opacity:0,duration:.8},0.2)
+  .from("#s1b",{scale:.6,opacity:0,duration:.6,ease:"back.out(2)"},1.4);
+// S2
+show("#s2",5,3.6);
+tl.from("#s2p",{y:60,opacity:0,duration:.6},5.2)
+  .from("#s2cost",{scale:.6,opacity:0,duration:.5,ease:"back.out(2)"},6.6)
+  .from("#s2s",{y:30,opacity:0,duration:.6},7.6);
+// S3
+show("#s3",9,4.6);
+tl.from("#s3g",{scale:.4,opacity:0,duration:1,ease:"back.out(1.6)"},9.2)
+  .to("#s3g",{rotation:8,duration:3,ease:"none"},9.4)
+  .from("#s3t",{y:40,opacity:0,duration:.7},10.4)
+  .from("#s3s",{opacity:0,duration:.6},11.2);
+// S4
+show("#s4",14,5.6);
+gsap.utils.toArray("#s4map .line").forEach((el,i)=>{
+  const w=el.getAttribute("data-w");
+  tl.fromTo(el,{width:0,opacity:0},{width:w+"px",opacity:1,duration:.7,ease:"power2.out"},14.4+i*0.18);
+});
+gsap.utils.toArray("#s4 .node").forEach((el,i)=>{tl.to(el,{opacity:1,duration:.4},15.0+i*0.18);});
+tl.from("#s4t",{y:40,opacity:0,duration:.6},16.8)
+  .from("#s4s",{y:30,opacity:0,duration:.6},17.4);
+// S5
+show("#s5",20,5.6);
+tl.from("#s5p",{y:60,opacity:0,duration:.6},20.3)
+  .to("#s5b1",{opacity:1,duration:.4},20.9)
+  .to("#s5b2",{opacity:1,duration:.4},21.7)
+  .to("#s5b3",{opacity:1,scale:1,duration:.5,ease:"back.out(2)"},22.6)
+  .from("#s5s",{y:30,opacity:0,duration:.5},23.6);
+// S6
+show("#s6",26,5.6);
+const c={v:0};
+tl.from("#s6p",{y:60,opacity:0,duration:.6},26.3)
+  .to("#s6bar",{width:"100%",duration:2.4,ease:"power1.inOut"},26.6)
+  .to(c,{v:58420,duration:2.4,ease:"power1.inOut",onUpdate:function(){document.getElementById("s6n").textContent=Math.round(c.v).toLocaleString();}},26.6)
+  .to("#s6r1",{opacity:1,duration:.3},27.6)
+  .to("#s6r2",{opacity:1,duration:.3},28.1)
+  .to("#s6r3",{opacity:1,duration:.3},28.6)
+  .from("#s6s",{y:30,opacity:0,duration:.5},29.6);
+// S7
+show("#s7",32,5.6);
+gsap.utils.toArray("#s7 .chip").forEach((el,i)=>{tl.to(el,{opacity:1,y:0,duration:.45,ease:"back.out(1.6)"},32.5+i*0.32);});
+gsap.utils.toArray("#s7 .chip").forEach((el)=>{gsap.set(el,{y:30});});
+// S8
+tl.fromTo("#s8",{opacity:0},{opacity:1,duration:.6},38.3);
+tl.from("#s8l",{scale:.7,opacity:0,duration:.7,ease:"back.out(1.8)"},38.5)
+  .from("#s8s",{y:30,opacity:0,duration:.6},39.4)
+  .from("#s8c",{opacity:0,duration:.6},40.4);
+
+window.__timelines["main"] = tl;
+</script>
+</body>
+</html>

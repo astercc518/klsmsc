@@ -180,6 +180,7 @@ celery_app.conf.task_routes.update({
 celery_app.conf.task_routes.update({
     'process_batch': {'queue': 'celery'},
     'process_batch_chunk': {'queue': 'celery'},
+    'dispatch_scheduled_batches': {'queue': 'celery'},
     'retry_batch_as_new': {'queue': 'celery'},
     'inspect_batches_task': {'queue': 'celery'},
     'sync_processing_batch_progress_task': {'queue': 'celery'},
@@ -206,6 +207,11 @@ celery_app.conf.beat_schedule = {
     # 每30秒拉取一次 DLR 报告
     'fetch-dlr-reports-every-30s': {
         'task': 'fetch_dlr_reports_task',
+        'schedule': 30.0,
+    },
+    # 每30秒派发到点的定时发送批次（替代 eta 反模式；到点才入队，不挂 worker 内存）
+    'dispatch-scheduled-batches-30s': {
+        'task': 'dispatch_scheduled_batches',
         'schedule': 30.0,
     },
     # 每10分钟刷新所有活跃商品库存（含时效过期自动下架）
