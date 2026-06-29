@@ -989,7 +989,9 @@ def process_smpp_dlr_task(channel_id: int, upstream_id: str, new_status: str, st
         return {"success": False, "error": str(e)}
 
 
-async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status: str, stat: str, err: str, dest_addr: str, source_addr: str, receipted_message_id: str):
+async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status: str, stat: str, err: str, dest_addr: str, source_addr: str, receipted_message_id: str, from_flush: bool = False):
+    # from_flush=True：来自 flush_dlr_retry_buffer 的接力重放，必须绕过未匹配负缓存短路做真实 DB 匹配，
+    # 否则会撞自己刚打的 dlr_unmatched 键直接返回 True，致 flush 误判已匹配而删掉缓冲条目。
     # 纯函数，不依赖 db，定义在 session 外
     def _expand_id_candidates(raw: str) -> list:
         upstream_id_str = str(raw).strip()
@@ -1034,6 +1036,21 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
         except Exception as _seen_err:
             logger.debug(f"DLR 进DB前去重检查失败，放行: {_seen_err}")
 
+    # —— 未匹配回执的「重传短路」(治本 worker-dlr 空转 658% CPU)——
+    # 上游(TSD ch64/TS ch82)对同一回执狂重传；其中一类回执的 upstream_id 在本库根本没有对应
+    # sms_log(外来/旧消息/从未落库)，注定匹配不上。原逻辑对每个这样的重传都跑 10×0.2s=2s 的 DB
+    # 重试匹配后才进缓冲——同一 id 每次重传都重跑，纯空转烧 CPU。首次未匹配时打一个短 TTL 负缓存键，
+    # 此后该 (channel, upstream_id) 的重传直接返回：原条目已在 dlr_pending_retry 缓冲，由 flush 接力
+    # 匹配(umid 迟到落库也能被 flush 重放命中)，无需 worker 再付 2s+10 查询。fail-open：Redis 故障不短路。
+    _unmatched_key = f"dlr_unmatched:{channel_id}:{str(upstream_id).strip()}" if upstream_id else None
+    if _unmatched_key and not from_flush:
+        try:
+            if _redis_sync_client().get(_unmatched_key):
+                logger.debug(f"DLR 未匹配重传短路(已在重试缓冲): id={upstream_id}")
+                return True
+        except Exception:
+            pass
+
     def _mark_seen():
         if not _seen_key:
             return
@@ -1064,7 +1081,10 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                 # DLR 偶尔比 SubmitSMResp 落库还快（上游 1 秒内回执，sms_logs.upstream_message_id
                 # 的写入由 sms_result_queue 异步处理可能滞后）。重试覆盖到 ~2 秒，覆盖大多数 race；
                 # 仍未命中则 buffer_unmatched_dlr 缓冲后由 flush 任务接力。
-                _retry_attempts = int(os.getenv("WORKER_DLR_MATCH_RETRY_ATTEMPTS", "10"))
+                # 10×0.2s=2s 阻塞重试对「DLR 早于回写」的秒级竞态有意义，但当 sms_result_queue 积压、
+                # 回写滞后数分钟时，2s 内等不到 umid 落库——纯阻塞空转、反拖慢 DLR 吞吐。降到 3×0.2s=0.6s
+                # 覆盖快竞态即可，更长的滞后交由 buffer_unmatched_dlr + flush 异步接力(不占 worker 槽位)。
+                _retry_attempts = int(os.getenv("WORKER_DLR_MATCH_RETRY_ATTEMPTS", "3"))
                 _retry_sleep_sec = float(os.getenv("WORKER_DLR_MATCH_RETRY_SLEEP_SEC", "0.2"))
                 for _attempt in range(_retry_attempts):
                     result = await db.execute(stmt)
@@ -1097,14 +1117,48 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
 
             if not sms_log:
                 logger.warning(f"SMPP DLR: 未找到 upstream_id={upstream_id} (候选 {candidate_ids})，dest={dest_addr!r}")
-                try:
-                    from app.utils.dlr_buffer import buffer_unmatched_dlr
-                    await buffer_unmatched_dlr(
-                        channel_id, upstream_id, new_status, stat, err,
-                        dest_addr, source_addr, receipted_message_id,
+                # —— 源头减量：永久孤儿(owned-but-no-row)直接丢弃，不进重试缓冲 ——
+                # 网关 SubmitSMResp 时以 7 天 TTL 写 dlr_owned:{ch}:{id} 归属键。若该键已老(MarkOwned 距今
+                # > 阈值，默认 1h)，说明结果回写早该完成、对应 sms_logs 行确实从未落库(分片掉线/死锁丢行的
+                # 永久孤儿)，这条 DLR 永不可能匹配——再缓冲+重试 20 次纯空转。直接丢弃(仍打负缓存让重传短路)。
+                # 仅对「键老」才丢；新近未匹配(可能 umid 回写竞态)的键 TTL 接近满值，照常缓冲+flush 接力。
+                _orphan_drop = False
+                if upstream_id:
+                    try:
+                        _owned_ttl = _redis_sync_client().ttl(
+                            f"dlr_owned:{channel_id}:{str(upstream_id).strip()}"
+                        )
+                        _owned_full = int(os.getenv("DLR_OWNED_TTL_SEC", "604800"))
+                        _orphan_age = int(os.getenv("DLR_ORPHAN_DROP_AGE_SEC", "3600"))
+                        # ttl: >=0 剩余秒/-1 无过期/-2 不存在。剩余 < (满值-阈值) ⇒ MarkOwned 已超阈值=老孤儿。
+                        if isinstance(_owned_ttl, int) and 0 <= _owned_ttl < (_owned_full - _orphan_age):
+                            _orphan_drop = True
+                    except Exception:
+                        pass
+                if _orphan_drop:
+                    logger.info(
+                        f"DLR 永久孤儿丢弃(owned-but-no-row, MarkOwned 已超阈值): "
+                        f"channel={channel_id}, upstream_id={upstream_id}"
                     )
-                except Exception as _buf_err:
-                    logger.debug(f"DLR 重试缓冲写入异常(忽略): {_buf_err}")
+                else:
+                    try:
+                        from app.utils.dlr_buffer import buffer_unmatched_dlr
+                        await buffer_unmatched_dlr(
+                            channel_id, upstream_id, new_status, stat, err,
+                            dest_addr, source_addr, receipted_message_id,
+                        )
+                    except Exception as _buf_err:
+                        logger.debug(f"DLR 重试缓冲写入异常(忽略): {_buf_err}")
+                # 打负缓存：该 id 的后续重传直接走上面的短路(孤儿丢弃/缓冲都已决定，无需再跑 DB 匹配)。
+                # TTL 短(默认 90s)：仅折叠重传洪峰；过窗后若仍重传会重新判定一次，不会永久压制真命中。
+                if _unmatched_key:
+                    try:
+                        _redis_sync_client().set(
+                            _unmatched_key, 1,
+                            ex=int(os.getenv("DLR_UNMATCHED_SHORTCIRCUIT_TTL_SEC", "90")),
+                        )
+                    except Exception:
+                        pass
                 return False
 
             # —— 终态保护：失败不可被迟到/重传的 DELIVRD 翻回 ——
@@ -1295,6 +1349,7 @@ async def _flush_dlr_retry_buffer_async():
                     dest_addr=item.get("dest_addr", ""),
                     source_addr=item.get("source_addr", ""),
                     receipted_message_id=item.get("receipted_message_id", ""),
+                    from_flush=True,  # 绕过未匹配负缓存短路，做真实 DB 匹配
                 )
                 if matched:
                     # 成功匹配并写入 DB，从缓冲区删除

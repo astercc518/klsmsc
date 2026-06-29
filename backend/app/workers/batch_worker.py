@@ -1178,9 +1178,13 @@ async def _do_process_chunk(
                                 except _OpErr as _werr:
                                     _wo = getattr(_werr, 'orig', None)
                                     _wc = (_wo.args[0] if _wo and getattr(_wo, 'args', None) else None)
-                                    if _wc in (1205, 1213) and _w_atmpt < _write_attempts - 1:
+                                    # 1205/1213=行锁/死锁；2013=DB 过载时整条连接掉线(Lost connection during query)。
+                                    # 三者都是「本片未持久化、可整片重试」：commit 在入队之前，撞这些错即回滚重试，
+                                    # 绝不让整片丢失(owned-but-no-row 孤儿的源头正是 2013 掉线整片回滚未入库)。
+                                    # 每次重试重建对象用全新 message_id，故 2013 后即便原 commit 侥幸落库也不会撞 1062。
+                                    if _wc in (1205, 1213, 2013) and _w_atmpt < _write_attempts - 1:
                                         logger.warning(
-                                            f"分片写库行锁冲突({_wc}) retry={_w_atmpt+1}: "
+                                            f"分片写库冲突/掉线({_wc}) retry={_w_atmpt+1}: "
                                             f"batch={batch_id}, offset={start_offset}"
                                         )
                                         try:
