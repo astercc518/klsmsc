@@ -21,6 +21,7 @@ from app.modules.sms.sms_log import SMSLog
 from app.utils.logger import get_logger
 from app.workers.sms_worker import _make_session, _run_async
 from app.modules.sms.batch_utils import update_batch_progress
+from app.config import settings
 
 logger = get_logger(__name__)
 
@@ -48,6 +49,45 @@ _SMPP_QUEUE_PREFIX = "sms_send_smpp."
 # [事故根因] 批次 1118-1120 共 9 万条排在共用队列尾部，30 分钟内未轮到网关消费，
 # 却被「30 分钟空闲即斩杀」当成卡死全标 failed——比网关真正取到只早了约 30 秒。
 _SMPP_QUEUE_ALIVE_THRESHOLD = int(os.environ.get("BATCH_INSPECT_SMPP_QUEUE_ALIVE", "0"))
+# RabbitMQ 管理 API 端口：在途守门用它读队列「ready+unacked」总量。
+# [事故根因 1551/1553] Python 按 chunk 把最多 2000 条 SMS 打成「一条整包 AMQP 消息」投递，
+# 网关每通道 consumer prefetch=16，整包一被取走即变 unacked、要逐条按通道 TPS 慢慢吐(30 TPS≈67s/包)。
+# AMQP passive queue_declare 只回 message_count(=ready，**不含 unacked**)，于是 6000 条正攥在
+# 网关里慢慢发，message_count 却显示 0 → 守门误判「无积压」→ 30 分钟空闲斩杀。
+# 管理 API 的 messages 字段 = ready+unacked，能看见网关攥住的在途整包，根治该盲区。
+_RABBITMQ_MGMT_PORT = int(os.environ.get("RABBITMQ_MGMT_PORT", "15672"))
+
+
+def _smpp_queue_total_via_mgmt(queues: list) -> Optional[int]:
+    """用 RabbitMQ 管理 API 求 queues 的「messages = ready + unacked」总量；探测失败返回 None。
+
+    必须算上 unacked：网关 prefetch 把整包(最多 2000 条 SMS)取走后即为 unacked、正按通道 TPS
+    慢慢吐，AMQP message_count 看不见它们。漏掉 unacked 会让守门把在途批次误判为卡死（1551/1553）。
+
+    单次请求列出本 vhost 全部队列(只取 name,messages 两列)再按名求和——与 SMPP 通道数无关，
+    避免逐队列 N 次 HTTP；任一异常即返回 None 由调用方回退 AMQP message_count 探测。
+    """
+    import json as _json
+    import urllib.request as _ur
+    import urllib.parse as _up
+    import base64 as _b64
+
+    host = settings.RABBITMQ_HOST or "rabbitmq"
+    vhost = _up.quote(settings.RABBITMQ_VHOST or "/", safe="")  # "/" → %2F
+    auth = _b64.b64encode(f"{settings.RABBITMQ_USER}:{settings.RABBITMQ_PASSWORD}".encode()).decode()
+    url = f"http://{host}:{_RABBITMQ_MGMT_PORT}/api/queues/{vhost}?columns=name,messages"
+    req = _ur.Request(url, headers={"Authorization": f"Basic {auth}"})
+    try:
+        with _ur.urlopen(req, timeout=4) as resp:
+            rows = _json.loads(resp.read().decode())
+    except Exception as e:
+        logger.debug(f"inspect: 管理 API 读队列列表异常，回退 AMQP 探测: {e}")
+        return None
+    if not isinstance(rows, list):
+        return None
+    wanted = set(queues)
+    by_name = {r.get("name"): int(r.get("messages") or 0) for r in rows if isinstance(r, dict)}
+    return sum(by_name.get(q, 0) for q in wanted)
 
 
 def _smpp_send_queue_depth(extra_queues: Optional[list] = None) -> int:
@@ -56,10 +96,18 @@ def _smpp_send_queue_depth(extra_queues: Optional[list] = None) -> int:
     用于区分『消息仍在网关队列排队在途』与『真卡死/丢失』：队列非空时网关只是积压、并未死，
     此时绝不能把排队中的 SMPP pending/queued 误判为超时。探测失败回退旧行为（按时间斩杀）。
 
-    extra_queues — 每通道队列名列表(sms_send_smpp.{id})；逐个 passive 探测求和，
+    优先走管理 API 取 ready+unacked 总量（含网关 prefetch 攥住的在途整包）；管理 API 不可用时
+    回退 AMQP passive 探测——后者只能拿 message_count(ready)，会漏 unacked，但聊胜于无。
+
+    extra_queues — 每通道队列名列表(sms_send_smpp.{id})；逐个探测求和，
     单个不存在(尚无消息→未声明)按 0 计，不影响其它队列。
     """
     queues = [_SMPP_SEND_QUEUE] + list(extra_queues or [])
+
+    mgmt_total = _smpp_queue_total_via_mgmt(queues)
+    if mgmt_total is not None:
+        return mgmt_total
+
     total = 0
     probed_any = False
     for qname in queues:
@@ -603,6 +651,74 @@ async def _do_refresh_staff_commission_cache():
         return {"refreshed": len(comm_map), "month": ym}
     finally:
         await eng.dispose()
+
+
+@celery_app.task(name='refresh_admin_dashboard_cache_task')
+def refresh_admin_dashboard_cache_task():
+    """每 4 分钟预热管理员仪表板缓存。
+
+    /admin/dashboard 对 sms_logs(当月分区 650w+ 行)做十几条全表聚合，冷算 ~60-120s；
+    缓存 TTL 300s 但此前并无预热，每 5 分钟自然过期后下一个请求即撞冷算 → 前端 120s 超时报错。
+    这里把 super_admin/admin/finance/tech 四个全局角色(共享 role 维度缓存)提前算好写回，让用户常态命中。
+    sales 角色按 account_id 过滤(走 idx_account_time)冷算成本低，不在预热范围。
+    """
+    # _run_async 默认 60s 超时会半途砍掉冷算(全表聚合 ~60-120s)；本任务独占路由锁、无并发，
+    # 给它 200s 预算，足够算完且 <240s 调度周期。
+    return _run_async(_do_refresh_admin_dashboard_cache(), timeout=200)
+
+
+async def _do_refresh_admin_dashboard_cache():
+    from types import SimpleNamespace
+    from app.api.v1.admin import get_admin_dashboard, _dashboard_preheat_force
+    from app.utils.cache import get_redis_client
+
+    redis = await get_redis_client()
+    # 单实例锁：周期 240s 但冷算可能 ~50s，避免 beat 抖动/上一轮未完导致并发预热叠加冲击 DB
+    if not await redis.set("admin_dashboard:preheat:lock", "1", nx=True, ex=230):
+        logger.info("仪表板缓存预热跳过：上一轮仍在进行")
+        return {"skipped": True}
+    # 抢路由的单飞锁：预热用 ContextVar 强制重算(绕过缓存读)，必须独占该锁，否则会与某个
+    # 在线请求(它抢到锁后也会冷算)并发双重全表扫描，撞 net_write_timeout=60s → 2013。
+    # 持锁期间在线请求拿不到锁 → 走 stale / 轮询等本任务写好缓存，全局仅一个计算者。
+    _route_lock = "admin_dashboard:role:super_admin:lock"
+    if not await redis.set(_route_lock, "1", nx=True, ex=240):
+        logger.info("仪表板缓存预热跳过：已有在线请求在计算")
+        await redis.delete("admin_dashboard:preheat:lock")
+        return {"skipped": True, "reason": "route_locked"}
+    # 仪表板十几条全表聚合冷算可达 ~60-120s；worker 默认 asyncmy read_timeout=30s 会半途撕连接(2013)。
+    # 本任务独占路由锁、绝无并发争用，给它分钟级读超时单独计算。
+    eng, Session = _make_session(read_timeout=180)
+    # 置 ContextVar 强制 get_admin_dashboard 跳过缓存读、重算并覆盖；不删旧键 →
+    # 重算期间在线请求仍命中旧热缓存(240s<300s TTL 保证不过期)，绝不与预热并发冷扫描同一分区。
+    token = _dashboard_preheat_force.set(True)
+    try:
+        # super_admin 与 admin 角色的 payload 完全一致(同为全局视图、权限位相同)，只冷算一次
+        # 再镜像到 admin 键，省掉一遍十几条 sms_logs 全表聚合。
+        # finance/tech 较少访问，由路由的 stale 兜底逻辑覆盖，不在预热范围。
+        fake_admin = SimpleNamespace(role="super_admin", id=None, username="__preheat__")
+        try:
+            async with Session() as db:
+                await get_admin_dashboard(fake_admin, db)  # 内部写 super_admin 的 live+stale 缓存
+        except Exception as e:
+            # 冷算可能撞 (2013) MySQL 连接超时/并发争用；记日志即可，旧热缓存+stale 兜底，下一轮自愈
+            logger.warning(f"仪表板缓存预热计算失败(将于下轮重试): {e}")
+            return {"warmed": 0, "error": str(e)[:120]}
+        val = await redis.get("admin_dashboard:role:super_admin")
+        if val:
+            await redis.setex("admin_dashboard:role:admin", 300, val)
+            await redis.setex("admin_dashboard:role:admin:stale", 86400, val)
+            logger.info("管理员仪表板缓存预热完成: super_admin + admin")
+            return {"warmed": 2}
+        logger.warning("仪表板缓存预热: super_admin 计算后未取到缓存值")
+        return {"warmed": 0}
+    finally:
+        _dashboard_preheat_force.reset(token)
+        await eng.dispose()
+        for _k in (_route_lock, "admin_dashboard:preheat:lock"):
+            try:
+                await redis.delete(_k)
+            except Exception:
+                pass
 
 
 @celery_app.task(name='refresh_business_report_cache_task')

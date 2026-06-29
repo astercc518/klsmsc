@@ -265,6 +265,11 @@ celery_app.conf.beat_schedule = {
         'task': 'refresh_business_report_cache_task',
         'schedule': 3600.0,
     },
+    # 每 4 分钟预热管理员仪表板缓存（TTL 300s；十几条 sms_logs 全表聚合冷算 ~60-120s 会撞前端 120s 超时）
+    'refresh-admin-dashboard-cache-4min': {
+        'task': 'refresh_admin_dashboard_cache_task',
+        'schedule': 240.0,
+    },
     # 每天 00:30 清理过期 SMPP 待发 DLR
     'smpp-pending-dlr-cleanup-daily': {
         'task': 'smpp_pending_dlr_cleanup',

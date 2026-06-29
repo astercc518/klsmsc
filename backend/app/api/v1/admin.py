@@ -2,6 +2,7 @@
 管理员API路由
 """
 import asyncio
+import contextvars
 import random
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -3581,6 +3582,11 @@ class SenderIDAuditRequest(BaseModel):
 
 
 
+# 预热任务通过此 ContextVar 强制重算并覆盖缓存（跳过缓存读/单飞锁，不删旧键，保证重算期间
+# 在线请求始终命中旧热缓存、绝不与预热并发冷扫描同一分区）。见 batch_inspector.refresh_admin_dashboard_cache_task。
+_dashboard_preheat_force = contextvars.ContextVar("dashboard_preheat_force", default=False)
+
+
 @router.get("/dashboard", response_model=dict)
 async def get_admin_dashboard(
     admin: AdminUser = Depends(get_current_admin),
@@ -3603,20 +3609,47 @@ async def get_admin_dashboard(
         _cache_key = f"admin_dashboard:role:{admin.role}"
     else:
         _cache_key = f"admin_dashboard:{admin.id}:{admin.role}"
-    _cache_ttl = 300  # 秒；配合 beat 任务每 4 分钟预热，用户访问时常态命中
-    try:
-        _rc = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    _cache_ttl = 300       # 热缓存；由 refresh_admin_dashboard_cache_task 每 4 分钟预热，用户常态命中
+    _stale_ttl = 86400     # 陈旧兜底副本(24h)：只要 seed 过一次，热缓存过期时其余请求即时吃旧数据，
+                           # 永不让用户同步等 ~60-120s 冷扫描(撞前端 120s 超时)；刷新交给后台预热任务
+    _stale_key = f"{_cache_key}:stale"
+    _lock_key = f"{_cache_key}:lock"
+    _have_lock = False
+    _force_recompute = _dashboard_preheat_force.get()  # 预热任务置 True：跳过下方缓存读，强制重算覆盖
+    if not _force_recompute:
         try:
-            _cached = await _rc.get(_cache_key)
-            if _cached:
-                _r = json.loads(_cached)
-                # role 共享缓存里的 admin_name 是首个请求者的名字，按当前请求者覆盖
-                _r["admin_name"] = admin.username
-                return _r
-        finally:
-            await _rc.aclose()
-    except Exception:
-        pass
+            _rc = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+            try:
+                _cached = await _rc.get(_cache_key)
+                if _cached:
+                    _r = json.loads(_cached)
+                    # role 共享缓存里的 admin_name 是首个请求者的名字，按当前请求者覆盖
+                    _r["admin_name"] = admin.username
+                    return _r
+                # 热缓存已过期：单飞锁，只放一个请求去冷算（十几条 sms_logs 全表聚合 ~60-120s），
+                # 其余并发请求吃 stale，杜绝缓存击穿时多请求同时全表扫描把 DB 打爆 → 集体 120s 超时。
+                _have_lock = await _rc.set(_lock_key, "1", nx=True, ex=240)
+                if not _have_lock:
+                    _stale = await _rc.get(_stale_key)
+                    if _stale:
+                        _r = json.loads(_stale)
+                        _r["admin_name"] = admin.username
+                        return _r
+                    # 冷启动且无 stale：绝不和持锁者一起冷扫描（双重全表扫描会撞 net_write_timeout=60s→2013），
+                    # 轮询等持锁者(在线请求或预热任务)把缓存写好，最多 ~90s < 前端 120s。
+                    for _ in range(60):
+                        await asyncio.sleep(1.5)
+                        _hit = await _rc.get(_cache_key) or await _rc.get(_stale_key)
+                        if _hit:
+                            _r = json.loads(_hit)
+                            _r["admin_name"] = admin.username
+                            return _r
+                    # 等不到（持锁者异常退出）→ 落到下方兜底自算
+                # 拿到锁、或等待超时兜底 → 落到下方真算
+            finally:
+                await _rc.aclose()
+        except Exception:
+            pass
 
     from app.modules.sms.channel import Channel
     from app.modules.sms.sms_log import SMSLog
@@ -4154,7 +4187,11 @@ async def get_admin_dashboard(
     try:
         _rc2 = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
         try:
-            await _rc2.setex(_cache_key, _cache_ttl, json.dumps(_result, default=str))
+            _payload = json.dumps(_result, default=str)
+            await _rc2.setex(_cache_key, _cache_ttl, _payload)
+            await _rc2.setex(_stale_key, _stale_ttl, _payload)  # 陈旧兜底副本，供击穿期其余请求即时返回
+            if _have_lock:
+                await _rc2.delete(_lock_key)
         finally:
             await _rc2.aclose()
     except Exception:

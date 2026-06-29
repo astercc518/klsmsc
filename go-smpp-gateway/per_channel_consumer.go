@@ -45,19 +45,22 @@ func perChannelQueueName(channelID int) string {
 	return fmt.Sprintf("%s%d", perChannelQueuePrefix, channelID)
 }
 
-// perChannelPrefetch / perChannelWorkers：按通道并发能力定 QoS/worker，慢通道也只占自己的额度。
-func perChannelPrefetch(cfg ChannelConfig) int {
-	if cfg.Concurrency > 0 {
-		return cfg.Concurrency * 2
+// perChannelWorkers：消费侧「喂数」worker 数，与 SMPP bind 数(concurrency)解耦。
+// 关键：上游常限单 bind(concurrency=1)，但单条 bind 的在途窗口(默认100)能吃下远高于 1 路
+// 提交的吞吐；真正决定吞吐的是消费侧并发(workers × perDeliveryCap)能否把 max_tps 令牌桶喂满。
+// 故取 max(SMPP_PCQ_WORKERS 默认8, concurrency)：单 bind 也有 8 个 worker 喂满 max_tps，
+// 多 bind 时不少于 bind 数。此前 worker=concurrency 导致 concurrency=1 时只有 1 worker、
+// 喂数被掐在 ~30 TPS 顶不到 max_tps(2026-06 TSD 实测)。
+func perChannelWorkers(cfg ChannelConfig) int {
+	w := envInt("SMPP_PCQ_WORKERS", 8)
+	if cfg.Concurrency > w {
+		w = cfg.Concurrency
 	}
-	return envInt("SMPP_PCQ_PREFETCH", 16)
+	return w
 }
 
-func perChannelWorkers(cfg ChannelConfig) int {
-	if cfg.Concurrency > 0 {
-		return cfg.Concurrency
-	}
-	return envInt("SMPP_PCQ_WORKERS", 8)
+func perChannelPrefetch(cfg ChannelConfig) int {
+	return perChannelWorkers(cfg) * 2
 }
 
 type pcSupervisor struct {

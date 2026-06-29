@@ -1034,6 +1034,10 @@ async def send_batch_sms(
             sms_batch.send_config = {
                 "chunks": chunk_count, "chunk_size": CHUNK_SIZE, "async": True,
                 "scheduled": True, "payload_file": payload_file,
+                # 定时批派发前没有 sms_logs 行，发送任务列表无从取「内容/通道」展示。
+                # 把内容预览与所选通道一并落 send_config，供 batches 列表回退读取。
+                "message_preview": (request.message or "")[:200],
+                "channel_id": request.channel_id,
             }
             # 私库取号成功 → 标记 use_count（与 batch 入同一事务，失败一起回滚）
             await _mark_private_library_used(db, account.id, _private_library_db_nums)
