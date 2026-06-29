@@ -1286,6 +1286,13 @@ func (m *SMPPManager) handleDeliverSM(deliver *pdu.DeliverSM, cfg ChannelConfig)
 
 		// 不在 PDU 线程内同步写 MySQL（会阻塞读包与后续 DeliverSM）；由 Python process_smpp_dlr_task 写库与副作用。
 
+		// 源头去重：同 (channel,upstream_id,stat) 近期已发布过则跳过（上游按设计每条回执重发约 4 次）。
+		// 安全前提：deliver_sm_resp 已由 gosmpp 读循环在本函数之前自动回复，去重在 ACK 下游，不引发更多重传。详见 dlr_dedup.go。
+		if IsDuplicateDLR(cfg.ID, upstreamID, stat) {
+			log.Printf("[SMPP-DEBUG] DLR deduped (upstream retransmit): channel=%s upstream=%s stat=%s", cfg.ChannelCode, upstreamID, stat)
+			return
+		}
+
 		// [重要] 通知 Python Worker 写回执、对账、注水、Webhook 等
 		dlrArgs := []interface{}{
 			cfg.ID,      // channel_id
@@ -1300,6 +1307,8 @@ func (m *SMPPManager) handleDeliverSM(deliver *pdu.DeliverSM, cfg ChannelConfig)
 		if pubErr := PublishCeleryTask("sms_dlr", "process_smpp_dlr_task", dlrArgs); pubErr != nil {
 			log.Printf("[SMPP-ERROR] Failed to notify Python worker of DLR for %s: %v", upstreamID, pubErr)
 		} else {
+			// 发布成功后才标记去重键：发布失败不标记，靠上游重传天然重试，绝不丢回执。
+			MarkDLRPublished(cfg.ID, upstreamID, stat)
 			log.Printf("[SMPP-DEBUG] Notified Python worker of DLR for %s", upstreamID)
 		}
 	}

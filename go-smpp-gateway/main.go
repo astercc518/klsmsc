@@ -20,6 +20,10 @@ func main() {
     //     依赖 DB 用于启动回填，必须在 InitDB 之后
     InitDLROwnership()
 
+    // 1b'. DLR 源头去重（上游对每条回执重发约 4 次，跨度数分钟）：在发布到 sms_dlr 前折叠
+    //      同 (channel,upstream_id,stat) 的重传，根治大批次时 sms_dlr 队列爆炸 + Worker 4 倍 DB 负载。
+    InitDLRDedup()
+
     // 1c. 批次取消运行期标记（Redis）：消费 sms_send_smpp 单条短信前查询，跳过已取消批次
     InitBatchCancel()
 

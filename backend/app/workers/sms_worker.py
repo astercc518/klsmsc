@@ -140,13 +140,16 @@ def _run_async(coro, *, timeout: Optional[float] = None):
         loop.close()
 
 
-def _make_session():
+def _make_session(read_timeout: int = None):
     """为每次 Celery 任务创建独立的引擎和会话。
 
     **关键约束**：必须使用 NullPool。Celery ForkPool 任务通过 _run_async 每次创建新事件循环，
     若用持久连接池，第一次创建的连接 bound 到首个 loop，后续任务换 loop 时会触发
     "Task got Future attached to a different loop"，导致 sms_logs UPDATE 异步失败、
     批次永远卡在 pending（issue: 批次 327/328/330 反复卡死的根因）。
+
+    read_timeout: 覆盖默认 asyncmy 读超时(秒)。仅极少数重聚合任务(如仪表板预热全表扫描)需要
+    放宽到分钟级；普通任务保持 30s 默认，避免单查询 hang 长期挂住 ForkPoolWorker。
     """
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from sqlalchemy.pool import NullPool
@@ -155,7 +158,8 @@ def _make_session():
     # 单次查询永远阻塞，把 ForkPoolWorker 进程长期挂起。asyncmy 不支持 write_timeout
     # （tcp 写缓冲满会被 OS 卡住，但实践中由 read_timeout 覆盖大多数 hang 场景）。
     connect_timeout = int(os.getenv("WORKER_DB_CONNECT_TIMEOUT_SEC", "10"))
-    read_timeout = int(os.getenv("WORKER_DB_READ_TIMEOUT_SEC", "30"))
+    if read_timeout is None:
+        read_timeout = int(os.getenv("WORKER_DB_READ_TIMEOUT_SEC", "30"))
     eng = create_async_engine(
         settings.SQLALCHEMY_DATABASE_URL,
         echo=False,
@@ -1014,6 +1018,32 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
         candidate_ids.extend(_expand_id_candidates(piece))
     candidate_ids = list(dict.fromkeys(candidate_ids))
 
+    # —— 进 DB 前廉价去重（短路上游重传洪水）——
+    # TS_066 等上游对同一回执重传约 4 次。重传命中 DB 时状态写库是 no-op、副作用已由 dlr_fx 去重，
+    # 但仍要付一次 DB SELECT(~160ms/条，实测占 DLR 处理量约 2/3)。这里在进 DB 前用 Redis 标记位
+    # 短路：已被终态处理过的 (channel, upstream_id, status) 重传直接返回，省掉 SELECT，有效吞吐约 ×3。
+    # 仅对终态(delivered/failed)启用；fail-open：Redis 故障不短路，回落原逻辑。_mark_seen 在确定终态
+    # 处理完成后写标记（含终态保护分支），故未命中/缓冲的回执不会被误标，仍可由 flush 重试。
+    _seen_key = None
+    if upstream_id and new_status in ("delivered", "failed"):
+        _seen_key = f"dlr_seen:{channel_id}:{str(upstream_id).strip()}:{new_status}"
+        try:
+            if _redis_sync_client().get(_seen_key):
+                logger.debug(f"DLR 重传进DB前短路: id={upstream_id} -> {new_status}")
+                return True
+        except Exception as _seen_err:
+            logger.debug(f"DLR 进DB前去重检查失败，放行: {_seen_err}")
+
+    def _mark_seen():
+        if not _seen_key:
+            return
+        try:
+            _redis_sync_client().set(
+                _seen_key, 1, ex=int(os.getenv("DLR_SEEN_DEDUP_TTL_SEC", "7200"))
+            )
+        except Exception:
+            pass
+
     eng, Session = _make_session()
     try:
         async with Session() as db:
@@ -1077,6 +1107,20 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                     logger.debug(f"DLR 重试缓冲写入异常(忽略): {_buf_err}")
                 return False
 
+            # —— 终态保护：失败不可被迟到/重传的 DELIVRD 翻回 ——
+            # TS_066 等上游每条 DLR 重传约 4 次且常乱序，典型序列 DELIVRD→UNDELIV→UNDELIV→DELIVRD。
+            # 「最后写入生效」会让末尾那个重传的 DELIVRD 把已按 UNDELIV 判失败的记录翻回 delivered，
+            # 导致送达率虚高（实测批次 1311 因此多算约 1200 条，系统 85.7% vs 上游台账 73.6%）。
+            # UNDELIV/REJECTD/EXPIRED/DELETED 是上游对乐观回执的真实终态更正，一旦判失败即视为终态，
+            # 此后到达的 delivered（几乎都是重传/乱序）一律忽略，不翻状态、不再派发送达副作用。
+            if sms_log.status == "failed" and new_status == "delivered":
+                logger.info(
+                    f"SMPP DLR 终态保护：{sms_log.message_id} 已失败，忽略迟到/重传的 DELIVRD "
+                    f"(upstream_id={upstream_id}, stat={stat})"
+                )
+                _mark_seen()
+                return True
+
             already_correct = sms_log.status == new_status
             if not already_correct:
                 # Go gateway 尚未更新（或更新失败）：Python 主动写入
@@ -1112,6 +1156,9 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
             except Exception as _fx_err:
                 _fx_first = True  # fail-open：去重故障时放行派发，宁可偶发重复也不漏
                 logger.warning(f"DLR 副作用去重检查失败，放行派发: {_fx_err}")
+            # 此处 (channel, upstream_id, new_status) 已被终态处理（首次写库或 already_correct 重复），
+            # 标记 seen 让后续重传在进 DB 前短路。放在副作用去重之后，确保至少派发过一次。
+            _mark_seen()
             if not _fx_first:
                 logger.debug(f"重复 DLR 副作用已派发过，跳过: {sms_log.message_id} -> {new_status}")
                 return True

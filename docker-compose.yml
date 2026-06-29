@@ -726,6 +726,11 @@ services:
       INBOUND_MAX_CONNS_PER_IP: ${INBOUND_MAX_CONNS_PER_IP:-20}
       # DLR 归属过滤：与外部系统共用同一上游 SMPP 账号时启用，过滤掉别人的 DLR
       DLR_OWNERSHIP_FILTER: ${DLR_OWNERSHIP_FILTER:-true}
+      # DLR 源头去重：上游对每条回执按设计重发约 4 次(跨度数分钟)，在发布到 sms_dlr 前折叠同
+      # (channel,upstream_id,stat) 的重传，根治大批次时 sms_dlr 队列爆炸 + Worker 4 倍 DB 负载。
+      # 去重发生在 deliver_sm_resp(ACK) 之后，不引发上游更多重传。TTL 须盖住重传跨度(默认 900s)。
+      DLR_DEDUP_FILTER: ${DLR_DEDUP_FILTER:-true}
+      DLR_DEDUP_TTL_SEC: ${DLR_DEDUP_TTL_SEC:-900}
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
