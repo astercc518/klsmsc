@@ -42,6 +42,14 @@ class SmsBatchResponse(BaseModel):
         0,
         description="尚未终态送达的条数：sms_logs 中 pending+queued+sent（待发、队列中、已送通道待回执）",
     )
+    status_counts: Dict[str, int] = Field(
+        default_factory=dict,
+        description="按 sms_logs.status 的原始计数分布（pending/queued/sent/delivered/failed/expired）；仅批次详情接口填充，列表为空字典",
+    )
+    failure_reasons: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="失败/过期记录按 error_message 聚合的 Top 原因 [{reason, count}]；仅批次详情接口填充，列表为空",
+    )
     status: BatchStatus
     error_message: Optional[str]
     sender_id: Optional[str]

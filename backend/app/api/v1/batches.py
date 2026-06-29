@@ -561,6 +561,40 @@ async def get_batch(
         patches = await _smslog_batch_display_patches(db, [batch.id], total_by_id)
         p = patches.get(batch.id, {})
         p = await _maybe_sync_batch_row_from_logs(db, batch, p, total_by_id)
+
+        # 原始状态分布（回执统计卡片细分用）。带 submit_time 下界触发分区裁剪，避免扫全部月分区。
+        sc_stmt = select(SMSLog.status, func.count(SMSLog.id)).where(
+            SMSLog.batch_id == batch.id
+        )
+        if batch.created_at is not None:
+            sc_stmt = sc_stmt.where(
+                SMSLog.submit_time >= batch.created_at - timedelta(seconds=60)
+            )
+        sc_rows = (await db.execute(sc_stmt.group_by(SMSLog.status))).all()
+        p["status_counts"] = {str(s or ""): int(c or 0) for s, c in sc_rows}
+
+        # 失败原因分析：仅对 failed/expired 行按 error_message 聚合 Top12
+        fr_stmt = select(SMSLog.error_message, func.count(SMSLog.id)).where(
+            SMSLog.batch_id == batch.id,
+            SMSLog.status.in_(["failed", "expired"]),
+        )
+        if batch.created_at is not None:
+            fr_stmt = fr_stmt.where(
+                SMSLog.submit_time >= batch.created_at - timedelta(seconds=60)
+            )
+        fr_rows = (await db.execute(
+            fr_stmt.group_by(SMSLog.error_message)
+            .order_by(func.count(SMSLog.id).desc())
+            .limit(12)
+        )).all()
+        p["failure_reasons"] = [
+            {
+                "reason": (str(r).strip() if r and str(r).strip() else "未知原因"),
+                "count": int(c or 0),
+            }
+            for r, c in fr_rows
+        ]
+
         base = SmsBatchResponse.model_validate(batch, from_attributes=True)
         return base.model_copy(update=p)
     except Exception as e:

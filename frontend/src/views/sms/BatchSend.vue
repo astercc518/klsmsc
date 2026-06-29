@@ -305,6 +305,14 @@
               </el-button>
               <el-button
                 link
+                type="primary"
+                size="small"
+                @click="openReceiptStats(row)"
+              >
+                回执统计
+              </el-button>
+              <el-button
+                link
                 type="success"
                 size="small"
                 @click="openClickStats(row)"
@@ -481,6 +489,16 @@ phone,name,code<br>
         <el-button type="primary" @click="submitUpload" :loading="uploading">{{ $t('batchSend.startSend') }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- ========== 回执统计对话框 ========== -->
+    <ReceiptStatsDialog
+      v-model="receiptStatsVisible"
+      :batch="receiptStatsBatch"
+      :status-counts="receiptStatsCounts"
+      :failure-reasons="receiptStatsFailures"
+      :loading="receiptStatsLoading"
+      :width="isMobile ? '95%' : '720px'"
+    />
 
     <!-- ========== 短链点击统计对话框 ========== -->
     <el-dialog
@@ -678,12 +696,14 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+import ReceiptStatsDialog from '@/components/ReceiptStatsDialog.vue'
 
 const { isMobile } = useBreakpoint()
 import { Upload, Refresh, Filter, Setting } from '@element-plus/icons-vue'
 import {
   getBatches,
   getBatchStats,
+  getBatchDetail,
   uploadBatchFile,
   cancelBatch as cancelBatchApi,
   retryBatchFailed as retryBatchFailedApi,
@@ -789,6 +809,33 @@ const uploadForm = reactive({
 const templates = ref<any[]>([])
 /** 正在导出 CSV 的任务 id，用于按钮 loading */
 const exportingBatchId = ref<number | null>(null)
+
+// ========== 回执统计 ==========
+const receiptStatsVisible = ref(false)
+const receiptStatsBatch = ref<SmsBatch | null>(null)
+const receiptStatsCounts = ref<Record<string, number> | null>(null)
+const receiptStatsFailures = ref<{ reason: string; count: number }[] | null>(null)
+const receiptStatsLoading = ref(false)
+async function openReceiptStats(row: SmsBatch) {
+  // 先用列表行数据立即渲染汇总卡片，再拉详情补「状态明细」与「失败原因」
+  receiptStatsBatch.value = row
+  receiptStatsCounts.value = null
+  receiptStatsFailures.value = null
+  receiptStatsVisible.value = true
+  receiptStatsLoading.value = true
+  try {
+    const resp: any = await getBatchDetail(row.id)
+    const body = resp?.data?.data || resp?.data || {}
+    receiptStatsBatch.value = { ...row, ...body }
+    receiptStatsCounts.value = body.status_counts || null
+    receiptStatsFailures.value = body.failure_reasons || null
+  } catch (e: any) {
+    // 详情拉取失败不影响汇总卡片，仅明细缺失
+    ElMessage.warning(`回执明细加载失败：${e?.message || e}`)
+  } finally {
+    receiptStatsLoading.value = false
+  }
+}
 
 // ========== 短链点击统计 ==========
 const clickStatsVisible = ref(false)

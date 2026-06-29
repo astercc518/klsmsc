@@ -5875,6 +5875,25 @@ async def admin_get_batch(
     )).all()
     status_counts = {str(s or ""): int(c or 0) for s, c in status_rows}
 
+    # 失败原因分析：failed/expired 行按 error_message 聚合 Top12
+    fr_stmt = select(SMSLog.error_message, sa_func.count(SMSLog.id)).where(
+        and_(SMSLog.batch_id == batch_id, SMSLog.status.in_(["failed", "expired"]))
+    )
+    if b.created_at is not None:
+        fr_stmt = fr_stmt.where(SMSLog.submit_time >= b.created_at - timedelta(seconds=60))
+    fr_rows = (await db.execute(
+        fr_stmt.group_by(SMSLog.error_message)
+        .order_by(sa_func.count(SMSLog.id).desc())
+        .limit(12)
+    )).all()
+    failure_reasons = [
+        {
+            "reason": (str(r).strip() if r and str(r).strip() else "未知原因"),
+            "count": int(c or 0),
+        }
+        for r, c in fr_rows
+    ]
+
     # 当前未发主用通道（取众数）
     ch_rows = (await db.execute(
         select(SMSLog.channel_id, sa_func.count(SMSLog.id))
@@ -5912,6 +5931,7 @@ async def admin_get_batch(
     base.update({
         "account_name": acct_name,
         "status_counts": status_counts,
+        "failure_reasons": failure_reasons,
         "current_channel": current_channel,
         "refundable_count": refundable,
     })
