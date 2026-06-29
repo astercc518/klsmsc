@@ -265,6 +265,8 @@ services:
       # 批次巡检：Go 异步回写时放宽卡死/孤儿判定（分钟，与 batch_inspector 一致）
       BATCH_INSPECT_STUCK_MINUTES: ${BATCH_INSPECT_STUCK_MINUTES:-30}
       BATCH_INSPECT_SMPP_ORPHAN_MINUTES: ${BATCH_INSPECT_SMPP_ORPHAN_MINUTES:-30}
+      # 定时批负载文件目录：必须与 api 一致(同一 import_uploads 卷)，否则 worker 读不到 → 批次 FAILED
+      BATCH_UPLOAD_DIR: /tmp/smsc_imports
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
@@ -448,6 +450,8 @@ services:
       SMPP_DLR_SOCKET_HOLD_SECONDS: ${SMPP_DLR_SOCKET_HOLD_SECONDS:-300}
       DLR_SENT_TIMEOUT_HOURS: ${DLR_SENT_TIMEOUT_HOURS:-72}
       DLR_PULL_HTTP_TIMEOUT_SECONDS: ${DLR_PULL_HTTP_TIMEOUT_SECONDS:-60}
+      # 批次上传/定时批负载目录：与 api/worker 一致(同 import_uploads 卷)，避免路径不一致致读不到
+      BATCH_UPLOAD_DIR: /tmp/smsc_imports
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
