@@ -54,7 +54,10 @@ class SmsBatch(Base):
     # 发送配置
     sender_id = Column(String(20), comment="发送方ID")
     send_config = Column(JSON, comment="发送配置（优先级、延迟等）")
-    
+    # 定时发送时间（NULL=立即）。定时批次落 scheduled_at + 负载持久化到文件，status=PENDING，
+    # 到点由 beat dispatch_scheduled_batches 当下入队（不再用 eta 反模式，杜绝 consumer_timeout 崩 worker）。
+    scheduled_at = Column(TIMESTAMP, nullable=True, comment="定时发送时间(NULL=立即)")
+
     # 进度
     progress = Column(Integer, default=0, comment="进度百分比 0-100")
     

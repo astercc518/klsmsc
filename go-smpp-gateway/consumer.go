@@ -114,6 +114,18 @@ func parseSMSLogData(m map[string]interface{}) (SMSLogData, error) {
 	if v, ok := m["sender_id"].(string); ok {
 		d.SenderID = v
 	}
+	// 限流重投计数：必须透传，否则每次重投回来都归零，ThrottleRetry < throttleMaxRetry()
+	// 恒真，持续被上游 88 限流的消息会无限重投成风暴。Python 首投不带此字段 → 默认 0。
+	if v, ok := m["throttle_retry"]; ok {
+		switch x := v.(type) {
+		case float64:
+			d.ThrottleRetry = int(x)
+		case int:
+			d.ThrottleRetry = x
+		case int64:
+			d.ThrottleRetry = int(x)
+		}
+	}
 	return d, nil
 }
 
@@ -145,6 +157,12 @@ func stripCeleryEnvelope(body []byte) (first interface{}, ok bool) {
 		}
 		if len(top) == 0 {
 			return nil, false
+		}
+		// ①a republishSmppPayloads 的原生数组形态：[{SMSLogData}, …]，首元素即对象
+		// （非 Celery 位置参数数组）。上游 88 限流重投走 json.Marshal([]SMSLogData) 即此格式，
+		// 必须识别，否则重投消息会被当毒消息 NACK 丢弃、DB 永久停在 queued。
+		if _, isObj := top[0].(map[string]interface{}); isObj {
+			return top, true
 		}
 		posArgs, isArr := top[0].([]interface{})
 		if !isArr || len(posArgs) == 0 {
@@ -489,28 +507,63 @@ const (
 	smsTransient smsFailureKind = 2
 )
 
-// republishSmppPayloads 将瞬时失败的 SMS 以原生 JSON 数组重投回 sms_send_smpp 队列
+// republishSmppPayloads 将瞬时失败(如 88 限流)的 SMS 以原生 JSON 数组重投回队列。
+// 每通道队列启用时：按 channel_id 分组，各自回投到 sms_send_smpp.{id}(默认交换机按名路由)，
+// 使限流重投也不污染其它通道；channel_id<=0 或未启用时回投 legacy sms_send_smpp 交换机。
 func republishSmppPayloads(payloads []SMSLogData) error {
 	rabbitMu.Lock()
 	defer rabbitMu.Unlock()
 	if publishCh == nil {
 		return fmt.Errorf("RabbitMQ publish channel not ready")
 	}
-	body, err := json.Marshal(payloads)
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
+
+	publishLegacy := func(pls []SMSLogData) error {
+		body, err := json.Marshal(pls)
+		if err != nil {
+			return fmt.Errorf("marshal: %w", err)
+		}
+		return publishCh.Publish(
+			"sms_send_smpp", // exchange
+			"sms_send_smpp", // routing key
+			false, false,
+			amqp.Publishing{ContentType: "application/json", Body: body, DeliveryMode: amqp.Persistent},
+		)
 	}
-	return publishCh.Publish(
-		"sms_send_smpp", // exchange
-		"sms_send_smpp", // routing key
-		false,
-		false,
-		amqp.Publishing{
-			ContentType:  "application/json",
-			Body:         body,
-			DeliveryMode: amqp.Persistent,
-		},
-	)
+
+	if !perChannelEnabled() {
+		return publishLegacy(payloads)
+	}
+
+	// 按通道分组回投
+	groups := make(map[int][]SMSLogData)
+	for _, p := range payloads {
+		groups[p.ChannelID] = append(groups[p.ChannelID], p)
+	}
+	var firstErr error
+	for cid, g := range groups {
+		if cid <= 0 {
+			if err := publishLegacy(g); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		body, err := json.Marshal(g)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("marshal ch=%d: %w", cid, err)
+			}
+			continue
+		}
+		// exchange="" 默认交换机：按队列名路由，目标队列由 per-channel 监管者声明为 durable。
+		if err := publishCh.Publish(
+			"", perChannelQueueName(cid),
+			false, false,
+			amqp.Publishing{ContentType: "application/json", Body: body, DeliveryMode: amqp.Persistent},
+		); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // PublishCeleryTask dispatches a task to the Python worker via RabbitMQ

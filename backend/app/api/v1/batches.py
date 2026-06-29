@@ -404,6 +404,32 @@ async def list_batches(
             )).all()
             message_by_batch = {int(r[0]): r[1] for r in msg_rows if r[1]}
 
+            # 定时批(PENDING)派发前没有任何 sms_logs 行，上面两个子查询取不到内容/通道，
+            # 列表会留空白。回退从 send_config 读创建时落库的 message_preview + channel_id 补齐。
+            _sched_msg: Dict[int, str] = {}
+            _sched_cid: Dict[int, int] = {}
+            for b in batches:
+                bid = int(b.id)
+                cfg = b.send_config if isinstance(b.send_config, dict) else {}
+                if bid not in message_by_batch and cfg.get("message_preview"):
+                    _sched_msg[bid] = cfg["message_preview"]
+                if bid not in channel_by_batch and cfg.get("channel_id"):
+                    try:
+                        _sched_cid[bid] = int(cfg["channel_id"])
+                    except (TypeError, ValueError):
+                        pass
+            if _sched_cid:
+                _sc_rows = (await db.execute(
+                    select(Channel.id, Channel.channel_code)
+                    .where(Channel.id.in_(set(_sched_cid.values())))
+                )).all()
+                _sc_code = {int(r[0]): r[1] for r in _sc_rows}
+                for bid, cid in _sched_cid.items():
+                    if cid in _sc_code:
+                        channel_by_batch[bid] = _sc_code[cid]
+            for bid, mp in _sched_msg.items():
+                message_by_batch.setdefault(bid, mp)
+
         # 只对仍在处理中的批次扫 sms_logs；已完成批次直接用存量字段，避免全表聚合
         live_batches = [b for b in batches if b.status in (BatchStatus.PROCESSING, BatchStatus.PENDING)]
         live_ids = [b.id for b in live_batches]
@@ -561,6 +587,40 @@ async def get_batch(
         patches = await _smslog_batch_display_patches(db, [batch.id], total_by_id)
         p = patches.get(batch.id, {})
         p = await _maybe_sync_batch_row_from_logs(db, batch, p, total_by_id)
+
+        # 原始状态分布（回执统计卡片细分用）。带 submit_time 下界触发分区裁剪，避免扫全部月分区。
+        sc_stmt = select(SMSLog.status, func.count(SMSLog.id)).where(
+            SMSLog.batch_id == batch.id
+        )
+        if batch.created_at is not None:
+            sc_stmt = sc_stmt.where(
+                SMSLog.submit_time >= batch.created_at - timedelta(seconds=60)
+            )
+        sc_rows = (await db.execute(sc_stmt.group_by(SMSLog.status))).all()
+        p["status_counts"] = {str(s or ""): int(c or 0) for s, c in sc_rows}
+
+        # 失败原因分析：仅对 failed/expired 行按 error_message 聚合 Top12
+        fr_stmt = select(SMSLog.error_message, func.count(SMSLog.id)).where(
+            SMSLog.batch_id == batch.id,
+            SMSLog.status.in_(["failed", "expired"]),
+        )
+        if batch.created_at is not None:
+            fr_stmt = fr_stmt.where(
+                SMSLog.submit_time >= batch.created_at - timedelta(seconds=60)
+            )
+        fr_rows = (await db.execute(
+            fr_stmt.group_by(SMSLog.error_message)
+            .order_by(func.count(SMSLog.id).desc())
+            .limit(12)
+        )).all()
+        p["failure_reasons"] = [
+            {
+                "reason": (str(r).strip() if r and str(r).strip() else "未知原因"),
+                "count": int(c or 0),
+            }
+            for r, c in fr_rows
+        ]
+
         base = SmsBatchResponse.model_validate(batch, from_attributes=True)
         return base.model_copy(update=p)
     except Exception as e:

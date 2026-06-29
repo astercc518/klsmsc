@@ -322,10 +322,9 @@
                   <template #dropdown>
                     <el-dropdown-menu>
                       <el-dropdown-item @click="openSummary(row)">{{ $t('customers.accountSummary') }}</el-dropdown-item>
-                      <el-dropdown-item @click="bindSales(row)">{{ $t('customers.assignedSales') }}</el-dropdown-item>
                       <el-dropdown-item @click="openCountryRoutes(row)">国家路由与报价</el-dropdown-item>
                       <el-dropdown-item @click="openLogs(row)">{{ $t('customers.balance') }}</el-dropdown-item>
-                      <el-dropdown-item @click="handleResetKey(row)">{{ $t('dashboard.apiKey') }}</el-dropdown-item>
+                      <el-dropdown-item @click="openResetPasswordDialog(row)">{{ $t('customers.resetLoginPassword') }}</el-dropdown-item>
                       <el-dropdown-item divided @click="handleDelete(row)" style="color: #f56c6c">{{ $t('common.delete') }}</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>

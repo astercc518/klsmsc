@@ -58,6 +58,28 @@ func TestExtractSmsPayloads_BareSMSLogObject(t *testing.T) {
 	}
 }
 
+// republishSmppPayloads 重投格式：json.Marshal([]SMSLogData) == [{obj}, {obj}]。
+// 首元素是对象而非 Celery 位置参数数组；88 限流重投走此路径，必须被识别而非当毒消息丢弃。
+func TestExtractSmsPayloads_NativeRepublishArray(t *testing.T) {
+	raw := `[{"log_id": 11694852, "message_id": "msg_a", "phone_number": "+66826483489", "message": "hi", "channel_id": 64, "batch_status": "processing", "record_status": "queued", "throttle_retry": 1},{"log_id": 11694898, "message_id": "msg_b", "phone_number": "+66986908818", "message": "hi", "channel_id": 64, "batch_status": "processing", "record_status": "queued", "throttle_retry": 1}]`
+	got, poison := extractSmsPayloads([]byte(raw))
+	if poison {
+		t.Fatal("unexpected poison: 限流重投包被当毒消息丢弃")
+	}
+	if len(got) != 2 || got[0].LogID != 11694852 || got[1].MessageID != "msg_b" {
+		t.Fatalf("got=%+v", got)
+	}
+}
+
+// 单条限流重投：connector.go 走 republishSmppPayloads([]SMSLogData{pl}) → [{obj}]。
+func TestExtractSmsPayloads_NativeRepublishSingle(t *testing.T) {
+	raw := `[{"log_id": 7, "message_id": "solo", "phone_number": "p", "message": "m", "channel_id": 64, "batch_status": "processing", "record_status": "queued", "throttle_retry": 2}]`
+	got, poison := extractSmsPayloads([]byte(raw))
+	if poison || len(got) != 1 || got[0].MessageID != "solo" || got[0].ThrottleRetry != 2 {
+		t.Fatalf("poison=%v got=%+v", poison, got)
+	}
+}
+
 func TestExtractSmsPayloads_PoisonUnknown(t *testing.T) {
 	got, poison := extractSmsPayloads([]byte(`"garbage"`))
 	if !poison || len(got) != 0 {

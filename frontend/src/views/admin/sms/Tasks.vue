@@ -248,6 +248,7 @@
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
+                <el-button link type="primary" size="small" @click="openReceiptStats(row)">回执统计</el-button>
                 <el-button link size="small" @click="goRecords(row)">详情</el-button>
               </div>
             </template>
@@ -270,6 +271,15 @@
         />
       </div>
     </div>
+
+    <!-- 回执统计对话框 -->
+    <ReceiptStatsDialog
+      v-model="receiptStatsVisible"
+      :batch="receiptStatsBatch"
+      :status-counts="receiptStatsCounts"
+      :failure-reasons="receiptStatsFailures"
+      :loading="receiptStatsLoading"
+    />
 
     <!-- 切换通道对话框 -->
     <el-dialog v-model="switchVisible" title="切换通道继续发送" width="600px" :close-on-click-modal="false">
@@ -334,12 +344,13 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, WarningFilled, ArrowDown, Setting } from '@element-plus/icons-vue'
 import {
-  listAdminBatches, pauseBatch, resumeBatch,
+  listAdminBatches, getAdminBatch, pauseBatch, resumeBatch,
   clearBatchQueue, previewSwitchChannel, exportBatchPhones,
   type AdminBatchItem, type PreviewSwitchResult,
   type BatchPhoneCategory,
 } from '@/api/admin-batches'
 import { getChannelsAdmin } from '@/api/admin'
+import ReceiptStatsDialog from '@/components/ReceiptStatsDialog.vue'
 
 const router = useRouter()
 const loading = ref(false)
@@ -570,6 +581,33 @@ async function onDownloadPhones(row: AdminBatchItem, category: BatchPhoneCategor
 // 等待回执 = success_count - delivered_count
 function sentAwaiting(row: AdminBatchItem): number {
   return Math.max(0, (row.success_count || 0) - (row.delivered_count || 0))
+}
+
+// 回执统计弹窗
+const receiptStatsVisible = ref(false)
+const receiptStatsBatch = ref<AdminBatchItem | null>(null)
+const receiptStatsCounts = ref<Record<string, number> | null>(null)
+const receiptStatsFailures = ref<{ reason: string; count: number }[] | null>(null)
+const receiptStatsLoading = ref(false)
+async function openReceiptStats(row: AdminBatchItem) {
+  // 先用列表行数据即时渲染汇总卡片，再拉详情补「状态明细」与「失败原因」
+  receiptStatsBatch.value = row
+  receiptStatsCounts.value = null
+  receiptStatsFailures.value = null
+  receiptStatsVisible.value = true
+  receiptStatsLoading.value = true
+  try {
+    const resp = await getAdminBatch(row.id)
+    if (resp?.success && resp.batch) {
+      receiptStatsBatch.value = { ...row, ...resp.batch }
+      receiptStatsCounts.value = resp.batch.status_counts || null
+      receiptStatsFailures.value = resp.batch.failure_reasons || null
+    }
+  } catch (e: any) {
+    ElMessage.warning(`回执明细加载失败：${e?.message || e}`)
+  } finally {
+    receiptStatsLoading.value = false
+  }
 }
 
 // 送达率

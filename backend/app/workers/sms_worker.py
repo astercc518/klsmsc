@@ -67,7 +67,10 @@ async def _account_has_webhook(db, account_id) -> bool:
             from app.modules.common.account import Account
             rows = await db.execute(
                 select(Account.id).where(
-                    Account.webhook_url.isnot(None), Account.webhook_url != ""
+                    Account.webhook_url.isnot(None), Account.webhook_url != "",
+                    # 排除软删除/已关闭账户：删除客户残留的 webhook_url 不应再触发回执推送。
+                    Account.is_deleted == False,
+                    Account.status != "closed",
                 )
             )
             _WEBHOOK_ACCT_CACHE["ids"] = frozenset(r[0] for r in rows.all())
@@ -76,6 +79,40 @@ async def _account_has_webhook(db, account_id) -> bool:
             logger.warning(f"刷新 webhook 账户缓存失败，本次放行入队: {e}")
             return True
     return account_id in _WEBHOOK_ACCT_CACHE["ids"]
+
+
+# 注水账户缓存（仿 _account_has_webhook）：仅配置了 enabled 注水任务的账户才入队
+# dlr_water_followup，避免每条 delivered 都派生一个「进去查配置即空转」的注水任务。
+_WATER_ACCT_CACHE: dict = {"ids": frozenset(), "exp": 0.0}
+_WATER_ACCT_TTL = 60.0
+
+
+async def _account_has_water_config(db, account_id) -> bool:
+    """账户是否配置了 enabled 的注水任务（带 60s 缓存）。查询失败时返回 True（fail-open，
+    与 webhook 同策略：宁可多入队由任务内兜底，也不因缓存故障漏掉真实注水）。"""
+    if not account_id:
+        return False
+    now = time.monotonic()
+    if now >= _WATER_ACCT_CACHE["exp"]:
+        try:
+            from app.modules.water.models import WaterTaskConfig
+            from app.modules.common.account import Account
+            rows = await db.execute(
+                select(WaterTaskConfig.account_id)
+                .join(Account, Account.id == WaterTaskConfig.account_id)
+                .where(
+                    WaterTaskConfig.enabled == True,
+                    # 排除软删除/已关闭账户的残留注水配置。
+                    Account.is_deleted == False,
+                    Account.status != "closed",
+                )
+            )
+            _WATER_ACCT_CACHE["ids"] = frozenset(r[0] for r in rows.all())
+            _WATER_ACCT_CACHE["exp"] = now + _WATER_ACCT_TTL
+        except Exception as e:
+            logger.warning(f"刷新注水账户缓存失败，本次放行入队: {e}")
+            return True
+    return account_id in _WATER_ACCT_CACHE["ids"]
 
 
 
@@ -103,13 +140,16 @@ def _run_async(coro, *, timeout: Optional[float] = None):
         loop.close()
 
 
-def _make_session():
+def _make_session(read_timeout: int = None):
     """为每次 Celery 任务创建独立的引擎和会话。
 
     **关键约束**：必须使用 NullPool。Celery ForkPool 任务通过 _run_async 每次创建新事件循环，
     若用持久连接池，第一次创建的连接 bound 到首个 loop，后续任务换 loop 时会触发
     "Task got Future attached to a different loop"，导致 sms_logs UPDATE 异步失败、
     批次永远卡在 pending（issue: 批次 327/328/330 反复卡死的根因）。
+
+    read_timeout: 覆盖默认 asyncmy 读超时(秒)。仅极少数重聚合任务(如仪表板预热全表扫描)需要
+    放宽到分钟级；普通任务保持 30s 默认，避免单查询 hang 长期挂住 ForkPoolWorker。
     """
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from sqlalchemy.pool import NullPool
@@ -118,7 +158,8 @@ def _make_session():
     # 单次查询永远阻塞，把 ForkPoolWorker 进程长期挂起。asyncmy 不支持 write_timeout
     # （tcp 写缓冲满会被 OS 卡住，但实践中由 read_timeout 覆盖大多数 hang 场景）。
     connect_timeout = int(os.getenv("WORKER_DB_CONNECT_TIMEOUT_SEC", "10"))
-    read_timeout = int(os.getenv("WORKER_DB_READ_TIMEOUT_SEC", "30"))
+    if read_timeout is None:
+        read_timeout = int(os.getenv("WORKER_DB_READ_TIMEOUT_SEC", "30"))
     eng = create_async_engine(
         settings.SQLALCHEMY_DATABASE_URL,
         echo=False,
@@ -948,7 +989,9 @@ def process_smpp_dlr_task(channel_id: int, upstream_id: str, new_status: str, st
         return {"success": False, "error": str(e)}
 
 
-async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status: str, stat: str, err: str, dest_addr: str, source_addr: str, receipted_message_id: str):
+async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status: str, stat: str, err: str, dest_addr: str, source_addr: str, receipted_message_id: str, from_flush: bool = False):
+    # from_flush=True：来自 flush_dlr_retry_buffer 的接力重放，必须绕过未匹配负缓存短路做真实 DB 匹配，
+    # 否则会撞自己刚打的 dlr_unmatched 键直接返回 True，致 flush 误判已匹配而删掉缓冲条目。
     # 纯函数，不依赖 db，定义在 session 外
     def _expand_id_candidates(raw: str) -> list:
         upstream_id_str = str(raw).strip()
@@ -977,6 +1020,47 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
         candidate_ids.extend(_expand_id_candidates(piece))
     candidate_ids = list(dict.fromkeys(candidate_ids))
 
+    # —— 进 DB 前廉价去重（短路上游重传洪水）——
+    # TS_066 等上游对同一回执重传约 4 次。重传命中 DB 时状态写库是 no-op、副作用已由 dlr_fx 去重，
+    # 但仍要付一次 DB SELECT(~160ms/条，实测占 DLR 处理量约 2/3)。这里在进 DB 前用 Redis 标记位
+    # 短路：已被终态处理过的 (channel, upstream_id, status) 重传直接返回，省掉 SELECT，有效吞吐约 ×3。
+    # 仅对终态(delivered/failed)启用；fail-open：Redis 故障不短路，回落原逻辑。_mark_seen 在确定终态
+    # 处理完成后写标记（含终态保护分支），故未命中/缓冲的回执不会被误标，仍可由 flush 重试。
+    _seen_key = None
+    if upstream_id and new_status in ("delivered", "failed"):
+        _seen_key = f"dlr_seen:{channel_id}:{str(upstream_id).strip()}:{new_status}"
+        try:
+            if _redis_sync_client().get(_seen_key):
+                logger.debug(f"DLR 重传进DB前短路: id={upstream_id} -> {new_status}")
+                return True
+        except Exception as _seen_err:
+            logger.debug(f"DLR 进DB前去重检查失败，放行: {_seen_err}")
+
+    # —— 未匹配回执的「重传短路」(治本 worker-dlr 空转 658% CPU)——
+    # 上游(TSD ch64/TS ch82)对同一回执狂重传；其中一类回执的 upstream_id 在本库根本没有对应
+    # sms_log(外来/旧消息/从未落库)，注定匹配不上。原逻辑对每个这样的重传都跑 10×0.2s=2s 的 DB
+    # 重试匹配后才进缓冲——同一 id 每次重传都重跑，纯空转烧 CPU。首次未匹配时打一个短 TTL 负缓存键，
+    # 此后该 (channel, upstream_id) 的重传直接返回：原条目已在 dlr_pending_retry 缓冲，由 flush 接力
+    # 匹配(umid 迟到落库也能被 flush 重放命中)，无需 worker 再付 2s+10 查询。fail-open：Redis 故障不短路。
+    _unmatched_key = f"dlr_unmatched:{channel_id}:{str(upstream_id).strip()}" if upstream_id else None
+    if _unmatched_key and not from_flush:
+        try:
+            if _redis_sync_client().get(_unmatched_key):
+                logger.debug(f"DLR 未匹配重传短路(已在重试缓冲): id={upstream_id}")
+                return True
+        except Exception:
+            pass
+
+    def _mark_seen():
+        if not _seen_key:
+            return
+        try:
+            _redis_sync_client().set(
+                _seen_key, 1, ex=int(os.getenv("DLR_SEEN_DEDUP_TTL_SEC", "7200"))
+            )
+        except Exception:
+            pass
+
     eng, Session = _make_session()
     try:
         async with Session() as db:
@@ -997,7 +1081,10 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                 # DLR 偶尔比 SubmitSMResp 落库还快（上游 1 秒内回执，sms_logs.upstream_message_id
                 # 的写入由 sms_result_queue 异步处理可能滞后）。重试覆盖到 ~2 秒，覆盖大多数 race；
                 # 仍未命中则 buffer_unmatched_dlr 缓冲后由 flush 任务接力。
-                _retry_attempts = int(os.getenv("WORKER_DLR_MATCH_RETRY_ATTEMPTS", "10"))
+                # 10×0.2s=2s 阻塞重试对「DLR 早于回写」的秒级竞态有意义，但当 sms_result_queue 积压、
+                # 回写滞后数分钟时，2s 内等不到 umid 落库——纯阻塞空转、反拖慢 DLR 吞吐。降到 3×0.2s=0.6s
+                # 覆盖快竞态即可，更长的滞后交由 buffer_unmatched_dlr + flush 异步接力(不占 worker 槽位)。
+                _retry_attempts = int(os.getenv("WORKER_DLR_MATCH_RETRY_ATTEMPTS", "3"))
                 _retry_sleep_sec = float(os.getenv("WORKER_DLR_MATCH_RETRY_SLEEP_SEC", "0.2"))
                 for _attempt in range(_retry_attempts):
                     result = await db.execute(stmt)
@@ -1030,15 +1117,63 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
 
             if not sms_log:
                 logger.warning(f"SMPP DLR: 未找到 upstream_id={upstream_id} (候选 {candidate_ids})，dest={dest_addr!r}")
-                try:
-                    from app.utils.dlr_buffer import buffer_unmatched_dlr
-                    await buffer_unmatched_dlr(
-                        channel_id, upstream_id, new_status, stat, err,
-                        dest_addr, source_addr, receipted_message_id,
+                # —— 源头减量：永久孤儿(owned-but-no-row)直接丢弃，不进重试缓冲 ——
+                # 网关 SubmitSMResp 时以 7 天 TTL 写 dlr_owned:{ch}:{id} 归属键。若该键已老(MarkOwned 距今
+                # > 阈值，默认 1h)，说明结果回写早该完成、对应 sms_logs 行确实从未落库(分片掉线/死锁丢行的
+                # 永久孤儿)，这条 DLR 永不可能匹配——再缓冲+重试 20 次纯空转。直接丢弃(仍打负缓存让重传短路)。
+                # 仅对「键老」才丢；新近未匹配(可能 umid 回写竞态)的键 TTL 接近满值，照常缓冲+flush 接力。
+                _orphan_drop = False
+                if upstream_id:
+                    try:
+                        _owned_ttl = _redis_sync_client().ttl(
+                            f"dlr_owned:{channel_id}:{str(upstream_id).strip()}"
+                        )
+                        _owned_full = int(os.getenv("DLR_OWNED_TTL_SEC", "604800"))
+                        _orphan_age = int(os.getenv("DLR_ORPHAN_DROP_AGE_SEC", "3600"))
+                        # ttl: >=0 剩余秒/-1 无过期/-2 不存在。剩余 < (满值-阈值) ⇒ MarkOwned 已超阈值=老孤儿。
+                        if isinstance(_owned_ttl, int) and 0 <= _owned_ttl < (_owned_full - _orphan_age):
+                            _orphan_drop = True
+                    except Exception:
+                        pass
+                if _orphan_drop:
+                    logger.info(
+                        f"DLR 永久孤儿丢弃(owned-but-no-row, MarkOwned 已超阈值): "
+                        f"channel={channel_id}, upstream_id={upstream_id}"
                     )
-                except Exception as _buf_err:
-                    logger.debug(f"DLR 重试缓冲写入异常(忽略): {_buf_err}")
+                else:
+                    try:
+                        from app.utils.dlr_buffer import buffer_unmatched_dlr
+                        await buffer_unmatched_dlr(
+                            channel_id, upstream_id, new_status, stat, err,
+                            dest_addr, source_addr, receipted_message_id,
+                        )
+                    except Exception as _buf_err:
+                        logger.debug(f"DLR 重试缓冲写入异常(忽略): {_buf_err}")
+                # 打负缓存：该 id 的后续重传直接走上面的短路(孤儿丢弃/缓冲都已决定，无需再跑 DB 匹配)。
+                # TTL 短(默认 90s)：仅折叠重传洪峰；过窗后若仍重传会重新判定一次，不会永久压制真命中。
+                if _unmatched_key:
+                    try:
+                        _redis_sync_client().set(
+                            _unmatched_key, 1,
+                            ex=int(os.getenv("DLR_UNMATCHED_SHORTCIRCUIT_TTL_SEC", "90")),
+                        )
+                    except Exception:
+                        pass
                 return False
+
+            # —— 终态保护：失败不可被迟到/重传的 DELIVRD 翻回 ——
+            # TS_066 等上游每条 DLR 重传约 4 次且常乱序，典型序列 DELIVRD→UNDELIV→UNDELIV→DELIVRD。
+            # 「最后写入生效」会让末尾那个重传的 DELIVRD 把已按 UNDELIV 判失败的记录翻回 delivered，
+            # 导致送达率虚高（实测批次 1311 因此多算约 1200 条，系统 85.7% vs 上游台账 73.6%）。
+            # UNDELIV/REJECTD/EXPIRED/DELETED 是上游对乐观回执的真实终态更正，一旦判失败即视为终态，
+            # 此后到达的 delivered（几乎都是重传/乱序）一律忽略，不翻状态、不再派发送达副作用。
+            if sms_log.status == "failed" and new_status == "delivered":
+                logger.info(
+                    f"SMPP DLR 终态保护：{sms_log.message_id} 已失败，忽略迟到/重传的 DELIVRD "
+                    f"(upstream_id={upstream_id}, stat={stat})"
+                )
+                _mark_seen()
+                return True
 
             already_correct = sms_log.status == new_status
             if not already_correct:
@@ -1060,6 +1195,27 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                 logger.info(f"SMPP DLR 业务处理: {sms_log.message_id} 已是 {new_status}，派发 webhook/注水入队")
 
             # 批次进度由 sync_processing_batch_progress_task 等定时汇总，避免海量 DLR 并发抢锁 sms_batches。
+
+            # —— 副作用幂等去重 ——
+            # 上游对同一条回执常重传多次（实测 TS_066 每条 DLR 被重传约 4 次）。状态更新本身幂等
+            # （already_correct 跳过），但下面三个副作用（SMPP 入站转发 / webhook / 注水）原先对每个
+            # 重复回执都重复派发，导致注水点击/注册被刷 4 倍、代理商收 4 次重复回执。这里用 Redis
+            # SETNX 按 (message_id, 终态) 去重：首个回执派发，重传的后续直接跳过。
+            try:
+                _fx_ttl = int(os.getenv("DLR_FX_DEDUP_TTL_SEC", "7200"))
+                _fx_rds = _redis_sync_client()
+                _fx_first = bool(_fx_rds.set(
+                    f"dlr_fx:{sms_log.message_id}:{new_status}", 1, nx=True, ex=_fx_ttl
+                ))
+            except Exception as _fx_err:
+                _fx_first = True  # fail-open：去重故障时放行派发，宁可偶发重复也不漏
+                logger.warning(f"DLR 副作用去重检查失败，放行派发: {_fx_err}")
+            # 此处 (channel, upstream_id, new_status) 已被终态处理（首次写库或 already_correct 重复），
+            # 标记 seen 让后续重传在进 DB 前短路。放在副作用去重之后，确保至少派发过一次。
+            _mark_seen()
+            if not _fx_first:
+                logger.debug(f"重复 DLR 副作用已派发过，跳过: {sms_log.message_id} -> {new_status}")
+                return True
 
             # SMPP 入站账户：将 DLR 转发给在线客户端（或落库等待补发）
             try:
@@ -1104,17 +1260,22 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
 
             if new_status == "delivered" and sms_log.account_id:
                 try:
-                    celery_app.send_task(
-                        "dlr_water_followup_task",
-                        args=[
-                            sms_log.id,
-                            sms_log.message or "",
-                            sms_log.country_code or "",
-                            sms_log.account_id,
-                            sms_log.channel_id or 0,
-                        ],
-                        queue="data_tasks",
-                    )
+                    from app.utils.url_extractor import extract_urls as _extract_urls
+                    # 入队预检（仿 webhook）：仅当消息含 URL 且账户配了启用的注水任务才入队，
+                    # 避免每条 delivered 都派生一个「进去查配置即空转」的注水任务。
+                    if (_extract_urls(sms_log.message or "")
+                            and await _account_has_water_config(db, sms_log.account_id)):
+                        celery_app.send_task(
+                            "dlr_water_followup_task",
+                            args=[
+                                sms_log.id,
+                                sms_log.message or "",
+                                sms_log.country_code or "",
+                                sms_log.account_id,
+                                sms_log.channel_id or 0,
+                            ],
+                            queue="data_tasks",
+                        )
                 except Exception as e:
                     logger.warning(f"注水任务入队失败: {e}")
 
@@ -1188,6 +1349,7 @@ async def _flush_dlr_retry_buffer_async():
                     dest_addr=item.get("dest_addr", ""),
                     source_addr=item.get("source_addr", ""),
                     receipted_message_id=item.get("receipted_message_id", ""),
+                    from_flush=True,  # 绕过未匹配负缓存短路，做真实 DB 匹配
                 )
                 if matched:
                     # 成功匹配并写入 DB，从缓冲区删除

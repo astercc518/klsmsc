@@ -33,11 +33,21 @@ class Validator:
                     return False, "号码必须以 + 开头 (E.164格式)", None
 
             parsed = phonenumbers.parse(phone, None)
-            
+
+            # 严格校验：号段已分配。失败时回落到"可能号码"(仅校验号段长度)，
+            # 容忍 phonenumbers 元数据滞后于运营商新放号段的情况（如 MA 0726）。
             if not phonenumbers.is_valid_number(parsed):
-                return False, "无效的手机号码", None
-                
+                if not phonenumbers.is_possible_number(parsed):
+                    return False, "无效的手机号码", None
+                logger.warning(
+                    f"号码 {phone} 未通过严格校验但号段长度合法，按可能号码放行"
+                    f"（可能是 phonenumbers 元数据滞后）"
+                )
+
             region_code = phonenumbers.region_code_for_number(parsed)
+            # 元数据滞后时 region_code_for_number 可能返回 None，用区号兜底
+            if not region_code:
+                region_code = phonenumbers.region_code_for_country_code(parsed.country_code)
             dial_code = str(parsed.country_code)
             # 统一使用 ISO2 作为 country_code，区号保留在 dial_code
             iso_code = normalize_country_code(region_code) or normalize_country_code(dial_code) or region_code or dial_code
