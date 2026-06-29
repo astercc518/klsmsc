@@ -722,6 +722,15 @@ const friendlyError = (msg: string | null | undefined): { title: string; desc: s
       desc: '短信在运营商网络中等待投递超时。通常因为接收方设备长时间不在线（关机/无信号）。',
     }
   }
+  // 上游限流（ESME_RTHROTTLED=88）：通道瞬时拥塞，非号码问题。
+  // 注意：UNDELIV/EXPIRED 等回执分支在前已 return，此处只会命中 SubmitSMResp 的 88。
+  if (msg.includes('throttled') || /SMPP Error:\s*88(\b|\s|$)/.test(msg)) {
+    return {
+      type: 'warning',
+      title: '通道繁忙（限流）',
+      desc: '上游通道瞬时拥塞被限流，本条短信未发出。这是通道容量问题，与您的号码或内容无关，稍后重发即可。',
+    }
+  }
   if (msg.includes('different loop')) {
     return {
       type: 'error',

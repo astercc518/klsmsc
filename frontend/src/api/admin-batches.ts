@@ -24,6 +24,7 @@ export interface AdminBatchItem {
 
 export interface AdminBatchDetail extends AdminBatchItem {
   status_counts: Record<string, number>
+  failure_reasons?: { reason: string; count: number }[]
   current_channel?: {
     id: number
     channel_code: string

@@ -171,6 +171,104 @@ def process_batch_resume(self, batch_id: int):
     )
 
 
+@celery_app.task(name='dispatch_scheduled_batches')
+def dispatch_scheduled_batches():
+    """beat 周期调用：扫描到点的定时批次，当下入队分片——替代 eta 反模式。
+
+    定时发送不再 apply_async(eta=)（任务挂 worker 内存 unacked，eta>30min 撞 consumer_timeout
+    崩 worker）。批次以 scheduled_at + 持久化负载文件登记为 PENDING，本任务到点把负载读出、
+    当下分片入队（无 eta）。详见 docs/postmortem-2026-06-25-dlr-pipeline.md。
+    """
+    return _run_async(_do_dispatch_scheduled_batches(), timeout=120.0)
+
+
+def _enqueue_scheduled_chunks(batch_id: int, payload: dict, chunk_size: int) -> int:
+    """把定时批次持久化负载当下分片入队 process_batch_chunk（countdown 错峰，无 eta）。"""
+    phones = payload.get("phones") or []
+    n = 0
+    for offset in range(0, len(phones), chunk_size):
+        chunk = phones[offset:offset + chunk_size]
+        process_batch_chunk.apply_async(
+            args=(
+                batch_id,
+                payload.get("account_id"),
+                chunk,
+                payload.get("message") or "",
+                payload.get("rot_messages") or [],
+                offset,
+                payload.get("channel_id"),
+                payload.get("sender_id"),
+            ),
+            countdown=n * 0.1,
+        )
+        n += 1
+    return n
+
+
+async def _do_dispatch_scheduled_batches():
+    import json as _json
+    now = datetime.now()
+    dispatched = 0
+    scanned = 0
+    async with _get_worker_session() as db:
+        result = await db.execute(
+            select(SmsBatch).where(
+                SmsBatch.status == BatchStatus.PENDING,
+                SmsBatch.scheduled_at.isnot(None),
+                SmsBatch.scheduled_at <= now,
+                SmsBatch.is_deleted == False,
+            ).order_by(SmsBatch.scheduled_at.asc()).limit(20)
+        )
+        due = result.scalars().all()
+        scanned = len(due)
+        for batch in due:
+            cfg = batch.send_config or {}
+            if not cfg.get("scheduled") or not cfg.get("payload_file"):
+                continue
+            # 原子认领：PENDING→PROCESSING，防 beat 重叠/多实例对同一批次重复派发
+            claim = await db.execute(
+                update(SmsBatch)
+                .where(SmsBatch.id == batch.id, SmsBatch.status == BatchStatus.PENDING)
+                .values(status=BatchStatus.PROCESSING, started_at=now)
+            )
+            await db.commit()
+            if (claim.rowcount or 0) == 0:
+                continue  # 已被其他 beat tick 认领
+            pf = cfg.get("payload_file")
+            try:
+                if not pf or not os.path.exists(pf):
+                    raise FileNotFoundError(f"定时负载文件丢失: {pf}")
+                with open(pf, "r", encoding="utf-8") as f:
+                    payload = _json.load(f)
+                cnt = await asyncio.to_thread(
+                    _enqueue_scheduled_chunks, batch.id, payload, int(cfg.get("chunk_size", 2000))
+                )
+                dispatched += 1
+                logger.info(
+                    f"定时批次到点派发: batch={batch.id}, chunks={cnt}, total={len(payload.get('phones', []))}"
+                )
+                try:
+                    os.remove(pf)
+                except Exception:
+                    pass
+            except FileNotFoundError as e:
+                # 负载丢失无法恢复 → 置 FAILED，不再重试
+                logger.error(f"定时批次派发失败(负载丢失，置 FAILED): batch={batch.id}, {e}")
+                await db.execute(
+                    update(SmsBatch).where(SmsBatch.id == batch.id)
+                    .values(status=BatchStatus.FAILED, error_message=f"定时派发失败：{e}")
+                )
+                await db.commit()
+            except Exception as e:
+                # 瞬时错误 → 回退 PENDING 等下轮重试（process_batch_chunk 顶部 already_done 幂等保安全）
+                logger.error(f"定时批次派发异常(回退 PENDING 重试): batch={batch.id}, {e}", exc_info=e)
+                await db.execute(
+                    update(SmsBatch).where(SmsBatch.id == batch.id).values(status=BatchStatus.PENDING)
+                )
+                await db.commit()
+    return {"scanned": scanned, "dispatched": dispatched}
+
+
 async def _do_process_batch(batch_id: int, resume: bool = False):
     db = _get_worker_session()
     try:
@@ -1080,9 +1178,13 @@ async def _do_process_chunk(
                                 except _OpErr as _werr:
                                     _wo = getattr(_werr, 'orig', None)
                                     _wc = (_wo.args[0] if _wo and getattr(_wo, 'args', None) else None)
-                                    if _wc in (1205, 1213) and _w_atmpt < _write_attempts - 1:
+                                    # 1205/1213=行锁/死锁；2013=DB 过载时整条连接掉线(Lost connection during query)。
+                                    # 三者都是「本片未持久化、可整片重试」：commit 在入队之前，撞这些错即回滚重试，
+                                    # 绝不让整片丢失(owned-but-no-row 孤儿的源头正是 2013 掉线整片回滚未入库)。
+                                    # 每次重试重建对象用全新 message_id，故 2013 后即便原 commit 侥幸落库也不会撞 1062。
+                                    if _wc in (1205, 1213, 2013) and _w_atmpt < _write_attempts - 1:
                                         logger.warning(
-                                            f"分片写库行锁冲突({_wc}) retry={_w_atmpt+1}: "
+                                            f"分片写库冲突/掉线({_wc}) retry={_w_atmpt+1}: "
                                             f"batch={batch_id}, offset={start_offset}"
                                         )
                                         try:

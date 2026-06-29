@@ -1,6 +1,7 @@
 """
 消息队列工具
 """
+import os
 import time
 from typing import Optional
 
@@ -12,6 +13,36 @@ logger = get_logger(__name__)
 # 入队短暂失败（Broker 抖动、连接竞争）时自动重试，避免库中永久 queued 却无 Celery 任务
 _SMS_QUEUE_RETRIES = 3
 _SMS_QUEUE_BACKOFF = (0.2, 0.6, 1.2)
+
+# 每通道独立队列开关：开启后 SMPP 整包/单条按 channel_id 投到 sms_send_smpp.{id}，
+# 由 Go 网关每通道独立 consumer 消费，消除单一 sms_send_smpp FIFO 的 head-of-line 阻塞
+# (一个被限流的慢通道不再饿死其它通道)。默认关闭，行为与改造前一致。
+# 灰度：先在网关容器设此 env(消费者就绪)，再在 api/worker 容器设(生产端开始投递)。
+SMPP_PER_CHANNEL_QUEUES = os.getenv("SMPP_PER_CHANNEL_QUEUES", "0").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+_SMPP_QUEUE_PREFIX = "sms_send_smpp."
+
+
+def _smpp_channel_queue_name(payload: dict) -> Optional[str]:
+    """整包/单条均为单通道：取 channel_id 决定每通道队列名。
+    开关关闭、payload 非 dict、或 channel_id 缺失/非法时返回 None(回退 legacy sms_send_smpp)。
+    """
+    if not SMPP_PER_CHANNEL_QUEUES or not isinstance(payload, dict):
+        return None
+    try:
+        cid = int(payload.get("channel_id") or 0)
+    except (TypeError, ValueError):
+        cid = 0
+    if cid <= 0:
+        return None
+    return f"{_SMPP_QUEUE_PREFIX}{cid}"
+
+
+# 说明：投递走 apply_async(queue=qname)，由 Celery task_create_missing_queues(默认 True)
+# 自动声明 durable 队列 + 交换机 + 绑定；不能用 apply_async(exchange="", routing_key=qname)，
+# 因为 Celery 把空 exchange 当 falsy → 回退到 send_sms_task 的 'sms_send' 交换机 → 路由键无匹配
+# 绑定 → 消息被静默丢弃。Go 网关 per-channel 监管者预声明的同名 durable 队列与此幂等兼容。
 
 
 class QueueManager:
@@ -77,15 +108,18 @@ class QueueManager:
         else:
             mid = (payload or {}).get("message_id", "")
 
+        qname = _smpp_channel_queue_name(payload)
+
         last_err: Optional[Exception] = None
         for attempt in range(_SMS_QUEUE_RETRIES):
             try:
+                target = qname or "sms_send_smpp"
                 task = send_sms_task.apply_async(
                     args=[payload, http_credentials],
-                    queue="sms_send_smpp",
+                    queue=target,
                 )
                 logger.info(
-                    f"SMPP 已直投 sms_send_smpp: {mid}, task_id: {task.id}"
+                    f"SMPP 已直投 {target}: {mid}, task_id: {task.id}"
                     + (f" (第{attempt + 1}次尝试)" if attempt else "")
                 )
                 return True
@@ -173,6 +207,8 @@ class QueueManager:
             payloads = list(items)
 
         ser = SMPP_BULK_PUBLISH_SERIALIZER
+        # 整包为单批次→单通道：取首条 channel_id 决定每通道队列(开关关闭则回退 legacy)
+        qname = _smpp_channel_queue_name(payloads[0] if payloads else None)
         last_err: Optional[Exception] = None
 
         for attempt in range(_SMS_QUEUE_RETRIES):
@@ -180,12 +216,13 @@ class QueueManager:
                 with celery_app.producer_pool.acquire(block=True) as producer:
                     send_sms_task.apply_async(
                         args=[payloads, http_credentials],
-                        queue="sms_send_smpp",
+                        queue=qname or "sms_send_smpp",
                         producer=producer,
                         serializer=ser,
                     )
                 logger.info(
-                    f"SMPP 整包直投 sms_send_smpp: {len(payloads)} 条, serializer={ser}, 单次 publish"
+                    f"SMPP 整包直投 {qname or 'sms_send_smpp'}: {len(payloads)} 条, "
+                    f"serializer={ser}, 单次 publish"
                 )
                 return True
             except Exception as e:

@@ -5,7 +5,9 @@ WORKDIR /app
 # Install git for private modules or dependencies if needed
 RUN apk add --no-cache git
 
+# 本地 fork（replace 目标）必须在首个 go mod tidy 前就位，否则 tidy 找不到 ./third_party/gosmpp
 COPY go.mod go.sum* ./
+COPY third_party/ ./third_party/
 RUN go mod tidy
 
 COPY . .

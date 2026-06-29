@@ -834,6 +834,7 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 						if pd.CommandStatus == data.ESME_ROK {
 							// 标记为本系统所有：后续 DeliverSM 将以此作为归属判断依据，外来 DLR 直接丢弃。
 							MarkOwned(cfg.ID, pd.MessageID)
+							statROK(cfg.ID) // 计数:SubmitSMResp status=0 接受
 							if err := publishSmsSubmitResult(seqData.logID, seqData.messageID, pd.MessageID, "sent", ""); err != nil {
 								log.Printf("[SMPP-ERROR] Failed to publish submit result for %s: %v", seqData.messageID, err)
 							} else {
@@ -844,21 +845,25 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 							// 避免把「慢点发就能成」的消息直接判 failed 丢弃。超过重投上限才落 failed。
 							// 此时原 RabbitMQ delivery 早已 ACK（SubmitSM 写 socket 成功即 ACK），只能重投新消息而非 NACK。
 							go m.throttleChannelDedup(cfg.ID, cfg)
+							statThrottled(cfg.ID) // 计数:SubmitSMResp status=88 限流
 							pl := seqData.payload
 							if pl.LogID != 0 && pl.ThrottleRetry < throttleMaxRetry() {
 								pl.ThrottleRetry++
 								pl.RecordStatus = "queued" // DB 仍为 queued，重投时幂等检查放行
 								if err := republishSmppPayloads([]SMSLogData{pl}); err != nil {
+									statRetryFail(cfg.ID) // 计数:88 重投失败落 failed
 									log.Printf("[SMPP-THROTTLE] channel %s msg %s 限流重投失败(第%d次)，回退 failed: %v",
 										cfg.ChannelCode, seqData.messageID, pl.ThrottleRetry, err)
 									if perr := publishSmsSubmitResult(seqData.logID, seqData.messageID, "", "failed", fmt.Sprintf("SMPP Error: %d", pd.CommandStatus)); perr != nil {
 										log.Printf("[SMPP-ERROR] Failed to publish SMPP error for %s: %v", seqData.messageID, perr)
 									}
 								} else {
+									statRetry(cfg.ID) // 计数:88 重投成功(submit 将被放大)
 									log.Printf("[SMPP-THROTTLE] channel %s msg %s 被上游限流(88)，降速并重投重试(第%d/%d次)",
 										cfg.ChannelCode, seqData.messageID, pl.ThrottleRetry, throttleMaxRetry())
 								}
 							} else {
+								statRetryFail(cfg.ID) // 计数:88 重投达上限落 failed
 								log.Printf("[SMPP-THROTTLE] channel %s msg %s 限流重投已达上限(%d)，标记 failed",
 									cfg.ChannelCode, seqData.messageID, throttleMaxRetry())
 								if err := publishSmsSubmitResult(seqData.logID, seqData.messageID, "", "failed", fmt.Sprintf("SMPP Error: %d (throttled, retries exhausted)", pd.CommandStatus)); err != nil {
@@ -866,6 +871,7 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 								}
 							}
 						} else {
+							statOtherFail(cfg.ID) // 计数:其它非零状态落 failed(如 status=1 模板拒收)
 							log.Printf("[SMPP-ERROR] SubmitSM failed with status %d for msg %s", pd.CommandStatus, seqData.messageID)
 							if err := publishSmsSubmitResult(seqData.logID, seqData.messageID, "", "failed", fmt.Sprintf("SMPP Error: %d", pd.CommandStatus)); err != nil {
 								log.Printf("[SMPP-ERROR] Failed to publish SMPP error for %s: %v", seqData.messageID, err)
@@ -1280,6 +1286,13 @@ func (m *SMPPManager) handleDeliverSM(deliver *pdu.DeliverSM, cfg ChannelConfig)
 
 		// 不在 PDU 线程内同步写 MySQL（会阻塞读包与后续 DeliverSM）；由 Python process_smpp_dlr_task 写库与副作用。
 
+		// 源头去重：同 (channel,upstream_id,stat) 近期已发布过则跳过（上游按设计每条回执重发约 4 次）。
+		// 安全前提：deliver_sm_resp 已由 gosmpp 读循环在本函数之前自动回复，去重在 ACK 下游，不引发更多重传。详见 dlr_dedup.go。
+		if IsDuplicateDLR(cfg.ID, upstreamID, stat) {
+			log.Printf("[SMPP-DEBUG] DLR deduped (upstream retransmit): channel=%s upstream=%s stat=%s", cfg.ChannelCode, upstreamID, stat)
+			return
+		}
+
 		// [重要] 通知 Python Worker 写回执、对账、注水、Webhook 等
 		dlrArgs := []interface{}{
 			cfg.ID,      // channel_id
@@ -1294,6 +1307,8 @@ func (m *SMPPManager) handleDeliverSM(deliver *pdu.DeliverSM, cfg ChannelConfig)
 		if pubErr := PublishCeleryTask("sms_dlr", "process_smpp_dlr_task", dlrArgs); pubErr != nil {
 			log.Printf("[SMPP-ERROR] Failed to notify Python worker of DLR for %s: %v", upstreamID, pubErr)
 		} else {
+			// 发布成功后才标记去重键：发布失败不标记，靠上游重传天然重试，绝不丢回执。
+			MarkDLRPublished(cfg.ID, upstreamID, stat)
 			log.Printf("[SMPP-DEBUG] Notified Python worker of DLR for %s", upstreamID)
 		}
 	}
@@ -1482,6 +1497,7 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 							log.Printf("[SMPP-ERROR] GSM7 UDH part %d/%d submit failed: channel=%s msg=%s %v",
 								part, total, cfg.ChannelCode, messageID, err)
 						} else {
+							statSubmit(channelID) // 计数:GSM7 长信后续段 submit_sm PDU
 							log.Printf("[SMPP-DEBUG] Submitting SM(GSM7 UDH %d/%d): channel=%s seq=%d dest=%s ref=%d",
 								part, total, cfg.ChannelCode, psm.SequenceNumber, destDigits, ref)
 						}
@@ -1588,6 +1604,7 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 						part, total, cfg.ChannelCode, messageID, err)
 					// 不阻断后续段；接收端能收到的段会拼接展示，缺段处显示空白
 				} else {
+					statSubmit(channelID) // 计数:UCS2 长信后续段 submit_sm PDU
 					log.Printf("[SMPP-DEBUG] Submitting SM (UDH part %d/%d): channel=%s sequence=%d dest=%s ref=%d seg_bytes=%d",
 						part, total, cfg.ChannelCode, psm.SequenceNumber, destDigits, ref, len(seg))
 				}
@@ -1644,5 +1661,6 @@ func (m *SMPPManager) submitOneAndTrack(
 		log.Printf("[SMPP-ERROR] Submit failed: %v", err)
 		return err
 	}
+	statSubmit(channelID) // 计数:写到上游的 submit_sm PDU(单段/首段)
 	return nil
 }

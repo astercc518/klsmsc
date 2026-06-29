@@ -159,6 +159,7 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
+      SMPP_PER_CHANNEL_QUEUES: ${SMPP_PER_CHANNEL_QUEUES:-1}
       DATABASE_HOST: proxysql
       DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
@@ -241,6 +242,7 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
+      SMPP_PER_CHANNEL_QUEUES: ${SMPP_PER_CHANNEL_QUEUES:-1}
       DATABASE_HOST: proxysql
       DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
@@ -291,6 +293,7 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
+      SMPP_PER_CHANNEL_QUEUES: ${SMPP_PER_CHANNEL_QUEUES:-1}
       DATABASE_HOST: proxysql
       DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
@@ -307,6 +310,9 @@ services:
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
       SMPP_PROBE_TOKEN: ${SMPP_PROBE_TOKEN:-}
       DLR_SENT_TIMEOUT_HOURS: ${DLR_SENT_TIMEOUT_HOURS:-72}
+      # unmatched DLR(ch82 dest='' 洪水)别空等 10×0.2s=1.8s/条,砍到 3×0.1s=0.3s,余下交 dlr_buffer flush 接力
+      WORKER_DLR_MATCH_RETRY_ATTEMPTS: ${WORKER_DLR_MATCH_RETRY_ATTEMPTS:-3}
+      WORKER_DLR_MATCH_RETRY_SLEEP_SEC: ${WORKER_DLR_MATCH_RETRY_SLEEP_SEC:-0.1}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
@@ -317,7 +323,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${DLR_WORKER_CONCURRENCY:-8} --max-tasks-per-child=${DLR_WORKER_MAX_TASKS_PER_CHILD:-2000} -Q sms_dlr
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=${DLR_WORKER_CONCURRENCY:-16} --max-tasks-per-child=${DLR_WORKER_MAX_TASKS_PER_CHILD:-2000} -Q sms_dlr
     restart: unless-stopped
     logging: *default-logging
     networks:
@@ -333,6 +339,7 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
+      SMPP_PER_CHANNEL_QUEUES: ${SMPP_PER_CHANNEL_QUEUES:-1}
       DATABASE_HOST: proxysql
       DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
@@ -378,6 +385,7 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
+      SMPP_PER_CHANNEL_QUEUES: ${SMPP_PER_CHANNEL_QUEUES:-1}
       DATABASE_HOST: proxysql
       DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
@@ -418,6 +426,7 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
+      SMPP_PER_CHANNEL_QUEUES: ${SMPP_PER_CHANNEL_QUEUES:-1}
       DATABASE_HOST: proxysql
       DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
@@ -469,6 +478,7 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
+      SMPP_PER_CHANNEL_QUEUES: ${SMPP_PER_CHANNEL_QUEUES:-1}
       DATABASE_HOST: proxysql
       DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
@@ -596,6 +606,7 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
+      SMPP_PER_CHANNEL_QUEUES: ${SMPP_PER_CHANNEL_QUEUES:-1}
       DATABASE_HOST: proxysql
       DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
@@ -641,6 +652,7 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: ${APP_ENV:-development}
       APP_DEBUG: ${APP_DEBUG:-false}
+      SMPP_PER_CHANNEL_QUEUES: ${SMPP_PER_CHANNEL_QUEUES:-1}
       DATABASE_HOST: proxysql
       DATABASE_PORT: 6033
       DATABASE_USER: ${MYSQL_USER:-smsuser}
@@ -692,6 +704,16 @@ services:
       # Go 网关消费 sms_send_smpp：并行 worker 数与 Rabbit QoS prefetch（与 channels.concurrency 配合调压）
       SMPP_GATEWAY_WORKERS: ${SMPP_GATEWAY_WORKERS:-32}
       SMPP_GATEWAY_PREFETCH: ${SMPP_GATEWAY_PREFETCH:-32}
+      # 88(ESME_RTHROTTLED)限流重投上限。按提交计费时每次重投=上游多计一次成本,
+      # 故止血设 0：遇 88 立即落 failed、不重投(代价:合法瞬时限流不再抢救,可能略掉送达)。
+      SMPP_THROTTLE_MAX_RETRY: ${SMPP_THROTTLE_MAX_RETRY:-0}
+      # 每通道独立队列：=1 时为每个活跃 SMPP 通道起独立 consumer 消费 sms_send_smpp.{id}，
+      # 消除单一 sms_send_smpp FIFO 的 head-of-line 阻塞（慢/被限流通道不再饿死其它通道）。
+      # 灰度：网关先开（消费者就绪，legacy 队列仍消费），再开 api/worker 生产端。
+      SMPP_PER_CHANNEL_QUEUES: ${SMPP_PER_CHANNEL_QUEUES_GATEWAY:-1}
+      SMPP_PCQ_PREFETCH: ${SMPP_PCQ_PREFETCH:-16}
+      SMPP_PCQ_WORKERS: ${SMPP_PCQ_WORKERS:-8}
+      SMPP_PCQ_SYNC_SEC: ${SMPP_PCQ_SYNC_SEC:-60}
       SMPP_PROBE_BIND_LISTEN: ${SMPP_PROBE_BIND_LISTEN:-:8090}
       SMPP_PROBE_TOKEN: ${SMPP_PROBE_TOKEN:-}
       # SMPP 入站服务器
@@ -704,6 +726,11 @@ services:
       INBOUND_MAX_CONNS_PER_IP: ${INBOUND_MAX_CONNS_PER_IP:-20}
       # DLR 归属过滤：与外部系统共用同一上游 SMPP 账号时启用，过滤掉别人的 DLR
       DLR_OWNERSHIP_FILTER: ${DLR_OWNERSHIP_FILTER:-true}
+      # DLR 源头去重：上游对每条回执按设计重发约 4 次(跨度数分钟)，在发布到 sms_dlr 前折叠同
+      # (channel,upstream_id,stat) 的重传，根治大批次时 sms_dlr 队列爆炸 + Worker 4 倍 DB 负载。
+      # 去重发生在 deliver_sm_resp(ACK) 之后，不引发上游更多重传。TTL 须盖住重传跨度(默认 900s)。
+      DLR_DEDUP_FILTER: ${DLR_DEDUP_FILTER:-true}
+      DLR_DEDUP_TTL_SEC: ${DLR_DEDUP_TTL_SEC:-900}
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}

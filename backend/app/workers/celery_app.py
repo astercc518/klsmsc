@@ -180,6 +180,7 @@ celery_app.conf.task_routes.update({
 celery_app.conf.task_routes.update({
     'process_batch': {'queue': 'celery'},
     'process_batch_chunk': {'queue': 'celery'},
+    'dispatch_scheduled_batches': {'queue': 'celery'},
     'retry_batch_as_new': {'queue': 'celery'},
     'inspect_batches_task': {'queue': 'celery'},
     'sync_processing_batch_progress_task': {'queue': 'celery'},
@@ -206,6 +207,11 @@ celery_app.conf.beat_schedule = {
     # 每30秒拉取一次 DLR 报告
     'fetch-dlr-reports-every-30s': {
         'task': 'fetch_dlr_reports_task',
+        'schedule': 30.0,
+    },
+    # 每30秒派发到点的定时发送批次（替代 eta 反模式；到点才入队，不挂 worker 内存）
+    'dispatch-scheduled-batches-30s': {
+        'task': 'dispatch_scheduled_batches',
         'schedule': 30.0,
     },
     # 每10分钟刷新所有活跃商品库存（含时效过期自动下架）
@@ -258,6 +264,11 @@ celery_app.conf.beat_schedule = {
     'refresh-business-report-cache-1h': {
         'task': 'refresh_business_report_cache_task',
         'schedule': 3600.0,
+    },
+    # 每 4 分钟预热管理员仪表板缓存（TTL 300s；十几条 sms_logs 全表聚合冷算 ~60-120s 会撞前端 120s 超时）
+    'refresh-admin-dashboard-cache-4min': {
+        'task': 'refresh_admin_dashboard_cache_task',
+        'schedule': 240.0,
     },
     # 每天 00:30 清理过期 SMPP 待发 DLR
     'smpp-pending-dlr-cleanup-daily': {
