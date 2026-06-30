@@ -1119,9 +1119,11 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                 logger.warning(f"SMPP DLR: 未找到 upstream_id={upstream_id} (候选 {candidate_ids})，dest={dest_addr!r}")
                 # —— 源头减量：永久孤儿(owned-but-no-row)直接丢弃，不进重试缓冲 ——
                 # 网关 SubmitSMResp 时以 7 天 TTL 写 dlr_owned:{ch}:{id} 归属键。若该键已老(MarkOwned 距今
-                # > 阈值，默认 1h)，说明结果回写早该完成、对应 sms_logs 行确实从未落库(分片掉线/死锁丢行的
+                # > 阈值，默认 2h)，说明结果回写早该完成、对应 sms_logs 行确实从未落库(分片掉线/死锁丢行的
                 # 永久孤儿)，这条 DLR 永不可能匹配——再缓冲+重试 20 次纯空转。直接丢弃(仍打负缓存让重传短路)。
                 # 仅对「键老」才丢；新近未匹配(可能 umid 回写竞态)的键 TTL 接近满值，照常缓冲+flush 接力。
+                # 阈值取 2h：须显著高于 sms_result_queue 回写最坏积压(实测峰值 ~40min)，避免大积压时把
+                # 「umid 尚未落库的真在途消息」误判孤儿丢弃；负缓存已让未匹配重传很便宜，阈值放宽几乎无成本。
                 _orphan_drop = False
                 if upstream_id:
                     try:
@@ -1129,7 +1131,7 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                             f"dlr_owned:{channel_id}:{str(upstream_id).strip()}"
                         )
                         _owned_full = int(os.getenv("DLR_OWNED_TTL_SEC", "604800"))
-                        _orphan_age = int(os.getenv("DLR_ORPHAN_DROP_AGE_SEC", "3600"))
+                        _orphan_age = int(os.getenv("DLR_ORPHAN_DROP_AGE_SEC", "7200"))
                         # ttl: >=0 剩余秒/-1 无过期/-2 不存在。剩余 < (满值-阈值) ⇒ MarkOwned 已超阈值=老孤儿。
                         if isinstance(_owned_ttl, int) and 0 <= _owned_ttl < (_owned_full - _orphan_age):
                             _orphan_drop = True
