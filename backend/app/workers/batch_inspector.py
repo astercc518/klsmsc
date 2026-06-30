@@ -49,6 +49,20 @@ _SMPP_QUEUE_PREFIX = "sms_send_smpp."
 # [事故根因] 批次 1118-1120 共 9 万条排在共用队列尾部，30 分钟内未轮到网关消费，
 # 却被「30 分钟空闲即斩杀」当成卡死全标 failed——比网关真正取到只早了约 30 秒。
 _SMPP_QUEUE_ALIVE_THRESHOLD = int(os.environ.get("BATCH_INSPECT_SMPP_QUEUE_ALIVE", "0"))
+
+# 结果回写队列：process_sms_result_task 消费它，把 pending→sent/failed 写回 sms_logs。
+# [事故根因 1638/1639] sms_send_smpp 已排空(发送队列守门=0、未生效)，但结果回写队列积压 15w，
+# pending 的 log 迟迟翻不成 sent；批次空闲超 30min 被「超时斩杀」全标 failed，9 分钟后回写追上
+# 又把 log 改回 sent，主记录却永久卡 failed。这说明在途守门只盯发送队列有盲区：回写滞后期间
+# 「pending」多半是「已提交上游、回写没追上」而非「卡死/丢失」，同样不能斩杀。
+# 超此积压量即认定回写滞后，暂缓对 pending 的斩杀/过期。-1=探测失败→回退旧行为（不守门）。
+_RESULT_WRITEBACK_QUEUE = "sms_result_queue"
+_RESULT_BACKLOG_ALIVE_THRESHOLD = int(os.environ.get("BATCH_INSPECT_RESULT_BACKLOG_ALIVE", "500"))
+
+# 反向校准窗口：被斩杀标 FAILED 的批次，若回写追上后底层实际有 sent/delivered，说明此前是
+# 「回写滞后误判」而非真失败 —— 在此窗口内的 FAILED 批次重算进度自愈翻回 COMPLETED。
+# 韧性兜底：即便守门偶有疏漏，下一轮巡检也能把误杀的批次纠回，不再依赖「斩杀那刻没出错」。
+_REVERSE_RECONCILE_HOURS = int(os.environ.get("BATCH_INSPECT_REVERSE_HOURS", "6"))
 # RabbitMQ 管理 API 端口：在途守门用它读队列「ready+unacked」总量。
 # [事故根因 1551/1553] Python 按 chunk 把最多 2000 条 SMS 打成「一条整包 AMQP 消息」投递，
 # 网关每通道 consumer prefetch=16，整包一被取走即变 unacked、要逐条按通道 TPS 慢慢吐(30 TPS≈67s/包)。
@@ -123,6 +137,24 @@ def _smpp_send_queue_depth(extra_queues: Optional[list] = None) -> int:
                 return -1
             logger.debug(f"inspect: 每通道队列 {qname} 不存在/探测失败，按 0 计: {e}")
     return total if probed_any else -1
+
+
+def _result_writeback_backlog() -> int:
+    """读取结果回写队列(sms_result_queue)堆积条数；-1 表示探测失败(未知)。
+
+    优先走管理 API 取 ready+unacked（与 SMPP 守门同口径）；不可用时回退 AMQP message_count。
+    用于区分『pending 是回写没追上(已提交上游)』与『真卡死/丢失』——前者绝不能斩杀。
+    """
+    mgmt = _smpp_queue_total_via_mgmt([_RESULT_WRITEBACK_QUEUE])
+    if mgmt is not None:
+        return mgmt
+    try:
+        with celery_app.connection_for_read() as conn:
+            q = conn.default_channel.queue_declare(queue=_RESULT_WRITEBACK_QUEUE, passive=True)
+            return int(q.message_count)
+    except Exception as e:
+        logger.debug(f"inspect: 读取 {_RESULT_WRITEBACK_QUEUE} 队列深度失败: {e}")
+        return -1
 
 
 async def _active_smpp_channel_queue_names(db) -> list:
@@ -262,6 +294,16 @@ async def _do_inspect_batches():
                     f"inspect: sms_send_smpp 仍积压 {_smpp_backlog} 条，本轮暂缓斩杀/过期 SMPP 在途记录"
                 )
 
+            # 结果回写守门：sms_result_queue 积压时，pending 多为「已提交上游、回写没追上」，
+            # 不得斩杀/过期（事故 1638/1639）。-1=探测失败→不守门，回退旧的按时间收割。
+            _result_backlog = _result_writeback_backlog()
+            _result_lagging = _result_backlog > _RESULT_BACKLOG_ALIVE_THRESHOLD
+            if _result_lagging:
+                logger.info(
+                    f"inspect: sms_result_queue 积压 {_result_backlog} 条，结果回写滞后，"
+                    f"本轮暂缓斩杀/过期仍 pending 的记录（多为已提交上游、回写未追上）"
+                )
+
             reconciled = 0
             stuck_force_failed = 0
             for batch in stuck_batches:
@@ -276,9 +318,12 @@ async def _do_inspect_batches():
                     # 重新查询状态
                     await db.refresh(batch)
 
-                    # 绝对斩杀：停滞超过 BATCH_INSPECT_STUCK_MINUTES 的批次，无视 batch_utils 内 2% 虚拟兜底限制，
-                    # 将仍卡在 pending/queued 的记录标为 failed，避免进度永久卡在 ~97%。
-                    # 仅长空闲档执行(短空闲可能仍在队列在途,误杀会丢消息)。
+                    # 绝对收口：停滞超过 BATCH_INSPECT_STUCK_MINUTES 的批次，无视 batch_utils 内 2% 虚拟兜底限制，
+                    # 将仍卡在 pending/queued 的记录收口，避免进度永久卡在 ~97%。仅长空闲档执行。
+                    # [治本 1638/1639] 收口写 expired（"超时未知"）而非 failed（"发送失败"）：超时只是
+                    # 我们放弃等待，不是上游拒收的正面证据；时钟不能制造"发送失败"这种结论。expired 仍可被
+                    # 后续真实回写(_apply_sms_result_row_to_db 无终态保护)覆盖回 sent/delivered，故误判可自愈。
+                    # 且只碰 sent_time IS NULL 的记录——已拿到上游提交结果的(情况iii)绝不动。
                     pend_q = (
                         await db.execute(
                             select(func.count(SMSLog.id)).where(
@@ -298,22 +343,36 @@ async def _do_inspect_batches():
                         and _smpp_inflight
                         and await _batch_has_smpp_pending(db, batch.id)
                     )
+                    # 结果回写守门：回写队列积压时，pending 多半是「已提交上游、回写没追上」，
+                    # 斩杀会把真实已发的消息误标 failed（事故 1638/1639）。暂缓，等回写追上。
+                    _result_lag_guard = (
+                        pend_q > 0
+                        and batch.status == BatchStatus.PROCESSING
+                        and idle_long
+                        and _result_lagging
+                    )
                     if _smpp_inflight_guard:
                         logger.warning(
                             f"inspect: 批次 {batch.id} 有 SMPP pending/queued，但 sms_send_smpp 仍积压 "
                             f"{_smpp_backlog} 条，判定为在途、暂缓斩杀（等队列排空）"
                         )
+                    elif _result_lag_guard:
+                        logger.warning(
+                            f"inspect: 批次 {batch.id} 有 {pend_q} 条 pending/queued，但 sms_result_queue 仍积压 "
+                            f"{_result_backlog} 条，判定为回写滞后(多已提交上游)、暂缓斩杀（等回写追上）"
+                        )
                     elif pend_q > 0 and batch.status == BatchStatus.PROCESSING and idle_long:
-                        _timeout_msg = "Timeout or dropped by gateway"
+                        _timeout_msg = "超时未在时限内收到上游提交结果，标记为未知(expired)；如后续回执到达将自动覆盖"
                         _now_ts = datetime.now()
-                        await db.execute(
+                        _r_exp = await db.execute(
                             _sa_upd_log(SMSLog)
                             .where(
                                 SMSLog.batch_id == batch.id,
                                 SMSLog.status.in_(["pending", "queued"]),
+                                SMSLog.sent_time.is_(None),  # 已拿到提交结果的(情况iii)绝不动
                             )
                             .values(
-                                status="failed",
+                                status="expired",
                                 error_message=_timeout_msg,
                                 sent_time=_now_ts,
                             )
@@ -321,9 +380,11 @@ async def _do_inspect_batches():
                         await db.commit()
                         await update_batch_progress(db, batch.id)
                         await db.refresh(batch)
-                        stuck_force_failed += int(pend_q)
+                        _exp_cnt = int(_r_exp.rowcount or 0)
+                        stuck_force_failed += _exp_cnt
                         logger.warning(
-                            f"inspect: 停滞批次 {batch.id} 超时斩杀 {pend_q} 条 pending/queued → failed"
+                            f"inspect: 停滞批次 {batch.id} 超时收口 {_exp_cnt} 条 pending/queued → expired"
+                            f"（共 {pend_q} 条待处理，已提交未回写的不动）"
                         )
 
                     # 如果校准后仍然是 processing 且确实由于某种原因卡住了
@@ -452,37 +513,47 @@ async def _do_inspect_batches():
                     logger.error(f"检查COMPLETED批次 {batch.id} 虚拟DLR积压失败: {e}")
 
             # 2.5 SMPP pending 重派发（修复"派发阶段丢失致整批卡 99%/100 条静默 pending"）：
-            # pending 可靠地等价于"从未成功 submit 到上游"——submit 到 socket 成功的消息在会话断连时
-            # 会被 Go 网关 OnClosed 标为 sent（非 pending），故 pending 重发安全、无重复风险；
+            # pending 期望等价于"从未成功 submit 到上游"——submit 到 socket 成功的消息在会话断连时
+            # 会被 Go 网关 OnClosed 标为 sent（非 pending），故 pending 重发期望安全、无重复风险；
             # 与下方 expire 的本质区别：① 直接针对消息、不等整批 updated_at 停滞（854 因回执持续刷新
             # updated_at 拖了 2 小时才被 expire，正是此门控之过）；② 只补 pending、绝不碰 queued
             # （queued 可能已提交，重发有重复风险）。Redis NX 保证每条在可恢复窗口内至多重派发一次，
             # 超 _SMPP_ORPHAN_MINUTES 仍 pending 才由下方 expire 兜底。
+            # [双发护栏 1638/1639] 上面"pending=未提交"的前提在结果回写积压时不成立：消息其实已 submit、
+            # sent 状态正堵在 sms_result_queue 没落库，DB 仍显示 pending。此时重派发=对上游双发/双扣费。
+            # 故回写滞后(_result_lagging)时整段跳过，等回写追上再判定。
             try:
                 _rd_hi = datetime.now() - timedelta(minutes=_SMPP_REDISPATCH_MINUTES)  # 卡超此才补（避开在途新消息）
                 _rd_lo = datetime.now() - timedelta(minutes=_SMPP_ORPHAN_MINUTES)      # 早于此放弃补发，交 expire
                 from app.modules.sms.channel import Channel as _RDCh
                 from app.utils.smpp_payload import smpp_payload_public_dict as _rd_pl
 
-                _rd_rows = (await db.execute(
-                    select(SMSLog, SmsBatch.status)
-                    .select_from(SMSLog)
-                    .join(_RDCh, SMSLog.channel_id == _RDCh.id)
-                    .join(SmsBatch, SMSLog.batch_id == SmsBatch.id)
-                    .where(
-                        and_(
-                            _RDCh.protocol == "SMPP",
-                            SMSLog.status == "pending",
-                            SMSLog.sent_time.is_(None),
-                            SMSLog.submit_time.isnot(None),
-                            SMSLog.submit_time < _rd_hi,
-                            SMSLog.submit_time >= _rd_lo,
-                            SmsBatch.status == BatchStatus.PROCESSING,
-                            SmsBatch.is_deleted == False,
-                        )
+                if _result_lagging:
+                    logger.info(
+                        f"inspect: sms_result_queue 积压 {_result_backlog} 条，跳过本轮 SMPP pending 重派发"
+                        f"（pending 可能是已提交上游、回写未追上，重派发会双发）"
                     )
-                    .limit(2000)
-                )).all()
+                    _rd_rows = []
+                else:
+                    _rd_rows = (await db.execute(
+                        select(SMSLog, SmsBatch.status)
+                        .select_from(SMSLog)
+                        .join(_RDCh, SMSLog.channel_id == _RDCh.id)
+                        .join(SmsBatch, SMSLog.batch_id == SmsBatch.id)
+                        .where(
+                            and_(
+                                _RDCh.protocol == "SMPP",
+                                SMSLog.status == "pending",
+                                SMSLog.sent_time.is_(None),
+                                SMSLog.submit_time.isnot(None),
+                                SMSLog.submit_time < _rd_hi,
+                                SMSLog.submit_time >= _rd_lo,
+                                SmsBatch.status == BatchStatus.PROCESSING,
+                                SmsBatch.is_deleted == False,
+                            )
+                        )
+                        .limit(2000)
+                    )).all()
 
                 if _rd_rows:
                     from app.utils.cache import get_redis_client
@@ -535,6 +606,13 @@ async def _do_inspect_batches():
                     f"inspect: sms_send_smpp 积压 {_smpp_backlog} 条，跳过本轮 SMPP 孤儿过期清理"
                 )
                 stale_batch_ids = []
+            elif _result_lagging:
+                # 结果回写守门：回写队列积压时 pending 多为已提交上游、回写没追上，不做过期收割
+                # （与第 1 步同源盲区，事故 1638/1639）。待回写追上后下一轮再兜底。
+                logger.info(
+                    f"inspect: sms_result_queue 积压 {_result_backlog} 条，跳过本轮 SMPP 孤儿过期清理"
+                )
+                stale_batch_ids = []
             if stale_batch_ids:
                 r_smpp = await db.execute(
                     _sa_upd2(SMSLog)
@@ -555,8 +633,8 @@ async def _do_inspect_batches():
                 smpp_orphan_cleaned = r_smpp.rowcount
 
             # 无批次归属的孤儿单条消息（batch_id IS NULL），继续用时间兜底清理
-            # 同样受在途守门：队列仍积压时这些消息可能仍排队，不收割。
-            if not _smpp_inflight:
+            # 同样受在途守门：发送队列/结果回写队列仍积压时这些消息可能仍在途，不收割。
+            if not _smpp_inflight and not _result_lagging:
                 r_smpp_standalone = await db.execute(
                     _sa_upd2(SMSLog)
                     .where(
@@ -598,12 +676,59 @@ async def _do_inspect_batches():
                         except Exception:
                             pass
 
+            # 4. 反向校准（误杀自愈）：近窗口内被标 FAILED、但底层实际已有 sent/delivered 的批次，
+            #    重算进度翻回 COMPLETED。真失败批 sent/delivered=0，绝不会被翻案（update_batch_progress
+            #    仅在 done>=log_total 且 sent>0 时判 COMPLETED；sent==0 仍判 FAILED）。
+            reverse_healed = 0
+            try:
+                revive_cutoff = datetime.now() - timedelta(hours=_REVERSE_RECONCILE_HOURS)
+                revive_ids = (
+                    await db.execute(
+                        select(SMSLog.batch_id)
+                        .where(
+                            SMSLog.status.in_(["sent", "delivered"]),
+                            SMSLog.batch_id.in_(
+                                select(SmsBatch.id).where(
+                                    and_(
+                                        SmsBatch.status == BatchStatus.FAILED,
+                                        SmsBatch.is_deleted == False,
+                                        SmsBatch.completed_at >= revive_cutoff,
+                                    )
+                                )
+                            ),
+                        )
+                        .group_by(SMSLog.batch_id)
+                        .limit(200)
+                    )
+                ).scalars().all()
+                for bid in revive_ids:
+                    if not bid:
+                        continue
+                    try:
+                        await update_batch_progress(db, bid)
+                        b_now = (
+                            await db.execute(select(SmsBatch.status).where(SmsBatch.id == bid))
+                        ).scalar()
+                        b_now_val = getattr(b_now, "value", b_now)
+                        if str(b_now_val).lower() != "failed":
+                            reverse_healed += 1
+                            logger.warning(
+                                f"inspect: 批次 {bid} 底层实际有成功记录，FAILED→{b_now_val} 反向校准自愈"
+                                f"（此前疑似回写滞后被误杀）"
+                            )
+                    except Exception as _re:
+                        logger.error(f"inspect: 批次 {bid} 反向校准失败: {_re}")
+                        await db.rollback()
+            except Exception as _rev_err:
+                logger.error(f"inspect: 反向校准扫描异常: {_rev_err}")
+
             return {
                 "stuck_found": len(stuck_batches),
                 "reconciled": reconciled,
                 "stuck_force_failed": stuck_force_failed,
                 "virtual_dlr_repaired": virtual_repair_count,
                 "smpp_orphan_cleaned": smpp_orphan_cleaned,
+                "reverse_healed": reverse_healed,
             }
     finally:
         await eng.dispose()

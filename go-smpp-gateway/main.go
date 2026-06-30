@@ -24,6 +24,10 @@ func main() {
     //      同 (channel,upstream_id,stat) 的重传，根治大批次时 sms_dlr 队列爆炸 + Worker 4 倍 DB 负载。
     InitDLRDedup()
 
+    // 1b''. 出站 submit 幂等（Redis）：网关收到 SubmitSMResp ROK 即标记 submit_done:{message_id}，
+    //       提交前查它拦住同一 message_id 的二次提交，根治 redispatch/重投在回写滞后时的上游双发。
+    InitOutboundDedup()
+
     // 1c. 批次取消运行期标记（Redis）：消费 sms_send_smpp 单条短信前查询，跳过已取消批次
     InitBatchCancel()
 

@@ -635,6 +635,15 @@ func processSingleSMSData(data SMSLogData) (smsFailureKind, error) {
 		}
 	}
 
+	// 出站 submit 幂等（不依赖 Python 回写，由网关 ROK 标记）：上面那道"查 DB 实时 status"在结果
+	// 回写积压时会被击穿（DB 还没变 sent 就放行 → redispatch 双发，事故 1638/1639）。这里用网关
+	// 自己在 ROK 时写的 Redis 标记拦住同一 message_id 的二次提交，不受回写滞后影响。
+	if IsAlreadySubmitted(data.MessageID) {
+		log.Printf("跳过 SMPP 提交: message_id=%s 近期已成功提交上游(submit_done)，拦下重复提交防双发 log_id=%d",
+			data.MessageID, data.LogID)
+		return smsSentOK, nil
+	}
+
 	err := manager.SendSMS(data)
 	if err != nil {
 		errStr := err.Error()

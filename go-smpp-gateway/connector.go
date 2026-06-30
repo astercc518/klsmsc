@@ -834,6 +834,9 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 						if pd.CommandStatus == data.ESME_ROK {
 							// 标记为本系统所有：后续 DeliverSM 将以此作为归属判断依据，外来 DLR 直接丢弃。
 							MarkOwned(cfg.ID, pd.MessageID)
+							// 出站幂等：确认已成功提交上游，写 submit_done:{message_id}。提交前查它拦二次提交。
+							// 只在 ROK 标记（88/其它失败不标记），故合法重投不受影响。
+							MarkSubmitted(seqData.messageID)
 							statROK(cfg.ID) // 计数:SubmitSMResp status=0 接受
 							if err := publishSmsSubmitResult(seqData.logID, seqData.messageID, pd.MessageID, "sent", ""); err != nil {
 								log.Printf("[SMPP-ERROR] Failed to publish submit result for %s: %v", seqData.messageID, err)
