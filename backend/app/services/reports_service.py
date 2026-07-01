@@ -3,7 +3,7 @@
 """
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
-from sqlalchemy import select, func, and_, case
+from sqlalchemy import select, func, and_, case, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
@@ -13,6 +13,7 @@ from app.modules.common.admin_user import AdminUser
 from app.modules.data.models import DataOrder
 from app.utils.cache import get_cache_manager
 from app.utils.logger import get_logger
+from app.services.sms_finance import net_cost, net_revenue, net_profit
 
 logger = get_logger(__name__)
 
@@ -32,8 +33,9 @@ class ReportsService:
         # 缓存：完全在过去（end_dt <= 今天 00:00）按 24h，否则 60s
         today_zero = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         ttl = 24 * 3600 if end_dt <= today_zero else 60
+        # v2: 剔除虚拟通道后口径变更，版本号使旧缓存(含虚拟通道)立即失效
         cache_key = (
-            f"report:business:{dimension}:{business_type}:"
+            f"report:business:v3:{dimension}:{business_type}:"
             f"{start_dt.strftime('%Y%m%d%H%M')}:{end_dt.strftime('%Y%m%d%H%M')}"
         )
         cm = await get_cache_manager()
@@ -90,11 +92,21 @@ class ReportsService:
         """
         agg_count = func.count(SMSLog.id).label("total_count")
         agg_delivered = func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered_count")
-        agg_revenue = func.sum(SMSLog.selling_price).label("revenue")
-        agg_cost = func.sum(SMSLog.cost_price).label("cost")
-        agg_profit = func.sum(SMSLog.profit).label("profit")
+        # 净额口径：剔除已退补充值(失败已退)行的金额，计数/送达率不受影响
+        agg_revenue = net_revenue("revenue")
+        agg_cost = net_cost("cost")
+        agg_profit = net_profit("profit")
 
         time_filter = and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt)
+
+        # 剔除虚拟通道(注水/演示流量)，保留 channel_id 为 NULL 的真实失败记录。
+        # 不改 sms_logs 任何数据，仅过滤读查询。
+        virtual_ids = await ReportsService._fetch_virtual_channel_ids(db)
+        if virtual_ids:
+            time_filter = and_(
+                time_filter,
+                or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)),
+            )
 
         # === 第一步：按 sms_logs 自带列聚合 ===
         if dimension == "country":
@@ -246,6 +258,12 @@ class ReportsService:
             select(AdminUser.id, AdminUser.username, AdminUser.real_name).where(AdminUser.id.in_(ids))
         )).all()
         return {r.id: (r.real_name or r.username) for r in rows}
+
+    @staticmethod
+    async def _fetch_virtual_channel_ids(db: AsyncSession) -> List[int]:
+        """虚拟通道(protocol=VIRTUAL)的ID，用于从业务报表中剔除注水/演示流量。"""
+        rows = (await db.execute(select(Channel.id).where(Channel.protocol == "VIRTUAL"))).all()
+        return [r[0] for r in rows]
 
     @staticmethod
     async def _fetch_channel_names(db: AsyncSession, ids: List[int]) -> Dict[int, str]:

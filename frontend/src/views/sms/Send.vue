@@ -92,9 +92,6 @@
                   <el-button size="small" type="warning" plain @click="showShortLinkDialog = true">
                     <el-icon><Link /></el-icon> 短链转换
                   </el-button>
-                  <el-button size="small" type="success" @click="showTemplateEngine = true">
-                    <el-icon><MagicStick /></el-icon> 智能生成
-                  </el-button>
                   <el-button v-if="aiEnabled" size="small" type="primary" @click="showAiDialog = true">
                     <el-icon><MagicStick /></el-icon> AI 生成
                   </el-button>
@@ -146,12 +143,21 @@
               <div v-if="multiMessages.length > 1" class="multi-msg-banner">
                 <div class="mmb-header">
                   <span>已加载 <strong>{{ multiMessages.length }}</strong> 条文案，发送时均匀分配号码</span>
-                  <el-button link type="danger" size="small" @click="multiMessages = []">清除多文案</el-button>
+                  <div class="mmb-actions">
+                    <el-button link type="primary" size="small" :icon="CopyDocument" @click="copyAll(multiMessages)">复制全部</el-button>
+                    <el-button link type="primary" size="small" :loading="multiZhLoading" @click="translateMulti">翻译中文</el-button>
+                    <el-button link type="danger" size="small" @click="multiMessages = []">清除多文案</el-button>
+                  </div>
                 </div>
                 <div class="mmb-list">
                   <div v-for="(msg, idx) in multiMessages" :key="idx" class="mmb-item" :class="{ current: idx === 0 }">
                     <span class="mmb-idx">{{ idx + 1 }}</span>
-                    <span class="mmb-text">{{ msg.length > 50 ? msg.substring(0, 50) + '...' : msg }}</span>
+                    <div class="mmb-body">
+                      <span class="mmb-text">{{ msg }}</span>
+                      <span v-if="multiMessagesZh[idx]" class="mmb-zh">中文：{{ multiMessagesZh[idx] }}</span>
+                    </div>
+                    <span class="mmb-char-count">{{ msg.length }}字符</span>
+                    <el-button class="mmb-copy-btn" link size="small" :icon="CopyDocument" title="复制此条" @click.stop="copyText(msg)" />
                   </div>
                 </div>
               </div>
@@ -870,7 +876,7 @@
         <div class="mmc-desc">每条文案发送的号码数量，总量由系统自动按比例分配</div>
         <div class="mmc-row" v-for="idx in [...tplSelectedSet]" :key="idx">
           <span class="mmc-label">文案 {{ idx + 1 }}:</span>
-          <span class="mmc-preview">{{ tplResults[idx]?.substring(0, 30) }}...</span>
+          <span class="mmc-preview">{{ tplResults[idx] }}</span>
         </div>
         <div class="mmc-summary">
           共 {{ tplSelectedSet.size }} 条文案，发送时将均匀分配号码
@@ -892,45 +898,65 @@
     />
 
     <!-- ========== AI 生成对话框 ========== -->
-    <el-dialog v-model="showAiDialog" title="AI 智能生成短信文案" width="680px" destroy-on-close>
+    <el-dialog v-model="showAiDialog" title="AI 智能优化短信文案" width="680px" destroy-on-close>
       <el-form label-position="top">
-        <el-form-item label="生成方式">
-          <el-radio-group v-model="aiForm.mode">
-            <el-radio value="prompt">自由描述</el-radio>
-            <el-radio value="rewrite" :disabled="!form.message.trim()">基于当前文案改写</el-radio>
-          </el-radio-group>
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 12px"
+          title="AI 会基于下方原始文案生成多条优化版本：语义不变，表达更自然吸引人，并降低运营商拦截风险（链接、数字原样保留）。"
+        />
+        <el-form-item label="原始文案（可直接编辑，与上方「短信内容」同步）">
+          <el-input
+            v-model="form.message"
+            type="textarea"
+            :rows="3"
+            placeholder="在此输入或粘贴要优化的原始文案"
+            @input="onAiOriginalInput"
+          />
         </el-form-item>
-        <template v-if="aiForm.mode === 'prompt'">
-          <el-form-item label="描述你的需求">
-            <el-input v-model="aiForm.prompt" type="textarea" :rows="3" placeholder="如：巴西博彩推广短信，吸引用户注册，风格热情" />
-          </el-form-item>
-        </template>
-        <template v-else>
-          <el-form-item label="原始文案（AI 将基于此改写多个变体）">
-            <el-input :model-value="form.message" type="textarea" :rows="2" disabled />
-          </el-form-item>
-          <el-form-item label="改写要求（可选）">
-            <el-input v-model="aiForm.rewriteHint" placeholder="如：换几种不同的表达风格" />
-          </el-form-item>
-        </template>
-        <el-form-item label="目标国家（可选）">
-          <el-select
-            v-model="aiGenCountryIso"
-            filterable
-            clearable
-            placeholder="选择后显示该国主要语言，并同步生成语言"
-            style="width: 100%"
-            @change="onAiGenCountryChange"
-          >
-            <el-option
-              v-for="c in countrySelectOptions"
-              :key="c.iso"
-              :label="`${c.name} (+${c.dial})`"
-              :value="c.iso"
+        <el-form-item>
+          <el-switch v-model="aiUseShortLink" active-text="启用短链转换" inline-prompt @change="onToggleShortLink" />
+          <span class="ai-original-tools-hint" style="margin-left: 10px">开启后把文案里的链接转成可追踪短链，降低拦截风险</span>
+        </el-form-item>
+        <template v-if="aiUseShortLink">
+          <el-form-item label="原链接（长链接，将转成短链）">
+            <el-input
+              v-model="aiShortLinkTarget"
+              placeholder="https://promo.example.com/landing"
+              clearable
+              @blur="aiShortLinkTarget = normalizeTargetUrl(aiShortLinkTarget)"
             />
-          </el-select>
-          <p v-if="aiCountryHint" class="lang-smart-hint">{{ aiCountryHint }}</p>
-        </el-form-item>
+          </el-form-item>
+          <el-form-item label="短链域名">
+            <el-select
+              v-model="aiShortLinkDomainId"
+              :loading="aiShortLinkDomainLoading"
+              filterable
+              placeholder="请选择短链域名"
+              style="width: 100%"
+            >
+              <el-option v-for="d in aiShortLinkDomains" :key="d.id" :label="d.base_url" :value="d.id">
+                <span>{{ d.base_url }}</span>
+                <span v-if="d.remark" style="color: var(--el-text-color-placeholder); margin-left: 8px; font-size: 12px">{{ d.remark }}</span>
+              </el-option>
+            </el-select>
+            <div v-if="!aiShortLinkDomains.length && !aiShortLinkDomainLoading" class="ai-original-tools-hint">
+              暂无可用域名，请联系管理员在「系统管理 → 短链域名」中配置
+            </div>
+          </el-form-item>
+          <el-form-item label="短链模式">
+            <el-radio-group v-model="aiShortLinkMode">
+              <el-radio value="per_number">一号码一链</el-radio>
+              <el-radio value="per_copy">一文案一链</el-radio>
+            </el-radio-group>
+            <div class="ai-original-tools-hint">
+              一号码一链：每个号码唯一短链，可精准追踪到号码。
+              一文案一链：同一条文案的所有号码共用一条短链，正文固定=报备模板，<strong>报备后不易被拦</strong>（点击按文案聚合统计）。
+            </div>
+          </el-form-item>
+        </template>
         <div style="display: flex; gap: 12px">
           <el-form-item label="语言" style="flex: 1">
             <el-select v-model="aiForm.language" style="width: 100%">
@@ -953,8 +979,8 @@
           <el-input-number v-model="aiForm.maxLen" :min="30" :max="aiMaxLenLimit" :step="10" style="width: 160px" />
           <span style="margin-left: 8px; font-size: 12px; color: var(--el-text-color-secondary)">英文 160 字/条，其它语言 70 字/条；随「语言」自动调整，超出将截断</span>
         </el-form-item>
-        <el-button type="primary" @click="generateFromAi" :loading="aiGenerating" :disabled="aiForm.mode === 'prompt' && !aiForm.prompt.trim()">
-          <el-icon><MagicStick /></el-icon> 调用 AI 生成
+        <el-button type="primary" @click="generateFromAi" :loading="aiGenerating" :disabled="!form.message.trim()">
+          <el-icon><MagicStick /></el-icon> AI 优化生成
         </el-button>
       </el-form>
 
@@ -962,11 +988,18 @@
         <div class="gen-header">
           <el-checkbox v-model="aiSelectAll" @change="toggleAiSelectAll">全选</el-checkbox>
           <span class="gen-selected-tip">已选 {{ aiSelectedSet.size }} 条</span>
+          <div class="gen-header-actions">
+            <el-button link type="primary" size="small" :loading="aiZhLoading" @click="translateAiResults">中文对照</el-button>
+            <el-button link type="primary" size="small" :loading="aiGenerating" @click="generateFromAi">换一批</el-button>
+          </div>
         </div>
         <div v-for="(msg, idx) in aiResults" :key="idx" class="gen-result-item" :class="{ selected: aiSelectedSet.has(idx) }" @click="toggleAiSelect(idx)">
           <el-checkbox :model-value="aiSelectedSet.has(idx)" @click.stop @change="toggleAiSelect(idx)" />
           <span class="gen-idx">{{ idx + 1 }}</span>
-          <span class="gen-text">{{ msg }}</span>
+          <div class="gen-body">
+            <span class="gen-text">{{ msg }}</span>
+            <span v-if="aiResultsZh[idx]" class="gen-zh">中文：{{ aiResultsZh[idx] }}</span>
+          </div>
           <span class="gen-char-count">{{ msg.length }}字符</span>
         </div>
       </div>
@@ -975,7 +1008,7 @@
         <div class="mmc-title">多文案发送分配</div>
         <div class="mmc-row" v-for="idx in [...aiSelectedSet]" :key="idx">
           <span class="mmc-label">文案 {{ idx + 1 }}:</span>
-          <span class="mmc-preview">{{ aiResults[idx]?.substring(0, 30) }}...</span>
+          <span class="mmc-preview">{{ aiResults[idx] }}</span>
         </div>
         <div class="mmc-summary">
           共 {{ aiSelectedSet.size }} 条文案，发送时将均匀分配号码
@@ -997,14 +1030,15 @@ import { useRoute } from 'vue-router'
 import type { FormInstance } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick, Link } from '@element-plus/icons-vue'
+import { MagicStick, Link, CopyDocument } from '@element-plus/icons-vue'
 import ShortLinkConvertDialog from '../../components/ShortLinkConvertDialog.vue'
 import { sendBatchSMS, submitSmsApproval, getChannelSenderIds } from '@/api/sms'
 import { getChannels } from '@/api/channel'
 import { getChannelBannedWords } from '@/api/sms'
 import { getBatchDetail } from '@/api/batch'
 import { getDataProducts, buyAndSend, getCarriers, getMyNumbersSummary, type DataProduct } from '@/api/data'
-import { getAiConfig, generateSmsContent } from '@/api/ai'
+import { getAiConfig, generateSmsContent, paraphraseText, translateTexts } from '@/api/ai'
+import { listActiveShortLinkDomains, buildTrackUrlPlaceholder, type ShortLinkDomain } from '@/api/short-link'
 import request from '@/api/index'
 import { COUNTRY_LIST, findCountryByIso } from '@/constants/countries'
 import { smsCodePointLength, isGsm7Message, countSmsParts, smsSegmentUnitLength } from '@/utils/smsParts'
@@ -1278,9 +1312,136 @@ function stripEmoji(str: string): string {
   return str.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{200D}\u{20E3}\u{2702}-\u{27B0}\u{E0020}-\u{E007F}]/gu, '').trim()
 }
 
-// 截断到指定字符数
+// 链接识别：http(s):// 或 裸域名(含路径)，如 cutt.ly/nt5UMSgf、shorturl.at/fNUmg
+const URL_REGEX = /(https?:\/\/[^\s]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s]*)?)/gi
+
+function hasUrl(s: string): boolean {
+  return new RegExp(URL_REGEX.source, 'i').test(s)
+}
+
+// 截断到指定字符数：优先保住末尾的「链接 + 紧邻的数字/验证码」整段，裁掉前面的正文，
+// 而不是把链接整段丢掉。例如改写后正文变长超限，应裁泰文散文、保留 99-9999 与短链。
 function truncateToLimit(msg: string, maxLen: number): string {
-  return msg.length > maxLen ? msg.substring(0, maxLen) : msg
+  if (msg.length <= maxLen) return msg
+  const isProtected = (t: string) => hasUrl(t) || /\d/.test(t)
+  // 按空白切分（保留空白片段），从末尾向前收集连续的「链接/含数字」token 作为受保护尾巴
+  const parts = msg.split(/(\s+)/)
+  let k = parts.length
+  for (let idx = parts.length - 1; idx >= 0; idx--) {
+    const tok = parts[idx]
+    if (/^\s*$/.test(tok)) continue        // 跳过空白继续往前看
+    if (isProtected(tok)) { k = idx; continue }
+    break                                   // 遇到普通文字 token 即停
+  }
+  const tail = parts.slice(k).join('').trim()
+  // 有可保护尾巴且尾巴本身放得下：裁前面正文给尾巴腾位置
+  if (tail && tail.length + 1 < maxLen) {
+    let prose = parts.slice(0, k).join('').replace(/\s+$/, '')
+    const room = maxLen - tail.length - 1
+    if (prose.length > room) prose = prose.substring(0, room).replace(/\s+$/, '')
+    return (prose ? prose + ' ' + tail : tail).trim()
+  }
+  // 无尾巴或尾巴过长：退回「不在链接中间截断」的逻辑，避免出现半截坏链
+  let cut = maxLen
+  const re = new RegExp(URL_REGEX.source, 'gi')
+  let m: RegExpExecArray | null
+  while ((m = re.exec(msg)) !== null) {
+    const start = m.index
+    const end = m.index + m[0].length
+    if (cut > start && cut < end) { cut = start; break }
+  }
+  return msg.substring(0, cut).replace(/\s+$/, '')
+}
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// 同义词/同义短语表（仅对有空格、可按词替换的语言；泰语等无空格语言不做替换，只重排）
+// 取常见营销用词，保守替换，避免改变含义或破坏上游已报备模板。
+const SYNONYMS: Record<string, Record<string, string[]>> = {
+  en: {
+    'now': ['today', 'right away'], 'free': ['complimentary', 'no-cost'], 'get': ['claim', 'grab'],
+    'win': ['earn', 'score'], 'bonus': ['reward', 'perk'], 'join': ['sign up', 'enroll'],
+    'limited': ['exclusive', 'special'], 'offer': ['deal', 'promo'], 'hurry': ['be quick', 'act fast'],
+    'click': ['tap', 'open'], 'register': ['sign up', 'enroll'], 'discount': ['markdown', 'price cut'],
+    'sale': ['clearance', 'flash sale'], 'new': ['latest', 'fresh'], 'best': ['top', 'finest'],
+    'huge': ['massive', 'big'], 'instantly': ['right away', 'in seconds'], 'amazing': ['incredible', 'awesome'],
+    'save': ['save big', 'cut costs'], 'gift': ['present', 'freebie'], 'deal': ['offer', 'bargain'],
+    'exclusive': ['VIP', 'members-only'], 'extra': ['bonus', 'added'], 'today': ['now', 'right away'],
+  },
+  pt: {
+    'agora': ['já', 'hoje'], 'grátis': ['gratuito', 'de graça'], 'ganhe': ['receba', 'conquiste'],
+    'bônus': ['prêmio', 'recompensa'], 'oferta': ['promoção', 'oferta especial'],
+    'cadastre-se': ['registre-se', 'inscreva-se'], 'aproveite': ['não perca', 'garanta'],
+    'desconto': ['abatimento', 'redução'], 'novo': ['novíssimo', 'recém-chegado'],
+    'rápido': ['depressa', 'sem demora'], 'limitado': ['restrito', 'por tempo limitado'],
+    'clique': ['acesse', 'toque'], 'presente': ['brinde', 'mimo'], 'exclusivo': ['especial', 'só para você'],
+    'promoção': ['oferta', 'liquidação'], 'última chance': ['não perca', 'corra'],
+  },
+  es: {
+    'ahora': ['ya', 'hoy'], 'gratis': ['gratuito', 'sin costo'], 'gana': ['recibe', 'consigue'],
+    'bono': ['premio', 'recompensa'], 'oferta': ['promoción', 'oferta especial'],
+    'regístrate': ['inscríbete', 'únete'], 'aprovecha': ['no te lo pierdas', 'asegura'],
+    'descuento': ['rebaja', 'precio especial'], 'nuevo': ['novedoso', 'recién llegado'],
+    'rápido': ['pronto', 'sin demora'], 'limitado': ['exclusivo', 'por tiempo limitado'],
+    'haz clic': ['ingresa', 'visita'], 'regalo': ['obsequio', 'detalle'], 'promoción': ['oferta', 'rebaja'],
+    'última oportunidad': ['no te lo pierdas', 'date prisa'],
+  },
+  vi: {
+    'ngay': ['hôm nay', 'liền'], 'nhận': ['lấy', 'sở hữu'], 'thưởng': ['quà', 'phần thưởng'],
+    'ưu đãi': ['khuyến mãi', 'giảm giá'], 'đăng ký': ['tham gia', 'mở tài khoản'],
+    'nhanh': ['gấp', 'mau lên'], 'miễn phí': ['không mất phí', 'free'],
+    'cơ hội': ['dịp', 'thời cơ'], 'mới': ['mới nhất', 'vừa ra mắt'], 'tặng': ['biếu', 'trao'],
+    'duy nhất': ['độc quyền', 'riêng biệt'], 'nạp': ['gửi', 'thêm tiền'], 'rút': ['rút tiền', 'lấy ra'],
+  },
+  id: {
+    'sekarang': ['hari ini', 'segera'], 'gratis': ['cuma-cuma', 'tanpa biaya'],
+    'dapatkan': ['raih', 'ambil'], 'bonus': ['hadiah', 'imbalan'],
+    'penawaran': ['promo', 'diskon'], 'daftar': ['gabung', 'registrasi'],
+    'buruan': ['cepat', 'jangan lewatkan'], 'baru': ['terbaru', 'baru rilis'],
+    'menang': ['raih', 'menangkan'], 'klik': ['kunjungi', 'buka'],
+    'terbatas': ['eksklusif', 'spesial'], 'kesempatan': ['peluang', 'kesempatan emas'],
+    'hadiah': ['bonus', 'hibah'],
+  },
+}
+
+// 同义词替换：保护链接，对命中词随机替换一个同义词；无词表的语言原样返回
+function applySynonyms(text: string, lang: string): string {
+  const map = SYNONYMS[lang]
+  if (!map) return text
+  const urls: string[] = []
+  let out = text.replace(new RegExp(URL_REGEX.source, 'gi'), (m) => { urls.push(m); return `\u0000${urls.length - 1}\u0000` })
+  // 单次扫描：所有词条合并成一个正则一次性替换，已替换的文本不会被后续词条再次命中（避免来回替换）
+  const keys = Object.keys(map).sort((a, b) => b.length - a.length)
+  const re = new RegExp(`(^|[^\\p{L}])(${keys.map(escapeRegExp).join('|')})(?![\\p{L}])`, 'giu')
+  out = out.replace(re, (_full, pre: string, kw: string) => {
+    const syns = map[kw.toLowerCase()]
+    if (!syns) return _full
+    const syn = syns[Math.floor(Math.random() * syns.length)]
+      const cased = /^[A-ZÀ-Þ]/.test(kw) ? syn.charAt(0).toUpperCase() + syn.slice(1) : syn
+    return pre + cased
+  })
+  return out.replace(/\u0000(\d+)\u0000/g, (_m, i) => urls[+i])
+}
+
+// 子句重排：按句末标点拆分，打乱非链接子句顺序，含链接子句保持在末尾。
+// 不改动任何文字，语言无关（泰语等无空格语言同样安全）。
+function reorderClauses(text: string): string {
+  const parts = text.split(/([!！。?？]+)/)
+  const clauses: string[] = []
+  for (let i = 0; i < parts.length; i += 2) {
+    const seg = (parts[i] || '').trim()
+    const delim = (parts[i + 1] || '').trim()
+    if (seg) clauses.push(seg + delim)
+  }
+  if (clauses.length < 2) return text
+  const urlClauses = clauses.filter(c => hasUrl(c))
+  const textClauses = clauses.filter(c => !hasUrl(c))
+  for (let i = textClauses.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [textClauses[i], textClauses[j]] = [textClauses[j], textClauses[i]]
+  }
+  return [...textClauses, ...urlClauses].join(' ')
 }
 
 const TEMPLATE_POOL: Record<string, Record<string, string[]>> = {
@@ -1623,11 +1784,24 @@ const aiCountryHint = ref('')
 const aiForm = ref({ prompt: '', language: 'zh', count: 5, mode: 'prompt' as 'prompt' | 'rewrite', rewriteHint: '', maxLen: 70 })
 const aiGenerating = ref(false)
 const aiResults = ref<string[]>([])
+const aiResultsZh = ref<string[]>([])  // AI 结果中文对照
+const aiZhLoading = ref(false)
+// AI 对话框内嵌短链转换
+const aiUseShortLink = ref(false)
+const aiShortLinkMode = ref<'per_number' | 'per_copy'>('per_number')  // 一号码一链 / 一文案一链
+const aiShortLinkTarget = ref('')
+const aiShortLinkDomainId = ref<number | undefined>(undefined)
+const aiShortLinkDomains = ref<ShortLinkDomain[]>([])
+const aiShortLinkDomainLoading = ref(false)
 const aiSelectedSet = ref<Set<number>>(new Set())
 const aiSelectAll = ref(false)
 
 // 多文案发送列表
 const multiMessages = ref<string[]>([])
+const multiMessagesZh = ref<string[]>([])  // 预览区中文翻译（点「翻译中文」后填充）
+const multiZhLoading = ref(false)
+// 多文案内容变化时清掉旧翻译，避免错位
+watch(multiMessages, () => { multiMessagesZh.value = [] })
 
 const stats = ref({ today_sent: 0, today_success: 0, success_rate: 0, today_cost: '0.00' })
 
@@ -1912,12 +2086,70 @@ function openCustomVarDialog() {
 
 // ============ 模板引擎 ============
 
-function generateFromTemplateEngine() {
+// 构造交给后端 AI 的提示词（按类型生成 / 基于当前文案改写）
+function buildTplAiPrompt(maxLen: number): string {
+  const noEmojiHint = '严禁使用任何 emoji 表情符号。'
+  const sensitiveHint = '内容中不得包含敏感词汇（赌博、色情、毒品、暴力等）。'
+  const charHint = `每条文案不超过 ${maxLen} 个字符。`
+  const linkHint = '原文中的链接、网址、数字、验证码必须原样保留，不得改写、翻译或截断。'
+  if (tplForm.value.mode === 'rewrite' && form.value.message.trim()) {
+    const kw = tplForm.value.keywords.trim() ? `改写时尽量融入关键词：${tplForm.value.keywords}。` : ''
+    return `请基于以下短信文案改写 ${tplForm.value.count} 个不同版本，保持核心意思但变换表达方式、语气和风格，每条都要明显不同，不要只是调整词序或加个前缀。${kw}${linkHint} ${noEmojiHint} ${sensitiveHint} ${charHint}\n\n原文案：${form.value.message}`
+  }
+  const typeLabel = TPL_TYPES.find(t => t.value === tplForm.value.type)?.label || tplForm.value.type
+  const kw = tplForm.value.keywords.trim() ? `主题关键词：${tplForm.value.keywords}。` : ''
+  return `请生成 ${tplForm.value.count} 条「${typeLabel}」类营销短信，风格多样、各不相同。${kw}${linkHint} ${noEmojiHint} ${sensitiveHint} ${charHint}`
+}
+
+async function generateFromTemplateEngine() {
   tplGenerating.value = true
   tplSelectedSet.value = new Set(); tplSelectAll.value = false
   const maxLen = tplForm.value.maxLen || maxSmsCharsForLang(tplForm.value.language)
 
+  // AI 已配置时优先走后端 AI 做真正改写/生成；未配置或失败则回退本地模板引擎
+  if (aiEnabled.value) {
+    try {
+      const prompt = buildTplAiPrompt(maxLen)
+      const res = await generateSmsContent({ prompt, count: tplForm.value.count, language: tplForm.value.language, max_length: maxLen })
+      if (res.success && res.messages?.length) {
+        tplResults.value = res.messages.map(m => truncateToLimit(stripEmoji(m), maxLen))
+        tplGenerating.value = false
+        return
+      }
+      ElMessage.info('AI 未返回有效文案，已改用内置模板引擎')
+    } catch (e: any) {
+      ElMessage.info('AI 暂不可用，已改用内置模板引擎')
+    }
+  }
+
+  // 改写模式：用 Google 往返翻译做改写（适合泰语等本地引擎改不动的语言），失败再回退本地模板
+  if (tplForm.value.mode === 'rewrite' && form.value.message.trim()) {
+    try {
+      const res = await paraphraseText({ text: form.value.message.trim(), lang: tplForm.value.language, count: tplForm.value.count })
+      if (res.success && res.variants?.length >= 2) {
+        tplResults.value = res.variants.map(m => truncateToLimit(stripEmoji(m), maxLen))
+        tplGenerating.value = false
+        if (tplResults.value.length < tplForm.value.count) {
+          ElMessage.info(`原文可改写空间有限，生成了 ${tplResults.value.length} 条不同文案`)
+        }
+        return
+      }
+    } catch {
+      // 忽略，走下面的本地模板引擎兜底
+    }
+  }
+
   setTimeout(() => {
+    tplResults.value = localTemplateGenerate(maxLen)
+    tplGenerating.value = false
+    if (tplForm.value.mode === 'rewrite' && tplResults.value.length < tplForm.value.count) {
+      ElMessage.warning(`原文已接近字数上限且缺少可变换内容，仅生成 ${tplResults.value.length} 条不同文案；可提高「单条最大字符数」或配置 AI 以获得更多变体`)
+    }
+  }, 300)
+}
+
+// 本地模板引擎生成（AI 未配置或失败时的回退）
+function localTemplateGenerate(maxLen: number): string[] {
     let raw: string[] = []
     if (tplForm.value.mode === 'rewrite' && form.value.message.trim()) {
       const base = stripEmoji(form.value.message.trim())
@@ -1948,14 +2180,30 @@ function generateFromTemplateEngine() {
       const lang = tplForm.value.language
       const prefixes = langPrefixes[lang] || langPrefixes.en
       const suffixes = langSuffixes[lang] || langSuffixes.en
-      for (let i = 0; i < tplForm.value.count; i++) {
-        const prefix = prefixes[Math.floor(Math.random() * prefixes.length)]
-        const suffix = suffixes[Math.floor(Math.random() * suffixes.length)]
-        let variant = base
-        const strategy = i % 3
-        if (strategy === 0) variant = prefix + variant + suffix
-        else if (strategy === 1) variant = prefix + variant.replace(/[!！。]?\s*$/, '') + suffix
-        else variant = variant + suffix
+      const hasSynonyms = !!SYNONYMS[lang]
+      // 正文里的链接绝不能被装饰挤出 maxLen 而截断，预留正文长度后才允许加前后缀
+      const seen = new Set<string>()
+      let guard = 0
+      while (raw.length < tplForm.value.count && guard < tplForm.value.count * 12) {
+        guard++
+        // 变体核心：① 同义词替换（有词表的语言）② 子句重排（任意语言安全，不改字）
+        let body = base
+        if (hasSynonyms) body = applySynonyms(body, lang)
+        if (Math.random() < 0.6) body = reorderClauses(body)
+        // 再叠加前后缀装饰，进一步增加多样性
+        let prefix = prefixes[Math.floor(Math.random() * prefixes.length)]
+        let suffix = suffixes[Math.floor(Math.random() * suffixes.length)]
+        const strategy = raw.length % 3
+        if (strategy === 1) body = body.replace(/[!！。]?\s*$/, '')
+        else if (strategy === 2) prefix = ''  // 仅加后缀
+        // 预算控制：装饰超出 maxLen 时优先丢后缀，再丢前缀，保证正文(含链接)完整
+        if (body.length + prefix.length + suffix.length > maxLen) {
+          suffix = ''
+          if (body.length + prefix.length > maxLen) prefix = ''
+        }
+        const variant = (prefix + body + suffix).trim()
+        if (seen.has(variant)) continue  // 去重：避免产出多条一模一样的文案
+        seen.add(variant)
         raw.push(variant)
       }
     } else {
@@ -1972,9 +2220,95 @@ function generateFromTemplateEngine() {
         })
       }
     }
-    tplResults.value = raw.map(m => truncateToLimit(stripEmoji(m), maxLen))
-    tplGenerating.value = false
-  }, 300)
+    return raw.map(m => truncateToLimit(stripEmoji(m), maxLen))
+}
+
+// 复制文案到剪贴板（兼容非 HTTPS / 旧浏览器）
+async function copyText(text: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    ElMessage.success('已复制到剪贴板')
+  } catch {
+    ElMessage.error('复制失败，请手动选择文案复制')
+  }
+}
+async function copyAll(list: string[]) {
+  if (!list.length) return
+  await copyText(list.join('\n'))
+}
+// 预览区「翻译中文」：把已加载的多条文案译成中文做对照（Google 免费翻译，自动识别语言）
+async function translateMulti() {
+  if (!multiMessages.value.length) return
+  multiZhLoading.value = true
+  try {
+    const res = await translateTexts({ texts: multiMessages.value, source: 'auto', target: 'zh-CN' })
+    multiMessagesZh.value = res.success ? (res.translations || []) : []
+    if (!res.success || !multiMessagesZh.value.some(Boolean)) ElMessage.warning('翻译失败，请稍后重试')
+  } catch {
+    ElMessage.error('翻译服务暂不可用')
+  } finally {
+    multiZhLoading.value = false
+  }
+}
+
+// ===== AI 对话框内嵌短链转换 =====
+function normalizeTargetUrl(raw: string): string {
+  const u = (raw || '').trim()
+  if (!u) return ''
+  return /^https?:\/\//i.test(u) ? u : 'https://' + u.replace(/^\/+/, '')
+}
+async function loadAiShortLinkDomains() {
+  aiShortLinkDomainLoading.value = true
+  try {
+    const resp: any = await listActiveShortLinkDomains()
+    aiShortLinkDomains.value = (resp?.data?.data || resp?.data || []) as ShortLinkDomain[]
+    if (!aiShortLinkDomainId.value && aiShortLinkDomains.value.length) {
+      aiShortLinkDomainId.value = aiShortLinkDomains.value[0].id
+    }
+  } catch {
+    ElMessage.warning('加载短链域名失败，请稍后重试')
+  } finally {
+    aiShortLinkDomainLoading.value = false
+  }
+}
+function onToggleShortLink(val: boolean) {
+  if (val) {
+    if (!aiShortLinkDomains.value.length) loadAiShortLinkDomains()
+    // 原链接为空时，尝试从原始文案里提取首个链接作为默认目标
+    if (!aiShortLinkTarget.value.trim()) {
+      const m = form.value.message.match(new RegExp(URL_REGEX.source, 'i'))
+      if (m) aiShortLinkTarget.value = normalizeTargetUrl(m[0])
+    }
+  }
+}
+// 把单条文案里的链接替换为短链占位符；无链接则追加到末尾
+function applyShortLinkToMsg(msg: string, placeholder: string): string {
+  if (new RegExp(URL_REGEX.source, 'i').test(msg)) {
+    return msg.replace(new RegExp(URL_REGEX.source, 'i'), placeholder)
+  }
+  return msg.replace(/\s+$/, '') + ' ' + placeholder
+}
+
+// AI 结果「中文对照」：翻译生成的优化文案做参考（Google 免费翻译，自动识别语言）
+async function translateAiResults() {
+  if (!aiResults.value.length) return
+  aiZhLoading.value = true
+  try {
+    const res = await translateTexts({ texts: aiResults.value, source: 'auto', target: 'zh-CN' })
+    aiResultsZh.value = res.success ? (res.translations || []) : []
+    if (!res.success || !aiResultsZh.value.some(Boolean)) ElMessage.warning('翻译失败，请稍后重试')
+  } catch {
+    ElMessage.error('翻译服务暂不可用')
+  } finally {
+    aiZhLoading.value = false
+  }
 }
 
 // 模板引擎多选逻辑
@@ -2008,20 +2342,33 @@ function applyMultiTpl() {
 // ============ AI 生成 ============
 
 async function generateFromAi() {
-  aiGenerating.value = true; aiSelectedSet.value = new Set(); aiSelectAll.value = false; aiResults.value = []
-  const maxLen = aiForm.value.maxLen || maxSmsCharsForLang(aiForm.value.language)
-
-  let prompt = ''
-  const noEmojiHint = '严禁使用任何 emoji 表情符号。'
-  const sensitiveHint = '内容中不得包含敏感词汇（赌博、色情、毒品、暴力等）。'
-  const charHint = `每条文案不超过 ${maxLen} 个字符。`
-  if (aiForm.value.mode === 'rewrite' && form.value.message.trim()) {
-    prompt = `请基于以下短信文案改写 ${aiForm.value.count} 个不同版本，保持核心意思但变换表达方式、语气和风格。${noEmojiHint} ${sensitiveHint} ${charHint}\n\n原文案：${form.value.message}\n\n${aiForm.value.rewriteHint ? '改写要求：' + aiForm.value.rewriteHint : ''}`
-  } else {
-    prompt = aiForm.value.prompt
-    if (!prompt.trim()) { aiGenerating.value = false; return }
-    prompt = `${prompt}\n\n注意：${noEmojiHint} ${sensitiveHint} ${charHint}`
+  const base = form.value.message.trim()
+  if (!base) { ElMessage.warning('请先在「短信内容」中输入要优化的原始文案'); return }
+  // 短链转换校验（放在 loading 之前，避免早退留下转圈）
+  let slTarget = '', slBase = '', slEnabled = false
+  if (aiUseShortLink.value) {
+    slTarget = normalizeTargetUrl(aiShortLinkTarget.value)
+    const dom = aiShortLinkDomains.value.find(d => d.id === aiShortLinkDomainId.value)
+    if (!slTarget) { ElMessage.warning('已启用短链转换，请填写要转换的原链接'); return }
+    if (!dom) { ElMessage.warning('已启用短链转换，请选择短链域名'); return }
+    slBase = dom.base_url
+    slEnabled = true
   }
+  aiGenerating.value = true; aiSelectedSet.value = new Set(); aiSelectAll.value = false; aiResults.value = []; aiResultsZh.value = []
+  const maxLen = aiForm.value.maxLen || maxSmsCharsForLang(aiForm.value.language)
+  const hint = aiForm.value.rewriteHint.trim()
+
+  const prompt = [
+    `请基于以下原始短信文案，生成 ${aiForm.value.count} 条优化版本，要求：`,
+    `1) 保持核心含义与营销目的不变；`,
+    `2) 表达更自然、更吸引人，更能促使客户点击或转化；`,
+    `3) 降低运营商/反垃圾系统的拦截与误判风险：避免明显垃圾营销腔、全大写、连续感叹号、敏感词堆砌，用词自然且每条措辞明显不同；`,
+    `4) 原文中的链接、网址、数字、验证码必须原样保留，不得改写、翻译或截断；`,
+    `5) 严禁使用任何 emoji；不得包含赌博/色情/毒品/暴力等违禁内容；`,
+    `6) 每条不超过 ${maxLen} 个字符。`,
+    hint ? `额外优化方向：${hint}` : '',
+    `\n原始文案：${base}`,
+  ].filter(Boolean).join('\n')
 
   try {
     const res = await generateSmsContent({ prompt, count: aiForm.value.count, language: aiForm.value.language, max_length: maxLen })
@@ -2029,11 +2376,37 @@ async function generateFromAi() {
       aiResults.value = res.messages.map(m => truncateToLimit(stripEmoji(m), maxLen))
     } else { ElMessage.warning('AI 未返回有效文案') }
   } catch (e: any) {
-    ElMessage.error(e.message || 'AI 生成失败')
-    tplForm.value.type = 'marketing'; tplForm.value.language = aiForm.value.language; tplForm.value.keywords = prompt; tplForm.value.mode = 'type'
-    generateFromTemplateEngine(); aiResults.value = tplResults.value
-    if (aiResults.value.length) ElMessage.info('已使用内置模板引擎生成替代文案')
-  } finally { aiGenerating.value = false }
+    // AI 不可用时退回往返翻译改写，仍基于原文产出优化变体
+    try {
+      const pr = await paraphraseText({ text: base, lang: aiForm.value.language, count: aiForm.value.count })
+      if (pr.success && pr.variants?.length) {
+        aiResults.value = pr.variants.map(m => truncateToLimit(stripEmoji(m), maxLen))
+        ElMessage.info('AI 暂不可用，已用翻译改写引擎生成替代文案')
+      } else {
+        ElMessage.error(e.message || 'AI 优化失败，请稍后重试')
+      }
+    } catch {
+      ElMessage.error(e.message || 'AI 优化失败，请稍后重试')
+    }
+  } finally {
+    aiGenerating.value = false
+    // 先基于可读文案拉取中文对照（此时链接还未换成占位符，翻译更干净）
+    if (aiResults.value.length) translateAiResults()
+    // 再把每条结果里的链接替换成短链占位符。一文案一链时每条打独立分组号 g=，
+    // 使同一条文案的所有号码共用一个短链（利于报备）；一号码一链则不带分组。
+    if (aiResults.value.length && slEnabled) {
+      aiResults.value = aiResults.value.map((m) => {
+        const ph = aiShortLinkMode.value === 'per_copy'
+          ? `{{TRACK_URL=${slTarget}|${slBase}|g=${genShortLinkGroup()}}}`
+          : buildTrackUrlPlaceholder({ targetUrl: slTarget, baseUrl: slBase })
+        return applyShortLinkToMsg(m, ph)
+      })
+    }
+  }
+}
+// 一文案一链分组号：每条文案一个唯一 id，同文案的所有号码据此共用短链
+function genShortLinkGroup(): string {
+  return 'g' + Math.random().toString(36).slice(2, 10)
 }
 
 // AI 多选逻辑
@@ -2208,6 +2581,16 @@ function onTplGenCountryChange(iso: string | undefined) {
 }
 
 /** AI 生成：根据短信内容框识别语言 */
+// 在 AI 对话框里直接编辑原始文案时：开启自动识别则随输入更新语言
+function onAiOriginalInput() {
+  if (!aiAutoDetectOnOpen.value) return
+  const txt = form.value.message.trim()
+  if (txt.length >= 2) {
+    aiForm.value.language = detectLanguageFromText(txt)
+    aiLangHint.value = `已自动识别文案语言：${getLangLabel(aiForm.value.language)}`
+  }
+}
+
 function applyAiLangFromText() {
   const txt = form.value.message.trim()
   if (!txt) {
@@ -2274,14 +2657,18 @@ watch(showAiDialog, (open) => {
   aiLangHint.value = ''
   aiGenCountryIso.value = ''
   aiCountryHint.value = ''
-  if (open && aiAutoDetectOnOpen.value) {
+  if (open) {
+    // 先按首个收件号码识别国家（可选展示），再用文案语言识别覆盖（更贴合实际发送内容）
+    const nums = parseNumbers()
+    if (nums.length) {
+      const iso = inferCountryIsoFromPhone(nums[0])
+      if (iso) { aiGenCountryIso.value = iso; onAiGenCountryChange(iso) }
+    }
     const txt = form.value.message.trim()
-    if (txt) {
+    if (aiAutoDetectOnOpen.value && txt) {
       aiForm.value.language = detectLanguageFromText(txt)
       aiLangHint.value = `已自动识别文案语言：${getLangLabel(aiForm.value.language)}`
     }
-  }
-  if (open) {
     aiForm.value.maxLen = maxSmsCharsForLang(aiForm.value.language)
   }
 })
@@ -2928,7 +3315,9 @@ onUnmounted(() => clearInterval(timeInterval))
 .gen-result-item.selected { border-color: var(--el-color-primary, #409eff); background: rgba(64, 158, 255, 0.06); }
 .gen-idx { flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; background: var(--el-fill-color, #f0f2f5); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
 .gen-result-item.selected .gen-idx { background: var(--el-color-primary, #409eff); color: white; }
-.gen-text { font-size: 13px; line-height: 1.5; flex: 1; }
+.gen-body { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.gen-text { font-size: 13px; line-height: 1.5; flex: 1; word-break: break-word; white-space: pre-wrap; }
+.gen-zh { font-size: 12px; line-height: 1.4; color: var(--el-text-color-secondary); word-break: break-word; padding-left: 8px; border-left: 2px solid var(--el-border-color, #dcdfe6); }
 .gen-char-count { flex-shrink: 0; font-size: 11px; color: var(--el-text-color-secondary); white-space: nowrap; margin-left: auto; }
 
 /* 字符计数 & 敏感词提示 */
@@ -2955,6 +3344,9 @@ onUnmounted(() => clearInterval(timeInterval))
 
 /* 生成结果头部 */
 .gen-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5); }
+.gen-header-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+.ai-original-tools { margin-top: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ai-original-tools-hint { font-size: 12px; color: var(--el-text-color-secondary); }
 .gen-selected-tip { font-size: 12px; color: var(--el-text-color-secondary); }
 
 /* 智能生成：语言自动识别与按国家匹配 */
@@ -2966,20 +3358,25 @@ onUnmounted(() => clearInterval(timeInterval))
 .multi-msg-config { margin-top: 16px; padding: 12px; background: rgba(64, 158, 255, 0.04); border: 1px solid var(--el-border-color-lighter, #ebeef5); border-radius: 8px; }
 .mmc-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
 .mmc-desc { font-size: 12px; color: var(--el-text-color-secondary); margin-bottom: 8px; }
-.mmc-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 13px; }
+.mmc-row { display: flex; align-items: flex-start; gap: 8px; padding: 4px 0; font-size: 13px; }
 .mmc-label { font-weight: 500; white-space: nowrap; min-width: 52px; }
-.mmc-preview { color: var(--el-text-color-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.mmc-preview { color: var(--el-text-color-secondary); word-break: break-word; white-space: pre-wrap; flex: 1; }
 .mmc-summary { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--el-border-color-lighter, #ebeef5); font-size: 13px; font-weight: 500; color: var(--el-color-primary, #409eff); }
 
 /* 多文案提示横幅 */
 .multi-msg-banner { margin-top: 8px; padding: 10px 12px; background: rgba(64, 158, 255, 0.06); border: 1px solid rgba(64, 158, 255, 0.2); border-radius: 8px; }
 .mmb-header { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin-bottom: 6px; }
 .mmb-header strong { color: var(--el-color-primary, #409eff); }
+.mmb-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .mmb-list { display: flex; flex-direction: column; gap: 4px; }
-.mmb-item { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 8px; border-radius: 4px; background: var(--el-fill-color-light, #f5f7fa); }
+.mmb-item { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; padding: 4px 8px; border-radius: 4px; background: var(--el-fill-color-light, #f5f7fa); }
 .mmb-item.current { background: rgba(64, 158, 255, 0.1); }
 .mmb-idx { width: 18px; height: 18px; border-radius: 50%; background: var(--el-color-primary, #409eff); color: white; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; flex-shrink: 0; }
-.mmb-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--el-text-color-secondary); }
+.mmb-body { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mmb-text { word-break: break-word; white-space: pre-wrap; color: var(--el-text-color-secondary); }
+.mmb-zh { font-size: 11px; line-height: 1.4; color: var(--el-text-color-secondary); word-break: break-word; padding-left: 6px; border-left: 2px solid var(--el-border-color, #dcdfe6); }
+.mmb-char-count { flex-shrink: 0; font-size: 11px; color: var(--el-text-color-secondary); white-space: nowrap; }
+.mmb-copy-btn { flex-shrink: 0; padding: 0 2px; height: 18px; }
 
 .slide-enter-active, .slide-leave-active { transition: all 0.3s ease; }
 .slide-enter-from, .slide-leave-to { opacity: 0; transform: translateY(-10px); }

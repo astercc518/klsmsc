@@ -26,6 +26,7 @@ from app.modules.common.account import Account
 from app.modules.common.admin_user import AdminUser
 from app.modules.sms.short_link_domain import ShortLinkDomain
 from app.utils.logger import get_logger
+from app.utils.phone_utils import excel_text
 
 logger = get_logger(__name__)
 from app.modules.sms.short_link_log import ShortLinkLog
@@ -748,7 +749,7 @@ async def download_domain_clicked_phones(
             buf.seek(0); buf.truncate(0)
 
             async for r in rows_iter:
-                ts = r.last_click_at.isoformat() if r.last_click_at else ""
+                ts = excel_text(r.last_click_at.strftime("%Y-%m-%d %H:%M:%S")) if r.last_click_at else ""
                 w.writerow([r.phone_number, r.country_code or "", int(r.click_count or 0), ts, r.original_url or ""])
                 data = buf.getvalue()
                 if data:
@@ -1061,7 +1062,7 @@ async def download_clicked_phones_csv(
         yield buf.getvalue()
         buf.seek(0); buf.truncate(0)
         for r in rows:
-            ts = r.last_click_at.isoformat() if r.last_click_at else ""
+            ts = excel_text(r.last_click_at.strftime("%Y-%m-%d %H:%M:%S")) if r.last_click_at else ""
             w.writerow([
                 r.phone_number,
                 int(r.human_clicks or 0),
@@ -1327,7 +1328,7 @@ async def download_clicked_phones_csv_by_code(
         yield buf.getvalue()
         buf.seek(0); buf.truncate(0)
         for r in rows:
-            ts = r.last_click_at.isoformat() if r.last_click_at else ""
+            ts = excel_text(r.last_click_at.strftime("%Y-%m-%d %H:%M:%S")) if r.last_click_at else ""
             w.writerow([
                 r.phone_number,
                 int(r.human_clicks or 0),

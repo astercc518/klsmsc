@@ -122,9 +122,18 @@ class Settings(BaseSettings):
     PROMETHEUS_PORT: int = 9090
     
     # AI 文案生成配置
+    # AI_PROVIDER: "openai"=OpenAI 兼容接口(DeepSeek 等)；"google"/"gemini"=Google Gemini 原生接口
+    AI_PROVIDER: str = "openai"
     AI_API_KEY: Optional[str] = None
     AI_API_URL: str = "https://api.deepseek.com/v1/chat/completions"
     AI_MODEL: str = "deepseek-chat"
+    # Google Gemini 专用（AI_PROVIDER=google 时使用；未单独设置则回退到 AI_API_KEY/AI_MODEL）
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_API_BASE: str = "https://generativelanguage.googleapis.com/v1beta"
+    # 可选出口代理：Gemini 免费接口对机房/部分地区 IP 做地域封锁，
+    # 设置后 AI 调用经此代理出网（如 http://user:pass@host:port）
+    AI_HTTP_PROXY: Optional[str] = None
 
     # 注水注册验证码求解 (CapSolver — GeeTest v4)
     CAPSOLVER_API_KEY: Optional[str] = None

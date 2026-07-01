@@ -17,6 +17,7 @@ from app.modules.sms.channel import Channel
 from app.core.auth import api_key_header, AuthService
 from app.utils.logger import get_logger
 from app.services.reports_service import ReportsService
+from app.services.sms_finance import net_cost, net_revenue
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/reports", tags=["Reports"])
@@ -82,8 +83,8 @@ async def get_statistics(
         func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
         func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
         func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("total_pending"),
-        func.sum(SMSLog.cost_price).label("total_cost"),
-        func.sum(SMSLog.selling_price).label("total_revenue")
+        net_cost("total_cost"),
+        net_revenue("total_revenue")
     ).where(
         and_(
             SMSLog.account_id == account.id,

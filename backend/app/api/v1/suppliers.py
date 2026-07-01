@@ -1318,7 +1318,8 @@ async def get_supplier_statistics(
 ):
     """获取供应商统计数据"""
     from app.modules.sms.sms_log import SMSLog
-    
+    from app.services.sms_finance import net_cost
+
     # 获取供应商关联的通道
     channels_result = await db.execute(
         select(SupplierChannel.channel_id).where(SupplierChannel.supplier_id == supplier_id)
@@ -1342,7 +1343,7 @@ async def get_supplier_statistics(
         func.count(SMSLog.id).label('total'),
         func.sum(case((SMSLog.status == 'delivered', 1), else_=0)).label('success'),
         func.sum(case((SMSLog.status == 'failed', 1), else_=0)).label('failed'),
-        func.sum(SMSLog.cost_price).label('cost')
+        net_cost('cost')
     ).where(SMSLog.channel_id.in_(channel_ids))
     
     if start_date:

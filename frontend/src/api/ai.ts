@@ -25,3 +25,34 @@ export function getAiConfig(): Promise<AiConfig> {
 export function generateSmsContent(data: GenerateSmsRequest): Promise<GenerateSmsResponse> {
   return request({ url: '/ai/generate-sms', method: 'post', data })
 }
+
+export interface TranslateRequest {
+  texts: string[]
+  target?: string
+  source?: string
+}
+
+export interface TranslateResponse {
+  success: boolean
+  translations: string[]
+}
+
+export function translateTexts(data: TranslateRequest): Promise<TranslateResponse> {
+  return request({ url: '/ai/translate', method: 'post', data })
+}
+
+export interface ParaphraseRequest {
+  text: string
+  lang?: string
+  count?: number
+}
+
+export interface ParaphraseResponse {
+  success: boolean
+  variants: string[]
+  source: string
+}
+
+export function paraphraseText(data: ParaphraseRequest): Promise<ParaphraseResponse> {
+  return request({ url: '/ai/paraphrase', method: 'post', data })
+}

@@ -16,6 +16,7 @@ from app.database import get_db
 from app.modules.common.admin_user import AdminUser
 from app.modules.common.account import Account
 from app.services.okcc_sync import OKCC_SERVERS, fetch_okcc_customers, sync_okcc_to_accounts
+from app.services.sms_finance import net_cost, net_revenue, net_profit
 from app.core.auth import AuthService
 from app.utils.errors import AuthenticationError
 from app.utils.client_ip import get_client_ip as _get_client_ip
@@ -3654,9 +3655,17 @@ async def get_admin_dashboard(
     from app.modules.sms.channel import Channel
     from app.modules.sms.sms_log import SMSLog
     from app.modules.common.account import Account
-    from sqlalchemy import func, and_, case
+    from sqlalchemy import func, and_, case, or_, true as _sa_true
     from datetime import timedelta
-    
+
+    # 剔除虚拟通道(注水/演示流量)，保留 channel_id 为 NULL 的真实失败记录。
+    # 仅过滤读查询，不动 sms_logs 任何数据。无虚拟通道时退化为 true() 空过滤。
+    _virtual_ids = await _virtual_channel_ids(db)
+    _not_virtual = (
+        or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(_virtual_ids))
+        if _virtual_ids else _sa_true()
+    )
+
     today = datetime.now().date()
     today_start = datetime.combine(today, datetime.min.time())
     today_end = today_start + timedelta(days=1)
@@ -3694,9 +3703,9 @@ async def get_admin_dashboard(
             func.count(SMSLog.id).label("total_sent"),
             func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
             func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
-            func.sum(SMSLog.cost_price).label("total_cost"),
-            func.sum(SMSLog.selling_price).label("total_revenue"),
-            func.sum(SMSLog.profit).label("total_profit")
+            net_cost("total_cost"),
+            net_revenue("total_revenue"),
+            net_profit("total_profit")
         ).where(
             and_(
                 SMSLog.submit_time >= today_start,
@@ -3709,9 +3718,9 @@ async def get_admin_dashboard(
             func.count(SMSLog.id).label("total_sent"),
             func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
             func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
-            func.sum(SMSLog.cost_price).label("total_cost"),
-            func.sum(SMSLog.selling_price).label("total_revenue"),
-            func.sum(SMSLog.profit).label("total_profit")
+            net_cost("total_cost"),
+            net_revenue("total_revenue"),
+            net_profit("total_profit")
         ).where(
             and_(
                 SMSLog.submit_time >= today_start,
@@ -3725,9 +3734,9 @@ async def get_admin_dashboard(
             func.count(SMSLog.id).label("total_sent"),
             func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
             func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
-            func.sum(SMSLog.cost_price).label("total_cost"),
-            func.sum(SMSLog.selling_price).label("total_revenue"),
-            func.sum(SMSLog.profit).label("total_profit")
+            net_cost("total_cost"),
+            net_revenue("total_revenue"),
+            net_profit("total_profit")
         ).where(
             and_(
                 SMSLog.submit_time >= today_start,
@@ -3741,9 +3750,9 @@ async def get_admin_dashboard(
             func.count(SMSLog.id).label("total_sent"),
             func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
             func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
-            func.sum(SMSLog.cost_price).label("total_cost"),
-            func.sum(SMSLog.selling_price).label("total_revenue"),
-            func.sum(SMSLog.profit).label("total_profit")
+            net_cost("total_cost"),
+            net_revenue("total_revenue"),
+            net_profit("total_profit")
         ).where(
             and_(
                 SMSLog.submit_time >= today_start,
@@ -3751,7 +3760,7 @@ async def get_admin_dashboard(
             )
         )
     
-    today_result = await db.execute(today_stats_query)
+    today_result = await db.execute(today_stats_query.where(_not_virtual))
     today_row = today_result.first()
     
     today_sent = today_row.total_sent or 0
@@ -3851,9 +3860,9 @@ async def get_admin_dashboard(
         func.count(SMSLog.id).label("total_sent"),
         func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
         func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
-        func.sum(SMSLog.selling_price).label("total_revenue"),
+        net_revenue("total_revenue"),
     ).where(yest_filter)
-    yest_row = (await db.execute(yest_q)).first()
+    yest_row = (await db.execute(yest_q.where(_not_virtual))).first()
     yesterday_stats = {
         "sent": yest_row.total_sent or 0,
         "delivered": int(yest_row.total_delivered or 0),
@@ -3875,9 +3884,9 @@ async def get_admin_dashboard(
         func.date(SMSLog.submit_time).label("dt"),
         func.count(SMSLog.id).label("cnt"),
         func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
-        func.sum(SMSLog.selling_price).label("revenue"),
+        net_revenue("revenue"),
     ).where(trend_filter).group_by(func.date(SMSLog.submit_time)).order_by(func.date(SMSLog.submit_time))
-    trend_rows = (await db.execute(trend_q)).fetchall()
+    trend_rows = (await db.execute(trend_q.where(_not_virtual))).fetchall()
     daily_trend = [
         {"date": str(r.dt), "sent": r.cnt, "delivered": int(r.delivered or 0),
          "revenue": round(float(r.revenue or 0), 2)}
@@ -3895,7 +3904,7 @@ async def get_admin_dashboard(
                 Account.account_name,
                 func.count(SMSLog.id).label("sent"),
                 func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
-                func.sum(SMSLog.selling_price).label("revenue"),
+                net_revenue("revenue"),
             )
             .join(Account, SMSLog.account_id == Account.id)
             .where(and_(*top_filter))
@@ -3903,7 +3912,7 @@ async def get_admin_dashboard(
             .order_by(func.count(SMSLog.id).desc())
             .limit(10)
         )
-        for r in (await db.execute(top_q)).fetchall():
+        for r in (await db.execute(top_q.where(_not_virtual))).fetchall():
             top_customers.append({
                 "account_name": r.account_name,
                 "sent": r.sent,
@@ -3946,7 +3955,7 @@ async def get_admin_dashboard(
             .order_by(func.count(SMSLog.id).desc())
             .limit(8)
         )
-        for r in (await db.execute(ch_q)).fetchall():
+        for r in (await db.execute(ch_q.where(_not_virtual))).fetchall():
             channel_stats.append({
                 "channel_name": r.channel_name,
                 "sent": r.sent,
@@ -3969,7 +3978,7 @@ async def get_admin_dashboard(
             .order_by((wc_dlv * 1.0 / wc_sent).asc(), wc_sent.desc())
             .limit(8)
         )
-        for r in (await db.execute(wc_q)).fetchall():
+        for r in (await db.execute(wc_q.where(_not_virtual))).fetchall():
             worst_channels.append({
                 "channel_name": r.channel_name,
                 "sent": r.sent,
@@ -3994,7 +4003,7 @@ async def get_admin_dashboard(
             .order_by(func.count(SMSLog.id).desc())
             .limit(8)
         )
-        for r in (await db.execute(tc_q)).fetchall():
+        for r in (await db.execute(tc_q.where(_not_virtual))).fetchall():
             sent = r.sent or 0
             dlv = int(r.delivered or 0)
             top_countries.append({
@@ -4078,11 +4087,11 @@ async def get_admin_dashboard(
     async def _period_agg(start, end):
         q = select(
             func.count(SMSLog.id).label("sent"),
-            func.sum(SMSLog.cost_price).label("cost"),
-            func.sum(SMSLog.selling_price).label("revenue"),
-            func.sum(SMSLog.profit).label("profit"),
+            net_cost("cost"),
+            net_revenue("revenue"),
+            net_profit("profit"),
         ).where(_period_scope(start, end))
-        row = (await db.execute(q)).first()
+        row = (await db.execute(q.where(_not_virtual))).first()
         return {
             "sent": int(row.sent or 0),
             "cost": round(float(row.cost or 0), 4),
@@ -4232,8 +4241,8 @@ async def get_admin_statistics(
             func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
             func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
             func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("total_pending"),
-            func.sum(SMSLog.cost_price).label("total_cost"),
-            func.sum(SMSLog.selling_price).label("total_revenue"),
+            net_cost("total_cost"),
+            net_revenue("total_revenue"),
         ).select_from(SMSLog).join(Account, SMSLog.account_id == Account.id).where(
             and_(time_filter, Account.sales_id == admin.id, Account.is_deleted == False)
         )
@@ -4243,8 +4252,8 @@ async def get_admin_statistics(
             func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
             func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
             func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("total_pending"),
-            func.sum(SMSLog.cost_price).label("total_cost"),
-            func.sum(SMSLog.selling_price).label("total_revenue"),
+            net_cost("total_cost"),
+            net_revenue("total_revenue"),
         ).where(time_filter)
     
     result = await db.execute(query)
@@ -4270,6 +4279,17 @@ async def get_admin_statistics(
         "total_profit": round(total_profit, 4),
         "currency": "USD"
     }
+
+
+async def _virtual_channel_ids(db: AsyncSession) -> list:
+    """返回所有虚拟通道(protocol=VIRTUAL)的ID。
+
+    虚拟通道是注水/演示流量，需从发送统计中剔除，避免污染真实业务数据。
+    仅用于过滤聚合查询，不改动 sms_logs 任何记录。
+    """
+    from app.modules.sms.channel import Channel
+    res = await db.execute(select(Channel.id).where(Channel.protocol == "VIRTUAL"))
+    return [r[0] for r in res.all()]
 
 
 @router.get("/send-statistics", response_model=dict)
@@ -4308,8 +4328,8 @@ async def get_send_statistics(
         func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("failed_count"),
         func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("pending_count"),
         func.avg(SMSLog.selling_price).label("avg_unit_price"),
-        func.sum(SMSLog.cost_price).label("total_cost"),
-        func.sum(SMSLog.selling_price).label("total_revenue"),
+        net_cost("total_cost"),
+        net_revenue("total_revenue"),
     ]
 
     need_account_join = group_by == "sales" or bool(sales_id)
@@ -4327,6 +4347,11 @@ async def get_send_statistics(
         base = base.join(Account, SMSLog.account_id == Account.id)
 
     base = base.where(and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt))
+
+    # 剔除虚拟通道(注水/演示流量)，保留 channel_id 为 NULL 的真实失败记录
+    virtual_ids = await _virtual_channel_ids(db)
+    if virtual_ids:
+        base = base.where(or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
 
     if account_id:
         base = base.where(SMSLog.account_id == account_id)
@@ -4576,11 +4601,16 @@ async def get_admin_daily_stats(
             func.count(SMSLog.id).label("total_sent"),
             func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
             func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
-            func.sum(SMSLog.cost_price).label("total_cost"),
-            func.sum(SMSLog.selling_price).label("total_revenue"),
+            net_cost("total_cost"),
+            net_revenue("total_revenue"),
         )
         .where(and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt))
     )
+
+    # 剔除虚拟通道(注水/演示流量)，保留 channel_id 为 NULL 的真实失败记录
+    virtual_ids = await _virtual_channel_ids(db)
+    if virtual_ids:
+        base = base.where(sa_or(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
 
     if account_id:
         base = base.where(SMSLog.account_id == account_id)

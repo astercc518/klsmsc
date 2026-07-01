@@ -32,7 +32,11 @@ _PLACEHOLDER_RE = re.compile(r"\{\{TRACK_URL(?:=([^}]*))?\}\}")
 # Redis 键前缀
 _REDIS_TOKEN_PREFIX = "sl:t:"   # sl:t:{token} -> original_url
 _REDIS_SMSLOG_PREFIX = "sl:s:"  # sl:s:{sms_log_id} -> token
+_REDIS_SHARE_PREFIX = "sl:share:"  # sl:share:{group} -> token（一文案一链：同组共用同一 token）
 _REDIS_TTL = 90 * 86400         # 90 天
+
+# 一文案一链分组标记：占位符可带 |g=UID，同 UID 的所有消息共用一个短链
+_GROUP_RE = re.compile(r"\|g=([^|}]+)")
 
 
 # 默认 token 长度从 7 升到 8 位（Base62 8 位 ≈ 218 万亿组合，约 47 bits，
@@ -87,15 +91,24 @@ def extract_placeholder_parts(message: str, default_url: str, default_base_url: 
     target_url = default_url
     base_url = default_base_url
     if embedded:
-        if "|" in embedded:
-            t, b = embedded.split("|", 1)
-            target_url = (t.strip() or default_url)
-            base_url = (b.strip() or default_base_url)
-        else:
-            target_url = embedded
+        # 过滤掉分组标记 g=xxx（一文案一链用），只保留 target|base 段
+        plain = [s.strip() for s in embedded.split("|") if not s.strip().startswith("g=")]
+        if len(plain) >= 1 and plain[0]:
+            target_url = plain[0]
+        if len(plain) >= 2 and plain[1]:
+            base_url = plain[1]
     if not target_url:
         return None
     return target_url, (base_url or default_base_url)
+
+
+def extract_track_group(message: str) -> Optional[str]:
+    """从 {{TRACK_URL=...|g=UID}} 提取分组标记（一文案一链）；无则 None。"""
+    m = _PLACEHOLDER_RE.search(message or "")
+    if not m:
+        return None
+    gm = _GROUP_RE.search(m.group(1) or "")
+    return gm.group(1).strip() if gm else None
 
 
 # 旧调用兼容
@@ -205,6 +218,39 @@ async def _resolve_domain_id_by_base_url(db: AsyncSession, base_url: str) -> Opt
     return int(row.id)
 
 
+async def _mint_token(
+    db: AsyncSession,
+    sms_log_id: int,
+    original_url: str,
+    domain_id,
+    max_retries: int = 5,
+) -> str:
+    """铸造一个全新唯一 token 并写入 short_link_logs（纯生成，不做幂等复用）。"""
+    for attempt in range(max_retries):
+        token = _gen_token()
+        # Redis SETNX：抢占 token，防两个 worker 并发生成同一 token 后同时尝试 DB 写入
+        r = await _get_redis()
+        redis_key = f"{_REDIS_TOKEN_PREFIX}{token}".encode()
+        acquired = await r.set(redis_key, original_url.encode(), ex=_REDIS_TTL, nx=True)
+        if not acquired:
+            logger.debug(f"short_link Redis SETNX miss (collision): token={token} attempt={attempt}")
+            continue
+        # INSERT IGNORE：若 token UNIQUE 冲突则 rowcount=0，无异常，无回滚，安全重试
+        result = await db.execute(
+            text(
+                "INSERT IGNORE INTO short_link_logs (token, sms_log_id, domain_id, original_url)"
+                " VALUES (:token, :sms_log_id, :domain_id, :original_url)"
+            ),
+            {"token": token, "sms_log_id": sms_log_id, "domain_id": domain_id, "original_url": original_url},
+        )
+        if result.rowcount == 0:
+            await r.delete(redis_key)
+            logger.debug(f"short_link DB INSERT IGNORE collision: token={token} attempt={attempt}")
+            continue
+        return token
+    raise RuntimeError(f"Failed to generate unique short_link token after {max_retries} attempts")
+
+
 async def generate_short_link(
     db: AsyncSession,
     sms_log_id: int,
@@ -212,22 +258,42 @@ async def generate_short_link(
     base_url: str,
     *,
     max_retries: int = 5,
+    share_key: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
-    为指定 sms_log_id 生成唯一短链。
-
-    碰撞处理：使用 INSERT IGNORE（而非 ORM flush+rollback），不会意外回滚
-    同一会话里其他待提交字段（如 sms_log.channel_id）。
+    生成短链。默认「一号码一链」（按 sms_log_id 幂等）；
+    传 share_key 时走「一文案一链」：同 share_key 的所有消息共用同一 token（点击按该组聚合）。
 
     Returns:
         (token, short_url)
     """
     from app.modules.sms.short_link_log import ShortLinkLog
 
-    # 幂等：同一条 sms_log 已有 token 时直接复用（Redis 优先）
+    base_pref = base_url.rstrip('/')
+
+    # ===== 一文案一链：按 share_key 复用同一 token =====
+    if share_key:
+        skey = f"{_REDIS_SHARE_PREFIX}{share_key}"
+        cached = await _redis_get(skey)
+        if cached:
+            return cached, f"{base_pref}/{cached}"
+        domain_id = await _resolve_domain_id_by_base_url(db, base_url)
+        token = await _mint_token(db, sms_log_id, original_url, domain_id, max_retries)
+        # 抢占分组槽位：赢家的 token 成为该组共用短链；输家丢弃自己刚铸的 token（成孤儿行，无害）
+        r = await _get_redis()
+        claimed = await r.set(skey.encode(), token.encode(), ex=_REDIS_TTL, nx=True)
+        if claimed:
+            logger.info(f"short_link generated (shared): token={token} group={share_key}")
+            return token, f"{base_pref}/{token}"
+        winner = await _redis_get(skey)
+        if winner:
+            return winner, f"{base_pref}/{winner}"
+        return token, f"{base_pref}/{token}"
+
+    # ===== 一号码一链（原逻辑，按 sms_log_id 幂等）=====
     cached_token = await _redis_get(f"{_REDIS_SMSLOG_PREFIX}{sms_log_id}")
     if cached_token:
-        return cached_token, f"{base_url.rstrip('/')}/{cached_token}"
+        return cached_token, f"{base_pref}/{cached_token}"
 
     # worker 重试时 Redis 可能已过期，回库确认
     existing = (
@@ -238,49 +304,13 @@ async def generate_short_link(
     if existing:
         await _redis_set(f"{_REDIS_SMSLOG_PREFIX}{sms_log_id}", existing)
         await _redis_set(f"{_REDIS_TOKEN_PREFIX}{existing}", original_url)
-        return existing, f"{base_url.rstrip('/')}/{existing}"
+        return existing, f"{base_pref}/{existing}"
 
-    # 生成前先查一次 domain_id（每条 sms_log 一次反查 + Redis 缓存）
     domain_id = await _resolve_domain_id_by_base_url(db, base_url)
-
-    # 生成新 token；使用 INSERT IGNORE 避免碰撞时回滚整个会话
-    for attempt in range(max_retries):
-        token = _gen_token()
-
-        # Redis SETNX：抢占 token，防两个 worker 并发生成同一 token 后同时尝试 DB 写入
-        r = await _get_redis()
-        redis_key = f"{_REDIS_TOKEN_PREFIX}{token}".encode()
-        acquired = await r.set(redis_key, original_url.encode(), ex=_REDIS_TTL, nx=True)
-        if not acquired:
-            logger.debug(f"short_link Redis SETNX miss (collision): token={token} attempt={attempt}")
-            continue
-
-        # INSERT IGNORE：若 token UNIQUE 冲突则 rowcount=0，无异常，无回滚，安全重试
-        result = await db.execute(
-            text(
-                "INSERT IGNORE INTO short_link_logs (token, sms_log_id, domain_id, original_url)"
-                " VALUES (:token, :sms_log_id, :domain_id, :original_url)"
-            ),
-            {
-                "token": token,
-                "sms_log_id": sms_log_id,
-                "domain_id": domain_id,
-                "original_url": original_url,
-            },
-        )
-        if result.rowcount == 0:
-            # DB UNIQUE 碰撞（Redis 可能误判），释放 Redis 占位并重试
-            await r.delete(redis_key)
-            logger.debug(f"short_link DB INSERT IGNORE collision: token={token} attempt={attempt}")
-            continue
-
-        # 成功写入 DB（INSERT IGNORE rowcount=1）；缓存 sms_log_id → token 映射
-        await _redis_set(f"{_REDIS_SMSLOG_PREFIX}{sms_log_id}", token)
-        short_url = f"{base_url.rstrip('/')}/{token}"
-        logger.info(f"short_link generated: token={token} sms_log_id={sms_log_id}")
-        return token, short_url
-
-    raise RuntimeError(f"Failed to generate unique short_link token after {max_retries} attempts")
+    token = await _mint_token(db, sms_log_id, original_url, domain_id, max_retries)
+    await _redis_set(f"{_REDIS_SMSLOG_PREFIX}{sms_log_id}", token)
+    logger.info(f"short_link generated: token={token} sms_log_id={sms_log_id}")
+    return token, f"{base_pref}/{token}"
 
 
 async def replace_track_urls_bulk(
@@ -352,7 +382,11 @@ async def replace_track_url_in_message(
         logger.warning(f"short_link: empty target URL for sms_log_id={sms_log_id}, skipping replacement")
         return message
 
-    _, short_url = await generate_short_link(db, sms_log_id, target_url, effective_base)
+    # 一文案一链：占位符带 |g=UID 时，同组共用一个短链（利于报备）
+    group = extract_track_group(message)
+    _, short_url = await generate_short_link(
+        db, sms_log_id, target_url, effective_base, share_key=group
+    )
     return _PLACEHOLDER_RE.sub(short_url, message)
 
 

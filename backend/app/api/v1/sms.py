@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.modules.common.account import Account
 from app.modules.sms.sms_log import SMSLog
+from app.services.sms_finance import net_revenue
 from app.core.auth import AuthService, api_key_header, optional_basic
 from app.utils.validator import Validator
 from app.utils.sms_template import render_sms_variables, sms_template_has_variables
@@ -1868,8 +1869,8 @@ async def get_sms_stats(
     # 计算成功率
     success_rate = round((today_success / today_sent * 100) if today_sent > 0 else 0, 1)
     
-    # 查询今日消费
-    cost_query = select(func.coalesce(func.sum(SMSLog.selling_price), 0)).where(and_(*conditions))
+    # 查询今日消费（净额：剔除已退补充值的失败短信）
+    cost_query = select(func.coalesce(net_revenue(None), 0)).where(and_(*conditions))
     cost_result = await db.execute(cost_query)
     today_cost = float(cost_result.scalar() or 0)
     
@@ -2548,7 +2549,7 @@ async def get_customer_send_statistics(
             func.sum(case((SMSLog.status == "queued", 1), else_=0)).label("queued"),
             func.sum(case((SMSLog.status == "sent", 1), else_=0)).label("sent"),
             func.sum(case((SMSLog.status == "expired", 1), else_=0)).label("expired"),
-            func.sum(SMSLog.selling_price).label("total_spending"),
+            net_revenue("total_spending"),
         )
         .where(and_(
             SMSLog.account_id == account.id,
@@ -2652,7 +2653,7 @@ async def get_customer_daily_stats(
             func.sum(case((SMSLog.status == "queued", 1), else_=0)).label("queued"),
             func.sum(case((SMSLog.status == "sent", 1), else_=0)).label("sent"),
             func.sum(case((SMSLog.status == "expired", 1), else_=0)).label("expired"),
-            func.sum(SMSLog.selling_price).label("total_spending"),
+            net_revenue("total_spending"),
         )
         .where(and_(
             SMSLog.account_id == account.id,

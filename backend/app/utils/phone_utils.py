@@ -63,6 +63,19 @@ def export_phone_plain_digits(raw) -> str:
     return "".join(c for c in s if c.isdigit())
 
 
+def excel_text(value) -> str:
+    """把值包成 Excel 文本单元格 ="值"，用于「给人用 Excel 看的报表」列，规避两类自动判类型坑：
+    - 时间(2026-07-01 12:34:56，空格分隔)被识别成日期 → 列宽不够显示 ######；
+    - 纯长数字(上游消息ID等)被转科学计数法(2.07E+18)并丢精度。
+    包裹后 Excel 一律左对齐按文本显示，窄列也可见、数字不丢位。空值返回空串。
+    注意：仅用于报表类导出。号码回传/再导入类文件不要包裹（否则重新上传会拿到字面 ="..."）。
+    """
+    if value is None or value == "":
+        return ""
+    s = str(value).replace('"', '""')
+    return f'="{s}"'
+
+
 # ISO 3166-1 alpha-2 → ITU-T E.164 国家区号
 _COUNTRY_DIAL_MAP = {
     "PH": "63", "VN": "84", "ID": "62", "TH": "66", "MY": "60",

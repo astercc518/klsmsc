@@ -31,6 +31,7 @@ from app.core.auth import get_current_account
 from app.core.license import require_valid_license
 from app.modules.common.account import Account
 from app.utils.logger import get_logger
+from app.utils.phone_utils import excel_text
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -646,6 +647,8 @@ async def export_batch_records_csv(
     if not batch:
         raise HTTPException(status_code=404, detail="批次不存在")
 
+    # 流式导出：按主键升序 stream，不设行数上限（原 limit(10000) 会把 >1万条的批次截断），
+    # 也不再一次性 .all() 进内存，避免大批次(数十万条)撑爆内存。
     query = (
         select(SMSLog)
         .where(
@@ -653,57 +656,64 @@ async def export_batch_records_csv(
             SMSLog.account_id == current_account.id,
         )
         .order_by(SMSLog.id.asc())
-        .limit(10000)
     )
-    rows = (await db.execute(query)).scalars().all()
+    rows_iter = await db.stream(query)
 
-    output = io.StringIO()
-    output.write("\ufeff")
-    writer = csv.writer(output)
-    writer.writerow(
-        [
-            "ID",
-            "消息ID",
-            "上游消息ID",
-            "手机号(脱敏)",
-            "国家",
-            "内容",
-            "条数",
-            "状态",
-            "售价",
-            "币种",
-            "提交时间",
-            "发送时间",
-            "送达时间",
-            "错误信息",
-        ]
-    )
+    buf = io.StringIO()
+    buf.write("\ufeff")
+    writer = csv.writer(buf)
 
-    for r in rows:
+    async def generate():
         writer.writerow(
             [
-                r.id,
-                r.message_id,
-                r.upstream_message_id or "",
-                _mask_phone_for_export(r.phone_number),
-                r.country_code or "",
-                (r.message or "")[:200],
-                r.message_count,
-                r.status,
-                float(r.selling_price) if r.selling_price else 0,
-                r.currency or "USD",
-                r.submit_time.strftime("%Y-%m-%d %H:%M:%S") if r.submit_time else "",
-                r.sent_time.strftime("%Y-%m-%d %H:%M:%S") if r.sent_time else "",
-                r.delivery_time.strftime("%Y-%m-%d %H:%M:%S") if r.delivery_time else "",
-                r.error_message or "",
+                "ID",
+                "消息ID",
+                "上游消息ID",
+                "手机号(脱敏)",
+                "国家",
+                "内容",
+                "条数",
+                "状态",
+                "售价",
+                "币种",
+                "提交时间",
+                "发送时间",
+                "送达时间",
+                "错误信息",
             ]
         )
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate(0)
 
-    output.seek(0)
+        async for row in rows_iter:
+            r = row[0]
+            writer.writerow(
+                [
+                    r.id,
+                    r.message_id,
+                    excel_text(r.upstream_message_id),
+                    _mask_phone_for_export(r.phone_number),
+                    r.country_code or "",
+                    (r.message or "")[:200],
+                    r.message_count,
+                    r.status,
+                    float(r.selling_price) if r.selling_price else 0,
+                    r.currency or "USD",
+                    excel_text(r.submit_time.strftime("%Y-%m-%d %H:%M:%S")) if r.submit_time else "",
+                    excel_text(r.sent_time.strftime("%Y-%m-%d %H:%M:%S")) if r.sent_time else "",
+                    excel_text(r.delivery_time.strftime("%Y-%m-%d %H:%M:%S")) if r.delivery_time else "",
+                    r.error_message or "",
+                ]
+            )
+            data = buf.getvalue()
+            if data:
+                yield data
+                buf.seek(0); buf.truncate(0)
+
     # 仅 ASCII 文件名：Starlette 用 latin-1 编码响应头，批次名含中文会导致 UnicodeEncodeError → 500
     filename_ascii = f"batch_{batch_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     return StreamingResponse(
-        iter([output.getvalue().encode("utf-8")]),
+        generate(),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename_ascii}"'},
     )
