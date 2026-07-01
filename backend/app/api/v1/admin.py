@@ -4322,6 +4322,17 @@ async def get_send_statistics(
     if is_sales_scoped(admin):
         sales_id = admin.id
 
+    # 缓存：月维度聚合需扫 ~900万行索引(~38s)，Redis 缓存避免每次打开/切换都全量重算(TTL 300s)。
+    import json as _json
+    from app.utils.cache import get_redis_client
+    _ck = f"send_stats:v1:{group_by}:{start_date}:{end_date}:a{account_id}:s{sales_id}:c{channel_id}:cc{country_code}"
+    try:
+        _hit = await (await get_redis_client()).get(_ck)
+        if _hit:
+            return _json.loads(_hit)
+    except Exception:
+        pass
+
     agg_cols = [
         func.count(SMSLog.id).label("submit_total"),
         func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("success_count"),
@@ -4332,21 +4343,19 @@ async def get_send_statistics(
         net_revenue("total_revenue"),
     ]
 
-    need_account_join = group_by == "sales" or bool(sales_id)
-
+    # 分组聚合列：account 与 sales 维度都先按 account_id 聚合（走覆盖索引 idx_sms_report_cov2
+    # 做 index-only 扫描），sales 再在 Python 归约到员工——规避 JOIN accounts + GROUP BY
+    # sales_id 的嵌套回表慢计划（月维度 157s → ~37s，且 <120s 前端超时）。
     if group_by == "channel":
-        base = select(SMSLog.channel_id, *agg_cols)
+        gcol = SMSLog.channel_id
     elif group_by == "country":
-        base = select(SMSLog.country_code, *agg_cols)
-    elif group_by == "sales":
-        base = select(Account.sales_id, *agg_cols)
-    else:
-        base = select(SMSLog.account_id, *agg_cols)
+        gcol = SMSLog.country_code
+    else:  # account / sales 均按 account_id 聚合
+        gcol = SMSLog.account_id
 
-    if need_account_join:
-        base = base.join(Account, SMSLog.account_id == Account.id)
-
-    base = base.where(and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt))
+    base = select(gcol.label("gid"), *agg_cols).where(
+        and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt)
+    )
 
     # 剔除虚拟通道(注水/演示流量)，保留 channel_id 为 NULL 的真实失败记录
     virtual_ids = await _virtual_channel_ids(db)
@@ -4360,39 +4369,108 @@ async def get_send_statistics(
     if country_code:
         base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
     if sales_id:
-        base = base.where(Account.sales_id == sales_id)
+        # 限定该员工名下账户，避免 JOIN accounts
+        _sacc = (await db.execute(select(Account.id).where(Account.sales_id == sales_id))).all()
+        _sacc_ids = [a for (a,) in _sacc]
+        base = base.where(SMSLog.account_id.in_(_sacc_ids) if _sacc_ids else (SMSLog.id < 0))
 
     if group_by == "channel":
-        base = base.where(SMSLog.channel_id.isnot(None)).group_by(SMSLog.channel_id)
+        base = base.where(SMSLog.channel_id.isnot(None))
     elif group_by == "country":
-        base = base.where(SMSLog.country_code.isnot(None)).group_by(SMSLog.country_code)
-    elif group_by == "sales":
-        base = base.group_by(Account.sales_id)
-    else:
-        base = base.group_by(SMSLog.account_id)
+        base = base.where(SMSLog.country_code.isnot(None))
+    base = base.group_by(gcol)
 
-    result = await db.execute(base)
-    rows = result.all()
+    agg_rows = (await db.execute(base)).all()
+
+    # sales 维度：按 account_id 的聚合结果在 Python 里归约到 sales_id
+    if group_by == "sales":
+        _acct_ids = [r.gid for r in agg_rows if r.gid is not None]
+        _a2s: dict = {}
+        if _acct_ids:
+            for aid, sid in (await db.execute(
+                select(Account.id, Account.sales_id).where(Account.id.in_(_acct_ids))
+            )).all():
+                _a2s[aid] = sid
+        _sb: dict = {}
+        for r in agg_rows:
+            sid = _a2s.get(r.gid)
+            if sid is None:
+                continue
+            b = _sb.setdefault(sid, {"submit_total": 0, "success_count": 0, "failed_count": 0,
+                                     "pending_count": 0, "total_cost": 0.0, "total_revenue": 0.0})
+            b["submit_total"] += int(r.submit_total or 0)
+            b["success_count"] += int(r.success_count or 0)
+            b["failed_count"] += int(r.failed_count or 0)
+            b["pending_count"] += int(r.pending_count or 0)
+            b["total_cost"] += float(r.total_cost or 0)
+            b["total_revenue"] += float(r.total_revenue or 0)
+        from types import SimpleNamespace
+        rows = [SimpleNamespace(
+            gid=sid, submit_total=b["submit_total"], success_count=b["success_count"],
+            failed_count=b["failed_count"], pending_count=b["pending_count"],
+            total_cost=b["total_cost"], total_revenue=b["total_revenue"],
+            avg_unit_price=(b["total_revenue"] / b["submit_total"] if b["submit_total"] else 0),
+        ) for sid, b in _sb.items()]
+    else:
+        rows = agg_rows
 
     name_map: dict = {}
     if group_by == "channel":
-        ch_ids = list({r.channel_id for r in rows if r.channel_id})
+        ch_ids = list({r.gid for r in rows if r.gid})
         if ch_ids:
             ch_res = await db.execute(select(Channel.id, Channel.channel_name, Channel.channel_code).where(Channel.id.in_(ch_ids)))
             for r in ch_res:
                 name_map[r.id] = {"name": r.channel_name, "code": r.channel_code}
     elif group_by == "account":
-        acc_ids = list({r.account_id for r in rows if r.account_id})
+        acc_ids = list({r.gid for r in rows if r.gid})
         if acc_ids:
             acc_res = await db.execute(select(Account.id, Account.account_name).where(Account.id.in_(acc_ids)))
             for r in acc_res:
                 name_map[r.id] = r.account_name
     elif group_by == "sales":
-        staff_ids = list({r.sales_id for r in rows if r.sales_id})
+        staff_ids = list({r.gid for r in rows if r.gid})
         if staff_ids:
             staff_res = await db.execute(select(AdminUser.id, AdminUser.real_name, AdminUser.username).where(AdminUser.id.in_(staff_ids)))
             for r in staff_res:
                 name_map[r.id] = r.real_name or r.username
+
+    # 退补充值(refund_recharge)：来自 balance_logs，按 账户→员工 归属；仅列示，不计入成本/收入/利润。
+    # 通道/国家维度无字段可归属（balance_logs 无 channel/country），行内不显示，仅汇总体现总额。
+    from app.modules.common.balance_log import BalanceLog
+    rr_where = [
+        BalanceLog.change_type == "refund_recharge",
+        BalanceLog.created_at >= start_dt,
+        BalanceLog.created_at < end_dt,
+    ]
+    if account_id:
+        rr_where.append(BalanceLog.account_id == account_id)
+    if sales_id:
+        rr_where.append(Account.sales_id == sales_id)
+    rr_rows = (await db.execute(
+        select(
+            BalanceLog.account_id.label("acc"),
+            Account.sales_id.label("sid"),
+            func.count(BalanceLog.id).label("cnt"),
+            func.coalesce(func.sum(BalanceLog.amount), 0).label("amt"),
+        )
+        .join(Account, BalanceLog.account_id == Account.id)
+        .where(and_(*rr_where))
+        .group_by(BalanceLog.account_id, Account.sales_id)
+    )).all()
+    rr_by_account: dict = {}
+    rr_by_sales: dict = {}
+    rr_total_cnt = 0
+    rr_total_amt = 0.0
+    for rr in rr_rows:
+        _c = int(rr.cnt or 0)
+        _a = float(rr.amt or 0)
+        rr_by_account[rr.acc] = {"cnt": _c, "amt": _a}
+        if rr.sid is not None:
+            _b = rr_by_sales.setdefault(rr.sid, {"cnt": 0, "amt": 0.0})
+            _b["cnt"] += _c
+            _b["amt"] += _a
+        rr_total_cnt += _c
+        rr_total_amt += _a
 
     # 汇总
     sum_submit = sum_success = sum_failed = sum_pending = 0
@@ -4407,6 +4485,14 @@ async def get_send_statistics(
         total_cost = round(float(r.total_cost or 0), 5)
         total_revenue = round(float(r.total_revenue or 0), 5)
         profit = round(total_revenue - total_cost, 5)
+        if group_by == "account":
+            _rr = rr_by_account.get(r.gid)
+        elif group_by == "sales":
+            _rr = rr_by_sales.get(r.gid)
+        else:
+            _rr = None  # 通道/国家维度无法归属退补
+        refunded = _rr["cnt"] if _rr else 0
+        refund_amt = round(_rr["amt"], 5) if _rr else 0.0
         success_rate = round((success_count / submit_total * 100) if submit_total > 0 else 0, 2)
 
         sum_submit += submit_total
@@ -4426,24 +4512,26 @@ async def get_send_statistics(
             "total_cost": total_cost,
             "total_revenue": total_revenue,
             "profit": profit,
+            "refunded_count": refunded,
+            "refund_amount": refund_amt,
         }
 
         if group_by == "channel":
-            ch_info = name_map.get(r.channel_id, {})
-            item["channel_id"] = r.channel_id
+            ch_info = name_map.get(r.gid, {})
+            item["channel_id"] = r.gid
             item["channel_name"] = ch_info.get("name", "-") if isinstance(ch_info, dict) else "-"
             item["channel_code"] = ch_info.get("code", "-") if isinstance(ch_info, dict) else "-"
             item["dim_label"] = item["channel_name"]
         elif group_by == "country":
-            item["country_code"] = r.country_code
-            item["dim_label"] = r.country_code
+            item["country_code"] = r.gid
+            item["dim_label"] = r.gid
         elif group_by == "sales":
-            item["sales_id"] = r.sales_id
-            item["sales_name"] = name_map.get(r.sales_id, "未分配")
+            item["sales_id"] = r.gid
+            item["sales_name"] = name_map.get(r.gid, "未分配")
             item["dim_label"] = item["sales_name"]
         else:
-            item["account_id"] = r.account_id
-            item["account_name"] = name_map.get(r.account_id, "-")
+            item["account_id"] = r.gid
+            item["account_name"] = name_map.get(r.gid, "-")
             item["dim_label"] = item["account_name"]
 
         items.append(item)
@@ -4459,15 +4547,23 @@ async def get_send_statistics(
         "total_cost": round(sum_cost, 5),
         "total_revenue": round(sum_revenue, 5),
         "profit": round(sum_revenue - sum_cost, 5),
+        "refunded_count": rr_total_cnt,
+        "refund_amount": round(rr_total_amt, 5),
     }
 
-    return {
+    resp = {
         "success": True,
         "total": len(items),
         "items": items,
         "summary": summary,
         "filters": {"start_date": start_date, "end_date": end_date, "group_by": group_by},
     }
+    try:
+        # 取新连接再写(前面聚合期间旧连接可能已空闲失效)；月维度~40s，缓存 15min 内秒开
+        await (await get_redis_client()).set(_ck, _json.dumps(resp, default=str), ex=900)
+    except Exception:
+        pass
+    return resp
 
 
 @router.get("/reports/success-rate", response_model=dict)

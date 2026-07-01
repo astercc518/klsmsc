@@ -191,9 +191,16 @@
           </template>
         </el-table-column>
 
-        <el-table-column :label="$t('reports.cost')" width="140" align="right" sortable>
+        <el-table-column :label="$t('reports.cost')" width="160" align="right" sortable>
           <template #default="{ row }">
             <span class="currency-text cost">${{ row.cost.toFixed(4) }}</span>
+            <el-tooltip
+              v-if="row.refunded_count"
+              :content="`退补充值 ${row.refunded_count} 笔，按售价退回客户 $${(row.refund_amount || 0).toFixed(4)}（仅列示，不计入成本/业绩）`"
+              placement="top"
+            >
+              <div class="refund-hint">退补 {{ row.refunded_count }} 笔 · ${{ (row.refund_amount || 0).toFixed(4) }}</div>
+            </el-tooltip>
           </template>
         </el-table-column>
 
@@ -661,6 +668,7 @@ onUnmounted(() => {
 .currency-text { font-family: 'Inter', monospace; font-weight: 700; font-size: 14px; }
 .revenue { color: #3b82f6; }
 .cost { color: var(--text-tertiary); font-weight: 500; }
+.refund-hint { font-size: 11px; color: #f59e0b; margin-top: 2px; line-height: 1.2; cursor: help; }
 .profit { color: #2dd4bf; }
 .profit.negative { color: #f87171; }
 

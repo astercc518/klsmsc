@@ -14,6 +14,7 @@ from app.modules.data.models import DataOrder
 from app.utils.cache import get_cache_manager
 from app.utils.logger import get_logger
 from app.services.sms_finance import net_cost, net_revenue, net_profit
+from app.modules.common.balance_log import BalanceLog
 
 logger = get_logger(__name__)
 
@@ -35,7 +36,7 @@ class ReportsService:
         ttl = 24 * 3600 if end_dt <= today_zero else 60
         # v2: 剔除虚拟通道后口径变更，版本号使旧缓存(含虚拟通道)立即失效
         cache_key = (
-            f"report:business:v3:{dimension}:{business_type}:"
+            f"report:business:v6:{dimension}:{business_type}:"
             f"{start_dt.strftime('%Y%m%d%H%M')}:{end_dt.strftime('%Y%m%d%H%M')}"
         )
         cm = await get_cache_manager()
@@ -143,10 +144,18 @@ class ReportsService:
         # === 第二步：根据维度补名称 / 二次聚合 ===
         if dimension == "customer":
             name_map = await ReportsService._fetch_account_names(db, fk_ids)
-            return [
-                ReportsService._fmt_sms_row(r.fk, name_map.get(r.fk, f"Account#{r.fk}"), r)
-                for r in rows if r.fk is not None
-            ]
+            rr_acc, _ = await ReportsService._fetch_refund_recharge(db, start_dt, end_dt)
+            out = []
+            for r in rows:
+                if r.fk is None:
+                    continue
+                d = ReportsService._fmt_sms_row(r.fk, name_map.get(r.fk, f"Account#{r.fk}"), r)
+                rr = rr_acc.get(r.fk)
+                if rr:
+                    d["refunded_count"] = rr["cnt"]
+                    d["refund_amount"] = rr["amt"]
+                out.append(d)
+            return out
 
         if dimension == "channel":
             name_map = await ReportsService._fetch_channel_names(db, fk_ids)
@@ -158,6 +167,7 @@ class ReportsService:
         if dimension == "employee":
             # account_id -> sales_id 映射
             sales_map = await ReportsService._fetch_account_sales_map(db, fk_ids)
+            _, rr_sales = await ReportsService._fetch_refund_recharge(db, start_dt, end_dt)
             # 在 Python 里按 sales_id 重新聚合
             buckets: Dict[int, Dict[str, float]] = {}
             for r in rows:
@@ -181,6 +191,8 @@ class ReportsService:
                     "revenue": b["revenue"],
                     "cost": b["cost"],
                     "profit": b["profit"],
+                    "refunded_count": rr_sales.get(sid, {}).get("cnt", 0),
+                    "refund_amount": rr_sales.get(sid, {}).get("amt", 0.0),
                     "success_rate": round(b["delivered"] / b["count"] * 100, 2) if b["count"] > 0 else 0,
                 }
                 for sid, b in buckets.items()
@@ -211,6 +223,8 @@ class ReportsService:
                     "revenue": b["revenue"],
                     "cost": b["cost"],
                     "profit": b["profit"],
+                    "refunded_count": 0,  # 供应商维度无法归属退补(balance_logs 无 channel/supplier)
+                    "refund_amount": 0.0,
                     "success_rate": round(b["delivered"] / b["count"] * 100, 2) if b["count"] > 0 else 0,
                 }
                 for sup_id, b in buckets.items()
@@ -231,8 +245,41 @@ class ReportsService:
             "revenue": float(row.revenue or 0),
             "cost": float(row.cost or 0),
             "profit": float(row.profit or 0),
+            "refunded_count": int(getattr(row, "refunded_count", 0) or 0),
+            "refund_amount": float(getattr(row, "refund_amount", 0) or 0),
             "success_rate": round(delivered / cnt * 100, 2) if cnt > 0 else 0,
         }
+
+    @staticmethod
+    async def _fetch_refund_recharge(db: AsyncSession, start_dt: datetime, end_dt: datetime):
+        """退补充值(balance_logs.change_type=refund_recharge)按账户/员工归属。
+        仅列示，不计入成本/收入/利润。返回 (rr_by_account, rr_by_sales)，值={'cnt','amt'}。"""
+        rows = (await db.execute(
+            select(
+                BalanceLog.account_id.label("acc"),
+                Account.sales_id.label("sid"),
+                func.count(BalanceLog.id).label("cnt"),
+                func.coalesce(func.sum(BalanceLog.amount), 0).label("amt"),
+            )
+            .join(Account, BalanceLog.account_id == Account.id)
+            .where(and_(
+                BalanceLog.change_type == "refund_recharge",
+                BalanceLog.created_at >= start_dt,
+                BalanceLog.created_at < end_dt,
+            ))
+            .group_by(BalanceLog.account_id, Account.sales_id)
+        )).all()
+        rr_acc: Dict[Any, Dict[str, float]] = {}
+        rr_sales: Dict[Any, Dict[str, float]] = {}
+        for r in rows:
+            c = int(r.cnt or 0)
+            a = float(r.amt or 0)
+            rr_acc[r.acc] = {"cnt": c, "amt": a}
+            if r.sid is not None:
+                b = rr_sales.setdefault(r.sid, {"cnt": 0, "amt": 0.0})
+                b["cnt"] += c
+                b["amt"] += a
+        return rr_acc, rr_sales
 
     @staticmethod
     async def _fetch_account_names(db: AsyncSession, ids: List[int]) -> Dict[int, str]:

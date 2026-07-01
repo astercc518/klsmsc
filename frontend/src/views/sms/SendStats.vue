@@ -476,9 +476,16 @@
               <span class="currency revenue">${{ fmt5(row.total_revenue) }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="total_cost" :label="$t('sendStats.totalCost')" width="120" align="right" sortable>
+          <el-table-column prop="total_cost" :label="$t('sendStats.totalCost')" width="140" align="right" sortable>
             <template #default="{ row }">
               <span class="currency cost">${{ fmt5(row.total_cost) }}</span>
+              <el-tooltip
+                v-if="row.refunded_count"
+                :content="`退补充值 ${row.refunded_count} 笔，按售价退回客户 $${fmt5(row.refund_amount || 0)}（仅列示，不计入成本/业绩）`"
+                placement="top"
+              >
+                <div class="refund-hint">退补 {{ row.refunded_count }} 笔 · ${{ fmt5(row.refund_amount || 0) }}</div>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column prop="profit" :label="$t('sendStats.profit')" width="120" align="right" sortable>
@@ -988,7 +995,9 @@ const adminSummaryCards = computed(() => {
     {
       label: t('sendStats.totalCost'),
       value: `$${fmt5(s.total_cost)}`,
-      sub: `${t('sendStats.unitPrice')}: $${s.submit_total > 0 ? (s.total_cost / s.submit_total).toFixed(5) : '0.00000'}`,
+      sub: (s.refunded_count > 0)
+        ? `退补充值 ${s.refunded_count} 笔 · 退回 $${fmt5(s.refund_amount || 0)}（不计成本/业绩）`
+        : `${t('sendStats.unitPrice')}: $${s.submit_total > 0 ? (s.total_cost / s.submit_total).toFixed(5) : '0.00000'}`,
       icon: ChatDotRound,
       type: 'warning',
     },
@@ -1122,7 +1131,9 @@ const exportExcel = () => {
     [t('sendStats.successRate')]: `${row.success_rate}%`,
     [t('sendStats.unitPrice')]: Number(fmt5(row.avg_unit_price)),
     [t('sendStats.totalRevenue')]: Number(fmt5(row.total_revenue)),
-    [t('sendStats.totalCost')]: Number(fmt5(row.total_cost)),
+    // 总成本按需扣除退补充值（refund_recharge，按售价退回客户余额）后导出。
+    // 利润列仍为真实利润(收入−原始成本)，故导出表内「收入−总成本」不再恒等于利润。
+    [t('sendStats.totalCost')]: Number(fmt5(row.total_cost - (row.refund_amount || 0))),
     [t('sendStats.profit')]: Number(fmt5(row.profit)),
   }))
   const ws = XLSX.utils.json_to_sheet(data)
@@ -1193,6 +1204,7 @@ onUnmounted(() => {
   background: var(--bg-body);
   min-height: 100%;
 }
+.refund-hint { font-size: 11px; color: #f59e0b; margin-top: 2px; line-height: 1.2; cursor: help; }
 
 .page-header-row {
   display: flex;

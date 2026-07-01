@@ -1,40 +1,43 @@
-"""SMS 退款净额聚合口径（退补充值治本，2026-07）。
+"""SMS 报表金额聚合口径（成本/收入/利润）。
 
-退补充值：管理员审核确认「发送失败」的短信可退款后，写入 sms_logs.refunded_at
-并把 selling_price 退回客户余额（见 services/sms_refund.py）。商业口径上该条发送
-等于未发生 —— 成本/收入/利润都应剔除；但发送数/失败数/成功率仍应保留（短信确实
-提交过且失败），因此只对金额列做条件求和，不动计数。
+历史（2026-07 上旬）：曾把成本/收入/利润改成 SUM(CASE WHEN refunded_at IS NULL ...)
+以「剔除已退款短信」。后来确认两件事，故已回退为原始 SUM：
 
-关键前提：refunded_at 只可能出现在 status='failed' 的行（退款资格强制 failed），
-所以已按 status='delivered' 过滤的聚合（如销售佣金）天然免疫，无需套用本口径。
+  1. 业务上的「退补充值」= balance_logs.change_type='refund_recharge'（管理员按售价
+     把钱补回客户余额），与 sms_logs.refunded_at 无关，且明确「不计业绩和成本」。
+     所以报表的成本/收入/利润应取 sms_logs 原始值，退补充值另行独立列示
+     （见 reports_service._fetch_refund_recharge 与 admin.get_send_statistics）。
 
-用法：把 func.sum(SMSLog.cost_price).label("x") 换成 net_cost("x")，收入/利润同理。
+  2. 性能陷阱：refunded_at 不在覆盖索引 idx_sms_report_cov(account_id, cost_price,
+     selling_price, status, submit_time) 内。一旦 SUM 里引用 refunded_at，原本的
+     索引只读扫描会退化成对数百万行逐行回表——月维度聚合从秒级劣化到 80s+，
+     发送统计/业务报表直接转圈卡死。
+
+结论：这里必须是纯 SUM(cost_price/selling_price/profit)，勿再包 CASE(refunded_at)。
+函数名保留 net_*，避免大面积改动调用点；语义即「报表金额聚合」。
 """
 from __future__ import annotations
 
-from sqlalchemy import func, case
+from sqlalchemy import func
 
 from app.modules.sms.sms_log import SMSLog
 
-# refunded_at IS NULL 才计入金额，已退补充值（failed+已退）计 0
-_NOT_REFUNDED = SMSLog.refunded_at.is_(None)
 
-
-def _net_sum(col, label):
-    expr = func.sum(case((_NOT_REFUNDED, col), else_=0))
+def _sum(col, label):
+    expr = func.sum(col)
     return expr.label(label) if label else expr
 
 
 def net_cost(label: str | None = "total_cost"):
-    """净成本：剔除已退补充值行的 cost_price。label=None 返回无标签表达式。"""
-    return _net_sum(SMSLog.cost_price, label)
+    """成本聚合：SUM(cost_price)。label=None 返回无标签表达式（用于 coalesce 等）。"""
+    return _sum(SMSLog.cost_price, label)
 
 
 def net_revenue(label: str | None = "total_revenue"):
-    """净收入：剔除已退补充值行的 selling_price。label=None 返回无标签表达式。"""
-    return _net_sum(SMSLog.selling_price, label)
+    """收入聚合：SUM(selling_price)。"""
+    return _sum(SMSLog.selling_price, label)
 
 
 def net_profit(label: str | None = "total_profit"):
-    """净利润：剔除已退补充值行的 profit（生成列 = selling - cost）。"""
-    return _net_sum(SMSLog.profit, label)
+    """利润聚合：SUM(profit)（profit 为生成列 = selling - cost）。"""
+    return _sum(SMSLog.profit, label)
