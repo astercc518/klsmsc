@@ -294,7 +294,8 @@ def dlr_water_followup_task(
         return {"success": False, "error": str(e)}
 
 
-@celery_app.task(name='send_sms_task', bind=True, max_retries=3)
+@celery_app.task(name='send_sms_task', bind=True, max_retries=3,
+                 acks_late=True, reject_on_worker_lost=True)
 def send_sms_task(self, first, http_credentials: dict = None):
     """
     发送短信任务
@@ -435,9 +436,12 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
                     logger.info(f"批次已暂停，跳过发送: batch={sms_log.batch_id}, message_id={message_id}")
                     return {"success": True, "message_id": message_id, "status": sms_log.status, "skipped": "paused"}
 
-            # 已为终态则不再走发送逻辑（避免与批量虚拟回执等竞态把 delivered 覆盖回 sent）
-            if sms_log.status in ("delivered", "failed", "expired"):
-                logger.info(f"短信已终态，跳过发送任务: {message_id}, status={sms_log.status}")
+            # 已为终态/已提交上游则不再走发送逻辑：
+            #  - delivered/failed/expired：避免与批量虚拟回执等竞态把 delivered 覆盖回 sent
+            #  - sent：已提交上游。acks_late 下 worker 崩溃会重投本任务，若不跳过 'sent' 会二次提交上游
+            #    造成双发（审计 P0-6，SMPP 侧另有网关 outbound_dedup 兜底，此守卫覆盖 HTTP 通道）
+            if sms_log.status in ("delivered", "failed", "expired", "sent"):
+                logger.info(f"短信已终态/已提交，跳过发送任务: {message_id}, status={sms_log.status}")
                 return {"success": True, "message_id": message_id, "status": sms_log.status, "skipped": True}
 
             # 黑名单校验：data_numbers.status='blacklisted' 的号码直接拦截
@@ -843,7 +847,7 @@ async def _mark_failed(message_id: str, error_message: str):
         await eng.dispose()
 
 
-@celery_app.task(name='process_dlr_task')
+@celery_app.task(name='process_dlr_task', acks_late=True, reject_on_worker_lost=True)
 def process_dlr_task(dlr_data: dict):
     """
     处理送达回执(DLR)任务
@@ -1163,16 +1167,24 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                         pass
                 return False
 
-            # —— 终态保护：失败不可被迟到/重传的 DELIVRD 翻回 ——
+            # —— 终态保护（对称）：任一终态不可被迟到/重传的另一终态翻转 ——
             # TS_066 等上游每条 DLR 重传约 4 次且常乱序，典型序列 DELIVRD→UNDELIV→UNDELIV→DELIVRD。
-            # 「最后写入生效」会让末尾那个重传的 DELIVRD 把已按 UNDELIV 判失败的记录翻回 delivered，
-            # 导致送达率虚高（实测批次 1311 因此多算约 1200 条，系统 85.7% vs 上游台账 73.6%）。
-            # UNDELIV/REJECTD/EXPIRED/DELETED 是上游对乐观回执的真实终态更正，一旦判失败即视为终态，
-            # 此后到达的 delivered（几乎都是重传/乱序）一律忽略，不翻状态、不再派发送达副作用。
-            if sms_log.status == "failed" and new_status == "delivered":
+            # 「最后写入生效」有两个方向的危害：
+            #   failed→delivered：末尾重传的 DELIVRD 把已判失败翻回 delivered，送达率虚高
+            #                     （实测批次 1311 多算约 1200 条，系统 85.7% vs 上游台账 73.6%）。
+            #   delivered→failed：迟到的 UNDELIV 把已送达翻成失败，送达率随查询时刻波动、利润率突变，
+            #                     且以相反状态重复派发 webhook/SMPP 转发给代理商（审计 P0-4）。
+            # 一旦落入终态(delivered/failed)，此后到达的另一终态（几乎都是重传/乱序）一律忽略：
+            # 不翻状态、不再派发副作用，仅 _mark_seen 让后续重传在进 DB 前短路。
+            _TERMINAL_STATES = ("delivered", "failed")
+            if (
+                sms_log.status in _TERMINAL_STATES
+                and new_status in _TERMINAL_STATES
+                and sms_log.status != new_status
+            ):
                 logger.info(
-                    f"SMPP DLR 终态保护：{sms_log.message_id} 已失败，忽略迟到/重传的 DELIVRD "
-                    f"(upstream_id={upstream_id}, stat={stat})"
+                    f"SMPP DLR 终态保护：{sms_log.message_id} 已为终态 {sms_log.status}，"
+                    f"忽略迟到/重传的 {new_status} (upstream_id={upstream_id}, stat={stat})"
                 )
                 _mark_seen()
                 return True
@@ -1210,8 +1222,12 @@ async def _process_smpp_dlr_async(channel_id: int, upstream_id: str, new_status:
                     f"dlr_fx:{sms_log.message_id}:{new_status}", 1, nx=True, ex=_fx_ttl
                 ))
             except Exception as _fx_err:
-                _fx_first = True  # fail-open：去重故障时放行派发，宁可偶发重复也不漏
-                logger.warning(f"DLR 副作用去重检查失败，放行派发: {_fx_err}")
+                # fail-closed（审计 P0-5）：去重依赖的 Redis 故障时，保守跳过副作用派发，宁可暂缺也不放大。
+                # 状态已在上方写库（不受 Redis 门控），DB 记录正确；_mark_seen 同样依赖 Redis，故障期为
+                # no-op，不会短路后续重传——Redis 恢复后上游重传会命中并恰好派发一次。
+                # 与旧 fail-open 相比：Redis 单点故障时不再把一条回执的注水/webhook/SMPP 转发放大 4 倍。
+                _fx_first = False
+                logger.warning(f"DLR 副作用去重检查失败(Redis)，保守跳过派发以防重复放大: {_fx_err}")
             # 此处 (channel, upstream_id, new_status) 已被终态处理（首次写库或 already_correct 重复），
             # 标记 seen 让后续重传在进 DB 前短路。放在副作用去重之后，确保至少派发过一次。
             _mark_seen()

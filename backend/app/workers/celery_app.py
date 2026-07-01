@@ -22,6 +22,7 @@ celery_app = Celery(
         'app.workers.web_worker',
         'app.workers.batch_inspector',
         'app.workers.channel_encoding_inspector',
+        'app.workers.db_maintenance',
     ]
 )
 
@@ -284,6 +285,17 @@ celery_app.conf.beat_schedule = {
     'inspect-channel-encoding-risk-daily': {
         'task': 'inspect_channel_encoding_risk_task',
         'schedule': crontab(hour=9, minute=0),
+    },
+    # 每天 02:30 自动扩展 sms_logs 未来月分区（保持 6 月缓冲，杜绝 p_future 积压致分区裁剪失效）
+    # 幂等：无需新增时为空操作；分裂空 p_future 为纯元数据操作。审计 P0-8。
+    'ensure-sms-logs-partitions-daily': {
+        'task': 'ensure_sms_logs_partitions',
+        'schedule': crontab(hour=2, minute=30),
+    },
+    # 每天 01:00 资金守恒断言（负余额 + 退款台账 vs sms_logs 真相），异常告警。审计 P0-10。
+    'assert-fund-conservation-daily': {
+        'task': 'assert_fund_conservation',
+        'schedule': crontab(hour=1, minute=0),
     },
 }
 

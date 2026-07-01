@@ -391,7 +391,7 @@ async def verify_bot_user(
                     first_day = date.today().replace(day=1).strftime('%Y-%m-%d 00:00:00')
 
                     sql = text("""
-                        SELECT SUM(l.profit * l.message_count) 
+                        SELECT SUM(l.profit) 
                         FROM sms_logs l
                         JOIN accounts acc ON l.account_id = acc.id
                         JOIN channels ch ON l.channel_id = ch.id
@@ -2729,7 +2729,7 @@ async def get_sales_stats_internal(sales_id: int, db: AsyncSession = Depends(get
 
         # 业绩统计
         sql = text("""
-            SELECT SUM(l.profit * l.message_count) 
+            SELECT SUM(l.profit) 
             FROM sms_logs l
             JOIN accounts acc ON l.account_id = acc.id
             JOIN channels ch ON l.channel_id = ch.id

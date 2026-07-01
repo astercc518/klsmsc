@@ -4789,7 +4789,7 @@ async def list_admin_users(
             from app.modules.sms.channel import Channel
 
             comm_query = (
-                select(Account.sales_id, func.sum(SMSLog.profit * SMSLog.message_count).label("total_profit"))
+                select(Account.sales_id, func.sum(SMSLog.profit).label("total_profit"))  # profit 已是整条(含分段)总利润，勿再乘 message_count（审计 P0-1）
                 .select_from(SMSLog)
                 .join(Account, SMSLog.account_id == Account.id)
                 .join(Channel, SMSLog.channel_id == Channel.id)
