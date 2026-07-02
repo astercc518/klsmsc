@@ -1122,20 +1122,27 @@ const updateAdminPieChart = () => {
 }
 
 const exportExcel = () => {
-  const data = items.value.map(row => ({
-    [dimLabel.value]: row.dim_label || '-',
-    [t('sendStats.submitTotal')]: row.submit_total,
-    [t('sendStats.successCount')]: row.success_count,
-    [t('sendStats.failedCount')]: row.failed_count,
-    [t('sendStats.pendingCount')]: row.pending_count,
-    [t('sendStats.successRate')]: `${row.success_rate}%`,
-    [t('sendStats.unitPrice')]: Number(fmt5(row.avg_unit_price)),
-    [t('sendStats.totalRevenue')]: Number(fmt5(row.total_revenue)),
-    // 总成本按需扣除退补充值（refund_recharge，按售价退回客户余额）后导出。
-    // 利润列仍为真实利润(收入−原始成本)，故导出表内「收入−总成本」不再恒等于利润。
-    [t('sendStats.totalCost')]: Number(fmt5(row.total_cost - (row.refund_amount || 0))),
-    [t('sendStats.profit')]: Number(fmt5(row.profit)),
-  }))
+  const data = items.value.map(row => {
+    // 退补充值按“售价”退回客户，需先折算回“成本价”口径再从总成本里扣：
+    //   实际成本 = 总成本 − (退补金额 / 售价) × 成本价
+    // 行级按总量比换算：成本价/售价 ≈ 总成本/总收入，故
+    //   退补的成本价当量 = 退补金额 × (总成本 / 总收入)
+    const refund = row.refund_amount || 0
+    const refundCost = row.total_revenue > 0 ? refund * (row.total_cost / row.total_revenue) : 0
+    const actualCost = row.total_cost - refundCost
+    return {
+      [dimLabel.value]: row.dim_label || '-',
+      [t('sendStats.submitTotal')]: row.submit_total,
+      [t('sendStats.successCount')]: row.success_count,
+      [t('sendStats.failedCount')]: row.failed_count,
+      [t('sendStats.pendingCount')]: row.pending_count,
+      [t('sendStats.successRate')]: `${row.success_rate}%`,
+      [t('sendStats.unitPrice')]: Number(fmt5(row.avg_unit_price)),
+      [t('sendStats.totalRevenue')]: Number(fmt5(row.total_revenue)),
+      [t('sendStats.totalCost')]: Number(fmt5(actualCost)),
+      [t('sendStats.profit')]: Number(fmt5(row.profit)),
+    }
+  })
   const ws = XLSX.utils.json_to_sheet(data)
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, 'SendStats')
