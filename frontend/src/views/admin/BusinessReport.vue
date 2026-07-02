@@ -196,10 +196,10 @@
             <span class="currency-text cost">${{ row.cost.toFixed(4) }}</span>
             <el-tooltip
               v-if="row.refunded_count"
-              :content="`退补充值 ${row.refunded_count} 笔，按售价退回客户 $${(row.refund_amount || 0).toFixed(4)}（仅列示，不计入成本/业绩）`"
+              :content="`退补充值 ${row.refunded_count} 笔：按售价退回客户 $${(row.refund_amount || 0).toFixed(4)}，折合成本价 $${refundCostOf(row).toFixed(4)}（仅列示，不计入业绩）`"
               placement="top"
             >
-              <div class="refund-hint">退补 {{ row.refunded_count }} 笔 · ${{ (row.refund_amount || 0).toFixed(4) }}</div>
+              <div class="refund-hint">退补 {{ row.refunded_count }} 笔 · 成本 ${{ refundCostOf(row).toFixed(4) }}</div>
             </el-tooltip>
           </template>
         </el-table-column>
@@ -446,6 +446,15 @@ const getRateStatus = (rate: number) => {
   return 'exception'
 }
 
+// 退补充值按“售价”退回客户，换算回“成本价”口径：退补成本 = 退补金额 × (成本/收入)
+// 与发送统计(SendStats.vue refundCostOf)口径一致，避免用售价金额直接冲抵成本价。
+const refundCostOf = (row: any) => {
+  const amt = Number(row?.refund_amount) || 0
+  const rev = Number(row?.revenue) || 0
+  const cost = Number(row?.cost) || 0
+  return rev > 0 ? amt * (cost / rev) : 0
+}
+
 const exportExcel = () => {
   const exportData = tableData.value.map(row => ({
     [dimLabel.value]: row.dim_name,
@@ -454,7 +463,8 @@ const exportExcel = () => {
     'Delivered': row.delivered,
     'Success %': `${row.success_rate}%`,
     'Revenue (USD)': row.revenue,
-    'Cost (USD)': row.cost,
+    // 实际成本 = 成本 − 退补成本(按成本价折算)
+    'Cost (USD)': Number((row.cost - refundCostOf(row)).toFixed(4)),
     'Profit (USD)': row.profit
   }))
   
