@@ -481,10 +481,10 @@
               <span class="currency cost">${{ fmt5(row.total_cost) }}</span>
               <el-tooltip
                 v-if="row.refunded_count"
-                :content="`退补充值 ${row.refunded_count} 笔，按售价退回客户 $${fmt5(row.refund_amount || 0)}（仅列示，不计入成本/业绩）`"
+                :content="`退补充值 ${row.refunded_count} 笔：按售价退回客户 $${fmt5(row.refund_amount || 0)}，折合成本价 $${fmt5(refundCostOf(row))}（仅列示，不计入业绩）`"
                 placement="top"
               >
-                <div class="refund-hint">退补 {{ row.refunded_count }} 笔 · ${{ fmt5(row.refund_amount || 0) }}</div>
+                <div class="refund-hint">退补 {{ row.refunded_count }} 笔 · 成本 ${{ fmt5(refundCostOf(row)) }}</div>
               </el-tooltip>
             </template>
           </el-table-column>
@@ -590,6 +590,18 @@ const dimLabel = computed(() => {
 })
 
 const fmt5 = (v: any) => (Number(v) || 0).toFixed(5)
+
+// 退补充值按“售价”退回客户，换算回“成本价”口径的退补成本：
+//   退补成本 = 退补金额 × (成本价/售价) ≈ 退补金额 × (总成本/总收入)
+// 用于成本列/汇总/导出，避免用售价金额直接冲抵成本价口径的总成本。
+const refundCostOf = (row: any) => {
+  const amt = Number(row?.refund_amount) || 0
+  const rev = Number(row?.total_revenue) || 0
+  const cost = Number(row?.total_cost) || 0
+  return rev > 0 ? amt * (cost / rev) : 0
+}
+// 汇总退补成本按逐行求和（各行成本价/售价比可能不同，勿用全局比）
+const totalRefundCost = computed(() => items.value.reduce((a, r) => a + refundCostOf(r), 0))
 
 const fmtDate = (d: Date) => {
   const y = d.getFullYear()
@@ -996,7 +1008,7 @@ const adminSummaryCards = computed(() => {
       label: t('sendStats.totalCost'),
       value: `$${fmt5(s.total_cost)}`,
       sub: (s.refunded_count > 0)
-        ? `退补充值 ${s.refunded_count} 笔 · 退回 $${fmt5(s.refund_amount || 0)}（不计成本/业绩）`
+        ? `退补充值 ${s.refunded_count} 笔 · 成本 $${fmt5(totalRefundCost.value)}（退回客户 $${fmt5(s.refund_amount || 0)}，不计业绩）`
         : `${t('sendStats.unitPrice')}: $${s.submit_total > 0 ? (s.total_cost / s.submit_total).toFixed(5) : '0.00000'}`,
       icon: ChatDotRound,
       type: 'warning',
@@ -1123,13 +1135,8 @@ const updateAdminPieChart = () => {
 
 const exportExcel = () => {
   const data = items.value.map(row => {
-    // 退补充值按“售价”退回客户，需先折算回“成本价”口径再从总成本里扣：
-    //   实际成本 = 总成本 − (退补金额 / 售价) × 成本价
-    // 行级按总量比换算：成本价/售价 ≈ 总成本/总收入，故
-    //   退补的成本价当量 = 退补金额 × (总成本 / 总收入)
-    const refund = row.refund_amount || 0
-    const refundCost = row.total_revenue > 0 ? refund * (row.total_cost / row.total_revenue) : 0
-    const actualCost = row.total_cost - refundCost
+    // 实际成本 = 总成本 − 退补成本（退补按售价退回，需折算回成本价口径，见 refundCostOf）
+    const actualCost = row.total_cost - refundCostOf(row)
     return {
       [dimLabel.value]: row.dim_label || '-',
       [t('sendStats.submitTotal')]: row.submit_total,
