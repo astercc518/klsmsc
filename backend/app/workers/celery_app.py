@@ -199,6 +199,10 @@ celery_app.conf.task_routes.update({
     # 注册改走独立队列 web_register（专用 worker-web-register 消费），避免被点击 ETA 洪流饿死
     'web_register_task': {'queue': 'web_register'},
     'cleanup_stuck_water_logs_task': {'queue': 'web_automation'},
+    # 后台自动生成注册脚本(站点探针,带浏览器):独立 web_gen 队列(worker-web-register 兼消费),
+    # 独立 prefetch → 管理员交互任务不被注册批量积压堵在队尾,slot 一空即取。
+    'generate_register_script_task': {'queue': 'web_gen'},
+    'test_register_handler_task': {'queue': 'web_gen'},  # 「测试运行」同走 web_gen
     # SMPP 入站待发 DLR 清理（与其他 sms_dlr 任务同队列；任务体本身只跑短 SQL）
     'smpp_pending_dlr_cleanup': {'queue': 'sms_dlr'},
 })

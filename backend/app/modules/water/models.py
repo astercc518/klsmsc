@@ -67,6 +67,10 @@ class WaterTaskConfig(Base):
         default="mobile",
         comment="User-Agent 类型",
     )
+    register_handler = Column(
+        String(32), nullable=False, server_default="", default="",
+        comment="注册脚本/handler:''=自动识别 / tk688 / sp111 / onewin / api / generic",
+    )
     created_at = Column(TIMESTAMP, nullable=False, server_default=func.now(), comment="创建时间")
     updated_at = Column(
         TIMESTAMP,

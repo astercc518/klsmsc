@@ -71,6 +71,7 @@ class TaskConfigCreate(BaseModel):
     register_rate_max: float = Field(default=3.0, ge=0, le=100)
     proxy_id: Optional[int] = None
     user_agent_type: str = Field(default="mobile")
+    register_handler: str = Field(default="", max_length=32)
 
 
 class TaskConfigUpdate(BaseModel):
@@ -85,6 +86,7 @@ class TaskConfigUpdate(BaseModel):
     register_rate_max: Optional[float] = None
     proxy_id: Optional[int] = None
     user_agent_type: Optional[str] = None
+    register_handler: Optional[str] = None
 
 
 # 清空注水队列时须输入的确认口令（与前端一致）
@@ -121,6 +123,20 @@ class ScriptUpdate(BaseModel):
     steps: Optional[dict] = None
     enabled: Optional[bool] = None
     remark: Optional[str] = None
+
+
+class ScriptGenerate(BaseModel):
+    """自动生成注册脚本入参:只需目标站(url/域名)+可选国家(地域限制站的代理出口)。"""
+    url: str = Field(..., max_length=500)
+    country: Optional[str] = ""
+
+
+class ScriptTestRun(BaseModel):
+    """测试运行:内置 handler 传 handler_key,DB 脚本传 script_id;域名/国家(geo站)。"""
+    handler_key: Optional[str] = ""
+    domain: Optional[str] = ""
+    country: Optional[str] = ""
+    script_id: Optional[int] = None
 
 
 # ========== 代理管理 ==========
@@ -384,6 +400,7 @@ async def list_tasks(
                 "proxy_id": t.proxy_id,
                 "proxy_name": proxy_name,
                 "user_agent_type": t.user_agent_type,
+                "register_handler": t.register_handler or "",
                 "today_clicks": click_cnt,
                 "today_registers": reg_cnt,
             }
@@ -883,7 +900,32 @@ async def list_scripts(
     db: AsyncSession = Depends(get_db),
     _admin: AdminUser = Depends(get_current_admin_user),
 ):
-    """注册脚本列表"""
+    """注册脚本列表(含内置代码 handler 只读条目 + DB 配置脚本)"""
+    import os as _os
+
+    def _doms(env, default):
+        return ", ".join([d.strip() for d in _os.getenv(env, default).split(",") if d.strip()])
+
+    # 内置代码 handler(register_handlers/*.py、jl_api、1win):为反爬站硬编码,不在 DB 表,只读展示
+    builtin_scripts = [
+        {"id": None, "builtin": True, "handler_key": "tk688", "name": "TK688（孟加拉博彩·内置）",
+         "domain": _doms("WATER_TK688_DOMAINS", "tk688.my"), "steps": {"captcha_handler": "image"},
+         "enabled": True, "success_count": 0, "fail_count": 0, "last_run_at": None, "created_at": None,
+         "remark": "内置代码 handler：多层弹窗+算术图形验证码(CapSolver)；域名轮换改 WATER_TK688_DOMAINS"},
+        {"id": None, "builtin": True, "handler_key": "sp111", "name": "SP111（巴西博彩·内置）",
+         "domain": _doms("WATER_SP111_DOMAINS", "sp111.com,djsaa54545a.net"), "steps": {"captcha_handler": "none"},
+         "enabled": True, "success_count": 0, "fail_count": 0, "last_run_at": None, "created_at": None,
+         "remark": "内置代码 handler：geo锁BR需巴西代理+促销弹窗+手机/密码表单(无验证码)；域名改 WATER_SP111_DOMAINS"},
+        {"id": None, "builtin": True, "handler_key": "onewin", "name": "1win 系（内置）",
+         "domain": _doms("WATER_ONEWIN_DOMAINS", "1wzbzs.life"), "steps": {"captcha_handler": "geetest"},
+         "enabled": True, "success_count": 0, "fail_count": 0, "last_run_at": None, "created_at": None,
+         "remark": "内置代码 handler：目标国住宅代理+撞库电话+GeeTest v4(CapSolver)；域名改 WATER_ONEWIN_DOMAINS"},
+        {"id": None, "builtin": True, "handler_key": "api", "name": "直连 API·jl 系（内置）",
+         "domain": "in1.fun, rztk6mpvx.com", "steps": {"captcha_handler": "none"},
+         "enabled": True, "success_count": 0, "fail_count": 0, "last_run_at": None, "created_at": None,
+         "remark": "内置：逆向加密注册接口直连建号(无浏览器,最快最稳)"},
+    ]
+
     total = (await db.execute(select(func.count()).select_from(WaterRegisterScript))).scalar() or 0
     query = (
         select(WaterRegisterScript)
@@ -903,11 +945,14 @@ async def list_scripts(
             # 脏 JSON 不再整页 500:原样返回字符串,前端可见并可重新编辑修复
             return raw
 
+    # 内置 handler 只在第一页顶部展示(不参与分页/计数逻辑,纯提示)
+    head = builtin_scripts if page == 1 else []
     return {
-        "total": total,
-        "items": [
+        "total": total + len(head),
+        "items": head + [
             {
                 "id": s.id,
+                "builtin": False,
                 "name": s.name,
                 "domain": s.domain,
                 "steps": _safe_steps(s.steps),
@@ -1004,6 +1049,78 @@ async def test_script(
     )
 
     return {"task_id": task.id, "message": f"测试任务已提交，脚本: {script.name}"}
+
+
+@router.post("/scripts/generate")
+async def generate_script(
+    req: ScriptGenerate,
+    _admin: AdminUser = Depends(get_current_admin_user),
+):
+    """自动生成注册脚本:提交目标站 → 后台站点探针跑(带浏览器,约30-90秒)→ 返回 task_id 供轮询。"""
+    url = (req.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="请填写目标站 URL 或域名")
+    if not url.lower().startswith(("http://", "https://")):
+        url = "https://" + url
+    from app.workers.celery_app import celery_app
+    task = celery_app.send_task(
+        "generate_register_script_task",
+        args=[url, (req.country or "").strip()],
+        queue="web_gen",
+    )
+    return {"task_id": task.id, "message": "已提交探测，正在自动生成脚本（约30-90秒）"}
+
+
+@router.get("/scripts/generate/{task_id}")
+async def generate_script_result(
+    task_id: str,
+    _admin: AdminUser = Depends(get_current_admin_user),
+):
+    """轮询自动生成结果。state: PENDING/STARTED(进行中) | SUCCESS(result 内含生成脚本) | FAILURE。"""
+    from celery.result import AsyncResult
+    from app.workers.celery_app import celery_app
+    r = AsyncResult(task_id, app=celery_app)
+    if not r.ready():
+        return {"state": r.state, "ready": False}
+    if r.failed():
+        return {"state": "FAILURE", "ready": True, "error": str(r.result)[:300]}
+    return {"state": "SUCCESS", "ready": True, "result": r.result}
+
+
+@router.post("/scripts/test-run")
+async def test_run_script(
+    req: ScriptTestRun,
+    _admin: AdminUser = Depends(get_current_admin_user),
+):
+    """测试运行注册脚本/handler:后台真跑一次注册,返回 task_id 供轮询成败。"""
+    from app.workers.celery_app import celery_app
+    task = celery_app.send_task(
+        "test_register_handler_task",
+        kwargs={
+            "handler_key": (req.handler_key or "").strip(),
+            "domain": (req.domain or "").strip(),
+            "country": (req.country or "").strip(),
+            "script_id": req.script_id,
+        },
+        queue="web_gen",
+    )
+    return {"task_id": task.id, "message": "测试已提交，正在真跑一次注册（约30-90秒）"}
+
+
+@router.get("/scripts/test-run/{task_id}")
+async def test_run_result(
+    task_id: str,
+    _admin: AdminUser = Depends(get_current_admin_user),
+):
+    """轮询测试运行结果。SUCCESS 时 result={success, reason, landing}。"""
+    from celery.result import AsyncResult
+    from app.workers.celery_app import celery_app
+    r = AsyncResult(task_id, app=celery_app)
+    if not r.ready():
+        return {"state": r.state, "ready": False}
+    if r.failed():
+        return {"state": "FAILURE", "ready": True, "error": str(r.result)[:300]}
+    return {"state": "SUCCESS", "ready": True, "result": r.result}
 
 
 # ========== 短链替换映射（绕过 Cloudflare 拦截短链）==========

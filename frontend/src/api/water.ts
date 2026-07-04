@@ -83,3 +83,17 @@ export const deleteScript = (id: number) =>
 
 export const testScript = (id: number) =>
   request.post(`${BASE}/scripts/${id}/test`)
+
+// 自动生成注册脚本:提交目标站 → 返回 task_id;再轮询结果
+export const generateScript = (data: { url: string; country?: string }) =>
+  request.post(`${BASE}/scripts/generate`, data)
+
+export const getGenerateResult = (taskId: string) =>
+  request.get(`${BASE}/scripts/generate/${taskId}`)
+
+// 测试运行:内置 handler 传 handler_key,DB 脚本传 script_id;再轮询成败
+export const testRunScript = (data: { handler_key?: string; domain?: string; country?: string; script_id?: number | null }) =>
+  request.post(`${BASE}/scripts/test-run`, data)
+
+export const getTestRunResult = (taskId: string) =>
+  request.get(`${BASE}/scripts/test-run/${taskId}`)
