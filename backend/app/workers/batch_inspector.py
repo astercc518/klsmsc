@@ -753,7 +753,7 @@ async def _do_refresh_staff_commission_cache():
         async with Session() as db:
             first_day = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             comm_query = (
-                select(Account.sales_id, func.sum(SMSLog.profit * SMSLog.message_count).label("total_profit"))
+                select(Account.sales_id, func.sum(SMSLog.profit).label("total_profit"))  # profit 已是整条(含分段)总利润，勿再乘 message_count（审计 P0-1）
                 .select_from(SMSLog)
                 .join(Account, SMSLog.account_id == Account.id)
                 .join(Channel, SMSLog.channel_id == Channel.id)

@@ -693,7 +693,7 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork --concurrency=${WEB_REGISTER_CONCURRENCY:-2} --prefetch-multiplier=${WEB_REGISTER_PREFETCH:-1} --max-tasks-per-child=${WEB_WORKER_MAX_TASKS_PER_CHILD:-200} -Q web_register
+    command: celery -A app.workers.celery_app worker --loglevel=info --pool=prefork --concurrency=${WEB_REGISTER_CONCURRENCY:-2} --prefetch-multiplier=${WEB_REGISTER_PREFETCH:-1} --max-tasks-per-child=${WEB_WORKER_MAX_TASKS_PER_CHILD:-200} -Q web_register,web_gen
     restart: unless-stopped
     logging: *default-logging
     networks:

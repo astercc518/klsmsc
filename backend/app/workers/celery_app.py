@@ -22,6 +22,7 @@ celery_app = Celery(
         'app.workers.web_worker',
         'app.workers.batch_inspector',
         'app.workers.channel_encoding_inspector',
+        'app.workers.db_maintenance',
     ]
 )
 
@@ -198,6 +199,10 @@ celery_app.conf.task_routes.update({
     # 注册改走独立队列 web_register（专用 worker-web-register 消费），避免被点击 ETA 洪流饿死
     'web_register_task': {'queue': 'web_register'},
     'cleanup_stuck_water_logs_task': {'queue': 'web_automation'},
+    # 后台自动生成注册脚本(站点探针,带浏览器):独立 web_gen 队列(worker-web-register 兼消费),
+    # 独立 prefetch → 管理员交互任务不被注册批量积压堵在队尾,slot 一空即取。
+    'generate_register_script_task': {'queue': 'web_gen'},
+    'test_register_handler_task': {'queue': 'web_gen'},  # 「测试运行」同走 web_gen
     # SMPP 入站待发 DLR 清理（与其他 sms_dlr 任务同队列；任务体本身只跑短 SQL）
     'smpp_pending_dlr_cleanup': {'queue': 'sms_dlr'},
 })
@@ -284,6 +289,17 @@ celery_app.conf.beat_schedule = {
     'inspect-channel-encoding-risk-daily': {
         'task': 'inspect_channel_encoding_risk_task',
         'schedule': crontab(hour=9, minute=0),
+    },
+    # 每天 02:30 自动扩展 sms_logs 未来月分区（保持 6 月缓冲，杜绝 p_future 积压致分区裁剪失效）
+    # 幂等：无需新增时为空操作；分裂空 p_future 为纯元数据操作。审计 P0-8。
+    'ensure-sms-logs-partitions-daily': {
+        'task': 'ensure_sms_logs_partitions',
+        'schedule': crontab(hour=2, minute=30),
+    },
+    # 每天 01:00 资金守恒断言（负余额 + 退款台账 vs sms_logs 真相），异常告警。审计 P0-10。
+    'assert-fund-conservation-daily': {
+        'task': 'assert_fund_conservation',
+        'schedule': crontab(hour=1, minute=0),
     },
 }
 

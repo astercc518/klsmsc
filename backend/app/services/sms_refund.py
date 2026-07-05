@@ -178,14 +178,33 @@ async def _do_refund(
     if amount <= 0:
         return {"success": False, "reason": "金额非正", "message_id": row.message_id}
 
-    # 1. 加回账户余额
+    # 1. 原子幂等抢占：先写回 sms_logs（refunded_at IS NULL），rowcount==0 即已被并发退款，直接放弃。
+    #    必须先于余额回退/记账，否则并发下两次调用都会先加余额、后一次 UPDATE 影响 0 行仍多退（审计 P0-3）。
+    from datetime import datetime as _dt
+    guard = await db.execute(
+        update(SMSLog)
+        .where(SMSLog.id == row.id, SMSLog.refunded_at.is_(None))
+        .values(
+            refunded_at=_dt.now(),
+            refunded_by=refunded_by[:100],
+            refunded_amount=amount,
+        )
+    )
+    if guard.rowcount == 0:
+        # 已被其它并发请求退款：不加余额、不记账，保持幂等
+        logger.info(
+            f"SMS退款跳过(已退) sms_log_id={row.id} message_id={row.message_id} by={refunded_by}"
+        )
+        return {"success": False, "reason": "already_refunded", "message_id": row.message_id}
+
+    # 2. 加回账户余额（仅抢占成功者执行）
     await db.execute(
         update(Account).where(Account.id == row.account_id).values(balance=Account.balance + amount)
     )
     bal = (await db.execute(select(Account.balance).where(Account.id == row.account_id))).scalar()
     bal_f = float(bal) if bal is not None else 0.0
 
-    # 2. 记账
+    # 3. 记账
     desc = f"SMS退款: message_id={row.message_id} reason={category}"
     if note:
         desc += f" note={note[:200]}"
@@ -196,18 +215,6 @@ async def _do_refund(
             amount=amount,
             balance_after=bal_f,
             description=desc[:500],
-        )
-    )
-
-    # 3. 写回 sms_logs（refunded_at IS NULL 幂等保护）
-    from datetime import datetime as _dt
-    await db.execute(
-        update(SMSLog)
-        .where(SMSLog.id == row.id, SMSLog.refunded_at.is_(None))
-        .values(
-            refunded_at=_dt.now(),
-            refunded_by=refunded_by[:100],
-            refunded_amount=amount,
         )
     )
 
@@ -268,14 +275,11 @@ async def execute_auto_refund(
     source: 'submit_failed' | 'queue_failed' | 'batch_cancelled' | 'batch_queue_fail' | 'ruanwei_queue_failed'
     auto_commit=False 用于嵌入调用方事务。
     """
-    if auto_commit:
-        row = (await db.execute(
-            select(SMSLog).where(SMSLog.id == int(sms_log_id)).with_for_update()
-        )).scalar_one_or_none()
-    else:
-        row = (await db.execute(
-            select(SMSLog).where(SMSLog.id == int(sms_log_id))
-        )).scalar_one_or_none()
+    # 两分支一律加行锁，消除 auto_commit=False 嵌入事务路径的 TOCTOU 竞态（审计 P0-3）。
+    # 即使此处漏锁，_do_refund 的原子抢占也会兜底，此锁为纵深防御。
+    row = (await db.execute(
+        select(SMSLog).where(SMSLog.id == int(sms_log_id)).with_for_update()
+    )).scalar_one_or_none()
 
     if not row:
         return {"success": False, "reason": "not_found"}

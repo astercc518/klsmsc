@@ -14,6 +14,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from celery.signals import worker_process_shutdown, worker_process_init
 from app.workers.celery_app import celery_app
 from app.utils.logger import get_logger
+from app.workers.register_handlers import tk688, sp111  # 注水注册专用 handler(TK688 孟加拉 / SP111 巴西)
 
 
 # ---------- Playwright browser pool（进程级单例）----------
@@ -898,13 +899,35 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
                       task_config_id: int = None, account_id: int = None,
                       country_code: str = "",
                       proxy_id: int = None, ua_type: str = "mobile",
-                      click_log_id: int = None, batch_id: int = None):
+                      click_log_id: int = None, batch_id: int = None,
+                      register_handler: str = ""):
     """注水注册任务：使用 Playwright 同步 API 模拟注册"""
     if account_id and self.request.id:
         from app.utils.water_task_tracking import untrack_water_task
         untrack_water_task(account_id, self.request.id)
-    logger.info(f"注水注册开始: sms_log={sms_log_id}, account={account_id}, batch={batch_id}, url={url[:80]}")
     try:
+        # 手动指定注册脚本/handler:优先入参,否则按 task_config_id 查注水配置(注水配置里按账户选)。
+        # 从配置读避免层层透传 register_handler(不动高流量点击链路)。非空则直接路由,跳过自动识别。
+        rh = (register_handler or "").strip().lower()
+        if not rh and task_config_id:
+            try:
+                _rhe, _rhf = _make_session()
+                rh = (_db_sync(_fetch_register_handler(_rhf, task_config_id)) or "").strip().lower()
+                _db_sync(_rhe.dispose())
+            except Exception:
+                rh = ""
+        logger.info(f"注水注册开始: sms_log={sms_log_id}, account={account_id}, batch={batch_id}, "
+                    f"handler={rh or 'auto'}, url={url[:80]}")
+        if rh == "api":
+            return _do_register_via_api(sms_log_id, url, channel_id, task_config_id,
+                                        account_id, country_code, proxy_id, batch_id=batch_id)
+        if rh == "onewin":
+            return _do_register_1win(sms_log_id, url, channel_id, task_config_id,
+                                     account_id, country_code, proxy_id, batch_id=batch_id)
+        if rh in ("tk688", "sp111", "generic"):
+            return _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id,
+                                     country_code, proxy_id, ua_type, click_log_id,
+                                     batch_id=batch_id, force_handler=rh)
         # 直连注册 API 域名(如 in1.fun→jilievobdt 博彩SPA):页面反自动化把浏览器拖到200s超时,
         # 改走逆向出的加密注册接口,直接建号,快且稳。
         from urllib.parse import urlparse
@@ -942,6 +965,114 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
         logger.warning(f"注水注册软超时: sms_log={sms_log_id}")
         _mark_processing_log_failed(sms_log_id, 'register', 'soft_time_limit')
         return {"success": False, "error": "soft_time_limit"}
+
+
+@celery_app.task(name="test_register_handler_task", bind=True,
+                 soft_time_limit=180, time_limit=210)
+def test_register_handler_task(self, handler_key: str = "", domain: str = "",
+                               country: str = "", script_id: int = None):
+    """后台「测试运行」:用指定 handler/DB脚本在其域名真跑一次注册,返回成败+落地页。
+
+    浏览器 handler(tk688/sp111/generic/DB脚本)直接驱动页面并返回结果(不写注水统计日志);
+    onewin/api 依赖真实收信号撞库,测试仅提示改用真实批次验证。geo 站需在 country 填国家。
+    """
+    import json as _json
+    url = domain if str(domain).startswith("http") else f"https://{(domain or '').strip()}"
+    logger.info(f"测试运行注册: handler={handler_key or 'auto'}, script_id={script_id}, url={url[:80]}, country={country}")
+    try:
+        from app.workers.register_handlers import tk688, sp111
+        hk = (handler_key or "").strip().lower()
+        if hk in ("onewin", "api"):
+            return {"success": None, "reason": f"{hk} 类型依赖真实收信号撞库,无法离线测试;请用真实批次验证"}
+
+        eng, factory = _make_session()
+
+        async def _g():
+            from app.utils.proxy_manager import get_proxy_for_country
+            async with factory() as db:
+                return await get_proxy_for_country(db, country or "", None)
+        proxy = _db_sync(_g())
+        _db_sync(eng.dispose())
+        if proxy and "{country}" in _json.dumps(proxy):
+            proxy = None  # 空国家占位符残留 → 直连(geo 站会失败,提示填国家)
+
+        browser = _get_browser()
+        ck = {"user_agent": _pick_user_agent("mobile"), "viewport": {"width": 390, "height": 844},
+              "is_mobile": True, "has_touch": True, "device_scale_factor": 3, "locale": "en-US"}
+        if proxy:
+            ck["proxy"] = proxy
+        ctx = browser.new_context(**ck)
+        page = ctx.new_page()
+        try:
+            _apply_stealth(page)
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            _wait_through_cf(page)
+            page.wait_for_timeout(4000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            landing = page.url
+            if hk == "tk688":
+                ok, reason = tk688.register(page, country, phone="")
+            elif hk == "sp111":
+                ok, reason = sp111.register(page, country, phone="")
+            elif script_id:
+                e2, f2 = _make_session()
+
+                async def _s():
+                    from sqlalchemy import select as _sel
+                    from app.modules.water.models import WaterRegisterScript
+                    async with f2() as db:
+                        return (await db.execute(
+                            _sel(WaterRegisterScript.steps).where(WaterRegisterScript.id == script_id)
+                        )).scalar()
+                raw = _db_sync(_s())
+                _db_sync(e2.dispose())
+                steps = _json.loads(raw) if isinstance(raw, str) else raw
+                ok = _execute_script_steps(page, steps)
+                reason = "ok" if ok else "脚本未跑通(检查选择器/成功判断)"
+            else:
+                ok, reason = _auto_register(page, url, country)
+            return {"success": bool(ok), "reason": reason, "landing": landing}
+        finally:
+            try:
+                ctx.close()
+            except Exception:
+                pass
+    except SoftTimeLimitExceeded:
+        return {"success": False, "reason": "测试超时(站点慢/反爬严重/geo站未填国家)"}
+    except Exception as e:
+        logger.error(f"测试运行异常: {e}", exc_info=True)
+        return {"success": False, "reason": str(e)[:200]}
+
+
+@celery_app.task(name="generate_register_script_task", bind=True,
+                 soft_time_limit=180, time_limit=210)
+def generate_register_script_task(self, url: str, country: str = ""):
+    """后台"只填名称+目标站自动生成注册脚本":跑站点探针 → 产出配置脚本/脚手架/无法自动化判定。
+
+    在带浏览器的 worker(web_automation 队列)执行,结果经 Celery result backend 回传给 API 轮询。
+    """
+    logger.info(f"自动生成注册脚本: url={url[:80]}, country={country}")
+    try:
+        from app.workers.register_handlers import site_profiler
+        return site_profiler.generate(url, country_code=country or "", save=False)
+    except SoftTimeLimitExceeded:
+        return {"kind": "failed", "note": "探测超时(目标站太慢/反爬严重),请重试或改用手工配置"}
+    except Exception as e:
+        logger.error(f"自动生成注册脚本异常: {e}", exc_info=True)
+        return {"kind": "failed", "note": f"生成异常: {str(e)[:200]}"}
+
+
+async def _fetch_register_handler(factory, task_config_id):
+    """取该注水配置手动指定的注册脚本/handler(''=自动识别)。"""
+    from sqlalchemy import select as _select
+    from app.modules.water.models import WaterTaskConfig
+    async with factory() as db:
+        return (await db.execute(
+            _select(WaterTaskConfig.register_handler).where(WaterTaskConfig.id == task_config_id)
+        )).scalar()
 
 
 async def _fetch_sms_phone(factory, sms_log_id):
@@ -1233,8 +1364,8 @@ def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, coun
 
 
 def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, country_code,
-                      proxy_id, ua_type, click_log_id, batch_id=None):
-    """使用 Playwright 同步 API 执行注册模拟"""
+                      proxy_id, ua_type, click_log_id, batch_id=None, force_handler=""):
+    """使用 Playwright 同步 API 执行注册模拟。force_handler 非空时强制走该 handler(跳过自动识别)。"""
     eng, factory = _make_session()
     start_time = time.time()
     log_id = None
@@ -1283,10 +1414,46 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
             _wait_through_cf(page)
             page.wait_for_timeout(random.randint(2000, 4000))
+            # SPA 落地后等网络静默让首屏渲染完,便于内容识别 TK688 系模板站
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
 
             steps = script_data.get("steps") if script_data else None
             has_script = (isinstance(steps, dict) and steps.get("fields")) or (isinstance(steps, list) and steps)
-            if has_script:
+            _forced = (force_handler or "").strip().lower()  # 非空=手动指定 handler,覆盖自动识别
+            if _forced == "tk688" or (not _forced and tk688.detect(page)):
+                # TK688 系孟加拉博彩:多层弹窗 + 数字/算术图形验证码,通用引擎无法完成,走专用 handler
+                logger.info(f"{'手动指定' if _forced else '识别为'} TK688 → 走专用注册路径: {page.url[:80]}")
+                # 账号用该条短信的收信号码(撞库):取真实收信号传入,由 handler 去符号做用户名
+                _tk_phone = None
+                try:
+                    _tpe, _tpf = _make_session()
+                    _tk_phone = _db_sync(_fetch_sms_phone(_tpf, sms_log_id))
+                    _db_sync(_tpe.dispose())
+                except Exception:
+                    _tk_phone = None
+                reg_success, reg_reason = tk688.register(page, country_code, phone=_tk_phone or "")
+            elif _forced == "sp111" or (not _forced and sp111.detect(page)):
+                # SP111 系巴西博彩:促销弹窗 + 极简表单(手机+密码,无验证码),geo 封锁需 BR 代理
+                logger.info(f"{'手动指定' if _forced else '识别为'} SP111 → 走专用注册路径: {page.url[:80]}")
+                _sp_phone = None
+                try:
+                    _spe, _spf = _make_session()
+                    _sp_phone = _db_sync(_fetch_sms_phone(_spf, sms_log_id))
+                    _db_sync(_spe.dispose())
+                except Exception:
+                    _sp_phone = None
+                reg_success, reg_reason = sp111.register(page, country_code, phone=_sp_phone or "")
+            elif _forced == "generic":
+                # 强制通用引擎:有配置脚本走脚本,否则零配置自动注册
+                if has_script:
+                    reg_success = _execute_script_steps(page, steps)
+                    reg_reason = "ok" if reg_success else "脚本注册未完成"
+                else:
+                    reg_success, reg_reason = _auto_register(page, url, country_code)
+            elif has_script:
                 # 配了脚本(精准模式)
                 reg_success = _execute_script_steps(page, steps)
                 reg_reason = "ok" if reg_success else "脚本注册未完成"
@@ -1303,10 +1470,15 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
         duration = int((time.time() - start_time) * 1000)
         status = "success" if reg_success else "failed"
         error_msg = None if reg_success else (reg_reason or "注册流程未完成")
+        # 成功且 reason 带账号密码(TK688 等专用 handler 返回"账号 X ┊ 密码 Y ┊ ..."凭据串)
+        # → 存进 device_info 供后台回查/复用;通用 auto_register 只返回 "ok" 不含"密码",保留设备串。
+        dev_info = device_desc
+        if reg_success and reg_reason and "密码" in reg_reason:
+            dev_info = reg_reason[:255]
 
         eng2, factory2 = _make_session()
         _db_sync(_update_log_status(factory2, log_id, status, duration, error_msg, proxy_ip=detected_ip,
-                                    device_info=device_desc, user_agent=ua))
+                                    device_info=dev_info, user_agent=ua))
         if script_data and script_data.get("id"):
             _db_sync(_increment_script_counter(factory2, script_data["id"], reg_success))
         _db_sync(eng2.dispose())
@@ -1343,6 +1515,35 @@ def _field_value(fake, ftype: str, faker_method: str = "") -> str:
     if ftype == "password":
         return fake.password(length=12)
     return fake.user_name()
+
+
+def _solve_image_captcha_field(page, field_selector):
+    """配置脚本用:图形验证码字段 → 抓验证码图 data-URI → CapSolver ImageToText(含算术求值) → 填。
+
+    先在该字段最近容器里找 img[alt*=captcha](找不到再退全局),取 data-URI base64 交 CapSolver。
+    复杂站(聚焦刷新/GeeTest/滑块)仍需专用 handler,此处覆盖"标准图形验证码"的配置化场景。
+    """
+    try:
+        b64 = page.evaluate(
+            "(sel)=>{const inp=document.querySelector(sel);"
+            "const box=inp?inp.closest('div,form,li,section'):null;"
+            "const img=(box&&(box.querySelector('img[alt*=captcha i]')||box.querySelector('img')))"
+            "||document.querySelector('img[alt*=captcha i]');"
+            "return img?(img.getAttribute('src')||''):''}", field_selector) or ""
+        if "base64," not in b64:
+            logger.warning(f"图形验证码字段未找到验证码图({field_selector})")
+            return False
+        from app.workers.geetest_solver import solve_image_captcha, eval_captcha_answer
+        ans = eval_captcha_answer(solve_image_captcha(b64.split("base64,", 1)[1]))
+        if not ans:
+            return False
+        el = page.query_selector(field_selector)
+        if el:
+            el.fill(str(ans))
+            return True
+    except Exception as e:
+        logger.warning(f"图形验证码字段求解失败({field_selector}): {e}")
+    return False
 
 
 def _execute_script_steps(page, steps) -> bool:
@@ -1408,6 +1609,13 @@ def _execute_script_steps(page, steps) -> bool:
             selector = (field.get("selector") or "").strip()
             if not selector:
                 continue
+            ftype = (field.get("type") or "text").lower()
+            # 图形验证码字段:抓图→CapSolver解(含算术求值)→填(配置化站也能过图形验证码)
+            if ftype in ("captcha", "image_captcha"):
+                if _solve_image_captcha_field(page, selector):
+                    filled += 1
+                    page.wait_for_timeout(random.randint(200, 500))
+                continue
             value = _field_value(fake, field.get("type"), field.get("faker_method"))
             try:
                 el = page.query_selector(selector)
@@ -1458,12 +1666,18 @@ def _execute_script_steps(page, steps) -> bool:
 # ========== 零配置自动注册引擎（只需域名，自动发现并填写注册表单） ==========
 
 _REGISTER_ENTRY_TEXTS = ["立即注册", "免费注册", "注册", "Sign up", "Sign Up", "Signup",
-                         "Register", "Create account", "Create Account", "Join", "Get started"]
+                         "Register", "Create account", "Create Account", "Join", "Get started",
+                         # 孟加拉文(bn):নিবন্ধন=注册 / সাইন আপ=sign up / রেজিস্টার=register
+                         "নিবন্ধন", "সাইন আপ", "রেজিস্টার"]
 _SUBMIT_TEXTS = ["立即注册", "注册", "Sign up", "Sign Up", "Register", "Create account",
                  "Create Account", "Join now", "Join", "Continue", "Next", "提交", "确定", "下一步",
                  # lead-gen / 引流落地页常见行动按钮
                  "Play now", "PLAY NOW", "Play Now", "立即游戏", "开始游戏", "马上玩",
-                 "立即领取", "领取", "Claim", "Get Bonus", "Download", "下载", "Start"]
+                 "立即领取", "领取", "Claim", "Get Bonus", "Download", "下载", "Start",
+                 # 孟加拉文(bn):নিবন্ধন=注册/提交 / জমা দিন=提交 / নিশ্চিত করুন=确认 / পরবর্তী=下一步
+                 # চালিয়ে যান=继续 / শুরু করুন=开始 / এখনই খেলুন=立即游戏 / সংগ্রহ করুন=领取 / বোনাস নিন=领奖
+                 "নিবন্ধন", "জমা দিন", "নিশ্চিত করুন", "পরবর্তী", "চালিয়ে যান",
+                 "এখনই খেলুন", "খেলুন", "শুরু করুন", "ডাউনলোড", "সংগ্রহ করুন", "বোনাস নিন"]
 _REGISTER_PATHS = ["/register", "/signup", "/sign-up", "/account/register", "/user/register",
                    "/auth/register", "/reg"]
 _SUCCESS_HINTS = ["welcome", "dashboard", "success", "logout", "log out", "sign out", "my account",
@@ -1533,7 +1747,10 @@ def _classify_input(meta: dict):
         return "checkbox"
     blob = " ".join([meta.get("name", ""), meta.get("id", ""), meta.get("placeholder", ""),
                      meta.get("autocomplete", ""), meta.get("aria", ""), meta.get("label", "")]).lower()
-    if any(k in blob for k in ("captcha", "verif", "otp", "验证码", "确认码")):
+    # captcha/验证码字段：含孟加拉文 ক্যাপচা / যাচাই 及常见图形验证码 name(identifying/imgcode 等)
+    if any(k in blob for k in ("captcha", "verif", "otp", "验证码", "确认码",
+                               "ক্যাপচা", "যাচাই", "identifying", "imgcode",
+                               "checkcode", "verifycode", "seccode")):
         return "otp"
     if t == "email" or "email" in blob or "e-mail" in blob or "mail" in blob or "邮箱" in blob:
         return "email"
@@ -1577,14 +1794,30 @@ def _read_meta(el) -> dict:
 
 def _goto_register_form(page, url: str):
     """当前页没有密码框时，尝试点击「注册」入口，或跳转常见注册路径，把表单找出来。"""
-    # 1) 点击页面上的注册入口
+    # 1) 点击页面上的注册入口(含样式化 div/span/[role=button],如 TK688 <div class=register-btn>)
     for txt in _REGISTER_ENTRY_TEXTS:
         try:
-            loc = page.locator(f"a:has-text('{txt}'), button:has-text('{txt}')").first
+            loc = page.locator(
+                f"a:has-text('{txt}'), button:has-text('{txt}'), "
+                f"[role=button]:has-text('{txt}')"
+            ).first
             if loc.count() > 0 and loc.is_visible():
                 loc.click(timeout=5000)
                 page.wait_for_timeout(random.randint(1200, 2200))
-                if page.query_selector("input[type=password]"):
+                if _has_fillable_input(page):
+                    return
+        except Exception:
+            continue
+    # 1b) class 命名的注册入口(无标准语义的样式化按钮:.register-btn / [class*=signup] 等)
+    for sel in (".register-btn:visible", "[class*='register-btn']:visible",
+                "[class*=signup]:visible", "[class*='sign-up']:visible",
+                "a[href*='register']:visible", "a[href*='signup']:visible"):
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0:
+                loc.click(timeout=5000)
+                page.wait_for_timeout(random.randint(1500, 2500))
+                if _has_fillable_input(page):
                     return
         except Exception:
             continue
@@ -1687,6 +1920,7 @@ def _click_submit(page) -> bool:
     # 最后兜底：无文字的样式化/图片按钮(引流落地页常见，如 <div class=btn><img src=btn.png>)
     # 按 class / 图片命名定位，尺寸过滤掉图标和整页容器，命中即点。
     for sel in (".btn", ".button", "[class*=submit]", "[class*='play']",
+                "[class*='submit-btn']", "[class*='register-btn']", "[class*=confirm]",
                 "img[src*=btn]", "img[src*=play]", "img[src*=submit]", "img[src*=register]",
                 "img[alt*='play' i]"):
         try:
@@ -1694,7 +1928,7 @@ def _click_submit(page) -> bool:
                 if not el.is_visible():
                     continue
                 box = el.bounding_box()
-                if not box or box["width"] < 80 or box["height"] < 24 or box["height"] > 160:
+                if not box or box["width"] < 60 or box["height"] < 24 or box["height"] > 160:
                     continue
                 el.click(timeout=5000)
                 return True

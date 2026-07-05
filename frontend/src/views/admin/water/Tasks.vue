@@ -241,6 +241,17 @@
             <el-input-number v-model="form.register_rate_max" :min="0" :max="100" :precision="1" size="small" />
           </div>
         </el-form-item>
+        <el-form-item label="注册脚本" v-show="form.register_enabled">
+          <el-select v-model="form.register_handler" style="width: 100%">
+            <el-option label="自动识别（按落地页）" value="" />
+            <el-option label="TK688（孟加拉博彩）" value="tk688" />
+            <el-option label="SP111（巴西博彩）" value="sp111" />
+            <el-option label="1win 系" value="onewin" />
+            <el-option label="直连 API（jl 系）" value="api" />
+            <el-option label="通用引擎/配置脚本" value="generic" />
+          </el-select>
+          <div class="form-tip">默认自动识别落地页；轮换马甲域识别不准时，可手动锁定用哪个注册脚本。</div>
+        </el-form-item>
         <el-divider content-position="left">其他</el-divider>
         <el-form-item label="代理">
           <el-select v-model="form.proxy_id" placeholder="选择代理" clearable style="width: 100%">
@@ -529,6 +540,7 @@ const form = reactive({
   register_enabled: false,
   register_rate_min: 1.0,
   register_rate_max: 3.0,
+  register_handler: '',
   proxy_id: null as number | null,
   user_agent_type: 'mobile',
 })
@@ -730,6 +742,7 @@ const openDialog = (row?: any) => {
       register_enabled: row.register_enabled,
       register_rate_min: row.register_rate_min,
       register_rate_max: row.register_rate_max,
+      register_handler: row.register_handler || '',
       proxy_id: row.proxy_id,
       user_agent_type: row.user_agent_type || 'mobile',
     })
@@ -740,6 +753,7 @@ const openDialog = (row?: any) => {
       click_rate_min: 3.0, click_rate_max: 8.0,
       click_delay_min: 60, click_delay_max: 14400, click_delay_curve: 4.0,
       register_enabled: false, register_rate_min: 1.0, register_rate_max: 3.0,
+      register_handler: '',
       proxy_id: null, user_agent_type: 'mobile',
     })
   }
