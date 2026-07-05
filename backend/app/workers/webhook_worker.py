@@ -504,6 +504,59 @@ def _generate_signature(secret: str, payload: str) -> str:
 _ACCOUNT_ID_ARG_UNSET = object()
 
 
+# ── 入队前账户预检（防空转）───────────────────────────────────────────────
+# 绝大多数账户未配置 webhook_url。若每条终态回执都无脑 send_webhook_task.delay，
+# 任务进 worker 后要新建事件循环+NullPool 引擎、查库，才发现"无 URL 跳过"——纯空转烧 CPU
+# （实测单个高发量账户可把 worker-webhook 顶到数百 % CPU，全是 skip）。
+# 这里在入队前用 60s 进程内缓存的账户白名单先拦一道，只有真正配了 webhook 的账户才入队。
+# 口径与 sms_worker._account_has_webhook 一致；刷新失败时 fail-open 放行，宁可多入队也不丢真回执。
+_WEBHOOK_ACCT_CACHE: dict = {"ids": frozenset(), "exp": 0.0}
+_WEBHOOK_ACCT_TTL = float(os.getenv("WEBHOOK_ACCT_CACHE_TTL_SEC", "60"))
+
+
+async def _refresh_webhook_account_ids(db) -> frozenset:
+    rows = await db.execute(
+        select(Account.id).where(
+            Account.webhook_url.isnot(None), Account.webhook_url != "",
+            # 排除软删除/已关闭账户：删除客户残留的 webhook_url 不应再触发回执推送。
+            Account.is_deleted == False, Account.status != "closed",
+        )
+    )
+    return frozenset(r[0] for r in rows.all())
+
+
+async def _account_has_webhook_cached(account_id, db=None) -> bool:
+    """账户是否配置了有效 webhook_url（60s 进程内缓存）。
+    db 为空时自建 NullPool 会话刷新——用于 trigger_webhook 的 account_id 直传分支，
+    该分支刻意不持有全局会话（避免跨事件循环复用连接池）。刷新失败 → fail-open 返回 True。"""
+    if not account_id:
+        return False
+    now = time.monotonic()
+    if now >= _WEBHOOK_ACCT_CACHE["exp"]:
+        try:
+            if db is not None:
+                ids = await _refresh_webhook_account_ids(db)
+            else:
+                from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+                from sqlalchemy.pool import NullPool
+                from app.config import settings as _settings
+                _eng = create_async_engine(
+                    _settings.SQLALCHEMY_DATABASE_URL, echo=False, poolclass=NullPool,
+                )
+                try:
+                    _factory = async_sessionmaker(_eng, class_=AsyncSession, expire_on_commit=False)
+                    async with _factory() as _db:
+                        ids = await _refresh_webhook_account_ids(_db)
+                finally:
+                    await _eng.dispose()
+            _WEBHOOK_ACCT_CACHE["ids"] = ids
+            _WEBHOOK_ACCT_CACHE["exp"] = now + _WEBHOOK_ACCT_TTL
+        except Exception as e:
+            logger.warning(f"刷新 webhook 账户缓存失败，本次放行入队: {e}")
+            return True
+    return account_id in _WEBHOOK_ACCT_CACHE["ids"]
+
+
 async def trigger_webhook(
     message_id: str,
     status: str,
@@ -528,6 +581,9 @@ async def trigger_webhook(
         if not account_id:
             logger.warning(f"无法触发Webhook: 无账户ID: {message_id}")
             return
+        if not await _account_has_webhook_cached(account_id):
+            logger.debug(f"账户 {account_id} 未配置 webhook，跳过入队: {message_id}")
+            return
         send_webhook_task.delay(account_id, message_id, status, data or {})
         logger.debug(f"Webhook回调任务已入队: {message_id}, 状态: {status}")
         return
@@ -542,6 +598,10 @@ async def trigger_webhook(
 
         if not sms_log or not sms_log.account_id:
             logger.warning(f"无法触发Webhook: 短信记录不存在或无账户ID: {message_id}")
+            return
+
+        if not await _account_has_webhook_cached(sms_log.account_id, db=db):
+            logger.debug(f"账户 {sms_log.account_id} 未配置 webhook，跳过入队: {message_id}")
             return
 
         send_webhook_task.delay(sms_log.account_id, message_id, status, data or {})
