@@ -13,7 +13,10 @@ def collect_host_metrics_sync() -> Dict[str, Any]:
     """同步采集 CPU、内存、磁盘、负载等信息。"""
     import psutil
 
-    cpu_percent = psutil.cpu_percent(interval=0.15)
+    # 1.0s 采样窗口：0.15s 太短会撞上瞬时尖峰（如 DLR 回执高峰），
+    # 显示值在 10%~98% 之间乱跳且严重高估。采集已在独立线程执行，
+    # 阻塞 1s 不影响事件循环。取秒级均值更贴近真实持续利用率。
+    cpu_percent = psutil.cpu_percent(interval=1.0)
     vm = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
 
