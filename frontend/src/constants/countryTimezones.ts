@@ -1,0 +1,41 @@
+/**
+ * 国家 ISO2 → 代表性 IANA 时区
+ * 用于短信预览按「收件号码所在国家」显示当地时间(含夏令时,经 Intl 计算)。
+ * 跨多时区的大国(US/CA/AU/RU/BR 等)取主要/首都时区。
+ */
+export const COUNTRY_TIMEZONE: Record<string, string> = {
+  AE: 'Asia/Dubai', AF: 'Asia/Kabul', AL: 'Europe/Tirane', AM: 'Asia/Yerevan',
+  AO: 'Africa/Luanda', AR: 'America/Argentina/Buenos_Aires', AT: 'Europe/Vienna',
+  AU: 'Australia/Sydney', AZ: 'Asia/Baku', BA: 'Europe/Sarajevo', BD: 'Asia/Dhaka',
+  BE: 'Europe/Brussels', BF: 'Africa/Ouagadougou', BG: 'Europe/Sofia', BH: 'Asia/Bahrain',
+  BJ: 'Africa/Porto-Novo', BN: 'Asia/Brunei', BO: 'America/La_Paz', BR: 'America/Sao_Paulo',
+  BY: 'Europe/Minsk', CA: 'America/Toronto', CD: 'Africa/Kinshasa', CH: 'Europe/Zurich',
+  CI: 'Africa/Abidjan', CL: 'America/Santiago', CM: 'Africa/Douala', CN: 'Asia/Shanghai',
+  CO: 'America/Bogota', CR: 'America/Costa_Rica', CU: 'America/Havana', CY: 'Asia/Nicosia',
+  CZ: 'Europe/Prague', DE: 'Europe/Berlin', DK: 'Europe/Copenhagen', DO: 'America/Santo_Domingo',
+  DZ: 'Africa/Algiers', EC: 'America/Guayaquil', EE: 'Europe/Tallinn', EG: 'Africa/Cairo',
+  ES: 'Europe/Madrid', ET: 'Africa/Addis_Ababa', FI: 'Europe/Helsinki', FR: 'Europe/Paris',
+  GB: 'Europe/London', GE: 'Asia/Tbilisi', GH: 'Africa/Accra', GN: 'Africa/Conakry',
+  GR: 'Europe/Athens', GT: 'America/Guatemala', HK: 'Asia/Hong_Kong', HN: 'America/Tegucigalpa',
+  HR: 'Europe/Zagreb', HU: 'Europe/Budapest', ID: 'Asia/Jakarta', IE: 'Europe/Dublin',
+  IL: 'Asia/Jerusalem', IN: 'Asia/Kolkata', IQ: 'Asia/Baghdad', IR: 'Asia/Tehran',
+  IS: 'Atlantic/Reykjavik', IT: 'Europe/Rome', JM: 'America/Jamaica', JO: 'Asia/Amman',
+  JP: 'Asia/Tokyo', KE: 'Africa/Nairobi', KG: 'Asia/Bishkek', KH: 'Asia/Phnom_Penh',
+  KR: 'Asia/Seoul', KW: 'Asia/Kuwait', KZ: 'Asia/Almaty', LA: 'Asia/Vientiane',
+  LB: 'Asia/Beirut', LK: 'Asia/Colombo', LT: 'Europe/Vilnius', LU: 'Europe/Luxembourg',
+  LV: 'Europe/Riga', LY: 'Africa/Tripoli', MA: 'Africa/Casablanca', MD: 'Europe/Chisinau',
+  MG: 'Indian/Antananarivo', ML: 'Africa/Bamako', MM: 'Asia/Yangon', MN: 'Asia/Ulaanbaatar',
+  MO: 'Asia/Macau', MX: 'America/Mexico_City', MY: 'Asia/Kuala_Lumpur', MZ: 'Africa/Maputo',
+  NE: 'Africa/Niamey', NG: 'Africa/Lagos', NI: 'America/Managua', NL: 'Europe/Amsterdam',
+  NO: 'Europe/Oslo', NP: 'Asia/Kathmandu', NZ: 'Pacific/Auckland', OM: 'Asia/Muscat',
+  PA: 'America/Panama', PE: 'America/Lima', PH: 'Asia/Manila', PK: 'Asia/Karachi',
+  PL: 'Europe/Warsaw', PT: 'Europe/Lisbon', PY: 'America/Asuncion', QA: 'Asia/Qatar',
+  RO: 'Europe/Bucharest', RS: 'Europe/Belgrade', RU: 'Europe/Moscow', RW: 'Africa/Kigali',
+  SA: 'Asia/Riyadh', SD: 'Africa/Khartoum', SE: 'Europe/Stockholm', SG: 'Asia/Singapore',
+  SI: 'Europe/Ljubljana', SK: 'Europe/Bratislava', SN: 'Africa/Dakar', SO: 'Africa/Mogadishu',
+  SV: 'America/El_Salvador', SY: 'Asia/Damascus', TH: 'Asia/Bangkok', TJ: 'Asia/Dushanbe',
+  TM: 'Asia/Ashgabat', TN: 'Africa/Tunis', TR: 'Europe/Istanbul', TW: 'Asia/Taipei',
+  TZ: 'Africa/Dar_es_Salaam', UA: 'Europe/Kyiv', UG: 'Africa/Kampala', US: 'America/New_York',
+  UY: 'America/Montevideo', UZ: 'Asia/Tashkent', VE: 'America/Caracas', VN: 'Asia/Ho_Chi_Minh',
+  YE: 'Asia/Aden', ZA: 'Africa/Johannesburg', ZM: 'Africa/Lusaka', ZW: 'Africa/Harare',
+}

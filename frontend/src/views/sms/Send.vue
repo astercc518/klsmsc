@@ -610,72 +610,263 @@
       <div class="preview-panel">
         <div class="preview-header">
           <span class="preview-title">{{ $t('smsSend.livePreview') }}</span>
+          <div class="preview-actions">
+            <div class="preview-theme-toggle">
+              <button type="button" :class="{ active: previewTheme === 'android' }" @click="previewTheme = 'android'">Android</button>
+              <button type="button" :class="{ active: previewTheme === 'ios' }" @click="previewTheme = 'ios'">iOS</button>
+            </div>
+            <button type="button" class="preview-shot-btn" :disabled="capturing || !form.message" @click="capturePreview">
+              <svg v-if="!capturing" width="15" height="15" viewBox="0 0 24 24" fill="none">
+                <rect x="8" y="8" width="12" height="12" rx="2.4" stroke="currentColor" stroke-width="1.8"/>
+                <path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4H5.5A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <svg v-else class="spinner" width="15" height="15" viewBox="0 0 24 24" fill="none">
+                <path d="M12 3a9 9 0 1 0 9 9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+              <span>{{ $t('smsSend.previewCopyImage') }}</span>
+            </button>
+          </div>
         </div>
-        
+
+        <!-- 自定义发送人(默认取 SID) -->
+        <div class="preview-sender-field">
+          <span class="psf-label">{{ $t('smsSend.previewSenderLabel') }}</span>
+          <input v-model="previewSenderInput" class="psf-input" :placeholder="senderAutoName" maxlength="24" />
+        </div>
+        <div class="preview-tz-hint" v-if="previewCountryName">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3 2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          {{ $t('smsSend.previewLocalTime', { country: previewCountryName }) }}
+        </div>
+
         <div class="phone-container">
-          <div class="iphone">
-            <div class="dynamic-island"></div>
-            
-            <div class="iphone-screen">
-              <div class="ios-status-bar">
-                <span class="time">{{ currentTime }}</span>
-                <div class="status-icons">
-                  <div class="battery">
-                    <div class="battery-body">
-                      <div class="battery-level"></div>
-                    </div>
-                    <div class="battery-cap"></div>
+          <!-- ============ Android · Google 信息 ============ -->
+          <div class="android-phone" v-if="previewTheme === 'android'">
+            <div class="android-screen" ref="phoneCaptureRef">
+              <div class="punch-hole"></div>
+
+              <!-- 状态栏(浅色) -->
+              <div class="gm-status-bar">
+                <span class="gm-sb-time">{{ statusBarTime }}</span>
+                <div class="gm-sb-right">
+                  <span class="gm-sb-net">4G</span>
+                  <svg width="17" height="11" viewBox="0 0 17 11" fill="#202124">
+                    <rect x="0" y="7" width="3" height="4" rx="0.8"/>
+                    <rect x="4.6" y="4.8" width="3" height="6.2" rx="0.8"/>
+                    <rect x="9.2" y="2.4" width="3" height="8.6" rx="0.8"/>
+                    <rect x="13.8" y="0" width="3" height="11" rx="0.8"/>
+                  </svg>
+                  <svg width="15" height="11" viewBox="0 0 16 12" fill="none">
+                    <path d="M8 11 5.6 8.6a3.4 3.4 0 0 1 4.8 0L8 11Z" fill="#202124"/>
+                    <path d="M3.7 6.7a6 6 0 0 1 8.6 0" stroke="#202124" stroke-width="1.4" stroke-linecap="round"/>
+                    <path d="M1.4 4.35a9.3 9.3 0 0 1 13.2 0" stroke="#202124" stroke-width="1.4" stroke-linecap="round"/>
+                  </svg>
+                  <div class="gm-battery">
+                    <span class="gm-battery-pct">79</span>
+                    <div class="gm-battery-body"><div class="gm-battery-fill" style="width:79%"></div></div>
+                    <div class="gm-battery-cap"></div>
                   </div>
                 </div>
               </div>
-              
-              <div class="ios-messages">
-                <div class="ios-nav">
-                  <div class="nav-back">
-                    <svg width="10" height="18" viewBox="0 0 10 18" fill="none">
-                      <path d="M9 1L1 9L9 17" stroke="#007AFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  </div>
-                  <div class="nav-contact">
-                    <div class="contact-avatar-ios">
-                      <span>{{ senderInitial }}</span>
-                    </div>
-                    <div class="contact-info">
-                      <span class="contact-name">{{ senderDisplay }}</span>
-                      <span class="contact-label">{{ $t('menu.smsBusiness') }}</span>
-                    </div>
-                  </div>
+
+              <!-- Google 信息 顶栏 -->
+              <div class="gm-appbar">
+                <svg class="gm-back" width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <path d="M20 12H4M4 12l7-7M4 12l7 7" stroke="#444746" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <div class="gm-avatar" :style="{ background: senderLooksNumeric ? '#E8664E' : senderAvatarColor }">
+                  <svg width="18" height="18" viewBox="0 0 24 24">
+                    <path fill="#fff" d="M12 12.2a4.3 4.3 0 1 0 0-8.6 4.3 4.3 0 0 0 0 8.6Zm0 2c-4.1 0-7.4 2.5-7.4 5.5 0 .9.6 1.6 1.5 1.6h11.8c.9 0 1.5-.7 1.5-1.6 0-3-3.3-5.5-7.4-5.5Z"/>
+                  </svg>
                 </div>
-                
-                <div class="ios-chat">
-                  <div class="chat-date">{{ currentDate }}</div>
-                  
-                  <div class="ios-bubble" v-if="form.message">
-                    <div class="bubble-text">{{ hasVariables ? previewSms : form.message }}</div>
-                    <div class="bubble-meta">
-                      <span>{{ currentTime }}</span>
-                    </div>
-                  </div>
-                  
-                  <div class="empty-chat" v-else>
-                    <div class="empty-icon">
-                      <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-                        <path d="M42 6H6C4.34 6 3 7.34 3 9V33C3 34.66 4.34 36 6 36H12V45L24 36H42C43.66 36 45 34.66 45 33V9C45 7.34 43.66 6 42 6Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                <span class="gm-sender">{{ senderDisplay }}</span>
+                <svg v-if="senderLooksNumeric" class="gm-call" width="18" height="18" viewBox="0 0 24 24" fill="#444746">
+                  <path d="M6.6 10.8a15 15 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.24 11 11 0 0 0 3.5.56 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .56 3.5 1 1 0 0 1-.24 1l-2.2 2.3Z"/>
+                </svg>
+                <svg class="gm-more" width="18" height="18" viewBox="0 0 24 24" fill="#444746">
+                  <circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/>
+                </svg>
+              </div>
+
+              <!-- 会话区 -->
+              <div class="gm-conversation">
+                <!-- 保存联系人建议卡(仅号码发送人) -->
+                <div class="gm-save-card" v-if="form.message && senderLooksNumeric">
+                  <div class="gm-save-top">
+                    <div class="gm-save-icon">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff">
+                        <path d="M10 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm0 1.6c-3.3 0-6 1.7-6 3.9v1.3h8.3a5.4 5.4 0 0 1-.3-3.6c-.6-.1-1.3-.2-2-.2Zm8 .4v2h2v1.6h-2v2h-1.6v-2h-2V16h2v-2H18Z"/>
                       </svg>
                     </div>
-                    <span>{{ $t('smsSend.enterToPreview') }}</span>
+                    <div class="gm-save-text">
+                      <div class="gm-save-title">{{ saveTitleText }}</div>
+                      <div class="gm-save-sub">{{ chrome.saveSub }}</div>
+                    </div>
+                    <svg class="gm-save-x" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="#5f6368" stroke-width="2" stroke-linecap="round"/></svg>
+                  </div>
+                  <div class="gm-save-actions">
+                    <span>{{ chrome.reportSpam }}</span>
+                    <span>{{ chrome.addContact }}</span>
                   </div>
                 </div>
-                
-                <div class="ios-input-bar">
-                  <div class="input-bubble">
-                    <span>{{ $t('menu.sms') }}</span>
+
+                <div class="gm-spacer"></div>
+
+                <div class="gm-empty" v-if="!form.message">
+                  <div class="empty-icon">
+                    <svg width="46" height="46" viewBox="0 0 48 48" fill="none">
+                      <path d="M42 6H6C4.34 6 3 7.34 3 9V33C3 34.66 4.34 36 6 36H12V45L24 36H42C43.66 36 45 34.66 45 33V9C45 7.34 43.66 6 42 6Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                    </svg>
+                  </div>
+                  <span>{{ $t('smsSend.enterToPreview') }}</span>
+                </div>
+
+                <!-- 号码发送人:时间 + 会话副标题 + 未读 -->
+                <template v-else-if="senderLooksNumeric">
+                  <div class="gm-time-center">{{ clockLabel }}</div>
+                  <div class="gm-texting-with">{{ textingWithText }}</div>
+                  <div class="gm-unread"><span>{{ chrome.unread }}</span></div>
+                  <div class="gm-bubble"><template v-for="(part, i) in messageParts" :key="i"><a v-if="part.isLink" class="msg-link">{{ part.text }}</a><template v-else>{{ part.text }}</template></template></div>
+                  <div class="gm-replies">
+                    <span class="gm-reply-chip">{{ chrome.replyOkay }}</span>
+                    <span class="gm-reply-chip">{{ chrome.replyThanks }}</span>
+                    <span class="gm-reply-chip gm-reply-emoji">😊</span>
+                  </div>
+                </template>
+
+                <!-- 品牌发送人:未读 + 气泡 + 链接预览卡 + 时间 -->
+                <template v-else>
+                  <div class="gm-unread"><span>{{ chrome.unread }}</span></div>
+                  <div class="gm-bubble"><template v-for="(part, i) in messageParts" :key="i"><a v-if="part.isLink" class="msg-link">{{ part.text }}</a><template v-else>{{ part.text }}</template></template></div>
+                  <div class="gm-link-card" v-if="messageHasUrl">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                      <path d="M4 12a8 8 0 1 1 2.3 5.6" stroke="#5f6368" stroke-width="2" stroke-linecap="round"/>
+                      <path d="M4 20v-4h4" stroke="#5f6368" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span>{{ chrome.tapToLoad }}</span>
+                  </div>
+                  <div class="gm-time-left">{{ clockLabel }}</div>
+                </template>
+              </div>
+
+              <!-- 底部:品牌发送人=不可回复提示;号码发送人=输入栏 -->
+              <div class="gm-footer" v-if="form.message && !senderLooksNumeric">
+                {{ chrome.noReply }}<a>{{ chrome.learnMore }}</a>
+              </div>
+              <div class="gm-inputbar" v-else>
+                <div class="gm-input-plus">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="#444746" stroke-width="2.2" stroke-linecap="round"/></svg>
+                </div>
+                <div class="gm-input-field">
+                  <span>{{ chrome.simText }}</span>
+                  <div class="gm-input-icons">
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#5f6368" stroke-width="1.7"/><circle cx="9" cy="10" r="1" fill="#5f6368"/><circle cx="15" cy="10" r="1" fill="#5f6368"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0" stroke="#5f6368" stroke-width="1.7" stroke-linecap="round"/></svg>
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><rect x="3.5" y="5" width="17" height="14" rx="2.4" stroke="#5f6368" stroke-width="1.7"/><circle cx="8.5" cy="10" r="1.6" stroke="#5f6368" stroke-width="1.5"/><path d="M4 17l5-4 4 3 3-2.5 4 3.5" stroke="#5f6368" stroke-width="1.7" stroke-linejoin="round"/></svg>
+                  </div>
+                </div>
+                <div class="gm-input-mic">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M6 10v2M10 7v8M14 5v12M18 9v4" stroke="#7c4dff" stroke-width="2.2" stroke-linecap="round"/></svg>
+                </div>
+              </div>
+
+              <!-- Android 三键导航 -->
+              <div class="gm-navbar">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h16M4 17h16" stroke="#4d4d4d" stroke-width="2" stroke-linecap="round"/></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="16" height="16" rx="2.5" stroke="#4d4d4d" stroke-width="2.4"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M15 5l-7 7 7 7" stroke="#4d4d4d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </div>
+            </div>
+          </div>
+
+          <!-- ============ iOS · 信息(浅色,真实短信截图,无边框) ============ -->
+          <div class="iphone-l" v-else>
+            <div class="iphone-l-screen" ref="phoneCaptureRef">
+              <!-- 状态栏(黑字,含勿扰月亮) -->
+              <div class="il-status-bar">
+                <span class="il-time">{{ statusBarTime }}
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="#000"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+                </span>
+                <div class="il-icons">
+                  <svg width="17" height="11" viewBox="0 0 17 11" fill="#000">
+                    <rect x="0" y="7" width="3" height="4" rx="0.9"/>
+                    <rect x="4.6" y="4.8" width="3" height="6.2" rx="0.9"/>
+                    <rect x="9.2" y="2.4" width="3" height="8.6" rx="0.9"/>
+                    <rect x="13.8" y="0" width="3" height="11" rx="0.9"/>
+                  </svg>
+                  <svg width="16" height="12" viewBox="0 0 16 12" fill="none">
+                    <path d="M8 11.2 5.55 8.75a3.46 3.46 0 0 1 4.9 0L8 11.2Z" fill="#000"/>
+                    <path d="M3.6 6.8a6.2 6.2 0 0 1 8.8 0" stroke="#000" stroke-width="1.5" stroke-linecap="round"/>
+                    <path d="M1.2 4.35a9.6 9.6 0 0 1 13.6 0" stroke="#000" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                  <div class="il-battery">
+                    <div class="il-battery-body"><div class="il-battery-fill"></div></div>
+                    <div class="il-battery-cap"></div>
                   </div>
                 </div>
               </div>
+
+              <!-- 会话顶栏 -->
+              <div class="il-nav">
+                <div class="il-back">
+                  <svg width="12" height="21" viewBox="0 0 12 21" fill="none">
+                    <path d="M10.5 1.5 2 10.5l8.5 9" stroke="#007AFF" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span class="il-unread">1</span>
+                </div>
+                <div class="il-contact">
+                  <div class="il-avatar" style="background:#C7C7CC">
+                    <svg width="26" height="26" viewBox="0 0 24 24">
+                      <path fill="#fff" d="M12 12.2a4.3 4.3 0 1 0 0-8.6 4.3 4.3 0 0 0 0 8.6Zm0 2c-4.1 0-7.4 2.5-7.4 5.5 0 .9.6 1.6 1.5 1.6h11.8c.9 0 1.5-.7 1.5-1.6 0-3-3.3-5.5-7.4-5.5Z"/>
+                    </svg>
+                  </div>
+                  <div class="il-name-row">
+                    <span class="il-name">{{ senderDisplay }}</span>
+                    <svg width="7" height="12" viewBox="0 0 7 12" fill="none">
+                      <path d="M1 1l4.5 5L1 11" stroke="#B0B0B5" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </div>
+                </div>
+                <div class="il-nav-right"></div>
+              </div>
+
+              <!-- 会话区 -->
+              <div class="il-chat">
+                <template v-if="form.message">
+                  <div class="il-date">
+                    <span>{{ chrome.iosSmsLabel }}</span>
+                    <span>{{ chrome.today }} {{ clockLabel }}</span>
+                  </div>
+                  <div class="il-bubble"><template v-for="(part, i) in messageParts" :key="i"><a v-if="part.isLink" class="msg-link ios">{{ part.text }}</a><template v-else>{{ part.text }}</template></template></div>
+                </template>
+
+                <div class="il-empty" v-else>
+                  <div class="empty-icon">
+                    <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                      <path d="M42 6H6C4.34 6 3 7.34 3 9V33C3 34.66 4.34 36 6 36H12V45L24 36H42C43.66 36 45 34.66 45 33V9C45 7.34 43.66 6 42 6Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                    </svg>
+                  </div>
+                  <span>{{ $t('smsSend.enterToPreview') }}</span>
+                </div>
+              </div>
+
+              <!-- 输入栏 -->
+              <div class="il-input-bar">
+                <div class="il-plus">
+                  <svg width="14" height="14" viewBox="0 0 13 13" fill="none">
+                    <path d="M6.5 1v11M1 6.5h11" stroke="#8A8A8E" stroke-width="1.7" stroke-linecap="round"/>
+                  </svg>
+                </div>
+                <div class="il-field">
+                  <span>{{ chrome.iosInput }}</span>
+                  <svg width="11" height="16" viewBox="0 0 12 18" fill="none">
+                    <rect x="3.5" y="0.5" width="5" height="10" rx="2.5" fill="#8A8A8E"/>
+                    <path d="M1 8a5 5 0 0 0 10 0" stroke="#8A8A8E" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+                    <path d="M6 13v3.5M3.8 16.5h4.4" stroke="#8A8A8E" stroke-width="1.4" stroke-linecap="round"/>
+                  </svg>
+                </div>
+              </div>
+
+              <div class="il-home"></div>
             </div>
-            
-            <div class="home-indicator"></div>
           </div>
         </div>
       </div>
@@ -1026,6 +1217,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { toBlob } from 'html-to-image'
 import { useRoute } from 'vue-router'
 import type { FormInstance } from 'element-plus'
 import { useI18n } from 'vue-i18n'
@@ -1041,9 +1233,11 @@ import { getAiConfig, generateSmsContent, paraphraseText, translateTexts } from 
 import { listActiveShortLinkDomains, buildTrackUrlPlaceholder, type ShortLinkDomain } from '@/api/short-link'
 import request from '@/api/index'
 import { COUNTRY_LIST, findCountryByIso } from '@/constants/countries'
+import { COUNTRY_TIMEZONE } from '@/constants/countryTimezones'
+import { PREVIEW_CHROME, COUNTRY_LANG } from '@/constants/previewChrome'
 import { smsCodePointLength, isGsm7Message, countSmsParts, smsSegmentUnitLength } from '@/utils/smsParts'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const route = useRoute()
 
 // ============ 常量 ============
@@ -1607,8 +1801,6 @@ const failureSummary = computed<Array<{ code: string; message: string; count: nu
 })
 const channels = ref<any[]>([])
 const channelBound = ref(false)
-const currentTime = ref('')
-const currentDate = ref('')
 const sendProgress = ref(0)
 const asyncBatchPolling = ref<{batchId: number; total: number; timer: number | null} | null>(null)
 const asyncBatchProgress = ref(0)
@@ -1855,19 +2047,172 @@ const tplMaxLenLimit = computed(() => maxSmsCharsForLang(tplForm.value.language)
 /** AI 生成：当前语言对应的单条字符上限 */
 const aiMaxLenLimit = computed(() => maxSmsCharsForLang(aiForm.value.language))
 
-const senderDisplay = computed(() => {
+/** 预览手机主题(android=Google信息浅色 / ios=信息深色),持久化 */
+const previewTheme = ref<'android' | 'ios'>(
+  (localStorage.getItem('sms_preview_theme') as 'android' | 'ios') || 'android'
+)
+watch(previewTheme, v => localStorage.setItem('sms_preview_theme', v))
+
+/** 手动自定义的预览发送人(留空时自动取 SID) */
+const previewSenderInput = ref('')
+
+/** 自动发送人：优先 SID，其次首个号码 */
+const senderAutoName = computed(() => {
   if (form.value.sender_id) return form.value.sender_id
   const numbers = parseNumbers()
-  if (numbers.length > 0) return numbers[0]
-  return t('menu.sms')
+  if (numbers.length > 0) return '+' + numbers[0].replace(/^\+/, '')
+  return t('smsSend.previewDefaultSender')
 })
 
-const senderInitial = computed(() => {
-  const name = senderDisplay.value
-  if (!name) return 'S'
-  const first = name.charAt(0)
-  return /[a-zA-Z\u4e00-\u9fa5]/.test(first) ? first.toUpperCase() : '#'
+/** 顶栏显示的发送人：自定义优先，否则自动取 SID */
+const senderDisplay = computed(() => previewSenderInput.value.trim() || senderAutoName.value)
+
+/** \u53d1\u4ef6\u4eba\u9996\u5b57\u7b26\u662f\u5426\u4e3a\u5b57\u6bcd/\u6c49\u5b57\uff1a\u662f\u5219\u5934\u50cf\u663e\u793a\u9996\u5b57\u6bcd\uff0c\u5426\u5219\u663e\u793a\u9ed8\u8ba4\u4eba\u5f62\u526a\u5f71 */
+/** \u6839\u636e\u53d1\u4ef6\u4eba\u540d\u5b57\u7a33\u5b9a\u5730\u6311\u4e00\u4e2a Google \u4fe1\u606f\u98ce\u683c\u5934\u50cf\u8272 */
+const senderAvatarColor = computed(() => {
+  const palette = ['#8e44e6', '#1a73e8', '#12a150', '#e8710a', '#d93025', '#0b8043', '#5f6368', '#a142f4']
+  const name = senderDisplay.value || 'S'
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0
+  return palette[h % palette.length]
 })
+
+/** \u9884\u89c8\u76ee\u7684\u56fd\u5bb6 ISO2(\u7528\u4e8e\u6309\u5f53\u5730\u65f6\u533a\u663e\u793a\u65f6\u95f4);\u590d\u7528 SID \u76ee\u7684\u56fd\u5bb6\u63a8\u65ad */
+const previewCountryIso = computed(() => {
+  const raw = (sidTargetCountry.value || '').trim()
+  if (!raw) return ''
+  const up = raw.toUpperCase()
+  if (COUNTRY_TIMEZONE[up]) return up                                   // \u5df2\u662f ISO2
+  if (/^\d+$/.test(raw)) {                                              // \u533a\u53f7 \u2192 ISO2
+    const sorted = [...COUNTRY_LIST].sort((a, b) => b.dial.length - a.dial.length)
+    const hit = sorted.find(c => raw.startsWith(c.dial))
+    if (hit) return hit.iso.toUpperCase()
+  }
+  const byName = COUNTRY_LIST.find(c => c.name === raw || c.en.toLowerCase() === raw.toLowerCase())
+  return byName ? byName.iso.toUpperCase() : ''
+})
+
+/** \u76ee\u7684\u56fd\u5bb6\u7684 IANA \u65f6\u533a(\u53d6\u4e0d\u5230\u5219\u7a7a = \u7528\u672c\u673a\u65f6\u533a) */
+const previewTimeZone = computed(() => COUNTRY_TIMEZONE[previewCountryIso.value] || '')
+
+/** \u6536\u4ef6\u56fd\u5bb6\u4e2d\u6587/\u82f1\u6587\u540d(\u7528\u4e8e\u300c\u6309X\u5f53\u5730\u65f6\u95f4\u300d\u63d0\u793a) */
+const previewCountryName = computed(() => {
+  const c = COUNTRY_LIST.find(x => x.iso.toUpperCase() === previewCountryIso.value)
+  if (!c) return ''
+  return String(locale.value).startsWith('zh') ? c.name : c.en
+})
+
+/** 手机界面语言：有收件国家→按国家(未列出回退英文);无国家→跟随后台界面语言 */
+const previewLang = computed(() => {
+  const iso = previewCountryIso.value
+  if (iso) return COUNTRY_LANG[iso] || 'en'
+  return String(locale.value).startsWith('zh') ? 'zh' : 'en'
+})
+
+/** 当前手机界面文案集(按收件国家语言) */
+const chrome = computed(() => PREVIEW_CHROME[previewLang.value] || PREVIEW_CHROME.en)
+
+/** 带发送人占位符的文案 */
+const textingWithText = computed(() => chrome.value.textingWith.replace('{sender}', senderDisplay.value))
+const saveTitleText = computed(() => chrome.value.saveTitle.replace('{sender}', senderDisplay.value))
+
+/** now \u6bcf 20s \u66f4\u65b0\u4e00\u6b21,\u9a71\u52a8\u65f6\u533a\u65f6\u95f4\u91cd\u7b97 */
+const nowTick = ref(Date.now())
+
+/** \u5f53\u524d\u9884\u89c8\u65f6\u95f4\u5728\u76ee\u7684\u56fd\u5bb6\u65f6\u533a\u7684 {h,m}(24 \u5c0f\u65f6\u5236;\u542b\u590f\u4ee4\u65f6) */
+const zoneHM = computed(() => {
+  const d = new Date(nowTick.value)
+  const tz = previewTimeZone.value
+  try {
+    const s = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz || undefined, hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(d)
+    const [h, m] = s.split(':')
+    return { h: parseInt(h, 10) || 0, m: m || '00' }
+  } catch {
+    return { h: d.getHours(), m: String(d.getMinutes()).padStart(2, '0') }
+  }
+})
+
+/** \u72b6\u6001\u680f 12 \u5c0f\u65f6\u5236\u65f6\u95f4(1:35,\u65e0\u4e0a\u5348/\u4e0b\u5348\u524d\u7f00,\u8d34\u5408\u72b6\u6001\u680f) */
+const statusBarTime = computed(() => {
+  let h12 = zoneHM.value.h % 12
+  if (h12 === 0) h12 = 12
+  return `${h12}:${zoneHM.value.m}`
+})
+
+/** 12 \u5c0f\u65f6\u5236\u65f6\u949f\u6807\u7b7e(\u4e0b\u53481:35 / 1:35 PM),\u8ddf\u968f\u754c\u9762\u8bed\u8a00 */
+const clockLabel = computed(() => {
+  const { h, m } = zoneHM.value
+  const zh = String(locale.value).startsWith('zh')
+  const isPM = h >= 12
+  let h12 = h % 12
+  if (h12 === 0) h12 = 12
+  if (zh) return `${isPM ? '\u4e0b\u5348' : '\u4e0a\u5348'}${h12}:${m}`
+  return `${h12}:${m} ${isPM ? 'PM' : 'AM'}`
+})
+
+/** URL \u8bc6\u522b\uff1ahttp(s):// / www. / \u5e38\u89c1 TLD \u57df\u540d(\u53ef\u5e26\u8def\u5f84) */
+const URL_SPLIT_RE = /((?:https?:\/\/|www\.)[^\s]+|(?:[a-z0-9-]+\.)+(?:com|net|org|cn|io|at|ly|me|xyz|link|top|vip|club|shop|site|info|co|app|live|online|store|fun)(?:\/[^\s]*)?)/gi
+
+/** \u5f53\u524d\u9884\u89c8\u6b63\u6587 */
+const previewBody = computed(() => (hasVariables.value ? previewSms.value : form.value.message) || '')
+
+/** \u77ed\u4fe1\u6b63\u6587\u662f\u5426\u542b\u94fe\u63a5(\u54c1\u724c\u53d1\u9001\u4eba\u771f\u673a\u4f1a\u6e32\u67d3\u94fe\u63a5\u9884\u89c8\u5361\u7247) */
+const messageHasUrl = computed(() => new RegExp(URL_SPLIT_RE.source, 'i').test(previewBody.value))
+
+/** \u628a\u6b63\u6587\u62c6\u6210 \u6587\u672c/\u94fe\u63a5 \u7247\u6bb5\uff0c\u94fe\u63a5\u7247\u6bb5\u5728\u6c14\u6ce1\u91cc\u52a0\u4e0b\u5212\u7ebf(\u4eff\u771f\u673a\u81ea\u52a8\u8bc6\u522b URL) */
+const messageParts = computed<Array<{ text: string; isLink: boolean }>>(() => {
+  const test = new RegExp('^(?:' + URL_SPLIT_RE.source + ')$', 'i')
+  return previewBody.value
+    .split(URL_SPLIT_RE)
+    .filter(p => p !== undefined && p !== '')
+    .map(p => ({ text: p, isLink: test.test(p) }))
+})
+
+/** \u53d1\u9001\u4eba\u662f\u5426\u50cf\u53f7\u7801(\u7528\u4e8e\u5c55\u793a\u300c\u4fdd\u5b58\u8054\u7cfb\u4eba\u300d\u5efa\u8bae\u5361/\u5934\u50cf\u914d\u8272) */
+const senderLooksNumeric = computed(() => /^\+?\d/.test(senderDisplay.value.trim()))
+
+/** \u4e00\u952e\u590d\u5236\uff1a\u628a\u9884\u89c8\u624b\u673a\u6e32\u67d3\u6210 PNG \u5e76\u590d\u5236\u5230\u526a\u8d34\u677f(\u5931\u8d25\u56de\u9000\u4e0b\u8f7d) */
+const phoneCaptureRef = ref<HTMLElement | null>(null)
+const capturing = ref(false)
+const capturePreview = async () => {
+  const el = phoneCaptureRef.value
+  if (!el || capturing.value) return
+  capturing.value = true
+  try {
+    // 只抓屏幕内容:去边框(直角)、去阴影、隐藏挖孔摄像头 → 输出为真实截图
+    const blob = await toBlob(el, {
+      pixelRatio: 3,
+      cacheBust: true,
+      backgroundColor: previewTheme.value === 'ios' ? '#ffffff' : '#f7f9fc',
+      style: { borderRadius: '0', boxShadow: 'none' },
+      filter: (node: HTMLElement) => !(node?.classList && node.classList.contains('punch-hole')),
+    })
+    if (!blob) throw new Error('empty blob')
+    const clip = (navigator as any).clipboard
+    const CItem = (window as any).ClipboardItem
+    if (clip?.write && CItem) {
+      await clip.write([new CItem({ 'image/png': blob })])
+      ElMessage.success(t('smsSend.previewCopied'))
+    } else {
+      // \u6d4f\u89c8\u5668\u4e0d\u652f\u6301\u56fe\u7247\u526a\u8d34\u677f \u2192 \u56de\u9000\u4e3a\u4e0b\u8f7d
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      const sender = (senderDisplay.value || 'sms').replace(/[^\w\u4e00-\u9fa5-]+/g, '_').slice(0, 20)
+      a.href = url
+      a.download = `${previewTheme.value}-${sender}-preview.png`
+      a.click()
+      URL.revokeObjectURL(url)
+      ElMessage.success(t('smsSend.previewCopied'))
+    }
+  } catch (e) {
+    console.error('copy failed', e)
+    ElMessage.error(t('smsSend.previewCopyFailed'))
+  } finally {
+    capturing.value = false
+  }
+}
 
 /**
  * 把 {{TRACK_URL=target|base}} 占位符替换为「实际发送时的短链」估算长度，
@@ -3105,11 +3450,7 @@ const checkServices = async () => {
 
 const checkAiConfig = async () => { try { const cfg = await getAiConfig(); aiEnabled.value = cfg.ai_enabled } catch { aiEnabled.value = false } }
 
-const updateTime = () => {
-  const now = new Date()
-  currentTime.value = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-  currentDate.value = now.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-}
+const updateTime = () => { nowTick.value = Date.now() }
 
 let timeInterval: number
 
@@ -3270,36 +3611,156 @@ onUnmounted(() => clearInterval(timeInterval))
 .result-task-link:hover { text-decoration: underline; }
 
 .preview-panel { display: flex; flex-direction: column; }
-.preview-header { margin-bottom: 12px; }
 .preview-title { font-size: 13px; font-weight: 500; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.08em; }
+.preview-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.preview-theme-toggle { display: inline-flex; background: var(--bg-hover, #f0f2f5); border-radius: 8px; padding: 2px; gap: 2px; }
+.preview-theme-toggle button { border: none; background: transparent; color: var(--text-secondary); font-size: 12px; font-weight: 500; padding: 4px 12px; border-radius: 6px; cursor: pointer; transition: all 0.15s; }
+.preview-theme-toggle button.active { background: var(--el-color-primary, #667eea); color: #fff; }
+
+.preview-sender-field { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.psf-label { font-size: 12px; color: var(--text-tertiary); white-space: nowrap; }
+.psf-input { flex: 1; min-width: 0; background: var(--bg-hover, #f0f2f5); border: 1px solid var(--border-color, #e0e0e6); border-radius: 8px; padding: 6px 10px; font-size: 13px; color: var(--text-primary); outline: none; transition: border-color 0.15s; }
+.psf-input:focus { border-color: var(--el-color-primary, #667eea); }
+.preview-tz-hint { display: flex; align-items: center; gap: 5px; margin: 4px 0 2px; font-size: 11px; color: var(--text-tertiary); }
+
+.preview-actions { display: flex; align-items: center; gap: 8px; }
+.preview-shot-btn { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border-color, #dcdfe6); background: var(--bg-hover, #f5f7fa); color: var(--text-secondary); font-size: 12px; font-weight: 500; padding: 4px 10px; border-radius: 8px; cursor: pointer; transition: all 0.15s; }
+.preview-shot-btn:hover:not(:disabled) { border-color: var(--el-color-primary, #667eea); color: var(--el-color-primary, #667eea); }
+.preview-shot-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 气泡内自动识别的链接(下划线) */
+.msg-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.msg-link.ios { color: #007AFF; }
+
 .phone-container { flex: 1; display: flex; justify-content: center; padding: 8px; }
-.iphone { width: 280px; height: 560px; background: linear-gradient(145deg, #1C1C1E 0%, #000000 100%); border-radius: 44px; padding: 10px; position: relative; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 20px 60px rgba(0, 0, 0, 0.6); }
-.dynamic-island { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); width: 90px; height: 28px; background: #000; border-radius: 16px; z-index: 100; }
-.iphone-screen { width: 100%; height: 100%; background: linear-gradient(180deg, #000000 0%, #0A0A0A 100%); border-radius: 34px; overflow: hidden; display: flex; flex-direction: column; }
-.ios-status-bar { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px 6px; color: white; font-size: 14px; font-weight: 600; }
-.status-icons { display: flex; align-items: center; gap: 5px; }
-.battery { display: flex; align-items: center; }
-.battery-body { width: 20px; height: 10px; border: 1.5px solid white; border-radius: 3px; padding: 1px; }
-.battery-level { width: 100%; height: 100%; background: #32D74B; border-radius: 1px; }
-.battery-cap { width: 2px; height: 4px; background: white; border-radius: 0 1px 1px 0; margin-left: 1px; }
-.ios-messages { flex: 1; display: flex; flex-direction: column; background: #000; }
-.ios-nav { display: flex; align-items: center; padding: 6px 12px 10px; gap: 10px; }
-.nav-back { padding: 4px; }
-.nav-contact { flex: 1; display: flex; align-items: center; gap: 8px; }
-.contact-avatar-ios { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #667EEA 0%, #764BA2 100%); display: flex; align-items: center; justify-content: center; color: white; font-size: 14px; font-weight: 600; }
-.contact-info { display: flex; flex-direction: column; }
-.contact-name { font-size: 15px; font-weight: 600; color: white; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.contact-label { font-size: 10px; color: #8E8E93; }
-.ios-chat { flex: 1; padding: 8px 14px; overflow-y: auto; display: flex; flex-direction: column; }
-.chat-date { text-align: center; font-size: 11px; color: #8E8E93; margin: 6px 0 12px; }
-.ios-bubble { align-self: flex-start; max-width: 85%; }
-.bubble-text { background: #2C2C2E; color: white; padding: 10px 12px; border-radius: 16px 16px 16px 4px; font-size: 15px; line-height: 1.35; word-break: break-word; }
-.bubble-meta { margin-top: 4px; padding-left: 6px; font-size: 10px; color: #8E8E93; }
-.empty-chat { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #48484A; font-size: 13px; }
-.empty-icon { opacity: 0.3; }
-.ios-input-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px 22px; background: #1C1C1E; }
-.input-bubble { flex: 1; background: #3A3A3C; border-radius: 18px; padding: 8px 14px; font-size: 15px; color: #8E8E93; }
-.home-indicator { position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%); width: 120px; height: 4px; background: rgba(255, 255, 255, 0.4); border-radius: 3px; }
+
+/* ===== iOS · 真实短信截图(浅色,无边框机身) ===== */
+.iphone-l {
+  width: 290px; height: 600px; background: #fff; border-radius: 30px; overflow: hidden; position: relative;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.06), 0 18px 50px rgba(0, 0, 0, 0.35);
+}
+.iphone-l-screen { width: 100%; height: 100%; background: #fff; display: flex; flex-direction: column; }
+.il-status-bar { display: flex; justify-content: space-between; align-items: center; padding: 13px 24px 3px 26px; height: 40px; box-sizing: border-box; color: #000; }
+.il-time { display: inline-flex; align-items: center; gap: 5px; font-size: 15px; font-weight: 600; letter-spacing: 0.2px; font-variant-numeric: tabular-nums; }
+.il-icons { display: flex; align-items: center; gap: 6px; }
+.il-battery { display: flex; align-items: center; }
+.il-battery-body { width: 22px; height: 11px; border: 1px solid rgba(0,0,0,0.35); border-radius: 3.5px; padding: 1.5px; box-sizing: border-box; }
+.il-battery-fill { width: 62%; height: 100%; background: #000; border-radius: 1.5px; }
+.il-battery-cap { width: 1.5px; height: 4px; background: rgba(0,0,0,0.35); border-radius: 0 2px 2px 0; margin-left: 1px; }
+
+/* 会话顶栏 */
+.il-nav { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding: 2px 10px 8px; border-bottom: 0.5px solid #E3E3E6; }
+.il-back { display: flex; align-items: center; gap: 4px; justify-self: start; }
+.il-unread { min-width: 19px; height: 19px; padding: 0 5px; box-sizing: border-box; background: #007AFF; border-radius: 10px; color: #fff; font-size: 12px; font-weight: 500; display: flex; align-items: center; justify-content: center; }
+.il-contact { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.il-avatar { width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 20px; font-weight: 500; overflow: hidden; }
+.il-avatar svg { margin-bottom: -8px; }
+.il-name-row { display: flex; align-items: center; gap: 3px; }
+.il-name { font-size: 12px; color: #000; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.il-nav-right { justify-self: end; }
+
+/* 会话区(消息顶部对齐,下方留白) */
+.il-chat { flex: 1; padding: 10px 14px 6px; display: flex; flex-direction: column; overflow: hidden; }
+.il-date { display: flex; flex-direction: column; align-items: center; gap: 1px; font-size: 11px; color: #8A8A8E; margin: 2px 0 14px; }
+.il-date span:first-child { font-weight: 500; color: #7C7C81; }
+.il-bubble { position: relative; align-self: flex-start; max-width: 76%; background: #E9E9EB; color: #000; padding: 8px 13px; border-radius: 18px; font-size: 15.5px; line-height: 1.32; word-break: break-word; }
+.il-bubble::before { content: ''; position: absolute; z-index: 0; bottom: 0; left: -7px; height: 19px; width: 19px; background: #E9E9EB; border-bottom-right-radius: 15px; }
+.il-bubble::after { content: ''; position: absolute; z-index: 1; bottom: 0; left: -11px; width: 11px; height: 19px; background: #fff; border-bottom-right-radius: 11px; }
+.il-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #C4C4C8; font-size: 13px; }
+
+/* 输入栏 */
+.il-input-bar { display: flex; align-items: center; gap: 9px; padding: 6px 12px 6px; }
+.il-plus { width: 32px; height: 32px; border-radius: 50%; background: #E4E4E9; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.il-field { flex: 1; display: flex; align-items: center; justify-content: space-between; border: 1px solid #D3D3D8; border-radius: 17px; padding: 6px 8px 6px 13px; font-size: 15px; color: #A2A2A8; }
+.il-home { width: 128px; height: 5px; background: #000; border-radius: 3px; margin: 6px auto 9px; flex-shrink: 0; }
+
+/* ===== Android 机身(居中挖孔) ===== */
+.android-phone {
+  width: 290px; height: 600px; background: #0c1524; border-radius: 34px; padding: 6px; position: relative;
+  font-family: 'Roboto', 'Google Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans', sans-serif;
+  box-shadow:
+    0 0 0 1.5px #263042,
+    0 0 0 2.4px rgba(255, 255, 255, 0.14),
+    0 24px 60px rgba(0, 0, 0, 0.5);
+}
+/* 右侧电源/音量键 */
+.android-phone::after { content: ''; position: absolute; right: -3px; top: 150px; width: 3px; height: 40px; background: #263042; border-radius: 0 2px 2px 0; box-shadow: 0 -58px 0 #263042; }
+.android-screen { width: 100%; height: 100%; background: #f7f9fc; border-radius: 28px; overflow: hidden; display: flex; flex-direction: column; position: relative; }
+
+/* 居中挖孔摄像头 */
+.punch-hole { position: absolute; top: 11px; left: 50%; transform: translateX(-50%); width: 9px; height: 9px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #223, #000 70%); z-index: 100; box-shadow: 0 0 0 1.5px rgba(0,0,0,0.35); }
+
+/* 状态栏 */
+.gm-status-bar { display: flex; justify-content: space-between; align-items: center; padding: 9px 15px 5px; height: 30px; box-sizing: border-box; background: #f7f9fc; color: #202124; }
+.gm-sb-time { font-size: 13px; font-weight: 600; letter-spacing: 0.2px; font-variant-numeric: tabular-nums; }
+.gm-sb-right { display: flex; align-items: center; gap: 4px; }
+.gm-sb-net { font-size: 9px; font-weight: 700; letter-spacing: 0.3px; }
+.gm-battery { display: flex; align-items: center; gap: 2px; }
+.gm-battery-pct { font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.gm-battery-body { width: 20px; height: 10.5px; border: 1px solid #202124; border-radius: 3px; padding: 1.3px; box-sizing: border-box; }
+.gm-battery-fill { height: 100%; background: #202124; border-radius: 1px; }
+.gm-battery-cap { width: 1.4px; height: 4px; background: #202124; border-radius: 0 2px 2px 0; margin-left: 0.8px; }
+
+/* 顶栏 */
+.gm-appbar { display: flex; align-items: center; gap: 11px; padding: 7px 14px 9px; background: #f7f9fc; }
+.gm-back { flex-shrink: 0; }
+.gm-avatar { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 14px; font-weight: 500; flex-shrink: 0; overflow: hidden; }
+.gm-sender { flex: 1; font-size: 16px; font-weight: 500; color: #1f1f1f; letter-spacing: 0.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-call, .gm-more { flex-shrink: 0; }
+
+/* 会话区 */
+.gm-conversation { flex: 1; display: flex; flex-direction: column; padding: 0 12px; overflow: hidden; min-height: 0; background: #f7f9fc; }
+.gm-spacer { flex: 1; min-height: 8px; }
+
+/* 保存联系人建议卡 */
+.gm-save-card { background: #eceef4; border-radius: 18px; padding: 12px 12px 10px; margin: 8px 2px 0; }
+.gm-save-top { display: flex; align-items: flex-start; gap: 11px; }
+.gm-save-icon { width: 34px; height: 34px; border-radius: 50%; background: #1a73e8; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.gm-save-text { flex: 1; min-width: 0; }
+.gm-save-title { font-size: 13.5px; font-weight: 600; color: #1f1f1f; line-height: 1.3; }
+.gm-save-sub { font-size: 12px; color: #5f6368; margin-top: 2px; line-height: 1.3; }
+.gm-save-x { flex-shrink: 0; margin-top: 2px; }
+.gm-save-actions { display: flex; justify-content: flex-end; gap: 22px; margin-top: 8px; padding-right: 4px; }
+.gm-save-actions span { font-size: 13px; font-weight: 600; color: #1a73e8; }
+
+/* 时间 / 会话副标题 / 未读分隔线 */
+.gm-time-center { text-align: center; font-size: 11px; color: #5f6368; margin: 6px 0 8px; }
+.gm-texting-with { text-align: center; font-size: 11.5px; color: #5f6368; margin: 0 0 12px; padding: 0 8px; line-height: 1.35; }
+.gm-unread { display: flex; align-items: center; text-align: center; margin: 2px 0 8px; }
+.gm-unread::before, .gm-unread::after { content: ''; flex: 1; height: 1px; background: #3f6ad8; opacity: 0.5; }
+.gm-unread span { padding: 0 10px; font-size: 11px; color: #3f6ad8; font-weight: 500; }
+
+/* 收信气泡 */
+.gm-bubble { align-self: flex-start; max-width: 82%; background: #e7e9f1; color: #1f1f1f; padding: 9px 14px; border-radius: 20px 20px 20px 6px; font-size: 14.5px; line-height: 1.4; word-break: break-word; }
+
+/* 链接预览加载卡(品牌发送人) */
+.gm-link-card { align-self: flex-start; max-width: 82%; width: 236px; margin-top: 4px; box-sizing: border-box; border: 1px solid #dadce0; border-radius: 14px; background: #fff; padding: 18px 14px; display: flex; flex-direction: column; align-items: center; gap: 9px; }
+.gm-link-card span { font-size: 12.5px; color: #5f6368; }
+.gm-time-left { align-self: flex-start; font-size: 11px; color: #5f6368; margin: 8px 2px 4px; }
+
+/* 业务提示条(品牌单向发送人,不可回复) */
+.gm-footer { margin: 4px 10px 8px; padding: 9px 14px; background: #eceef4; border-radius: 16px; font-size: 11.5px; line-height: 1.45; color: #5f6368; text-align: center; }
+.gm-footer a { color: #1a73e8; text-decoration: none; }
+
+/* 智能回复建议 */
+.gm-replies { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0 2px; }
+.gm-reply-chip { border: 1px solid #c9ccd6; border-radius: 16px; padding: 6px 15px; font-size: 13px; color: #1a73e8; font-weight: 500; background: transparent; }
+.gm-reply-emoji { padding: 4px 10px; font-size: 15px; }
+
+.gm-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #bcc0c4; font-size: 13px; }
+.empty-icon { opacity: 0.5; }
+
+/* 输入栏 */
+.gm-inputbar { display: flex; align-items: center; gap: 8px; padding: 6px 12px 8px; background: #f7f9fc; }
+.gm-input-plus { width: 30px; height: 30px; border-radius: 50%; background: #e4e7ee; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.gm-input-field { flex: 1; display: flex; align-items: center; justify-content: space-between; background: #eceef4; border-radius: 20px; padding: 8px 12px; min-width: 0; }
+.gm-input-field > span { font-size: 14px; color: #5f6368; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gm-input-icons { display: flex; align-items: center; gap: 10px; flex-shrink: 0; padding-left: 8px; }
+.gm-input-mic { width: 38px; height: 38px; border-radius: 50%; background: #e9ddff; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+
+/* Android 三键导航 */
+.gm-navbar { display: flex; align-items: center; justify-content: space-around; padding: 9px 0 11px; background: #f7f9fc; }
 
 .empty-drafts { text-align: center; padding: 40px; color: var(--text-tertiary); }
 .draft-list { max-height: 400px; overflow-y: auto; }
