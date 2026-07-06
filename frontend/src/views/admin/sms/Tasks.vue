@@ -220,6 +220,13 @@
             </template>
           </el-table-column>
 
+          <el-table-column v-if="isColVisible('scheduled_at')" label="定时时间" width="148">
+            <template #default="{ row }">
+              <span v-if="row.scheduled_at" class="time-text">{{ fmtTime(row.scheduled_at) }}</span>
+              <span v-else class="text-muted">-</span>
+            </template>
+          </el-table-column>
+
           <el-table-column v-if="isColVisible('completed_at')" label="完成时间" width="148">
             <template #default="{ row }">
               <span v-if="row.completed_at" class="time-text">{{ fmtTime(row.completed_at) }}</span>
@@ -376,10 +383,12 @@ const COLUMN_DEFS = [
   { key: 'delivery_rate', label: '终态送达率' },
   { key: 'status', label: '状态' },
   { key: 'created_at', label: '创建时间' },
+  { key: 'scheduled_at', label: '定时时间' },
   { key: 'completed_at', label: '完成时间' },
 ] as const
 const DEFAULT_COLS = COLUMN_DEFS.map(c => c.key)
-const COL_STORAGE_KEY = 'admin.sms.tasks.visibleColumns.v3'
+// v4: 新增「定时时间」列——旧 key 存的列偏好不含该列会被过滤掉导致永不显示，升版重置一次
+const COL_STORAGE_KEY = 'admin.sms.tasks.visibleColumns.v4'
 
 const visibleColumns = ref<string[]>([...DEFAULT_COLS])
 try {

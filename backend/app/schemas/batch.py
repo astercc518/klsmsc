@@ -61,6 +61,7 @@ class SmsBatchResponse(BaseModel):
     progress: int
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
+    scheduled_at: Optional[datetime] = Field(None, description="定时发送时间（NULL=非定时批次）")
     created_at: datetime
     updated_at: datetime
 

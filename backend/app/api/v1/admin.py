@@ -5836,10 +5836,12 @@ def _serialize_batch_row(b, patch: Optional[dict] = None) -> dict:
         "status": (b.status.value if hasattr(b.status, "value") else b.status),
         "progress": p.get("progress", b.progress or 0),
         "error_message": b.error_message,
+        "sender_id": b.sender_id,
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "updated_at": b.updated_at.isoformat() if b.updated_at else None,
         "started_at": b.started_at.isoformat() if b.started_at else None,
         "completed_at": b.completed_at.isoformat() if b.completed_at else None,
+        "scheduled_at": b.scheduled_at.isoformat() if getattr(b, "scheduled_at", None) else None,
     }
 
 
@@ -6000,6 +6002,31 @@ async def admin_list_batches(
             cc = chan_map.get(cid) if cid else None
             i["channel_code"] = cc[0] if cc else None
             i["channel_name"] = cc[1] if cc else None
+
+        # 定时批(pending)派发前没有任何 sms_logs 行，上面反查取不到内容/通道，列表会留空白。
+        # 回退从 send_config 读创建时落库的 message_preview + channel_id 补齐（与客户端 /batches 一致）。
+        cfg_by_id = {int(b.id): b.send_config for b in rows if isinstance(b.send_config, dict)}
+        fb_cids: dict = {}
+        for i in items:
+            cfg = cfg_by_id.get(i["id"]) or {}
+            if not i.get("content") and cfg.get("message_preview"):
+                i["content"] = cfg["message_preview"]
+            if not i.get("channel_code") and cfg.get("channel_id"):
+                try:
+                    fb_cids[i["id"]] = int(cfg["channel_id"])
+                except (TypeError, ValueError):
+                    pass
+        if fb_cids:
+            from app.modules.sms.channel import Channel as _Ch
+            fr = await db.execute(
+                select(_Ch.id, _Ch.channel_code, _Ch.channel_name)
+                .where(_Ch.id.in_(set(fb_cids.values())))
+            )
+            fb_map = {row[0]: (row[1], row[2]) for row in fr.all()}
+            for i in items:
+                cc2 = fb_map.get(fb_cids.get(i["id"]))
+                if cc2:
+                    i["channel_code"], i["channel_name"] = cc2
 
     return {
         "success": True,

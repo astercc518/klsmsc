@@ -16,10 +16,12 @@ export interface AdminBatchItem {
   status: 'pending' | 'processing' | 'paused' | 'completed' | 'failed' | 'cancelled'
   progress: number
   error_message?: string | null
+  sender_id?: string | null
   created_at?: string | null
   updated_at?: string | null
   started_at?: string | null
   completed_at?: string | null
+  scheduled_at?: string | null
 }
 
 export interface AdminBatchDetail extends AdminBatchItem {
