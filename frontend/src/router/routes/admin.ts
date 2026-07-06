@@ -41,29 +41,22 @@ export const adminRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/admin/AccountTemplates.vue'),
     meta: { titleKey: 'menu.accountTemplates', icon: 'Document' },
   },
+  // TG助手配置类页面已迁入系统配置页 (/admin/system/config?tab=tg_bot)，旧地址重定向
   {
     path: '/admin/bot/config',
-    name: 'BotConfig',
-    component: () => import('@/views/bot/Config.vue'),
-    meta: { titleKey: 'menu.botConfig', icon: 'Setting' },
+    redirect: { path: '/admin/system/config', query: { tab: 'tg_bot', sub: 'config' } },
   },
   {
     path: '/admin/bot/messages',
-    name: 'BotMessages',
-    component: () => import('@/views/bot/Messages.vue'),
-    meta: { titleKey: 'menu.botMessages', icon: 'ChatDotRound' },
+    redirect: { path: '/admin/system/config', query: { tab: 'tg_bot', sub: 'messages' } },
   },
   {
     path: '/admin/bot/invites',
-    name: 'BotInvites',
-    component: () => import('@/views/bot/Invites.vue'),
-    meta: { titleKey: 'menu.botInvites', icon: 'Ticket' },
+    redirect: { path: '/admin/system/config', query: { tab: 'tg_bot', sub: 'invites' } },
   },
   {
     path: '/admin/bot/templates',
-    name: 'BotTemplates',
-    component: () => import('@/views/bot/Templates.vue'),
-    meta: { titleKey: 'menu.whitelist', icon: 'Check' },
+    redirect: { path: '/admin/system/config', query: { tab: 'tg_bot', sub: 'templates' } },
   },
   {
     path: '/admin/bot/recharge-audit',

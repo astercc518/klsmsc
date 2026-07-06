@@ -421,45 +421,6 @@
               <div class="nav-section">
                 <span class="nav-section-title" v-if="!sidebarCollapsed">{{ $t('menu.tgBot') }}</span>
 
-                <div class="nav-item" :class="{ active: isActive('/admin/bot/config') }" @click="navigate('/admin/bot/config')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M10 2V4M10 16V18M18 10H16M4 10H2M15.66 4.34L14.24 5.76M5.76 14.24L4.34 15.66" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.botConfig') }}</span>
-                </div>
-
-                <div class="nav-item" :class="{ active: isActive('/admin/bot/messages') }" @click="navigate('/admin/bot/messages')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <path d="M3 5C3 3.9 3.9 3 5 3H15C16.1 3 17 3.9 17 5V12C17 13.1 16.1 14 15 14H7L3 17V5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                      <path d="M7 7H13M7 10H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.botMessages') }}</span>
-                </div>
-
-                <div class="nav-item" :class="{ active: isActive('/admin/bot/invites') }" @click="navigate('/admin/bot/invites')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <rect x="3" y="2" width="14" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M7 6H13M7 10H13M7 14H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.invitations') }}</span>
-                </div>
-
-                <div class="nav-item" :class="{ active: isActive('/admin/bot/templates') }" @click="navigate('/admin/bot/templates')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <path d="M16 6L8 14L4 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.templateWhitelist') }}</span>
-                </div>
-
                 <div class="nav-item" :class="{ active: isActive('/admin/bot/recharge-audit') }" @click="navigate('/admin/bot/recharge-audit')">
                   <div class="nav-icon">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">

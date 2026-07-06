@@ -16,6 +16,9 @@
       <el-tab-pane :label="$t('system.tabs.security')" name="security">
         <SystemSecurity />
       </el-tab-pane>
+      <el-tab-pane :label="$t('system.tabs.tgBot')" name="tg_bot" lazy>
+        <SystemTgBot />
+      </el-tab-pane>
       <el-tab-pane label="短链域名" name="short_link_domains">
         <ShortLinkDomains />
       </el-tab-pane>
@@ -31,15 +34,20 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useRoute } from 'vue-router'
 import SystemConfig from './Config.vue'
 import SystemLogs from './Logs.vue'
 import SystemServices from './Services.vue'
 import SystemSecurity from './Security.vue'
+import SystemTgBot from './TgBot.vue'
 import ShortLinkDomains from './ShortLinkDomains.vue'
 import SystemLicense from './License.vue'
 import BrandThemes from './BrandThemes.vue'
 
-const activeTab = ref('config')
+const route = useRoute()
+const validTabs = ['config', 'logs', 'services', 'security', 'tg_bot', 'short_link_domains', 'license', 'brand_themes']
+const initialTab = String(route.query.tab || '')
+const activeTab = ref(validTabs.includes(initialTab) ? initialTab : 'config')
 </script>
 
 <style scoped>
