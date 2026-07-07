@@ -16,3 +16,20 @@ web_worker 里的共享工具(_gen_identity/_click_submit/_check_register_succes
 已迁移:tk688(孟加拉 TK688 系博彩,算术图形验证码)。
 待迁移(仍在 web_worker):1win(_do_register_1win)、jl_api(_do_register_via_api)。
 """
+
+
+def extract_affiliate(url: str) -> str:
+    """从落地 URL 提取推广码(常见参数名:affiliateCode/ch/code/ref/invite 等)。取不到返回 ''。
+
+    供各 handler 把 affiliateCode 写进注册凭据串(注水记录展示/对账用)。
+    """
+    try:
+        from urllib.parse import urlparse, parse_qs
+        qs = parse_qs(urlparse(url or "").query)
+        for k in ("affiliateCode", "affiliatecode", "affiliate_code", "ch", "code",
+                  "ref", "invite", "inviteCode", "aff", "agent", "promo"):
+            if qs.get(k) and qs[k][0].strip():
+                return qs[k][0].strip()
+    except Exception:
+        pass
+    return ""

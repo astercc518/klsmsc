@@ -231,12 +231,15 @@ def register(page, country_code="", phone=""):
     password = _gen_password()
     payee = (ident.get("name") or "Rahim Uddin")[:20]
     from urllib.parse import urlparse as _urlparse
+    from app.workers.register_handlers import extract_affiliate
     _host = ""
     try:
         _host = _urlparse(page.url).hostname or "tk688.my"
     except Exception:
         _host = "tk688.my"
-    creds = f"账号 {username} ┊ 密码 {password} ┊ TK688 @ {_host}"
+    _aff = extract_affiliate(page.url)
+    _aff_seg = f"affiliateCode {_aff} ┊ " if _aff else ""
+    creds = f"账号 {username} ┊ 密码 {password} ┊ {_aff_seg}TK688 @ {_host}"
 
     # 账号/密码/姓名只填一次;验证码每轮重解
     _fill(page, "input[name=username]", username)

@@ -206,7 +206,10 @@ def register(page, country_code="", phone=""):
         host = urlparse(page.url).hostname or "sp111"
     except Exception:
         host = "sp111"
-    creds = f"账号 +55{local} ┊ 密码 {password} ┊ SP111 @ {host}"
+    from app.workers.register_handlers import extract_affiliate
+    _aff = extract_affiliate(page.url)
+    _aff_seg = f"affiliateCode {_aff} ┊ " if _aff else ""
+    creds = f"账号 +55{local} ┊ 密码 {password} ┊ {_aff_seg}SP111 @ {host}"
 
     url_before = page.url
     reg_resp.clear()
