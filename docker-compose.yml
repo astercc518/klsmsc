@@ -187,6 +187,11 @@ services:
       SMPP_GATEWAY_PROBE_URL: ${SMPP_GATEWAY_PROBE_URL:-http://smpp-gateway:8090}
       SMPP_PROBE_TOKEN: ${SMPP_PROBE_TOKEN:-}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-}
+      # 注册脚本页「内置 handler」目标域名展示读这些 env(与 worker-web-register 同源同默认);
+      # 换皮域轮换时两处一起更新,页面才如实显示覆盖范围。
+      WATER_TK688_DOMAINS: ${WATER_TK688_DOMAINS:-tk688.my,25bd9.com}
+      WATER_SP111_DOMAINS: ${WATER_SP111_DOMAINS:-sp111.com,djsaa54545a.net}
+      WATER_ONEWIN_DOMAINS: ${WATER_ONEWIN_DOMAINS:-1wzbzs.life,rhrh888.com}
       # 工单附件存储：默认值是 path 拼接 bug 的产物（/data/tickets），显式指定容器内路径
       TICKET_UPLOAD_DIR: /app/data/tickets
       # 批次 CSV 上传：复用 import_uploads 命名卷
