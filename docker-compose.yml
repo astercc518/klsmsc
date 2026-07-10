@@ -683,6 +683,9 @@ services:
       # 1win 系落地马甲域(会轮换):匹配中即走 _do_register_1win 专用表单路径,否则误入通用浏览器路径报"未发现表单"。
       # 域名轮换时更新此处(逗号分隔,后缀匹配),改后须 docker compose up -d worker-web-register 重建生效。
       WATER_ONEWIN_DOMAINS: ${WATER_ONEWIN_DOMAINS:-1wzbzs.life,rhrh888.com}
+      # TK688 系博彩共享模板落地域(会换皮轮换,如 tk688.my / 25bd9.com):后缀匹配中即走 tk688 专用 handler。
+      # 内容指纹(register-btn+login-btn+孟加拉নিবন্ধন)已能兜底识别,此处显式配更快更稳;换皮域轮换时在此加主域。
+      WATER_TK688_DOMAINS: ${WATER_TK688_DOMAINS:-tk688.my,25bd9.com}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs

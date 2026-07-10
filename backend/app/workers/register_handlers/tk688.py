@@ -84,8 +84,17 @@ def _dismiss_popups(page, rounds=4):
 
 
 def _form_present(page) -> bool:
+    """注册表单是否已打开。
+
+    两类模板都覆盖:老站(tk688.my)注册页带图形验证码 → input[name=identifying];
+    换皮站(如 25bd9.com)砍掉验证码,字段仅 username/password/confimpsw → 用"确认密码"
+    input[name=confimpsw] 作为注册页专有信号(登录页无此字段),避免把已打开的无验证码
+    表单误判为"未打开"。"""
     try:
-        return bool(page.query_selector("input[name=identifying]"))
+        return bool(
+            page.query_selector("input[name=identifying]")
+            or page.query_selector("input[name=confimpsw]")
+        )
     except Exception:
         return False
 
@@ -257,36 +266,40 @@ def register(page, country_code="", phone=""):
     # 关键:该站在"首次聚焦 identifying 输入框"时会刷新一次验证码(实测:等待/填其它字段不刷,
     # 一点验证码框就刷;而聚焦后再键盘输入不会再刷)。故每轮:先点框触发刷新→解"刷新后"的图→
     # 只用键盘敲答案(不再 click/清空,避免二次刷新)→校验未变→提交。
+    # 该站点是否带图形验证码:老模板(tk688.my)有 input[name=identifying],换皮站(25bd9.com 等)无。
+    # 无验证码时跳过整段解码流程,填完字段直接提交。
+    has_captcha = bool(page.query_selector("input[name=identifying]"))
     last_reason = "TK688:注册未成功"
     for attempt in range(3):
-        ident_el = page.query_selector("input[name=identifying]")
-        if not ident_el:
-            return False, "TK688:注册表单验证码输入框丢失"
-        # 记录点击前验证码;聚焦触发刷新是异步的,先等它"相对点击前变了"(刷新落地)再解,
-        # 否则 wait_stable 可能在刷新尚未开始时把旧图当稳定返回→解旧图、提交时已换新图而必败。
-        before_src = _captcha_src(page)
-        try:
-            ident_el.click()
-        except Exception:
-            pass
-        _chg_deadline = time.time() + 3.0
-        while time.time() < _chg_deadline and _captcha_src(page) == before_src:
-            page.wait_for_timeout(300)
-        answer, src = _solve_captcha(page)
-        if not answer:
-            last_reason = "TK688:图形验证码求解失败(CapSolver 未返回)"
-            _refresh_captcha(page)
-            continue
-        try:
-            ident_el.press("Control+a")
-            ident_el.type(answer, delay=random.randint(60, 130))
-        except Exception:
-            _fill(page, "input[name=identifying]", answer)
-        page.wait_for_timeout(random.randint(200, 400))
-        # 提交前校验验证码未被刷新(键盘输入正常不会刷;若因意外变了→本次答案作废,重解)
-        if _captcha_src(page) != src:
-            last_reason = "TK688:验证码提交前被刷新,重解"
-            continue
+        if has_captcha:
+            ident_el = page.query_selector("input[name=identifying]")
+            if not ident_el:
+                return False, "TK688:注册表单验证码输入框丢失"
+            # 记录点击前验证码;聚焦触发刷新是异步的,先等它"相对点击前变了"(刷新落地)再解,
+            # 否则 wait_stable 可能在刷新尚未开始时把旧图当稳定返回→解旧图、提交时已换新图而必败。
+            before_src = _captcha_src(page)
+            try:
+                ident_el.click()
+            except Exception:
+                pass
+            _chg_deadline = time.time() + 3.0
+            while time.time() < _chg_deadline and _captcha_src(page) == before_src:
+                page.wait_for_timeout(300)
+            answer, src = _solve_captcha(page)
+            if not answer:
+                last_reason = "TK688:图形验证码求解失败(CapSolver 未返回)"
+                _refresh_captcha(page)
+                continue
+            try:
+                ident_el.press("Control+a")
+                ident_el.type(answer, delay=random.randint(60, 130))
+            except Exception:
+                _fill(page, "input[name=identifying]", answer)
+            page.wait_for_timeout(random.randint(200, 400))
+            # 提交前校验验证码未被刷新(键盘输入正常不会刷;若因意外变了→本次答案作废,重解)
+            if _captcha_src(page) != src:
+                last_reason = "TK688:验证码提交前被刷新,重解"
+                continue
 
         url_before = page.url
         reg_resp.clear()
@@ -299,33 +312,41 @@ def register(page, country_code="", phone=""):
                     or _click_first_visible(page, ".submit-btn", timeout=3000)):
                 clicked = True
                 break
+            # 无验证码换皮站(如 25bd9.com)提交成功即刻跳转 /m/home,click 因导航销毁上下文抛错
+            # → _click_first_visible 返回 False,但请求其实已发出。若已离开注册页或已收到注册响应,
+            # 视为已提交,不再当"没点到"。
+            if reg_resp.get("status") or ("/m/register" in (url_before or "")
+                                          and "/m/register" not in (page.url or "")):
+                clicked = True
+                break
             page.wait_for_timeout(700)
         if not clicked:
             clicked = _click_submit(page)  # 兜底:通用提交(已含孟加拉文 নিবন্ধন)
-        if not clicked:
-            last_reason = "TK688:未找到注册提交按钮"
-            _refresh_captcha(page)
-            continue
 
-        # 等注册接口响应(最多 ~6s)
+        # 等注册接口响应(最多 ~6s);提交成功可能已跳走
         for _ in range(15):
             page.wait_for_timeout(400)
             if reg_resp.get("status"):
                 break
         _wait_through_cf(page)
 
+        # 权威判定:接口 success:true → 成功(即便上面 clicked=False,只要请求发出并成功即算)
         if reg_resp.get("ok"):
             return True, creds
+        # 已离开注册页(提交后跳登录后主页 /m/home 等)或表单已消失 → 视为注册成功。
+        # 关键:该站无验证码,提交即跳转销毁上下文常使 click 抛错,绝不能据 clicked=False 判失败。
+        left_register = ("/m/register" in (url_before or "")) and ("/m/register" not in (page.url or ""))
+        if left_register or not _form_present(page) or _check_register_success(page, url_before):
+            return True, creds
         if reg_resp.get("status"):
-            # 收到响应但被拒(验证码判错/账号占用等)→ 刷新验证码重试
+            # 收到响应但被拒(验证码判错/账号占用等)
             last_reason = (f"TK688:注册接口拒绝 status={reg_resp.get('status')} "
                            f"{(reg_resp.get('body') or '')[:80]}")
+        elif not clicked:
+            last_reason = "TK688:未找到注册提交按钮"
+        else:
+            last_reason = f"TK688:注册未成功(attempt {attempt + 1})"
+        if has_captcha:
             _refresh_captcha(page)
-            continue
-        # 未截到响应 → 回退页面信号(弹层消失/登录后特征)
-        if not _form_present(page) or _check_register_success(page, url_before):
-            return True, creds
-        last_reason = f"TK688:注册未成功(attempt {attempt + 1})"
-        _refresh_captcha(page)
 
     return False, last_reason
