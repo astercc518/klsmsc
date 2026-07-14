@@ -922,7 +922,19 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 					m.livenessMu.Unlock()
 				}
 
-				// 2. 立即触发异步重绑（仅当本回调亲手移除了 session 时；否则 watchdog/stale-monitor
+				// 2. 关闭被丢弃的 session（置 state=Closed + 关底层 conn）。
+				//    必须做：NewSession 传了 rebindingInterval=5s(>0)，gosmpp 会在本回调返回后
+				//    紧接着调用 session.rebind()，而 rebind 的循环条件是 state==Alive。此处不 Close
+				//    则该 session 虽已被移出 m.connections（再无引用、watchdog 也扫不到），其内部
+				//    rebind 循环仍永久重连并不断新建 TCP 连接，成为无主僵尸，占死上游绑定槽位
+				//    ——表现为上游回 RALYBND/RBINDFAIL，网关侧却只看到 EOF，通道永不恢复。
+				//    Close() 是 CAS 幂等的；它触发的 OnClosed(ExplicitClosing) 会被 gosmpp 的
+				//    wrapper 直接吞掉，不会递归回本回调；随后的 rebind() 因 state!=Alive 成为 no-op。
+				if closedSession != nil {
+					_ = closedSession.Close()
+				}
+
+				// 3. 立即触发异步重绑（仅当本回调亲手移除了 session 时；否则 watchdog/stale-monitor
 				//    已或将 spawn rebind，本处再 spawn 会导致双重连）。
 				if removedHere {
 					done := m.addPendingBind(cfg.ID)
@@ -980,7 +992,7 @@ func (m *SMPPManager) bindSession(cfg ChannelConfig) (*gosmpp.Session, error) {
 					}()
 				} // end if removedHere
 
-				// 3. 仅清理「本会话」的 in-flight sequenceMap 条目（按 channelID:sessionPtr: 前缀隔离）。
+				// 4. 仅清理「本会话」的 in-flight sequenceMap 条目（按 channelID:sessionPtr: 前缀隔离）。
 				// 旧实现按 channelID: 前缀清整个通道，会把其它健康会话正在途的消息一并误倒成 orphan
 				// （concurrency>1 时一次关会话能殃及数百条），是批量假"已发"的放大器。现仅收割自己这条。
 				// 标为 sent 而非 failed：PDU 已送达 SMSC 网络层，SMSC 可能已接收（静默限流导致未返回 SubmitSMResp）
