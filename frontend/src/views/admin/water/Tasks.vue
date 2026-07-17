@@ -246,6 +246,7 @@
             <el-option label="自动识别（按落地页）" value="" />
             <el-option label="TK688（孟加拉博彩）" value="tk688" />
             <el-option label="SP111（巴西博彩）" value="sp111" />
+            <el-option label="MXLUCK（墨西哥博彩）" value="mxluck" />
             <el-option label="1win 系" value="onewin" />
             <el-option label="直连 API（jl 系）" value="api" />
             <el-option label="通用引擎/配置脚本" value="generic" />

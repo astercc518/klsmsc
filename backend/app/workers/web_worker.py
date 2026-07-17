@@ -14,7 +14,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from celery.signals import worker_process_shutdown, worker_process_init
 from app.workers.celery_app import celery_app
 from app.utils.logger import get_logger
-from app.workers.register_handlers import tk688, sp111  # 注水注册专用 handler(TK688 孟加拉 / SP111 巴西)
+from app.workers.register_handlers import tk688, sp111, mxluck  # 注水注册专用 handler(TK688 孟加拉 / SP111 巴西 / MXLUCK 墨西哥)
 
 
 # ---------- Playwright browser pool（进程级单例）----------
@@ -87,6 +87,36 @@ def _apply_stealth(page):
     仅作为各调用点的占位(避免改动调用方)。
     """
     return
+
+
+# 注水省流量:点击注水只需加载落地页 DOM/JS 触发短链计数与打点,不需要图片/字体/媒体。
+# 实测博彩落地页 ~61% 流量是装饰性图片(游戏缩图 webp),屏蔽后点击 5.5MB→1.9MB(省 65%),
+# 且点击计数在 page.goto(短链) 的 301 跳转即服务端记录(早于任何图片),屏蔽不影响计数。
+# 注意:仅用于点击注水;注册注水保持完整加载(屏蔽会掉注册成功率,且注册量占比小、失败更浪费)。
+_WATER_BLOCK_MEDIA = os.getenv("WATER_BLOCK_MEDIA", "1").strip().lower() not in ("0", "false", "no", "off")
+_WATER_BLOCK_TYPES = {"image", "media", "font"}
+
+
+def _install_media_blocker(page):
+    """在 page 上拦截图片/字体/媒体请求(省住宅代理流量)。best-effort,失败不影响主流程。
+    受 env WATER_BLOCK_MEDIA 控制(默认开);若某落地页点击计数依赖 img 像素信标,设 0 关闭。"""
+    if not _WATER_BLOCK_MEDIA:
+        return
+    def _handler(route):
+        try:
+            if route.request.resource_type in _WATER_BLOCK_TYPES:
+                route.abort()
+                return
+        except Exception:
+            pass
+        try:
+            route.continue_()
+        except Exception:
+            pass
+    try:
+        page.route("**/*", _handler)
+    except Exception:
+        pass
 
 
 def _wait_through_cf(page, max_wait_ms: int = 25000):
@@ -924,7 +954,7 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
         if rh == "onewin":
             return _do_register_1win(sms_log_id, url, channel_id, task_config_id,
                                      account_id, country_code, proxy_id, batch_id=batch_id)
-        if rh in ("tk688", "sp111", "generic"):
+        if rh in ("tk688", "sp111", "mxluck", "generic"):
             return _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id,
                                      country_code, proxy_id, ua_type, click_log_id,
                                      batch_id=batch_id, force_handler=rh)
@@ -980,7 +1010,7 @@ def test_register_handler_task(self, handler_key: str = "", domain: str = "",
     url = domain if str(domain).startswith("http") else f"https://{(domain or '').strip()}"
     logger.info(f"测试运行注册: handler={handler_key or 'auto'}, script_id={script_id}, url={url[:80]}, country={country}")
     try:
-        from app.workers.register_handlers import tk688, sp111
+        from app.workers.register_handlers import tk688, sp111, mxluck
         hk = (handler_key or "").strip().lower()
         if hk in ("onewin", "api"):
             return {"success": None, "reason": f"{hk} 类型依赖真实收信号撞库,无法离线测试;请用真实批次验证"}
@@ -1017,6 +1047,8 @@ def test_register_handler_task(self, handler_key: str = "", domain: str = "",
                 ok, reason = tk688.register(page, country, phone="")
             elif hk == "sp111":
                 ok, reason = sp111.register(page, country, phone="")
+            elif hk == "mxluck":
+                ok, reason = mxluck.register(page, country, phone="")
             elif script_id:
                 e2, f2 = _make_session()
 
@@ -1280,6 +1312,7 @@ def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, coun
 
             page = context.new_page()
             _apply_stealth(page)
+            _install_media_blocker(page)  # 省流量:点击注水屏蔽图片/字体/媒体(不影响短链计数,见函数注释)
             resp = page.goto(url, wait_until="domcontentloaded", timeout=45000)
             _wait_through_cf(page)
             # 等 JS 打点信标（GA/Pixel）发出；networkidle 拿不到时不阻断主流程
@@ -1446,6 +1479,17 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
                 except Exception:
                     _sp_phone = None
                 reg_success, reg_reason = sp111.register(page, country_code, phone=_sp_phone or "")
+            elif _forced == "mxluck" or (not _forced and mxluck.detect(page)):
+                # MXLUCK 系墨西哥西语博彩:欢迎/Aceptar 遮罩 + Usuario/Celular 表单(无 OTP),geo 封锁需 MX 代理
+                logger.info(f"{'手动指定' if _forced else '识别为'} MXLUCK → 走专用注册路径: {page.url[:80]}")
+                _mx_phone = None
+                try:
+                    _mxe, _mxf = _make_session()
+                    _mx_phone = _db_sync(_fetch_sms_phone(_mxf, sms_log_id))
+                    _db_sync(_mxe.dispose())
+                except Exception:
+                    _mx_phone = None
+                reg_success, reg_reason = mxluck.register(page, country_code, phone=_mx_phone or "")
             elif _forced == "generic":
                 # 强制通用引擎:有配置脚本走脚本,否则零配置自动注册
                 if has_script:

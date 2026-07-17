@@ -313,7 +313,7 @@ const handleSubmit = async () => {
   }
 }
 
-const HANDLER_TEST_COUNTRY: Record<string, string> = { sp111: 'BR', tk688: 'BD', onewin: '', api: '' }
+const HANDLER_TEST_COUNTRY: Record<string, string> = { sp111: 'BR', tk688: 'BD', mxluck: 'MX', onewin: '', api: '' }
 
 const handleTest = async (row: any) => {
   const firstDomain = (row.domain || '').split(',')[0].trim()
