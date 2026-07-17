@@ -73,6 +73,24 @@ def is_gsm7_message(message: str) -> bool:
     return gsm7_septet_count(norm) is not None
 
 
+def sanitize_sms_text_for_wire(message: str) -> str:
+    """上行发送前对正文做与「分段计费」完全相同的白名单规范化。
+
+    与 normalize_for_sms_segment_count 共用同一实现——这是关键：计费按此规范化
+    后判定编码/条数，若发送时不做同样处理，就会出现「计费按 GSM-7 算 1 条、上游
+    按 UCS-2 算 2 条」的口径错位（en-dash「–」U+2013、em-dash、省略号、弯引号、
+    NBSP、零宽字符都会触发），中间差价由平台自担。让上行正文走同一函数，
+    「实际发出的编码 ≡ 计费口径」由构造保证，二者永不漂移。
+
+    仅做安全的等价替换（–/—→-、…→...、弯引号→直引号、NBSP→空格、零宽→删除），
+    对真正的非 GSM-7 内容（中文/泰文/emoji 等）不改动，仍按 UCS-2 正确多段计费。
+    幂等：重复调用结果不变。
+    """
+    if not message:
+        return message
+    return normalize_for_sms_segment_count(message)
+
+
 # 短链占位符识别：{{TRACK_URL}}、{{TRACK_URL=target}}、{{TRACK_URL=target|base}}
 _TRACK_URL_RE = re.compile(r"\{\{TRACK_URL(?:=([^}]*))?\}\}")
 # 平均 token 长度（实际为 6-8 位 Base62，取 7 位）+ 1 位斜杠
