@@ -22,6 +22,7 @@ celery_app = Celery(
         'app.workers.web_worker',
         'app.workers.batch_inspector',
         'app.workers.channel_encoding_inspector',
+        'app.workers.shortlink_health_worker',
         'app.workers.db_maintenance',
     ]
 )
@@ -186,6 +187,7 @@ celery_app.conf.task_routes.update({
     'inspect_batches_task': {'queue': 'celery'},
     'sync_processing_batch_progress_task': {'queue': 'celery'},
     'inspect_channel_encoding_risk_task': {'queue': 'celery'},
+    'inspect_shortlink_domains_task': {'queue': 'celery'},
     'send_webhook': {'queue': 'webhook_tasks'},
     'record_link_click_task': {'queue': 'webhook_tasks'},
     'okcc_sync_balances_task': {'queue': 'integrations'},
@@ -254,6 +256,11 @@ celery_app.conf.beat_schedule = {
     'inspect-stuck-batches-5min': {
         'task': 'inspect_batches_task',
         'schedule': 300.0,
+    },
+    # 每3分钟巡检短链域健康：整域失效(如 66c.eu 被注册商暂停)自动停用+告警，恢复自动启用
+    'inspect-shortlink-domains-3min': {
+        'task': 'inspect_shortlink_domains_task',
+        'schedule': 180.0,
     },
     # 每5秒重试一次「DLR先于SubmitSMResp到达」导致未匹配的回执（防止 DLR 永久丢失）
     'flush-dlr-retry-buffer-5s': {

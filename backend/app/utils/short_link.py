@@ -9,6 +9,7 @@
 - 占位符格式：{{TRACK_URL=https://target.com}}；若省略 URL 则退化到
   settings.SHORT_LINK_DEFAULT_TARGET_URL。
 """
+import json
 import re
 import secrets
 import string
@@ -37,6 +38,71 @@ _REDIS_TTL = 90 * 86400         # 90 天
 
 # 一文案一链分组标记：占位符可带 |g=UID，同 UID 的所有消息共用一个短链
 _GROUP_RE = re.compile(r"\|g=([^|}]+)")
+
+# ── 短链域故障转移 (2026-07-06 起) ──────────────────────────────────────────
+# 短链域可能被注册商暂停/封禁导致整域失效（如 66c.eu 事故：DNS 整域消失，系统仍闷头
+# 往死域灌了一整天打不开的链）。为止损：发送建链时若消息内嵌的短链域在
+# short_link_domains 里已被 disable（人工或健康巡检 shortlink_health_worker 自动摘除），
+# 自动改写到当前 sort_order 最高的 active 域。
+# 只改写「库里已知且被停用」的域；健康 active 域、以及库外未登记的域（如默认
+# www.kaolach.com/s）一律原样放行，绝不误改。所有发送路径都汇入
+# replace_track_url_in_message，故在该函数取到 effective_base 后统一过一次本函数。
+_ACTIVE_MAP_KEY = "sl:domainmap"      # {"active":[host..],"disabled":[host..],"best_base":"..."}
+_ACTIVE_MAP_TTL_LAZY = 120            # 发送热路径冷启动兜底缓存(秒)
+_ACTIVE_MAP_TTL_PROBE = 900           # 健康巡检刷新时的 TTL(> 巡检周期，避免过期空窗)
+
+
+async def rebuild_active_domain_map(db: AsyncSession, ttl: int = _ACTIVE_MAP_TTL_PROBE) -> dict:
+    """查 short_link_domains 生成 {active,disabled,best_base} 并写 Redis。
+    健康巡检状态变更后应调用以立即刷新发送侧的故障转移视图。"""
+    from app.modules.sms.short_link_domain import ShortLinkDomain
+    rows = (await db.execute(
+        select(ShortLinkDomain).order_by(
+            ShortLinkDomain.sort_order.desc(), ShortLinkDomain.id.desc()
+        )
+    )).scalars().all()
+    active, disabled, best_base = [], [], None
+    for d in rows:
+        host = (d.domain or "").strip().lower()
+        if not host:
+            continue
+        if d.status == "active":
+            active.append(host)
+            if best_base is None:
+                best_base = d.base_url()   # 最高 sort_order 的 active 域作为兜底
+        else:
+            disabled.append(host)
+    data = {"active": active, "disabled": disabled, "best_base": best_base}
+    await _redis_set(_ACTIVE_MAP_KEY, json.dumps(data), ttl=ttl)
+    return data
+
+
+async def _get_active_domain_map(db: AsyncSession) -> dict:
+    cached = await _redis_get(_ACTIVE_MAP_KEY)
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception:
+            pass
+    try:
+        return await rebuild_active_domain_map(db, ttl=_ACTIVE_MAP_TTL_LAZY)
+    except Exception as e:
+        logger.warning(f"short_link: 读取活跃短链域映射失败，故障转移本次跳过: {e}")
+        return {"active": [], "disabled": [], "best_base": None}
+
+
+async def resolve_effective_base(db: AsyncSession, base_url: str) -> str:
+    """若 base_url 指向的短链域在库中已被停用，改写到当前最优 active 域；否则原样返回。"""
+    if not base_url:
+        return base_url
+    raw_host = base_url.split("://", 1)[-1].split("/", 1)[0].lower()
+    m = await _get_active_domain_map(db)
+    disabled = m.get("disabled") or []
+    best_base = m.get("best_base")
+    if raw_host in disabled and best_base and best_base.split("://", 1)[-1].split("/", 1)[0].lower() != raw_host:
+        logger.warning(f"short_link 故障转移: 短链域 {raw_host} 已停用 → 改用 {best_base}")
+        return best_base
+    return base_url
 
 
 # 默认 token 长度从 7 升到 8 位（Base62 8 位 ≈ 218 万亿组合，约 47 bits，
@@ -375,6 +441,8 @@ async def replace_track_url_in_message(
         logger.warning(f"short_link: no target URL for sms_log_id={sms_log_id}, skipping replacement")
         return message
     target_url, effective_base = parts
+    # 故障转移：若内嵌短链域已被停用(人工/健康巡检)，自动改写到最优 active 域
+    effective_base = await resolve_effective_base(db, effective_base)
     # 客户在「短链转换」表单里可能漏写 https://，统一补全后再入库；
     # 否则重定向时浏览器会把 "hi805.com" 当作相对路径，跳到当前短链域名下报 404
     target_url = _normalize_target_url(target_url)
