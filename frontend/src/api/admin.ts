@@ -503,6 +503,26 @@ export async function getAccountBalanceLogs(
   return request.get(`/admin/accounts/${accountId}/balance-logs`, { params });
 }
 
+// 销售：用授信额度给自己名下客户充值（带幂等键防重复扣款）
+export async function salesRechargeAccount(
+  accountId: number,
+  data: { amount: number; description?: string; idempotency_key?: string }
+): Promise<any> {
+  return request.post(`/admin/accounts/${accountId}/sales-recharge`, data);
+}
+
+// 销售：查询自己的授信额度与最近流水
+export async function getMyCredit(): Promise<{
+  success: boolean;
+  applicable: boolean;
+  credit_limit: number;
+  credit_used: number;
+  credit_available: number;
+  logs: any[];
+}> {
+  return request.get('/admin/my-credit');
+}
+
 // 充值记录查询（含退补充值）
 export async function getRechargeLogs(params?: {
   account_id?: number

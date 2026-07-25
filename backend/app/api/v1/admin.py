@@ -281,6 +281,20 @@ class AdminAccountBalanceAdjustRequest(BaseModel):
     transaction_id: Optional[str] = None
 
 
+class SalesRechargeRequest(BaseModel):
+    """销售用授信额度给自己名下客户充值"""
+    amount: float  # 充值金额（>0）
+    description: Optional[str] = None
+    idempotency_key: Optional[str] = None  # 幂等键，防重复扣款（前端每次弹窗生成一个）
+
+
+class StaffCreditAdjustRequest(BaseModel):
+    """管理员调整销售授信额度：设置额度上限 / 结算冲销（二选一或同时）"""
+    credit_limit: Optional[float] = None   # 设为新的额度上限（绝对值，不能低于已用）
+    settle_amount: Optional[float] = None  # 结算冲销：减少已用授信（腾出额度）
+    description: Optional[str] = None
+
+
 class AdminAccountResetPasswordRequest(BaseModel):
     password: str
 
@@ -1708,6 +1722,130 @@ async def adjust_account_balance(
     }
 
 
+@router.post("/accounts/{account_id}/sales-recharge", response_model=dict)
+async def sales_recharge_account(
+    account_id: int,
+    request: SalesRechargeRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """销售：用授信额度给自己名下客户充值（扣减授信 + 加客户余额，原子+行锁+幂等）"""
+    from app.modules.common.account import Account
+    from app.modules.common.balance_log import BalanceLog
+    from app.modules.common.sales_credit_log import SalesCreditLog
+    from sqlalchemy.exc import IntegrityError
+    from decimal import Decimal
+
+    if not is_sales_scoped(admin):
+        raise HTTPException(status_code=403, detail="该接口仅供销售使用；管理员请用余额调整")
+
+    amount = Decimal(str(request.amount))
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="充值金额必须大于 0")
+    idem = (request.idempotency_key or "").strip() or None
+
+    def _summary(prior: "SalesCreditLog") -> dict:
+        return {
+            "success": True,
+            "duplicate": True,
+            "credit_limit_after": float(prior.credit_limit_after),
+            "credit_used_after": float(prior.credit_used_after),
+            "credit_available": float(Decimal(str(prior.credit_limit_after)) - Decimal(str(prior.credit_used_after))),
+        }
+
+    # 幂等：同一 key 已处理则直接回放，不重复扣款
+    if idem:
+        prior = (await db.execute(
+            select(SalesCreditLog).where(SalesCreditLog.idempotency_key == idem)
+        )).scalar_one_or_none()
+        if prior:
+            return _summary(prior)
+
+    # 固定加锁顺序（先销售后账户）防死锁；SELECT ... FOR UPDATE 串行化并发充值
+    me = (await db.execute(
+        select(AdminUser).where(AdminUser.id == admin.id).with_for_update()
+    )).scalar_one()
+    acc = (await db.execute(
+        select(Account).where(Account.id == account_id, Account.is_deleted == False).with_for_update()
+    )).scalar_one_or_none()
+    if not acc:
+        raise HTTPException(status_code=404, detail="客户不存在")
+    if acc.sales_id != admin.id:
+        raise HTTPException(status_code=403, detail="只能给自己名下的客户充值")
+
+    credit_limit = Decimal(str(me.credit_limit or 0))
+    credit_used = Decimal(str(me.credit_used or 0))
+    available = credit_limit - credit_used
+    if amount > available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"授信额度不足：可用 {float(available)}，本次需 {float(amount)}",
+        )
+
+    balance_before = Decimal(str(acc.balance or 0))
+    balance_after = balance_before + amount
+    acc.balance = balance_after
+    credit_used_after = credit_used + amount
+    me.credit_used = credit_used_after
+
+    note = (request.description or "").strip()
+    blog = BalanceLog(
+        account_id=account_id,
+        change_type="sales_credit",
+        amount=amount,
+        balance_after=balance_after,
+        description=f"销售({admin.username})授信充值 +{float(amount)} {acc.currency}"
+        + (f" | {note}" if note else ""),
+    )
+    db.add(blog)
+    await db.flush()  # 取 blog.id 关联进授信账本
+
+    clog = SalesCreditLog(
+        sales_id=admin.id,
+        change_type="recharge",
+        amount=amount,
+        credit_limit_after=credit_limit,
+        credit_used_after=credit_used_after,
+        account_id=account_id,
+        related_balance_log_id=blog.id,
+        operator_id=admin.id,
+        operator_name=admin.username,
+        idempotency_key=idem,
+        description=note or None,
+    )
+    db.add(clog)
+    try:
+        await db.commit()
+    except IntegrityError:
+        # 幂等键唯一冲突=并发重复提交，回滚后回放已处理结果
+        await db.rollback()
+        if idem:
+            prior = (await db.execute(
+                select(SalesCreditLog).where(SalesCreditLog.idempotency_key == idem)
+            )).scalar_one_or_none()
+            if prior:
+                return _summary(prior)
+        raise
+
+    from app.services.operation_log import log_operation as _log_op
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="finance", action="recharge", target_type="account",
+        target_id=str(account_id),
+        title=f"销售授信充值 账户#{account_id} +{float(amount)} {acc.currency}",
+        detail=f'{{"amount": {float(amount)}, "balance_after": {float(balance_after)}, "credit_used_after": {float(credit_used_after)}}}',
+    )
+
+    return {
+        "success": True,
+        "balance_before": float(balance_before),
+        "balance_after": float(balance_after),
+        "credit_limit_after": float(credit_limit),
+        "credit_used_after": float(credit_used_after),
+        "credit_available": float(credit_limit - credit_used_after),
+    }
+
+
 @router.get("/accounts/{account_id}/balance-logs", response_model=dict)
 async def list_balance_logs_admin(
     account_id: int,
@@ -1791,8 +1929,8 @@ async def list_recharge_logs_admin(
     """充值记录查询（含退补充值，退补充值不计算业绩/成本）"""
     from app.modules.common.balance_log import BalanceLog
     from sqlalchemy import func, and_
-    # 充值相关类型
-    recharge_types = ["deposit", "withdraw", "refund_recharge"]
+    # 充值相关类型（sales_credit=销售授信充值，与现金 deposit 区分展示）
+    recharge_types = ["deposit", "withdraw", "refund_recharge", "sales_credit"]
     if change_type:
         recharge_types = [change_type] if change_type in recharge_types else []
 
@@ -4938,6 +5076,10 @@ async def list_admin_users(
                 "status": u.status,
                 "tg_id": u.tg_id,
                 "commission_rate": float(u.commission_rate) if u.commission_rate else 0,
+                # 销售授信（循环信用额度）
+                "credit_limit": float(u.credit_limit or 0),
+                "credit_used": float(u.credit_used or 0),
+                "credit_available": float((u.credit_limit or 0) - (u.credit_used or 0)),
                 "monthly_performance": round(comm_map.get(u.id, 0.0), 2),
                 "monthly_commission": round(comm_map.get(u.id, 0.0) * (float(u.commission_rate or 0) / 100.0), 2),
                 "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
@@ -5149,6 +5291,156 @@ async def update_staff(
         "success": True,
         "message": msg,
         "telegram_rebind_required": cleared_tg_for_username_change,
+    }
+
+
+def _credit_log_dict(l) -> dict:
+    return {
+        "id": l.id,
+        "sales_id": l.sales_id,
+        "change_type": l.change_type,
+        "amount": float(l.amount),
+        "credit_limit_after": float(l.credit_limit_after),
+        "credit_used_after": float(l.credit_used_after),
+        "account_id": l.account_id,
+        "operator_name": l.operator_name,
+        "description": l.description,
+        "created_at": l.created_at.isoformat() if l.created_at else None,
+    }
+
+
+@router.post("/users/{user_id}/credit/adjust", response_model=dict)
+async def adjust_staff_credit(
+    user_id: int,
+    request: StaffCreditAdjustRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理员：调整销售授信（设置额度上限 / 结算冲销）。均写授信账本。"""
+    if admin.role not in ['super_admin', 'admin']:
+        raise HTTPException(status_code=403, detail="无权限调整授信额度")
+    from app.modules.common.sales_credit_log import SalesCreditLog
+    from decimal import Decimal
+
+    me = (await db.execute(
+        select(AdminUser).where(AdminUser.id == user_id).with_for_update()
+    )).scalar_one_or_none()
+    if not me:
+        raise HTTPException(status_code=404, detail="员工不存在")
+    if me.role != 'sales':
+        raise HTTPException(status_code=400, detail="授信额度仅对销售角色有效")
+
+    credit_limit = Decimal(str(me.credit_limit or 0))
+    credit_used = Decimal(str(me.credit_used or 0))
+    note = (request.description or "").strip() or None
+    changed = []
+
+    if request.credit_limit is not None:
+        new_limit = Decimal(str(request.credit_limit))
+        if new_limit < 0:
+            raise HTTPException(status_code=400, detail="额度不能为负")
+        if new_limit < credit_used:
+            raise HTTPException(status_code=400, detail=f"新额度不能低于已用授信 {float(credit_used)}")
+        delta = new_limit - credit_limit
+        me.credit_limit = new_limit
+        credit_limit = new_limit
+        db.add(SalesCreditLog(
+            sales_id=user_id, change_type="limit_change", amount=abs(delta),
+            credit_limit_after=credit_limit, credit_used_after=credit_used,
+            operator_id=admin.id, operator_name=admin.username,
+            description=(note + f"（额度调整 {float(delta):+g}）") if note else f"额度调整 {float(delta):+g}",
+        ))
+        changed.append("limit")
+
+    if request.settle_amount is not None:
+        settle = Decimal(str(request.settle_amount))
+        if settle <= 0:
+            raise HTTPException(status_code=400, detail="结算金额必须大于 0")
+        if settle > credit_used:
+            raise HTTPException(status_code=400, detail=f"结算金额不能超过已用授信 {float(credit_used)}")
+        credit_used = credit_used - settle
+        me.credit_used = credit_used
+        db.add(SalesCreditLog(
+            sales_id=user_id, change_type="settlement", amount=settle,
+            credit_limit_after=credit_limit, credit_used_after=credit_used,
+            operator_id=admin.id, operator_name=admin.username,
+            description=(note + "（结算冲销）") if note else "结算冲销",
+        ))
+        changed.append("settle")
+
+    if not changed:
+        raise HTTPException(status_code=400, detail="无调整内容")
+
+    await db.commit()
+
+    from app.services.operation_log import log_operation as _log_op
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="finance", action="update", target_type="admin_user",
+        target_id=str(user_id),
+        title=f"调整销售授信 {me.username}（{'/'.join(changed)}）",
+        detail=f'{{"credit_limit": {float(credit_limit)}, "credit_used": {float(credit_used)}}}',
+    )
+
+    return {
+        "success": True,
+        "credit_limit": float(credit_limit),
+        "credit_used": float(credit_used),
+        "credit_available": float(credit_limit - credit_used),
+    }
+
+
+@router.get("/users/{user_id}/credit/logs", response_model=dict)
+async def list_staff_credit_logs(
+    user_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理员：查看某销售的授信流水账本"""
+    if admin.role not in ['super_admin', 'admin', 'finance']:
+        raise HTTPException(status_code=403, detail="无权限查看授信账本")
+    from app.modules.common.sales_credit_log import SalesCreditLog
+    from sqlalchemy import func
+
+    total = await db.scalar(
+        select(func.count(SalesCreditLog.id)).where(SalesCreditLog.sales_id == user_id)
+    ) or 0
+    rows = (await db.execute(
+        select(SalesCreditLog).where(SalesCreditLog.sales_id == user_id)
+        .order_by(SalesCreditLog.created_at.desc())
+        .offset((page - 1) * page_size).limit(page_size)
+    )).scalars().all()
+    return {"success": True, "total": total, "page": page, "page_size": page_size,
+            "logs": [_credit_log_dict(l) for l in rows]}
+
+
+@router.get("/my-credit", response_model=dict)
+async def get_my_credit(
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """销售：查看自己的授信额度与最近流水（非销售返回 applicable=False）"""
+    from decimal import Decimal
+    applicable = is_sales_scoped(admin)
+    credit_limit = Decimal(str(admin.credit_limit or 0))
+    credit_used = Decimal(str(admin.credit_used or 0))
+    logs = []
+    if applicable:
+        from app.modules.common.sales_credit_log import SalesCreditLog
+        rows = (await db.execute(
+            select(SalesCreditLog).where(SalesCreditLog.sales_id == admin.id)
+            .order_by(SalesCreditLog.created_at.desc()).limit(50)
+        )).scalars().all()
+        logs = [_credit_log_dict(l) for l in rows]
+    return {
+        "success": True,
+        "applicable": applicable,
+        "credit_limit": float(credit_limit),
+        "credit_used": float(credit_used),
+        "credit_available": float(credit_limit - credit_used),
+        "logs": logs,
     }
 
 
