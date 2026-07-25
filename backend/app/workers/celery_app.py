@@ -277,6 +277,11 @@ celery_app.conf.beat_schedule = {
         'task': 'refresh_business_report_cache_task',
         'schedule': 3600.0,
     },
+    # 每 5 分钟刷新发送统计日聚合；页面查询几千行汇总，不再扫描当月千万级 sms_logs。
+    'refresh-sms-daily-stats-5min': {
+        'task': 'refresh_sms_daily_stats_task',
+        'schedule': 300.0,
+    },
     # 每 4 分钟预热管理员仪表板缓存（TTL 300s；十几条 sms_logs 全表聚合冷算 ~60-120s 会撞前端 120s 超时）
     'refresh-admin-dashboard-cache-4min': {
         'task': 'refresh_admin_dashboard_cache_task',
@@ -350,4 +355,3 @@ try:
     celery_app.conf.accept_content = _ac
 except Exception:
     pass
-

@@ -36,6 +36,17 @@ def gsm7_septet_count(norm: str) -> "int | None":
     return total
 
 
+def utf16_code_unit_count(text: str) -> int:
+    """Return the number of 16-bit code units used by SMS Unicode encoding.
+
+    SMS providers commonly call the encoding UCS-2, but supplementary Unicode
+    characters (emoji, some historic scripts) are carried as UTF-16 surrogate
+    pairs and therefore consume two 16-bit units. Python ``len`` counts those as
+    one code point, so it cannot be used for billing boundaries.
+    """
+    return sum(2 if ord(c) > 0xFFFF else 1 for c in text)
+
+
 def normalize_for_sms_segment_count(text: str) -> str:
     """分段计费前的规范化（不改变用户存储的正文，仅用于条数与编码判断）。
 
@@ -139,8 +150,9 @@ def count_sms_parts(message: str) -> int:
         if septets <= 160:
             return 1
         return (septets + 152) // 153
-    # UCS-2：每码点 1 个 16-bit 单元，单段 70、拼接每段 67
-    length = len(norm)
-    if length <= 70:
+    # SMS Unicode（习惯称 UCS-2，实际需兼容 UTF-16 代理对）：
+    # 单段 70 个 16-bit 码元；6-byte UDH 拼接每段 67 码元。
+    units = utf16_code_unit_count(norm)
+    if units <= 70:
         return 1
-    return (length + 66) // 67
+    return (units + 66) // 67

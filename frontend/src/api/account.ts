@@ -56,6 +56,8 @@ export interface AccountInfo {
   country_code?: string | null
   remaining_sms_estimate?: number | null
   sales_tg_username?: string | null
+  hide_price?: boolean  // 客户门户隐藏价格(单价/剩余条数估算)
+  hide_tg?: boolean     // 客户门户隐藏TG(自绑TG卡片+归属商务联系TG)
 }
 
 // 查询账户信息

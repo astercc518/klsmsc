@@ -8,9 +8,9 @@
         {{ info.client_name || info.company_name || info.account_name || '—' }}
       </el-descriptions-item>
       <el-descriptions-item :label="$t('accountInfo.accountName')">{{ info.account_name }}</el-descriptions-item>
-      <el-descriptions-item :label="$t('dashboard.tgAccount')">{{ formatTg(info.tg_username) }}</el-descriptions-item>
+      <el-descriptions-item v-if="!info.hide_tg" :label="$t('dashboard.tgAccount')">{{ formatTg(info.tg_username) }}</el-descriptions-item>
       <el-descriptions-item :label="$t('dashboard.country')">{{ countryLabel(info.country_code) }}</el-descriptions-item>
-      <el-descriptions-item :label="$t('dashboard.unitPrice')">
+      <el-descriptions-item v-if="!info.hide_price" :label="$t('dashboard.unitPrice')">
         <template v-if="info.unit_price != null && info.unit_price > 0">
           {{ info.currency }} {{ fmtNum(info.unit_price) }} / {{ $t('dashboard.perSms') }}
         </template>
@@ -19,7 +19,7 @@
       <el-descriptions-item :label="$t('dashboard.balance')">
         {{ info.currency }} {{ fmtNum(info.balance) }}
       </el-descriptions-item>
-      <el-descriptions-item :label="$t('dashboard.remainingSms')">
+      <el-descriptions-item v-if="!info.hide_price" :label="$t('dashboard.remainingSms')">
         {{ info.remaining_sms_estimate != null ? fmtNum(info.remaining_sms_estimate) : '—' }}
       </el-descriptions-item>
       <el-descriptions-item :label="$t('accountInfo.accountId')">{{ info.id }}</el-descriptions-item>

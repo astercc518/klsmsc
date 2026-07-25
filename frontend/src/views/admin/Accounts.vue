@@ -459,6 +459,19 @@
           <div v-else class="hint">{{ $t('customers.channelPriorityHint') }}</div>
         </el-form-item>
 
+        <!-- 客户门户显示控制（仅编辑）：部分销售要求对其客户隐藏价格/TG -->
+        <template v-if="isEdit">
+          <el-divider content-position="left">{{ $t('customers.portalDisplay') }}</el-divider>
+          <el-form-item :label="$t('customers.hidePrice')">
+            <el-switch v-model="form.hide_price" />
+            <span class="hint" style="margin-left: 12px">{{ $t('customers.hidePriceHint') }}</span>
+          </el-form-item>
+          <el-form-item :label="$t('customers.hideTg')">
+            <el-switch v-model="form.hide_tg" />
+            <span class="hint" style="margin-left: 12px">{{ $t('customers.hideTgHint') }}</span>
+          </el-form-item>
+        </template>
+
         <!-- HTTP API 凭证 -->
         <el-alert
           v-if="createdCreds.api_key && createdCreds.protocol === 'HTTP'"
@@ -1214,6 +1227,9 @@ const form = reactive<any>({
   rate_limit: 30,
   smpp_max_binds: 5,
   low_balance_threshold: 100,
+  // 客户门户显示控制
+  hide_price: false,
+  hide_tg: false,
 })
 
 const openCreate = () => {
@@ -1245,6 +1261,9 @@ const openCreate = () => {
     // 绑定配置
     sales_id: null,
     channel_ids: [],
+    // 客户门户显示控制
+    hide_price: false,
+    hide_tg: false,
   })
   // 加载员工和通道列表
   loadSalesList()
@@ -1291,6 +1310,9 @@ const openEdit = async (row: AdminAccount) => {
     low_balance_threshold: row.low_balance_threshold ?? 100,
     sales_id: (row as any).sales_id || accountDetail.sales_id || null,
     channel_ids: accountDetail.channel_ids || [],
+    // 客户门户显示控制（以详情为准，回退 false=照常展示）
+    hide_price: !!(accountDetail.hide_price ?? (row as any).hide_price),
+    hide_tg: !!(accountDetail.hide_tg ?? (row as any).hide_tg),
   })
   // 无"全国默认"通道绑定 = 全部通道(*)
   useAllChannels.value = !(accountDetail.channel_ids && accountDetail.channel_ids.length)
@@ -1360,6 +1382,9 @@ const submitForm = async () => {
       ElMessage.success(t('customers.createSuccess'))
       await loadAccounts()
     } else {
+      // 客户门户显示控制仅在编辑时提交（新增接口不接收这两个开关）
+      payload.hide_price = form.hide_price
+      payload.hide_tg = form.hide_tg
       await updateAccountAdmin(form.id, payload)
       ElMessage.success(t('customers.saveSuccess'))
       formVisible.value = false

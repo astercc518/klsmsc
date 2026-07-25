@@ -465,6 +465,8 @@ export async function updateAccountAdmin(
     contact_phone?: string;
     sales_id?: number;
     channel_ids?: number[];
+    hide_price?: boolean;
+    hide_tg?: boolean;
   }
 ): Promise<any> {
   return request.put(`/admin/accounts/${accountId}`, data);

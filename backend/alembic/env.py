@@ -50,6 +50,7 @@ from app.modules.common.account_template import *  # noqa: F401,F403
 from app.modules.common.account_pricing import *  # noqa: F401,F403
 from app.modules.sms.channel import Channel  # noqa: F401
 from app.modules.sms.sms_log import SMSLog  # noqa: F401
+from app.modules.sms.sms_daily_stat import SMSDailyStat, SMSDailyStatsCoverage  # noqa: F401
 from app.modules.sms.sms_batch import *  # noqa: F401,F403
 from app.modules.sms.sms_template import *  # noqa: F401,F403
 from app.modules.sms.routing_rule import RoutingRule  # noqa: F401

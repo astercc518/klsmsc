@@ -269,6 +269,9 @@ class AdminAccountUpdateRequest(BaseModel):
     # 绑定配置
     sales_id: Optional[int] = None  # 绑定员工ID（传0表示解绑）
     channel_ids: Optional[List[int]] = None  # 绑定通道ID列表
+    # 客户门户展示控制（部分销售要求对其客户隐藏敏感项；仅影响客户门户显示）
+    hide_price: Optional[bool] = None  # 隐藏客户门户价格(单价/剩余条数估算)
+    hide_tg: Optional[bool] = None  # 隐藏客户门户TG(自绑TG卡片+归属商务联系TG)
 
 
 class AdminAccountBalanceAdjustRequest(BaseModel):
@@ -1121,6 +1124,9 @@ async def get_account_admin(
             "sales_id": a.sales_id,
             "channels": channels,
             "channel_ids": [ch["id"] for ch in channels],
+            # 客户门户展示控制
+            "hide_price": bool(getattr(a, "hide_price", False)),
+            "hide_tg": bool(getattr(a, "hide_tg", False)),
             "created_at": a.created_at.isoformat() if a.created_at else None,
             "updated_at": a.updated_at.isoformat() if a.updated_at else None,
             # 平台对接配置
@@ -1206,7 +1212,12 @@ async def update_account_admin(
         a.low_balance_threshold = request.low_balance_threshold
     if request.ip_whitelist is not None:
         a.ip_whitelist = json.dumps(request.ip_whitelist, ensure_ascii=False)
-    
+    # 客户门户展示控制（管理员专属；销售侧在上方已被限制仅可改 status）
+    if request.hide_price is not None:
+        a.hide_price = request.hide_price
+    if request.hide_tg is not None:
+        a.hide_tg = request.hide_tg
+
     # 更新绑定员工
     if request.sales_id is not None:
         a.sales_id = request.sales_id if request.sales_id > 0 else None
@@ -4322,10 +4333,10 @@ async def get_send_statistics(
     if is_sales_scoped(admin):
         sales_id = admin.id
 
-    # 缓存：月维度聚合需扫 ~900万行索引(~38s)，Redis 缓存避免每次打开/切换都全量重算(TTL 300s)。
+    # 缓存兜底：正常情况下下方读取日聚合表；尚未回填的历史区间才扫描 sms_logs。
     import json as _json
     from app.utils.cache import get_redis_client
-    _ck = f"send_stats:v1:{group_by}:{start_date}:{end_date}:a{account_id}:s{sales_id}:c{channel_id}:cc{country_code}"
+    _ck = f"send_stats:v2:{group_by}:{start_date}:{end_date}:a{account_id}:s{sales_id}:c{channel_id}:cc{country_code}"
     try:
         _hit = await (await get_redis_client()).get(_ck)
         if _hit:
@@ -4333,51 +4344,100 @@ async def get_send_statistics(
     except Exception:
         pass
 
-    agg_cols = [
-        func.count(SMSLog.id).label("submit_total"),
-        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("success_count"),
-        func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("failed_count"),
-        func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("pending_count"),
-        func.avg(SMSLog.selling_price).label("avg_unit_price"),
-        net_cost("total_cost"),
-        net_revenue("total_revenue"),
-    ]
-
-    # 分组聚合列：account 与 sales 维度都先按 account_id 聚合（走覆盖索引 idx_sms_report_cov2
-    # 做 index-only 扫描），sales 再在 Python 归约到员工——规避 JOIN accounts + GROUP BY
-    # sales_id 的嵌套回表慢计划（月维度 157s → ~37s，且 <120s 前端超时）。
-    if group_by == "channel":
-        gcol = SMSLog.channel_id
-    elif group_by == "country":
-        gcol = SMSLog.country_code
-    else:  # account / sales 均按 account_id 聚合
-        gcol = SMSLog.account_id
-
-    base = select(gcol.label("gid"), *agg_cols).where(
-        and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt)
-    )
-
-    # 剔除虚拟通道(注水/演示流量)，保留 channel_id 为 NULL 的真实失败记录
     virtual_ids = await _virtual_channel_ids(db)
-    if virtual_ids:
-        base = base.where(or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
-
-    if account_id:
-        base = base.where(SMSLog.account_id == account_id)
-    if channel_id:
-        base = base.where(SMSLog.channel_id == channel_id)
-    if country_code:
-        base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
+    _sacc_ids = None
     if sales_id:
         # 限定该员工名下账户，避免 JOIN accounts
         _sacc = (await db.execute(select(Account.id).where(Account.sales_id == sales_id))).all()
         _sacc_ids = [a for (a,) in _sacc]
-        base = base.where(SMSLog.account_id.in_(_sacc_ids) if _sacc_ids else (SMSLog.id < 0))
 
-    if group_by == "channel":
-        base = base.where(SMSLog.channel_id.isnot(None))
-    elif group_by == "country":
-        base = base.where(SMSLog.country_code.isnot(None))
+    # 覆盖完整时从日聚合表读取：整月约几千行，而不是 sms_logs 的 919 万行。
+    _use_daily_rollup = False
+    try:
+        from app.services.sms_daily_stats import has_complete_daily_stats
+
+        _use_daily_rollup = await has_complete_daily_stats(
+            db, start_dt.date(), end_dt.date() - timedelta(days=1)
+        )
+        # 高频聚合刻意不携带 country_code，避免刷新时对明细做随机回表；
+        # 国家分组/筛选保持原 SQL + Redis 缓存，统计口径不变。
+        _use_daily_rollup = _use_daily_rollup and group_by != "country" and not country_code
+    except Exception as exc:
+        logger.warning("发送统计日聚合覆盖检查失败，回退明细查询: {}", exc)
+
+    if _use_daily_rollup:
+        from app.modules.sms.sms_daily_stat import SMSDailyStat
+
+        D = SMSDailyStat
+        _total = func.sum(D.submit_total)
+        _priced = func.sum(D.priced_count)
+        agg_cols = [
+            _total.label("submit_total"),
+            func.sum(case((D.status == "delivered", D.submit_total), else_=0)).label("success_count"),
+            func.sum(case((D.status == "failed", D.submit_total), else_=0)).label("failed_count"),
+            func.sum(case((D.status.in_(("pending", "queued")), D.submit_total), else_=0)).label("pending_count"),
+            (func.sum(D.total_revenue) / func.nullif(_priced, 0)).label("avg_unit_price"),
+            func.sum(D.total_cost).label("total_cost"),
+            func.sum(D.total_revenue).label("total_revenue"),
+        ]
+        if group_by == "channel":
+            gcol = D.channel_id
+        elif group_by == "country":
+            gcol = D.country_code
+        else:
+            gcol = D.account_id
+        base = select(gcol.label("gid"), *agg_cols).where(
+            D.stat_date >= start_dt.date(), D.stat_date < end_dt.date()
+        )
+        if virtual_ids:
+            base = base.where(D.channel_id.notin_(virtual_ids))
+        if account_id:
+            base = base.where(D.account_id == account_id)
+        if channel_id:
+            base = base.where(D.channel_id == channel_id)
+        if country_code:
+            base = base.where(func.upper(D.country_code) == country_code.upper())
+        if sales_id:
+            base = base.where(D.account_id.in_(_sacc_ids) if _sacc_ids else (D.account_id < 0))
+        if group_by == "channel":
+            base = base.where(D.channel_id != 0)
+        elif group_by == "country":
+            base = base.where(D.country_code != "")
+    else:
+        agg_cols = [
+            func.count(SMSLog.id).label("submit_total"),
+            func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("success_count"),
+            func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("failed_count"),
+            func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("pending_count"),
+            func.avg(SMSLog.selling_price).label("avg_unit_price"),
+            net_cost("total_cost"),
+            net_revenue("total_revenue"),
+        ]
+        # account 与 sales 均先按 account_id 聚合，sales 再在 Python 归约到员工。
+        if group_by == "channel":
+            gcol = SMSLog.channel_id
+        elif group_by == "country":
+            gcol = SMSLog.country_code
+        else:
+            gcol = SMSLog.account_id
+        base = select(gcol.label("gid"), *agg_cols).where(
+            and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt)
+        )
+        if virtual_ids:
+            base = base.where(or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
+        if account_id:
+            base = base.where(SMSLog.account_id == account_id)
+        if channel_id:
+            base = base.where(SMSLog.channel_id == channel_id)
+        if country_code:
+            base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
+        if sales_id:
+            base = base.where(SMSLog.account_id.in_(_sacc_ids) if _sacc_ids else (SMSLog.id < 0))
+        if group_by == "channel":
+            base = base.where(SMSLog.channel_id.isnot(None))
+        elif group_by == "country":
+            base = base.where(SMSLog.country_code.isnot(None))
+
     base = base.group_by(gcol)
 
     agg_rows = (await db.execute(base)).all()
@@ -4559,8 +4619,9 @@ async def get_send_statistics(
         "filters": {"start_date": start_date, "end_date": end_date, "group_by": group_by},
     }
     try:
-        # 取新连接再写(前面聚合期间旧连接可能已空闲失效)；月维度~40s，缓存 15min 内秒开
-        await (await get_redis_client()).set(_ck, _json.dumps(resp, default=str), ex=900)
+        # 已结束区间数据冻结，长缓存；包含今天的区间保留 15 分钟兜底缓存。
+        _ttl = 86400 if end_dt.date() <= datetime.now().date() else 900
+        await (await get_redis_client()).set(_ck, _json.dumps(resp, default=str), ex=_ttl)
     except Exception:
         pass
     return resp
@@ -4675,7 +4736,9 @@ async def get_admin_daily_stats(
     db: AsyncSession = Depends(get_db)
 ):
     """管理员：每日统计（用于图表）。支持按客户/通道/国家筛选。销售角色仅统计归属客户。"""
+    import json as _json
     from app.modules.sms.sms_log import SMSLog
+    from app.utils.cache import get_redis_client
     from sqlalchemy import func, and_, case, or_ as sa_or
 
     if start_date and end_date:
@@ -4691,36 +4754,81 @@ async def get_admin_daily_stats(
     if is_sales_scoped(admin):
         sales_id = admin.id
 
-    base = (
-        select(
+    _ck = (
+        f"admin_daily_stats:v1:{start_dt}:{end_dt}:a{account_id}:s{sales_id}:"
+        f"c{channel_id}:cc{country_code}"
+    )
+    try:
+        _hit = await (await get_redis_client()).get(_ck)
+        if _hit:
+            return _json.loads(_hit)
+    except Exception:
+        pass
+
+    virtual_ids = await _virtual_channel_ids(db)
+    _sacc_ids = None
+    if sales_id:
+        _sacc = (await db.execute(
+            select(Account.id).where(Account.sales_id == sales_id, Account.is_deleted == False)
+        )).all()
+        _sacc_ids = [a for (a,) in _sacc]
+
+    _use_daily_rollup = False
+    try:
+        from app.services.sms_daily_stats import has_complete_daily_stats
+
+        _use_daily_rollup = await has_complete_daily_stats(
+            db, start_dt, end_dt - timedelta(days=1)
+        )
+        _use_daily_rollup = _use_daily_rollup and not country_code
+    except Exception as exc:
+        logger.warning("每日趋势日聚合覆盖检查失败，回退明细查询: {}", exc)
+
+    if _use_daily_rollup:
+        from app.modules.sms.sms_daily_stat import SMSDailyStat
+
+        D = SMSDailyStat
+        base = select(
+            D.stat_date.label("date"),
+            func.sum(D.submit_total).label("total_sent"),
+            func.sum(case((D.status == "delivered", D.submit_total), else_=0)).label("total_delivered"),
+            func.sum(case((D.status == "failed", D.submit_total), else_=0)).label("total_failed"),
+            func.sum(D.total_cost).label("total_cost"),
+            func.sum(D.total_revenue).label("total_revenue"),
+        ).where(D.stat_date >= start_dt, D.stat_date < end_dt)
+        if virtual_ids:
+            base = base.where(D.channel_id.notin_(virtual_ids))
+        if account_id:
+            base = base.where(D.account_id == account_id)
+        if channel_id:
+            base = base.where(D.channel_id == channel_id)
+        if country_code:
+            base = base.where(func.upper(D.country_code) == country_code.upper())
+        if sales_id:
+            base = base.where(D.account_id.in_(_sacc_ids) if _sacc_ids else (D.account_id < 0))
+        base = base.group_by(D.stat_date).order_by(D.stat_date.asc())
+    else:
+        base = select(
             func.date(SMSLog.submit_time).label("date"),
             func.count(SMSLog.id).label("total_sent"),
             func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
             func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
             net_cost("total_cost"),
             net_revenue("total_revenue"),
-        )
-        .where(and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt))
-    )
+        ).where(and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt))
+        if virtual_ids:
+            base = base.where(sa_or(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
+        if account_id:
+            base = base.where(SMSLog.account_id == account_id)
+        if channel_id:
+            base = base.where(SMSLog.channel_id == channel_id)
+        if country_code:
+            base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
+        if sales_id:
+            base = base.where(SMSLog.account_id.in_(_sacc_ids) if _sacc_ids else (SMSLog.id < 0))
+        base = base.group_by(func.date(SMSLog.submit_time)).order_by(func.date(SMSLog.submit_time).asc())
 
-    # 剔除虚拟通道(注水/演示流量)，保留 channel_id 为 NULL 的真实失败记录
-    virtual_ids = await _virtual_channel_ids(db)
-    if virtual_ids:
-        base = base.where(sa_or(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
-
-    if account_id:
-        base = base.where(SMSLog.account_id == account_id)
-    if channel_id:
-        base = base.where(SMSLog.channel_id == channel_id)
-    if country_code:
-        base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
-    if sales_id:
-        base = base.join(Account, SMSLog.account_id == Account.id).where(
-            and_(Account.sales_id == sales_id, Account.is_deleted == False)
-        )
-
-    base = base.group_by(func.date(SMSLog.submit_time)).order_by(func.date(SMSLog.submit_time).asc())
-    result = await db.execute(base)
+    result = (await db.execute(base)).all()
 
     statistics = []
     for row in result:
@@ -4737,7 +4845,13 @@ async def get_admin_daily_stats(
             "total_revenue": round(rev, 4),
             "total_profit": round(rev - cost, 4),
         })
-    return {"success": True, "days": (end_dt - start_dt).days, "statistics": statistics}
+    resp = {"success": True, "days": (end_dt - start_dt).days, "statistics": statistics}
+    try:
+        _ttl = 86400 if end_dt <= datetime.now().date() else 900
+        await (await get_redis_client()).set(_ck, _json.dumps(resp, default=str), ex=_ttl)
+    except Exception:
+        pass
+    return resp
 
 
 @router.get("/users", response_model=dict)

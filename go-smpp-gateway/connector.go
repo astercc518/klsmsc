@@ -328,12 +328,13 @@ func stripLeadingPlusFromConfigJSON(raw string) bool {
 
 // longMessageModeFromConfigJSON 解析 channels.config_json 中 long_message_mode；
 // 取值（默认 message_payload）：
-//   "message_payload"（默认）    — UCS-2 > 254 字节走 message_payload TLV 单 PDU。实测部分
-//                                   中国直连(如 TS_zhilian)不重组 UDH、把多段当独立消息且按
-//                                   GBK 误解 UCS-2 → 收到多条 CJK 乱码;故默认不分段、整条交上游。
-//   "udh_segmentation"           — 标准 UDH 多段(16-bit ref);仅给「不读 TLV、但能重组 UDH」
-//                                   的上游(如 woId_kafa)用,需该通道 config_json 显式
-//                                   {"long_message_mode":"udh_segmentation"} 开启。
+//
+//	"message_payload"（默认）    — UCS-2 > 254 字节走 message_payload TLV 单 PDU。实测部分
+//	                                中国直连(如 TS_zhilian)不重组 UDH、把多段当独立消息且按
+//	                                GBK 误解 UCS-2 → 收到多条 CJK 乱码;故默认不分段、整条交上游。
+//	"udh_segmentation"           — 标准 UDH 多段(16-bit ref);仅给「不读 TLV、但能重组 UDH」
+//	                                的上游(如 woId_kafa)用,需该通道 config_json 显式
+//	                                {"long_message_mode":"udh_segmentation"} 开启。
 func longMessageModeFromConfigJSON(raw string) string {
 	const def = "message_payload"
 	raw = strings.TrimSpace(raw)
@@ -360,24 +361,31 @@ func longMessageModeFromConfigJSON(raw string) string {
 	return def
 }
 
-// gsm7EnabledFromConfigJSON：仅当通道 config_json 显式 {"gsm7_enabled":true} 才启用
-// GSM-7 自动编码。**默认关闭(走 UCS2)**——packed GSM-7(DataCoding 0)与部分直连上游
-// 不兼容会导致收到乱码(已在 TS_zhilian 实测复现),故改为「逐通道实测通过后再 opt-in」。
+// gsm7EnabledFromConfigJSON：按 SMPP 标准默认启用 GSM-7（DCS=0）。
+// 个别上游若把 DCS=0 解读为其他字符集，可用
+// {"gsm7_enabled":false} 显式关闭；{"force_ucs2":true} 仍具有最高优先级。
 func gsm7EnabledFromConfigJSON(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return false
+		return true
 	}
 	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		// 配置损坏时保持旧行为，避免意外切换编码。
 		return false
+	}
+	if v, ok := m["force_ucs2"]; ok {
+		if b, ok := v.(bool); ok && b {
+			return false
+		}
 	}
 	if v, ok := m["gsm7_enabled"]; ok {
 		if b, ok := v.(bool); ok {
 			return b
 		}
+		return false
 	}
-	return false
+	return true
 }
 
 // latin1SingleFromConfigJSON：通道 config_json {"latin1_single":true} 时启用「拉丁文单 PDU
@@ -409,43 +417,34 @@ func isLatin1(text string) bool {
 	return true
 }
 
-// forceUCS2FromConfigJSON：通道 config_json {"force_ucs2":true} 时,禁用 GSM-7/Latin1 自动
-// 编码、一律走 UCS2(用于个别不认 DCS=0/DCS=3 的上游做逃生回退)。
-func forceUCS2FromConfigJSON(raw string) bool {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return false
+// splitGSM7Text 按 GSM-7 septet 数切分文本。扩展表字符（如 {}[]|^）
+// 占 2 septet，必须作为一个整体留在同一段，不能在 escape 序列中间断开。
+// 调用前应先用 ValidateGSM7String 确认文本可编码。
+func splitGSM7Text(text string, maxSeptets int) []string {
+	if text == "" || maxSeptets <= 0 {
+		return nil
 	}
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return false
-	}
-	if v, ok := m["force_ucs2"]; ok {
-		if b, ok := v.(bool); ok {
-			return b
+	segments := make([]string, 0, 2)
+	var current strings.Builder
+	currentSeptets := 0
+	for _, r := range text {
+		encoded, err := data.GSM7BIT.Encode(string(r))
+		if err != nil {
+			return nil
 		}
-	}
-	return false
-}
-
-// splitUCS2ForUDH 把 UCS-2 编码后的字节流拆为多段，每段 ≤ 134 字节
-// （UCS-2 字符是 2 字节宽，按 67 字符 = 134 字节切，避免拆中一个字符）。
-// 调用方需自己加 6 字节 UDH 头到每段前面。
-func splitUCS2ForUDH(encoded []byte) [][]byte {
-	const seg = 134
-	if len(encoded) <= seg {
-		return [][]byte{encoded}
-	}
-	out := make([][]byte, 0, (len(encoded)+seg-1)/seg)
-	for i := 0; i < len(encoded); i += seg {
-		end := i + seg
-		if end > len(encoded) {
-			end = len(encoded)
+		septets := len(encoded)
+		if currentSeptets > 0 && currentSeptets+septets > maxSeptets {
+			segments = append(segments, current.String())
+			current.Reset()
+			currentSeptets = 0
 		}
-		// 防御：UCS-2 必须按 2 字节对齐；len(encoded) 一定是偶数，seg 也是偶数，对齐安全
-		out = append(out, encoded[i:end])
+		current.WriteRune(r)
+		currentSeptets += septets
 	}
-	return out
+	if currentSeptets > 0 {
+		segments = append(segments, current.String())
+	}
+	return segments
 }
 
 // concatRefCounter 为同一 gateway 进程内不同消息生成 UDH 8-bit 拼接 ref。
@@ -456,14 +455,6 @@ var concatRefCounter uint32
 func nextConcatRef() byte {
 	v := atomic.AddUint32(&concatRefCounter, 1)
 	return byte(v & 0xFF)
-}
-
-// nextConcatRef16 生成 16-bit CSMS 引用号(IEI 0x08)。空间 65536，相比 8-bit(256)
-// 把「同号大流量下 ref 回绕 → 手机错误归并不同消息分段」的碰撞概率降几个数量级。
-// 原子单调递增，高并发线程安全。
-func nextConcatRef16() uint16 {
-	v := atomic.AddUint32(&concatRefCounter, 1)
-	return uint16(v & 0xFFFF)
 }
 
 // segmentUCS2Text 把文本按「整码点」编码为 UTF-16BE 并切成每段 ≤maxOctets 字节。
@@ -1453,30 +1444,28 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 		}
 	}
 
-	// 方案A：GSM-7 可表示的文案优先用 GSM-7(DataCoding 0，最通用的标准编码)。纯拉丁文
-	// 绝大多数 ≤160 字符即单段短信，不进长信/message_payload TLV 路径——既避免「不读
-	// TLV 的上游」收到空白，又比 UCS2 省一半以上分段成本。个别上游若不兼容 packed GSM-7，
-	// 默认 UCS2;通道 config_json 设 {"gsm7_enabled":true} 才逐通道启用 GSM-7(须先实测不乱码)。
+	// 方案A：GSM-7 可表示的文案优先使用 DCS=0。SMPP PDU 中按标准传送
+	// unpacked septet（每个 septet 占一个 octet），由 SMSC 转为空口所需的 packed GSM-7。
+	// 单段上限 160 septet；长信加 6-byte UDH 后每段 153 septet。
 	if gsm7EnabledFromConfigJSON(cfg.ConfigJSON) && len(data.ValidateGSM7String(message)) == 0 {
-		gsm7 := data.GSM7BITPACKED
-		if sp, ok := gsm7.(data.Splitter); ok {
-			if !sp.ShouldSplit(message, data.SM_GSM_MSG_LEN) {
-				// 单段 GSM-7（≤160 字符 → 打包 ≤140 字节）
-				if enc, gErr := gsm7.Encode(message); gErr == nil {
-					if err := s.Message.SetMessageDataWithEncoding(enc, gsm7); err != nil {
-						return fmt.Errorf("gsm7 short_message: %w", err)
-					}
-					s.RegisteredDelivery = 1
-					log.Printf("[SMPP-DEBUG] Submitting SM(GSM7): channel=%s dest=%s chars=%d bytes=%d",
-						cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
-					return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
+		gsm7 := data.GSM7BIT
+		if encoded, gErr := gsm7.Encode(message); gErr == nil {
+			if len(encoded) <= 160 {
+				if err := s.Message.SetMessageDataWithEncoding(encoded, gsm7); err != nil {
+					return fmt.Errorf("gsm7 short_message: %w", err)
 				}
-				// Encode 失败：落到下方 UCS2 兜底
-			} else if segs, sErr := sp.EncodeSplit(message, 153); sErr == nil && len(segs) > 0 {
-				// 多段 GSM-7：每段 ≤153 字符(打包 ≤134 字节) + 6 字节 concat UDH = ≤140
+				s.RegisteredDelivery = 1
+				log.Printf("[SMPP-DEBUG] Submitting SM(GSM7 standard): channel=%s dest=%s chars=%d septets=%d",
+					cfg.ChannelCode, destDigits, len([]rune(message)), len(encoded))
+				return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(encoded), false, 0, 0, 0, payload)
+			}
+
+			textSegments := splitGSM7Text(message, 153)
+			if len(textSegments) > 0 {
+				// 多段 GSM-7：每段 ≤153 septet + 6-byte concat UDH。
 				ref := nextConcatRef()
-				total := byte(len(segs))
-				for i, seg := range segs {
+				total := byte(len(textSegments))
+				for i, segmentText := range textSegments {
 					part := byte(i + 1)
 					var psm *pdu.SubmitSM
 					if i == 0 {
@@ -1487,6 +1476,13 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 						psm.SourceAddr.SetAddress(srcSID)
 						psm.DestAddr = pdu.NewAddress()
 						psm.DestAddr.SetAddress(destDigits)
+					}
+					seg, segErr := gsm7.Encode(segmentText)
+					if segErr != nil {
+						if i == 0 {
+							return fmt.Errorf("gsm7 encode segment 1: %w", segErr)
+						}
+						continue
 					}
 					if err := psm.Message.SetMessageDataWithEncoding(seg, gsm7); err != nil {
 						if i == 0 {
@@ -1513,33 +1509,20 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 								part, total, cfg.ChannelCode, messageID, err)
 						} else {
 							statSubmit(channelID) // 计数:GSM7 长信后续段 submit_sm PDU
-							log.Printf("[SMPP-DEBUG] Submitting SM(GSM7 UDH %d/%d): channel=%s seq=%d dest=%s ref=%d",
-								part, total, cfg.ChannelCode, psm.SequenceNumber, destDigits, ref)
+							log.Printf("[SMPP-DEBUG] Submitting SM(GSM7 standard UDH %d/%d): channel=%s seq=%d dest=%s ref=%d septets=%d",
+								part, total, cfg.ChannelCode, psm.SequenceNumber, destDigits, ref, len(seg))
 						}
 					}
 				}
 				return nil
 			}
-			// EncodeSplit 失败：落到下方 UCS2 兜底
 		}
+		// Encode/分段失败：落到下方 UCS2 兜底。
 	}
 
-	// 自动适配:凡纯拉丁文(含葡文重音,码点≤0xFF)且 Latin1 编码 ≤254 字节,一律优先 Latin1
-	// 单 PDU(DCS=3,1字节/字符)。放在 UCS2 之前——短信也走 Latin1,避免上游按 UCS2(70字/段)
-	// 把纯 ASCII 短信(>70 字符)多计成 2 段;Latin1 一字节一字符,同样内容上游按 1 段计。
-	// 个别不认 DCS=3 的上游用 config_json {"force_ucs2":true} 回退 UCS2。
-	if !forceUCS2FromConfigJSON(cfg.ConfigJSON) && isLatin1(message) {
-		if enc, lErr := data.LATIN1.Encode(message); lErr == nil && len(enc) <= data.SM_MSG_LEN {
-			if err := s.Message.SetMessageDataWithEncoding(enc, data.LATIN1); err != nil {
-				return fmt.Errorf("latin1 short_message: %w", err)
-			}
-			s.RegisteredDelivery = 1
-			log.Printf("[SMPP-DEBUG] Submitting SM(Latin1单PDU/auto): channel=%s dest=%s chars=%d bytes=%d",
-				cfg.ChannelCode, destDigits, len([]rune(message)), len(enc))
-			return m.submitOneAndTrack(s, session, trans, channelID, messageID, logID, destDigits, cfg, len(enc), false, 0, 0, 0, payload)
-		}
-	}
-
+	// GSM-7 不可表示的内容按标准路径转 Unicode/UCS2。DCS=3 在不同
+	// SMSC 中的字符映射存在差异，因此不再自动尝试 Latin-1；只有明确配置
+	// {"latin1_single":true} 的特定通道保留上方的兼容行为。
 	encoded, encErr := data.UCS2.Encode(message)
 	if encErr != nil {
 		log.Printf("[SMPP-ERROR] UCS2 Encode failed: channel=%s, msg=%s err=%v", cfg.ChannelCode, messageID, encErr)
@@ -1561,15 +1544,16 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 	mode := longMessageModeFromConfigJSON(cfg.ConfigJSON)
 
 	if mode == "udh_segmentation" {
-		// UDH 16-bit ref 多段 SMS：每段 7 字节 UDH 头(IEI 0x08) + 132 字节 UCS-2 payload = 139 字节
-		// 分段用 segmentUCS2Text(按整码点切,代理对/Emoji 不被截断);ref 用 16-bit 防回绕碰撞。
+		// 国际短信常用计费口径使用 8-bit concat ref：6-byte UDH(IEI 0x00)
+		// + 134-byte Unicode payload = 140 字节，即每段 67 个 UTF-16 码元。
+		// segmentUCS2Text 按整码点切，保证代理对/Emoji 不被截断。
 		// 第一段持有 sequenceMap 条目（决定整条消息的 sent/failed/DLR 归属），
 		// 其它段静默 Submit；其 SubmitSMResp 命中 OnPDU 的「无匹配映射」分支被忽略。
 		// 折中：若第一段 sent 而后续段 failed，只能查日志发现；多数运营商对同一 concat 组
 		// 全段同状态，跨段 status 分裂极少见。换全段联动跟踪需要在 Python 端引入「分段表」
 		// 与 DLR 汇总逻辑，工程量大；当前最小可用方案优先解决发不出去的问题。
-		segments := segmentUCS2Text(message, 132)
-		ref := nextConcatRef16()
+		segments := segmentUCS2Text(message, 134)
+		ref := nextConcatRef()
 		total := byte(len(segments))
 		for i, seg := range segments {
 			part := byte(i + 1)
@@ -1596,8 +1580,8 @@ func (m *SMPPManager) SendSMS(payload SMSLogData) error {
 			}
 			// 关键：显式置 esm_class UDHI 位(0x40)，否则收端把 UDH 头当正文 → 多条乱码。
 			psm.EsmClass = data.SM_UDH_GSM
-			// 标准 16-bit ref concat UDH：UDHL=0x06, IEI=0x08, IEDL=0x04, [refHi, refLo, total, part]
-			psm.Message.SetUDH(pdu.UDH{pdu.InfoElement{ID: 0x08, Data: []byte{byte(ref >> 8), byte(ref), total, part}}})
+			// 标准 8-bit ref concat UDH：UDHL=0x05, IEI=0x00, IEDL=0x03, [ref,total,part]
+			psm.Message.SetUDH(pdu.UDH{pdu.InfoElement{ID: 0x00, Data: []byte{ref, total, part}}})
 
 			if i == 0 {
 				psm.RegisteredDelivery = 1
