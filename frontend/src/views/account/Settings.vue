@@ -73,8 +73,8 @@
       </el-col>
     </el-row>
 
-    <!-- Telegram 绑定 -->
-    <el-row style="margin-top: 20px">
+    <!-- Telegram 绑定（部分销售要求对其客户隐藏 TG 信息时整块不展示） -->
+    <el-row v-if="!accountInfoFull?.hide_tg" style="margin-top: 20px">
       <el-col :span="24">
         <el-card>
           <template #header><h3>{{ $t('accountSettings.tgBinding') }}</h3></template>

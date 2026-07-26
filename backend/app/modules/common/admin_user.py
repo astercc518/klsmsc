@@ -20,6 +20,9 @@ class AdminUser(Base):
     phone = Column(String(20), comment="手机号")
     commission_rate = Column(DECIMAL(5, 2), default=0, comment="佣金比例(%)")
     monthly_commission = Column(DECIMAL(10, 2), default=0, comment="本月佣金")
+    # 销售授信（循环信用额度）：仅对 role=sales 有意义；可用授信 = credit_limit - credit_used
+    credit_limit = Column(DECIMAL(12, 4), nullable=False, default=0, server_default="0", comment="授信额度上限")
+    credit_used = Column(DECIMAL(12, 4), nullable=False, default=0, server_default="0", comment="已用授信(销售给客户充值累计,结算冲销可减回)")
     role = Column(
         Enum("super_admin", "admin", "finance", "sales", "tech", name="admin_role"),
         nullable=False,

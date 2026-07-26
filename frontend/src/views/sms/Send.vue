@@ -165,7 +165,9 @@
               <div class="field-toolbar">
                 <div class="stats-info">
                   {{ $t('smsSend.totalChars') }} <span class="highlight">{{ messageSmsLen }}</span> {{ $t('smsSend.chars') }}，
-                  {{ $t('smsSend.estimatedParts') }}：<span class="highlight">{{ estimatedParts }}</span> {{ $t('smsSend.parts') }}
+                  {{ $t('smsSend.encoding') }}：<span class="highlight">{{ messageEncoding }}</span>，
+                  {{ $t('smsSend.billingUnits') }}：<span class="highlight">{{ messageSegmentUnits }}</span> {{ messageUnitLabel }}，
+                  {{ $t('smsSend.standardEstimatedParts') }}：<span class="highlight">{{ estimatedParts }}</span> {{ $t('smsSend.parts') }}
                 </div>
                 <div class="toolbar-actions">
                   <el-button link type="primary" size="small" @click="handleSelectDraft">{{ $t('smsSend.loadDraft') }}</el-button>
@@ -2239,6 +2241,10 @@ const messageEffectiveForCount = computed(() =>
 /** 正文码点数与超限阈值（GSM-7 单条 160，否则单条 70） */
 const messageSmsLen = computed(() => smsCodePointLength(messageEffectiveForCount.value))
 const messageIsGsm7 = computed(() => isGsm7Message(messageEffectiveForCount.value))
+const messageEncoding = computed(() => (messageIsGsm7.value ? 'GSM-7' : 'Unicode'))
+const messageUnitLabel = computed(() => (
+  messageIsGsm7.value ? 'septet' : 'UTF-16 ' + String(t('smsSend.codeUnits'))
+))
 const singleSegmentCharLimit = computed(() => (messageIsGsm7.value ? 160 : 70))
 // 与单段上限同口径的长度（GSM-7 按 septet，扩展字符算 2）；用于判断是否超出单段，
 // 避免含 [ ] 等扩展字符时用码点数误判超限。

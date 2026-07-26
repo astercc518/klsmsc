@@ -8,6 +8,7 @@ from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
 from app.utils.logger import get_logger
 from app.utils.phone_utils import format_sms_dest_phone, strip_leading_plus_enabled
+from app.utils.sms_segment import sanitize_sms_text_for_wire
 
 logger = get_logger(__name__)
 
@@ -172,6 +173,10 @@ class HTTPAdapter:
         # SMSLog 模型无 sender_id 字段，优先从 channel 配置获取
         sender = getattr(sms_log, 'sender_id', None) or self.channel.default_sender_id or ''
 
+        # 上行正文与「分段计费」走同一白名单规范化：en-dash「–」等会让上游按 UCS-2 多段
+        # 计费，与我们按 GSM-7 算的条数错位。清洗后编码口径与计费一致，避免差价平台自担。
+        wire_message = sanitize_sms_text_for_wire(sms_log.message or "")
+
         if template == 'kaola':
             account = (self.channel.username or '').strip()
             password = (self.channel.password or self.channel.api_key or '').strip()
@@ -181,25 +186,25 @@ class HTTPAdapter:
                 "account": account,
                 "password": password,
                 "mobile": mobile,
-                "content": sms_log.message,
+                "content": wire_message,
                 "extno": sender,
             }
         elif template == 'twilio':
             return {
                 "To": self._dest_phone_for_payload(sms_log.phone_number),
                 "From": sender,
-                "Body": sms_log.message,
+                "Body": wire_message,
             }
         elif template == 'nexmo':
             return {
                 "to": self._dest_phone_for_payload(sms_log.phone_number),
                 "from": sender,
-                "text": sms_log.message,
+                "text": wire_message,
             }
         else:
             return {
                 "phone_number": self._dest_phone_for_payload(sms_log.phone_number),
-                "message": sms_log.message,
+                "message": wire_message,
                 "sender_id": sender,
                 "message_id": sms_log.message_id,
             }

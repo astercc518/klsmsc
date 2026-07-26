@@ -15,7 +15,7 @@
 | 层级 | 技术 |
 |------|------|
 | 后端 API | Python 3、FastAPI、SQLAlchemy 2（异步）、Pydantic v2 |
-| 数据库 | MySQL 8 |
+| 数据库 | MySQL 8（API/Worker 经 **ProxySQL** 连接池接入，不直连 MySQL） |
 | 缓存 / 队列 | Redis、RabbitMQ、Celery |
 | 前端 | Vue 3、Vite、TypeScript、Element Plus、ECharts、vue-i18n |
 | 部署 | Docker Compose、Nginx（前端镜像） |
@@ -64,6 +64,7 @@ docker compose up -d
 | 前端（Nginx） | 80 / 443 |
 | API（直连调试） | 8000 |
 | MySQL | 3306 |
+| ProxySQL（应用连此，非直连 MySQL） | 6033 |
 | Redis | 6379 |
 | RabbitMQ AMQP | 5672 |
 | RabbitMQ 管理台 | 15672 |

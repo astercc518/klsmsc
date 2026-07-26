@@ -100,6 +100,9 @@ class Account(Base):
     activity_updated_at = Column(TIMESTAMP, nullable=True, comment="活跃度最后更新时间")
     activity_zero_since = Column(TIMESTAMP, nullable=True, comment="活跃度为0开始时间")
     is_deleted = Column(Boolean, nullable=False, default=False, comment="软删除标记")
+    # 客户门户展示控制（部分销售要求对其客户隐藏敏感项；仅影响客户门户显示，不影响计费/路由）
+    hide_price = Column(Boolean, nullable=False, default=False, server_default="0", comment="客户门户隐藏价格(单价/剩余条数估算)")
+    hide_tg = Column(Boolean, nullable=False, default=False, server_default="0", comment="客户门户隐藏TG(自绑TG卡片+归属商务联系TG)")
     supplier_url = Column(String(500), nullable=True, comment="供应商系统登录地址")
     supplier_credentials = Column(JSON, nullable=True, comment="供应商系统凭据(系统地址/客户名/坐席号/域名等)")
 

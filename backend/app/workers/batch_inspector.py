@@ -876,3 +876,50 @@ async def _do_refresh_business_report_cache():
         return {"warmed": warmed, "total": len(targets)}
     finally:
         await eng.dispose()
+
+
+@celery_app.task(name="refresh_sms_daily_stats_task")
+def refresh_sms_daily_stats_task():
+    """每 5 分钟重建最近 3 天的发送统计聚合（覆盖延迟到达的 DLR 状态）。"""
+    return _run_async(_do_refresh_sms_daily_stats(), timeout=180)
+
+
+async def _do_refresh_sms_daily_stats():
+    import redis.asyncio as aioredis
+
+    from app.services.sms_daily_stats import refresh_daily_stats
+
+    # Celery 的 _run_async 每次创建新事件循环，不能复用 app.utils.cache 的全局客户端；
+    # 否则前一个任务关闭 loop 后会报 Event loop is closed。任务内使用独立短连接。
+    redis = aioredis.from_url(settings.REDIS_URL, decode_responses=False)
+    lock_key = "sms_daily_stats:refresh:lock"
+    try:
+        if not await redis.set(lock_key, "1", nx=True, ex=240):
+            return {"skipped": True, "reason": "locked"}
+
+        eng, Session = _make_session(read_timeout=180)
+        today = datetime.now().date()
+        start_date = today - timedelta(days=2)
+        try:
+            async with Session() as db:
+                rows = await refresh_daily_stats(db, start_date, today)
+        finally:
+            await eng.dispose()
+        # 页面热缓存最长 15 分钟，自然过期即可。不要在大键空间用 SCAN 全库找缓存键，
+        # 实测 SQL 仅 0.4s，而两次 SCAN 会额外阻塞约 90s。
+        logger.info("发送统计日聚合刷新完成: {} ~ {}, {} 行", start_date, today, rows)
+        return {
+            "success": True,
+            "start_date": start_date.isoformat(),
+            "end_date": today.isoformat(),
+            "rows": rows,
+        }
+    except Exception as exc:
+        logger.warning("发送统计日聚合刷新失败: {}", exc)
+        return {"success": False, "error": str(exc)[:200]}
+    finally:
+        try:
+            await redis.delete(lock_key)
+        except Exception:
+            pass
+        await redis.aclose()

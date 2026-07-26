@@ -269,6 +269,9 @@ class AdminAccountUpdateRequest(BaseModel):
     # 绑定配置
     sales_id: Optional[int] = None  # 绑定员工ID（传0表示解绑）
     channel_ids: Optional[List[int]] = None  # 绑定通道ID列表
+    # 客户门户展示控制（部分销售要求对其客户隐藏敏感项；仅影响客户门户显示）
+    hide_price: Optional[bool] = None  # 隐藏客户门户价格(单价/剩余条数估算)
+    hide_tg: Optional[bool] = None  # 隐藏客户门户TG(自绑TG卡片+归属商务联系TG)
 
 
 class AdminAccountBalanceAdjustRequest(BaseModel):
@@ -276,6 +279,20 @@ class AdminAccountBalanceAdjustRequest(BaseModel):
     change_type: Optional[str] = None  # deposit/withdraw/adjustment/refund/charge
     description: Optional[str] = None
     transaction_id: Optional[str] = None
+
+
+class SalesRechargeRequest(BaseModel):
+    """销售用授信额度给自己名下客户充值"""
+    amount: float  # 充值金额（>0）
+    description: Optional[str] = None
+    idempotency_key: Optional[str] = None  # 幂等键，防重复扣款（前端每次弹窗生成一个）
+
+
+class StaffCreditAdjustRequest(BaseModel):
+    """管理员调整销售授信额度：设置额度上限 / 结算冲销（二选一或同时）"""
+    credit_limit: Optional[float] = None   # 设为新的额度上限（绝对值，不能低于已用）
+    settle_amount: Optional[float] = None  # 结算冲销：减少已用授信（腾出额度）
+    description: Optional[str] = None
 
 
 class AdminAccountResetPasswordRequest(BaseModel):
@@ -1121,6 +1138,9 @@ async def get_account_admin(
             "sales_id": a.sales_id,
             "channels": channels,
             "channel_ids": [ch["id"] for ch in channels],
+            # 客户门户展示控制
+            "hide_price": bool(getattr(a, "hide_price", False)),
+            "hide_tg": bool(getattr(a, "hide_tg", False)),
             "created_at": a.created_at.isoformat() if a.created_at else None,
             "updated_at": a.updated_at.isoformat() if a.updated_at else None,
             # 平台对接配置
@@ -1206,7 +1226,12 @@ async def update_account_admin(
         a.low_balance_threshold = request.low_balance_threshold
     if request.ip_whitelist is not None:
         a.ip_whitelist = json.dumps(request.ip_whitelist, ensure_ascii=False)
-    
+    # 客户门户展示控制（管理员专属；销售侧在上方已被限制仅可改 status）
+    if request.hide_price is not None:
+        a.hide_price = request.hide_price
+    if request.hide_tg is not None:
+        a.hide_tg = request.hide_tg
+
     # 更新绑定员工
     if request.sales_id is not None:
         a.sales_id = request.sales_id if request.sales_id > 0 else None
@@ -1697,6 +1722,130 @@ async def adjust_account_balance(
     }
 
 
+@router.post("/accounts/{account_id}/sales-recharge", response_model=dict)
+async def sales_recharge_account(
+    account_id: int,
+    request: SalesRechargeRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """销售：用授信额度给自己名下客户充值（扣减授信 + 加客户余额，原子+行锁+幂等）"""
+    from app.modules.common.account import Account
+    from app.modules.common.balance_log import BalanceLog
+    from app.modules.common.sales_credit_log import SalesCreditLog
+    from sqlalchemy.exc import IntegrityError
+    from decimal import Decimal
+
+    if not is_sales_scoped(admin):
+        raise HTTPException(status_code=403, detail="该接口仅供销售使用；管理员请用余额调整")
+
+    amount = Decimal(str(request.amount))
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="充值金额必须大于 0")
+    idem = (request.idempotency_key or "").strip() or None
+
+    def _summary(prior: "SalesCreditLog") -> dict:
+        return {
+            "success": True,
+            "duplicate": True,
+            "credit_limit_after": float(prior.credit_limit_after),
+            "credit_used_after": float(prior.credit_used_after),
+            "credit_available": float(Decimal(str(prior.credit_limit_after)) - Decimal(str(prior.credit_used_after))),
+        }
+
+    # 幂等：同一 key 已处理则直接回放，不重复扣款
+    if idem:
+        prior = (await db.execute(
+            select(SalesCreditLog).where(SalesCreditLog.idempotency_key == idem)
+        )).scalar_one_or_none()
+        if prior:
+            return _summary(prior)
+
+    # 固定加锁顺序（先销售后账户）防死锁；SELECT ... FOR UPDATE 串行化并发充值
+    me = (await db.execute(
+        select(AdminUser).where(AdminUser.id == admin.id).with_for_update()
+    )).scalar_one()
+    acc = (await db.execute(
+        select(Account).where(Account.id == account_id, Account.is_deleted == False).with_for_update()
+    )).scalar_one_or_none()
+    if not acc:
+        raise HTTPException(status_code=404, detail="客户不存在")
+    if acc.sales_id != admin.id:
+        raise HTTPException(status_code=403, detail="只能给自己名下的客户充值")
+
+    credit_limit = Decimal(str(me.credit_limit or 0))
+    credit_used = Decimal(str(me.credit_used or 0))
+    available = credit_limit - credit_used
+    if amount > available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"授信额度不足：可用 {float(available)}，本次需 {float(amount)}",
+        )
+
+    balance_before = Decimal(str(acc.balance or 0))
+    balance_after = balance_before + amount
+    acc.balance = balance_after
+    credit_used_after = credit_used + amount
+    me.credit_used = credit_used_after
+
+    note = (request.description or "").strip()
+    blog = BalanceLog(
+        account_id=account_id,
+        change_type="sales_credit",
+        amount=amount,
+        balance_after=balance_after,
+        description=f"销售({admin.username})授信充值 +{float(amount)} {acc.currency}"
+        + (f" | {note}" if note else ""),
+    )
+    db.add(blog)
+    await db.flush()  # 取 blog.id 关联进授信账本
+
+    clog = SalesCreditLog(
+        sales_id=admin.id,
+        change_type="recharge",
+        amount=amount,
+        credit_limit_after=credit_limit,
+        credit_used_after=credit_used_after,
+        account_id=account_id,
+        related_balance_log_id=blog.id,
+        operator_id=admin.id,
+        operator_name=admin.username,
+        idempotency_key=idem,
+        description=note or None,
+    )
+    db.add(clog)
+    try:
+        await db.commit()
+    except IntegrityError:
+        # 幂等键唯一冲突=并发重复提交，回滚后回放已处理结果
+        await db.rollback()
+        if idem:
+            prior = (await db.execute(
+                select(SalesCreditLog).where(SalesCreditLog.idempotency_key == idem)
+            )).scalar_one_or_none()
+            if prior:
+                return _summary(prior)
+        raise
+
+    from app.services.operation_log import log_operation as _log_op
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="finance", action="recharge", target_type="account",
+        target_id=str(account_id),
+        title=f"销售授信充值 账户#{account_id} +{float(amount)} {acc.currency}",
+        detail=f'{{"amount": {float(amount)}, "balance_after": {float(balance_after)}, "credit_used_after": {float(credit_used_after)}}}',
+    )
+
+    return {
+        "success": True,
+        "balance_before": float(balance_before),
+        "balance_after": float(balance_after),
+        "credit_limit_after": float(credit_limit),
+        "credit_used_after": float(credit_used_after),
+        "credit_available": float(credit_limit - credit_used_after),
+    }
+
+
 @router.get("/accounts/{account_id}/balance-logs", response_model=dict)
 async def list_balance_logs_admin(
     account_id: int,
@@ -1780,8 +1929,8 @@ async def list_recharge_logs_admin(
     """充值记录查询（含退补充值，退补充值不计算业绩/成本）"""
     from app.modules.common.balance_log import BalanceLog
     from sqlalchemy import func, and_
-    # 充值相关类型
-    recharge_types = ["deposit", "withdraw", "refund_recharge"]
+    # 充值相关类型（sales_credit=销售授信充值，与现金 deposit 区分展示）
+    recharge_types = ["deposit", "withdraw", "refund_recharge", "sales_credit"]
     if change_type:
         recharge_types = [change_type] if change_type in recharge_types else []
 
@@ -4322,10 +4471,10 @@ async def get_send_statistics(
     if is_sales_scoped(admin):
         sales_id = admin.id
 
-    # 缓存：月维度聚合需扫 ~900万行索引(~38s)，Redis 缓存避免每次打开/切换都全量重算(TTL 300s)。
+    # 缓存兜底：正常情况下下方读取日聚合表；尚未回填的历史区间才扫描 sms_logs。
     import json as _json
     from app.utils.cache import get_redis_client
-    _ck = f"send_stats:v1:{group_by}:{start_date}:{end_date}:a{account_id}:s{sales_id}:c{channel_id}:cc{country_code}"
+    _ck = f"send_stats:v2:{group_by}:{start_date}:{end_date}:a{account_id}:s{sales_id}:c{channel_id}:cc{country_code}"
     try:
         _hit = await (await get_redis_client()).get(_ck)
         if _hit:
@@ -4333,51 +4482,100 @@ async def get_send_statistics(
     except Exception:
         pass
 
-    agg_cols = [
-        func.count(SMSLog.id).label("submit_total"),
-        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("success_count"),
-        func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("failed_count"),
-        func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("pending_count"),
-        func.avg(SMSLog.selling_price).label("avg_unit_price"),
-        net_cost("total_cost"),
-        net_revenue("total_revenue"),
-    ]
-
-    # 分组聚合列：account 与 sales 维度都先按 account_id 聚合（走覆盖索引 idx_sms_report_cov2
-    # 做 index-only 扫描），sales 再在 Python 归约到员工——规避 JOIN accounts + GROUP BY
-    # sales_id 的嵌套回表慢计划（月维度 157s → ~37s，且 <120s 前端超时）。
-    if group_by == "channel":
-        gcol = SMSLog.channel_id
-    elif group_by == "country":
-        gcol = SMSLog.country_code
-    else:  # account / sales 均按 account_id 聚合
-        gcol = SMSLog.account_id
-
-    base = select(gcol.label("gid"), *agg_cols).where(
-        and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt)
-    )
-
-    # 剔除虚拟通道(注水/演示流量)，保留 channel_id 为 NULL 的真实失败记录
     virtual_ids = await _virtual_channel_ids(db)
-    if virtual_ids:
-        base = base.where(or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
-
-    if account_id:
-        base = base.where(SMSLog.account_id == account_id)
-    if channel_id:
-        base = base.where(SMSLog.channel_id == channel_id)
-    if country_code:
-        base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
+    _sacc_ids = None
     if sales_id:
         # 限定该员工名下账户，避免 JOIN accounts
         _sacc = (await db.execute(select(Account.id).where(Account.sales_id == sales_id))).all()
         _sacc_ids = [a for (a,) in _sacc]
-        base = base.where(SMSLog.account_id.in_(_sacc_ids) if _sacc_ids else (SMSLog.id < 0))
 
-    if group_by == "channel":
-        base = base.where(SMSLog.channel_id.isnot(None))
-    elif group_by == "country":
-        base = base.where(SMSLog.country_code.isnot(None))
+    # 覆盖完整时从日聚合表读取：整月约几千行，而不是 sms_logs 的 919 万行。
+    _use_daily_rollup = False
+    try:
+        from app.services.sms_daily_stats import has_complete_daily_stats
+
+        _use_daily_rollup = await has_complete_daily_stats(
+            db, start_dt.date(), end_dt.date() - timedelta(days=1)
+        )
+        # 高频聚合刻意不携带 country_code，避免刷新时对明细做随机回表；
+        # 国家分组/筛选保持原 SQL + Redis 缓存，统计口径不变。
+        _use_daily_rollup = _use_daily_rollup and group_by != "country" and not country_code
+    except Exception as exc:
+        logger.warning("发送统计日聚合覆盖检查失败，回退明细查询: {}", exc)
+
+    if _use_daily_rollup:
+        from app.modules.sms.sms_daily_stat import SMSDailyStat
+
+        D = SMSDailyStat
+        _total = func.sum(D.submit_total)
+        _priced = func.sum(D.priced_count)
+        agg_cols = [
+            _total.label("submit_total"),
+            func.sum(case((D.status == "delivered", D.submit_total), else_=0)).label("success_count"),
+            func.sum(case((D.status == "failed", D.submit_total), else_=0)).label("failed_count"),
+            func.sum(case((D.status.in_(("pending", "queued")), D.submit_total), else_=0)).label("pending_count"),
+            (func.sum(D.total_revenue) / func.nullif(_priced, 0)).label("avg_unit_price"),
+            func.sum(D.total_cost).label("total_cost"),
+            func.sum(D.total_revenue).label("total_revenue"),
+        ]
+        if group_by == "channel":
+            gcol = D.channel_id
+        elif group_by == "country":
+            gcol = D.country_code
+        else:
+            gcol = D.account_id
+        base = select(gcol.label("gid"), *agg_cols).where(
+            D.stat_date >= start_dt.date(), D.stat_date < end_dt.date()
+        )
+        if virtual_ids:
+            base = base.where(D.channel_id.notin_(virtual_ids))
+        if account_id:
+            base = base.where(D.account_id == account_id)
+        if channel_id:
+            base = base.where(D.channel_id == channel_id)
+        if country_code:
+            base = base.where(func.upper(D.country_code) == country_code.upper())
+        if sales_id:
+            base = base.where(D.account_id.in_(_sacc_ids) if _sacc_ids else (D.account_id < 0))
+        if group_by == "channel":
+            base = base.where(D.channel_id != 0)
+        elif group_by == "country":
+            base = base.where(D.country_code != "")
+    else:
+        agg_cols = [
+            func.count(SMSLog.id).label("submit_total"),
+            func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("success_count"),
+            func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("failed_count"),
+            func.sum(case((or_(SMSLog.status == "pending", SMSLog.status == "queued"), 1), else_=0)).label("pending_count"),
+            func.avg(SMSLog.selling_price).label("avg_unit_price"),
+            net_cost("total_cost"),
+            net_revenue("total_revenue"),
+        ]
+        # account 与 sales 均先按 account_id 聚合，sales 再在 Python 归约到员工。
+        if group_by == "channel":
+            gcol = SMSLog.channel_id
+        elif group_by == "country":
+            gcol = SMSLog.country_code
+        else:
+            gcol = SMSLog.account_id
+        base = select(gcol.label("gid"), *agg_cols).where(
+            and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt)
+        )
+        if virtual_ids:
+            base = base.where(or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
+        if account_id:
+            base = base.where(SMSLog.account_id == account_id)
+        if channel_id:
+            base = base.where(SMSLog.channel_id == channel_id)
+        if country_code:
+            base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
+        if sales_id:
+            base = base.where(SMSLog.account_id.in_(_sacc_ids) if _sacc_ids else (SMSLog.id < 0))
+        if group_by == "channel":
+            base = base.where(SMSLog.channel_id.isnot(None))
+        elif group_by == "country":
+            base = base.where(SMSLog.country_code.isnot(None))
+
     base = base.group_by(gcol)
 
     agg_rows = (await db.execute(base)).all()
@@ -4559,8 +4757,9 @@ async def get_send_statistics(
         "filters": {"start_date": start_date, "end_date": end_date, "group_by": group_by},
     }
     try:
-        # 取新连接再写(前面聚合期间旧连接可能已空闲失效)；月维度~40s，缓存 15min 内秒开
-        await (await get_redis_client()).set(_ck, _json.dumps(resp, default=str), ex=900)
+        # 已结束区间数据冻结，长缓存；包含今天的区间保留 15 分钟兜底缓存。
+        _ttl = 86400 if end_dt.date() <= datetime.now().date() else 900
+        await (await get_redis_client()).set(_ck, _json.dumps(resp, default=str), ex=_ttl)
     except Exception:
         pass
     return resp
@@ -4675,7 +4874,9 @@ async def get_admin_daily_stats(
     db: AsyncSession = Depends(get_db)
 ):
     """管理员：每日统计（用于图表）。支持按客户/通道/国家筛选。销售角色仅统计归属客户。"""
+    import json as _json
     from app.modules.sms.sms_log import SMSLog
+    from app.utils.cache import get_redis_client
     from sqlalchemy import func, and_, case, or_ as sa_or
 
     if start_date and end_date:
@@ -4691,36 +4892,81 @@ async def get_admin_daily_stats(
     if is_sales_scoped(admin):
         sales_id = admin.id
 
-    base = (
-        select(
+    _ck = (
+        f"admin_daily_stats:v1:{start_dt}:{end_dt}:a{account_id}:s{sales_id}:"
+        f"c{channel_id}:cc{country_code}"
+    )
+    try:
+        _hit = await (await get_redis_client()).get(_ck)
+        if _hit:
+            return _json.loads(_hit)
+    except Exception:
+        pass
+
+    virtual_ids = await _virtual_channel_ids(db)
+    _sacc_ids = None
+    if sales_id:
+        _sacc = (await db.execute(
+            select(Account.id).where(Account.sales_id == sales_id, Account.is_deleted == False)
+        )).all()
+        _sacc_ids = [a for (a,) in _sacc]
+
+    _use_daily_rollup = False
+    try:
+        from app.services.sms_daily_stats import has_complete_daily_stats
+
+        _use_daily_rollup = await has_complete_daily_stats(
+            db, start_dt, end_dt - timedelta(days=1)
+        )
+        _use_daily_rollup = _use_daily_rollup and not country_code
+    except Exception as exc:
+        logger.warning("每日趋势日聚合覆盖检查失败，回退明细查询: {}", exc)
+
+    if _use_daily_rollup:
+        from app.modules.sms.sms_daily_stat import SMSDailyStat
+
+        D = SMSDailyStat
+        base = select(
+            D.stat_date.label("date"),
+            func.sum(D.submit_total).label("total_sent"),
+            func.sum(case((D.status == "delivered", D.submit_total), else_=0)).label("total_delivered"),
+            func.sum(case((D.status == "failed", D.submit_total), else_=0)).label("total_failed"),
+            func.sum(D.total_cost).label("total_cost"),
+            func.sum(D.total_revenue).label("total_revenue"),
+        ).where(D.stat_date >= start_dt, D.stat_date < end_dt)
+        if virtual_ids:
+            base = base.where(D.channel_id.notin_(virtual_ids))
+        if account_id:
+            base = base.where(D.account_id == account_id)
+        if channel_id:
+            base = base.where(D.channel_id == channel_id)
+        if country_code:
+            base = base.where(func.upper(D.country_code) == country_code.upper())
+        if sales_id:
+            base = base.where(D.account_id.in_(_sacc_ids) if _sacc_ids else (D.account_id < 0))
+        base = base.group_by(D.stat_date).order_by(D.stat_date.asc())
+    else:
+        base = select(
             func.date(SMSLog.submit_time).label("date"),
             func.count(SMSLog.id).label("total_sent"),
             func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("total_delivered"),
             func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("total_failed"),
             net_cost("total_cost"),
             net_revenue("total_revenue"),
-        )
-        .where(and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt))
-    )
+        ).where(and_(SMSLog.submit_time >= start_dt, SMSLog.submit_time < end_dt))
+        if virtual_ids:
+            base = base.where(sa_or(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
+        if account_id:
+            base = base.where(SMSLog.account_id == account_id)
+        if channel_id:
+            base = base.where(SMSLog.channel_id == channel_id)
+        if country_code:
+            base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
+        if sales_id:
+            base = base.where(SMSLog.account_id.in_(_sacc_ids) if _sacc_ids else (SMSLog.id < 0))
+        base = base.group_by(func.date(SMSLog.submit_time)).order_by(func.date(SMSLog.submit_time).asc())
 
-    # 剔除虚拟通道(注水/演示流量)，保留 channel_id 为 NULL 的真实失败记录
-    virtual_ids = await _virtual_channel_ids(db)
-    if virtual_ids:
-        base = base.where(sa_or(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
-
-    if account_id:
-        base = base.where(SMSLog.account_id == account_id)
-    if channel_id:
-        base = base.where(SMSLog.channel_id == channel_id)
-    if country_code:
-        base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
-    if sales_id:
-        base = base.join(Account, SMSLog.account_id == Account.id).where(
-            and_(Account.sales_id == sales_id, Account.is_deleted == False)
-        )
-
-    base = base.group_by(func.date(SMSLog.submit_time)).order_by(func.date(SMSLog.submit_time).asc())
-    result = await db.execute(base)
+    result = (await db.execute(base)).all()
 
     statistics = []
     for row in result:
@@ -4737,7 +4983,13 @@ async def get_admin_daily_stats(
             "total_revenue": round(rev, 4),
             "total_profit": round(rev - cost, 4),
         })
-    return {"success": True, "days": (end_dt - start_dt).days, "statistics": statistics}
+    resp = {"success": True, "days": (end_dt - start_dt).days, "statistics": statistics}
+    try:
+        _ttl = 86400 if end_dt <= datetime.now().date() else 900
+        await (await get_redis_client()).set(_ck, _json.dumps(resp, default=str), ex=_ttl)
+    except Exception:
+        pass
+    return resp
 
 
 @router.get("/users", response_model=dict)
@@ -4824,6 +5076,10 @@ async def list_admin_users(
                 "status": u.status,
                 "tg_id": u.tg_id,
                 "commission_rate": float(u.commission_rate) if u.commission_rate else 0,
+                # 销售授信（循环信用额度）
+                "credit_limit": float(u.credit_limit or 0),
+                "credit_used": float(u.credit_used or 0),
+                "credit_available": float((u.credit_limit or 0) - (u.credit_used or 0)),
                 "monthly_performance": round(comm_map.get(u.id, 0.0), 2),
                 "monthly_commission": round(comm_map.get(u.id, 0.0) * (float(u.commission_rate or 0) / 100.0), 2),
                 "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
@@ -5035,6 +5291,156 @@ async def update_staff(
         "success": True,
         "message": msg,
         "telegram_rebind_required": cleared_tg_for_username_change,
+    }
+
+
+def _credit_log_dict(l) -> dict:
+    return {
+        "id": l.id,
+        "sales_id": l.sales_id,
+        "change_type": l.change_type,
+        "amount": float(l.amount),
+        "credit_limit_after": float(l.credit_limit_after),
+        "credit_used_after": float(l.credit_used_after),
+        "account_id": l.account_id,
+        "operator_name": l.operator_name,
+        "description": l.description,
+        "created_at": l.created_at.isoformat() if l.created_at else None,
+    }
+
+
+@router.post("/users/{user_id}/credit/adjust", response_model=dict)
+async def adjust_staff_credit(
+    user_id: int,
+    request: StaffCreditAdjustRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理员：调整销售授信（设置额度上限 / 结算冲销）。均写授信账本。"""
+    if admin.role not in ['super_admin', 'admin']:
+        raise HTTPException(status_code=403, detail="无权限调整授信额度")
+    from app.modules.common.sales_credit_log import SalesCreditLog
+    from decimal import Decimal
+
+    me = (await db.execute(
+        select(AdminUser).where(AdminUser.id == user_id).with_for_update()
+    )).scalar_one_or_none()
+    if not me:
+        raise HTTPException(status_code=404, detail="员工不存在")
+    if me.role != 'sales':
+        raise HTTPException(status_code=400, detail="授信额度仅对销售角色有效")
+
+    credit_limit = Decimal(str(me.credit_limit or 0))
+    credit_used = Decimal(str(me.credit_used or 0))
+    note = (request.description or "").strip() or None
+    changed = []
+
+    if request.credit_limit is not None:
+        new_limit = Decimal(str(request.credit_limit))
+        if new_limit < 0:
+            raise HTTPException(status_code=400, detail="额度不能为负")
+        if new_limit < credit_used:
+            raise HTTPException(status_code=400, detail=f"新额度不能低于已用授信 {float(credit_used)}")
+        delta = new_limit - credit_limit
+        me.credit_limit = new_limit
+        credit_limit = new_limit
+        db.add(SalesCreditLog(
+            sales_id=user_id, change_type="limit_change", amount=abs(delta),
+            credit_limit_after=credit_limit, credit_used_after=credit_used,
+            operator_id=admin.id, operator_name=admin.username,
+            description=(note + f"（额度调整 {float(delta):+g}）") if note else f"额度调整 {float(delta):+g}",
+        ))
+        changed.append("limit")
+
+    if request.settle_amount is not None:
+        settle = Decimal(str(request.settle_amount))
+        if settle <= 0:
+            raise HTTPException(status_code=400, detail="结算金额必须大于 0")
+        if settle > credit_used:
+            raise HTTPException(status_code=400, detail=f"结算金额不能超过已用授信 {float(credit_used)}")
+        credit_used = credit_used - settle
+        me.credit_used = credit_used
+        db.add(SalesCreditLog(
+            sales_id=user_id, change_type="settlement", amount=settle,
+            credit_limit_after=credit_limit, credit_used_after=credit_used,
+            operator_id=admin.id, operator_name=admin.username,
+            description=(note + "（结算冲销）") if note else "结算冲销",
+        ))
+        changed.append("settle")
+
+    if not changed:
+        raise HTTPException(status_code=400, detail="无调整内容")
+
+    await db.commit()
+
+    from app.services.operation_log import log_operation as _log_op
+    await _log_op(
+        db, admin_id=admin.id, admin_name=admin.username,
+        module="finance", action="update", target_type="admin_user",
+        target_id=str(user_id),
+        title=f"调整销售授信 {me.username}（{'/'.join(changed)}）",
+        detail=f'{{"credit_limit": {float(credit_limit)}, "credit_used": {float(credit_used)}}}',
+    )
+
+    return {
+        "success": True,
+        "credit_limit": float(credit_limit),
+        "credit_used": float(credit_used),
+        "credit_available": float(credit_limit - credit_used),
+    }
+
+
+@router.get("/users/{user_id}/credit/logs", response_model=dict)
+async def list_staff_credit_logs(
+    user_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理员：查看某销售的授信流水账本"""
+    if admin.role not in ['super_admin', 'admin', 'finance']:
+        raise HTTPException(status_code=403, detail="无权限查看授信账本")
+    from app.modules.common.sales_credit_log import SalesCreditLog
+    from sqlalchemy import func
+
+    total = await db.scalar(
+        select(func.count(SalesCreditLog.id)).where(SalesCreditLog.sales_id == user_id)
+    ) or 0
+    rows = (await db.execute(
+        select(SalesCreditLog).where(SalesCreditLog.sales_id == user_id)
+        .order_by(SalesCreditLog.created_at.desc())
+        .offset((page - 1) * page_size).limit(page_size)
+    )).scalars().all()
+    return {"success": True, "total": total, "page": page, "page_size": page_size,
+            "logs": [_credit_log_dict(l) for l in rows]}
+
+
+@router.get("/my-credit", response_model=dict)
+async def get_my_credit(
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """销售：查看自己的授信额度与最近流水（非销售返回 applicable=False）"""
+    from decimal import Decimal
+    applicable = is_sales_scoped(admin)
+    credit_limit = Decimal(str(admin.credit_limit or 0))
+    credit_used = Decimal(str(admin.credit_used or 0))
+    logs = []
+    if applicable:
+        from app.modules.common.sales_credit_log import SalesCreditLog
+        rows = (await db.execute(
+            select(SalesCreditLog).where(SalesCreditLog.sales_id == admin.id)
+            .order_by(SalesCreditLog.created_at.desc()).limit(50)
+        )).scalars().all()
+        logs = [_credit_log_dict(l) for l in rows]
+    return {
+        "success": True,
+        "applicable": applicable,
+        "credit_limit": float(credit_limit),
+        "credit_used": float(credit_used),
+        "credit_available": float(credit_limit - credit_used),
+        "logs": logs,
     }
 
 

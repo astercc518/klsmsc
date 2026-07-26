@@ -123,6 +123,17 @@
             <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
+        <el-table-column :label="$t('staff.credit')" width="150" align="right">
+          <template #default="{ row }">
+            <template v-if="row.role === 'sales'">
+              <span :class="(row.credit_available ?? 0) > 0 ? 'money' : 'text-muted'">
+                {{ (row.credit_available ?? 0).toFixed(2) }}
+              </span>
+              <span class="text-muted"> / {{ (row.credit_limit ?? 0).toFixed(2) }}</span>
+            </template>
+            <span v-else class="text-muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="status" :label="$t('common.status')" width="90" align="center">
           <template #default="{ row }">
             <el-tag :type="row.status === 'active' ? 'success' : 'danger'" size="small" effect="light">
@@ -148,6 +159,7 @@
                 <template #dropdown>
                   <el-dropdown-menu>
                     <el-dropdown-item @click="resetPassword(row)">{{ $t('staff.resetPassword') }}</el-dropdown-item>
+                    <el-dropdown-item v-if="row.role === 'sales'" @click="openCredit(row)">{{ $t('staff.creditManage') }}</el-dropdown-item>
                     <el-dropdown-item v-if="row.tg_id" @click="unbindStaffTelegram(row)">{{ $t('staff.unbindTg') }}</el-dropdown-item>
                     <el-dropdown-item @click="toggleStatus(row)">
                       {{ row.status === 'active' ? $t('staff.disableAccount') : $t('staff.enableAccount') }}
@@ -298,6 +310,67 @@
         <el-button type="primary" @click="submitResetPassword" :loading="resetting">{{ $t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
+
+    <!-- 销售授信管理对话框 -->
+    <el-dialog
+      v-model="creditDialogVisible"
+      :title="creditTarget ? `${$t('staff.creditManage')} - ${creditTarget.real_name || creditTarget.username}` : $t('staff.creditManage')"
+      width="640px"
+      @closed="creditTarget = null"
+    >
+      <div v-if="creditTarget" class="credit-stat">
+        <div class="credit-stat-item">
+          <div class="credit-stat-label">{{ $t('staff.creditLimit') }}</div>
+          <div class="credit-stat-value">{{ (creditTarget.credit_limit ?? 0).toFixed(2) }}</div>
+        </div>
+        <div class="credit-stat-item">
+          <div class="credit-stat-label">{{ $t('staff.creditUsed') }}</div>
+          <div class="credit-stat-value">{{ (creditTarget.credit_used ?? 0).toFixed(2) }}</div>
+        </div>
+        <div class="credit-stat-item">
+          <div class="credit-stat-label">{{ $t('staff.creditAvailable') }}</div>
+          <div class="credit-stat-value money">{{ (creditTarget.credit_available ?? 0).toFixed(2) }}</div>
+        </div>
+      </div>
+
+      <el-form :model="creditForm" label-width="120px" style="margin-top: 12px">
+        <el-form-item :label="$t('staff.creditNewLimit')">
+          <el-input-number v-model="creditForm.credit_limit" :min="0" :precision="2" :step="100" style="width: 100%" />
+          <div class="hint">{{ $t('staff.creditNewLimitHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="$t('staff.creditSettle')">
+          <el-input-number v-model="creditForm.settle_amount" :min="0" :precision="2" :step="100" placeholder="0" style="width: 100%" />
+          <div class="hint">{{ $t('staff.creditSettleHint') }}</div>
+        </el-form-item>
+        <el-form-item :label="$t('common.remark')">
+          <el-input v-model="creditForm.description" type="textarea" :rows="2" maxlength="200" show-word-limit />
+        </el-form-item>
+      </el-form>
+
+      <el-divider content-position="left">{{ $t('staff.creditLedger') }}</el-divider>
+      <el-table :data="creditLogs" v-loading="creditLogsLoading" size="small" max-height="240" empty-text="—">
+        <el-table-column :label="$t('common.time')" width="150">
+          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column :label="$t('staff.creditChangeType')" width="100">
+          <template #default="{ row }">{{ creditTypeLabel(row.change_type) }}</template>
+        </el-table-column>
+        <el-table-column :label="$t('common.amount')" width="100" align="right">
+          <template #default="{ row }">{{ Number(row.amount).toFixed(2) }}</template>
+        </el-table-column>
+        <el-table-column :label="$t('staff.creditUsedAfter')" width="110" align="right">
+          <template #default="{ row }">{{ Number(row.credit_used_after).toFixed(2) }}</template>
+        </el-table-column>
+        <el-table-column :label="$t('common.remark')" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.description || '-' }}</template>
+        </el-table-column>
+      </el-table>
+
+      <template #footer>
+        <el-button @click="creditDialogVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" @click="submitCredit" :loading="creditSubmitting">{{ $t('common.confirm') }}</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -322,6 +395,9 @@ interface Staff {
   status: string
   tg_id?: number
   commission_rate?: number
+  credit_limit?: number
+  credit_used?: number
+  credit_available?: number
   monthly_performance?: number
   monthly_commission?: number
   last_login_at?: string
@@ -345,6 +421,18 @@ const offboardTarget = ref<Staff | null>(null)
 const offboardReassignId = ref<number | null>(null)
 const offboarding = ref(false)
 const activeSalesList = ref<Staff[]>([])
+
+// 销售授信管理
+const creditDialogVisible = ref(false)
+const creditTarget = ref<Staff | null>(null)
+const creditForm = ref<{ credit_limit: number | null; settle_amount: number | null; description: string }>({
+  credit_limit: 0,
+  settle_amount: null,
+  description: ''
+})
+const creditLogs = ref<any[]>([])
+const creditSubmitting = ref(false)
+const creditLogsLoading = ref(false)
 
 const filters = ref({
   role: '',
@@ -472,6 +560,77 @@ const loadData = async () => {
     ElMessage.error(e.message || t('staff.loadFailed'))
   } finally {
     loading.value = false
+  }
+}
+
+// ===== 销售授信管理 =====
+const creditTypeLabel = (t0: string) => {
+  const map: Record<string, string> = {
+    limit_change: t('staff.creditTypeLimit'),
+    recharge: t('staff.creditTypeRecharge'),
+    settlement: t('staff.creditTypeSettle'),
+  }
+  return map[t0] || t0
+}
+
+const loadCreditLogs = async (salesId: number) => {
+  creditLogsLoading.value = true
+  try {
+    const res = await request.get(`/admin/users/${salesId}/credit/logs`, { params: { page: 1, page_size: 50 } })
+    creditLogs.value = res.logs || []
+  } catch (e: any) {
+    creditLogs.value = []
+  } finally {
+    creditLogsLoading.value = false
+  }
+}
+
+const openCredit = (row: Staff) => {
+  creditTarget.value = row
+  creditForm.value = {
+    credit_limit: Number(row.credit_limit ?? 0),
+    settle_amount: null,
+    description: ''
+  }
+  creditLogs.value = []
+  creditDialogVisible.value = true
+  loadCreditLogs(row.id)
+}
+
+const submitCredit = async () => {
+  if (!creditTarget.value) return
+  const payload: any = {}
+  // 额度上限有变化才提交
+  if (creditForm.value.credit_limit != null && Number(creditForm.value.credit_limit) !== Number(creditTarget.value.credit_limit ?? 0)) {
+    payload.credit_limit = Number(creditForm.value.credit_limit)
+  }
+  if (creditForm.value.settle_amount != null && Number(creditForm.value.settle_amount) > 0) {
+    payload.settle_amount = Number(creditForm.value.settle_amount)
+  }
+  if (creditForm.value.description) payload.description = creditForm.value.description
+  if (payload.credit_limit === undefined && payload.settle_amount === undefined) {
+    ElMessage.warning(t('staff.creditNoChange'))
+    return
+  }
+  creditSubmitting.value = true
+  try {
+    const res = await request.post(`/admin/users/${creditTarget.value.id}/credit/adjust`, payload)
+    ElMessage.success(t('common.saveSuccess'))
+    // 同步弹窗内展示 + 列表
+    if (creditTarget.value) {
+      creditTarget.value.credit_limit = res.credit_limit
+      creditTarget.value.credit_used = res.credit_used
+      creditTarget.value.credit_available = res.credit_available
+    }
+    creditForm.value.credit_limit = res.credit_limit
+    creditForm.value.settle_amount = null
+    creditForm.value.description = ''
+    await loadCreditLogs(creditTarget.value.id)
+    await loadData()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || t('staff.creditAdjustFailed'))
+  } finally {
+    creditSubmitting.value = false
   }
 }
 
@@ -929,6 +1088,37 @@ onMounted(() => {
   font-weight: 600;
   color: #38ef7d;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.credit-stat {
+  display: flex;
+  gap: 12px;
+}
+
+.credit-stat-item {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border-radius: 8px;
+  text-align: center;
+}
+
+.credit-stat-label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-bottom: 4px;
+}
+
+.credit-stat-value {
+  font-size: 18px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
 }
 
 .time-text {

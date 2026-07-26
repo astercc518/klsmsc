@@ -238,7 +238,7 @@
                 <span class="account-label">{{ $t('dashboard.clientName') }}</span>
                 <span class="account-value">{{ customerDisplayName }}</span>
               </div>
-              <div class="account-row">
+              <div v-if="!customerAccountInfo?.hide_tg" class="account-row">
                 <span class="account-label">{{ $t('dashboard.tgAccount') }}</span>
                 <span class="account-value">{{ formatTgHandle(customerAccountInfo?.tg_username) }}</span>
               </div>
@@ -246,7 +246,7 @@
                 <span class="account-label">{{ $t('dashboard.country') }}</span>
                 <span class="account-value">{{ countryDisplay(customerAccountInfo?.country_code) }}</span>
               </div>
-              <div class="account-row">
+              <div v-if="!customerAccountInfo?.hide_price" class="account-row">
                 <span class="account-label">{{ $t('dashboard.unitPrice') }}</span>
                 <span class="account-value">
                   <template v-if="customerAccountInfo?.unit_price != null && customerAccountInfo.unit_price > 0">
@@ -259,7 +259,7 @@
                 <span class="account-label">{{ $t('dashboard.balance') }}</span>
                 <span class="account-value">{{ customerAccountInfo ? `${customerAccountInfo.currency} ${formatNumber(customerAccountInfo.balance)}` : '—' }}</span>
               </div>
-              <div class="account-row">
+              <div v-if="!customerAccountInfo?.hide_price" class="account-row">
                 <span class="account-label">{{ $t('dashboard.remainingSms') }}</span>
                 <span class="account-value">
                   {{ customerAccountInfo?.remaining_sms_estimate != null ? formatNumber(customerAccountInfo.remaining_sms_estimate) : '—' }}

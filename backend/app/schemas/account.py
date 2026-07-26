@@ -45,6 +45,9 @@ class AccountInfoResponse(BaseModel):
     country_code: Optional[str] = None  # 国家/地区代码
     remaining_sms_estimate: Optional[int] = None  # 按单价估算剩余可发条数（余额/单价向下取整）
     sales_tg_username: Optional[str] = None  # 归属商务 Telegram，便于客户联系
+    # 客户门户展示控制（管理员按账户设置；仅前端据此隐藏，不影响计费）
+    hide_price: bool = False  # 隐藏价格（单价/剩余条数估算）
+    hide_tg: bool = False  # 隐藏 TG（自绑 TG 卡片 + 归属商务联系 TG）
 
 
 class AccountCreateRequest(BaseModel):

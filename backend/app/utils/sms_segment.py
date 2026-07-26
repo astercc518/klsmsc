@@ -36,6 +36,17 @@ def gsm7_septet_count(norm: str) -> "int | None":
     return total
 
 
+def utf16_code_unit_count(text: str) -> int:
+    """Return the number of 16-bit code units used by SMS Unicode encoding.
+
+    SMS providers commonly call the encoding UCS-2, but supplementary Unicode
+    characters (emoji, some historic scripts) are carried as UTF-16 surrogate
+    pairs and therefore consume two 16-bit units. Python ``len`` counts those as
+    one code point, so it cannot be used for billing boundaries.
+    """
+    return sum(2 if ord(c) > 0xFFFF else 1 for c in text)
+
+
 def normalize_for_sms_segment_count(text: str) -> str:
     """分段计费前的规范化（不改变用户存储的正文，仅用于条数与编码判断）。
 
@@ -71,6 +82,24 @@ def normalize_for_sms_segment_count(text: str) -> str:
 def is_gsm7_message(message: str) -> bool:
     norm = normalize_for_sms_segment_count(message)
     return gsm7_septet_count(norm) is not None
+
+
+def sanitize_sms_text_for_wire(message: str) -> str:
+    """上行发送前对正文做与「分段计费」完全相同的白名单规范化。
+
+    与 normalize_for_sms_segment_count 共用同一实现——这是关键：计费按此规范化
+    后判定编码/条数，若发送时不做同样处理，就会出现「计费按 GSM-7 算 1 条、上游
+    按 UCS-2 算 2 条」的口径错位（en-dash「–」U+2013、em-dash、省略号、弯引号、
+    NBSP、零宽字符都会触发），中间差价由平台自担。让上行正文走同一函数，
+    「实际发出的编码 ≡ 计费口径」由构造保证，二者永不漂移。
+
+    仅做安全的等价替换（–/—→-、…→...、弯引号→直引号、NBSP→空格、零宽→删除），
+    对真正的非 GSM-7 内容（中文/泰文/emoji 等）不改动，仍按 UCS-2 正确多段计费。
+    幂等：重复调用结果不变。
+    """
+    if not message:
+        return message
+    return normalize_for_sms_segment_count(message)
 
 
 # 短链占位符识别：{{TRACK_URL}}、{{TRACK_URL=target}}、{{TRACK_URL=target|base}}
@@ -121,8 +150,9 @@ def count_sms_parts(message: str) -> int:
         if septets <= 160:
             return 1
         return (septets + 152) // 153
-    # UCS-2：每码点 1 个 16-bit 单元，单段 70、拼接每段 67
-    length = len(norm)
-    if length <= 70:
+    # SMS Unicode（习惯称 UCS-2，实际需兼容 UTF-16 代理对）：
+    # 单段 70 个 16-bit 码元；6-byte UDH 拼接每段 67 码元。
+    units = utf16_code_unit_count(norm)
+    if units <= 70:
         return 1
-    return (length + 66) // 67
+    return (units + 66) // 67

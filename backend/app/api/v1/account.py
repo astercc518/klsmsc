@@ -164,6 +164,8 @@ async def get_account_info(
         country_code=account.country_code,
         remaining_sms_estimate=remaining_sms,
         sales_tg_username=sales_tg_username,
+        hide_price=bool(getattr(account, "hide_price", False)),
+        hide_tg=bool(getattr(account, "hide_tg", False)),
     )
 
 

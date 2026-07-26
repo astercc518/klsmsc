@@ -285,7 +285,7 @@
       <p class="page-desc">{{ $t('sendStats.pageDesc') }}</p>
         </div>
         <div class="header-actions">
-          <el-button type="primary" plain size="small" :loading="loading" @click="loadAll">
+          <el-button type="primary" plain size="small" :loading="adminLoading" @click="loadAll">
             <el-icon><Refresh /></el-icon> {{ $t('common.refresh') }}
           </el-button>
           <el-button type="success" size="small" @click="exportExcel">
@@ -305,7 +305,7 @@
                 :key="d.value"
                 class="dim-tab"
                 :class="{ active: filters.group_by === d.value }"
-                @click="filters.group_by = d.value; loadAll()"
+                @click="filters.group_by = d.value; scheduleLoadAll()"
               >
                 <el-icon><component :is="d.icon" /></el-icon>
                 <span>{{ d.label }}</span>
@@ -315,28 +315,28 @@
 
           <div class="filter-group">
             <label class="filter-label">{{ $t('sendStats.customer') }}</label>
-            <el-select v-model="filters.account_id" :placeholder="$t('sendStats.allCustomers')" clearable filterable style="width: 180px" @change="loadAll">
+            <el-select v-model="filters.account_id" :placeholder="$t('sendStats.allCustomers')" clearable filterable style="width: 180px" @change="scheduleLoadAll">
             <el-option v-for="a in accountOptions" :key="a.id" :label="`${a.account_name} (${a.id})`" :value="a.id" />
           </el-select>
           </div>
 
           <div class="filter-group">
             <label class="filter-label">{{ $t('sendStats.sales') }}</label>
-            <el-select v-model="filters.sales_id" :placeholder="$t('sendStats.allSales')" clearable style="width: 150px" @change="loadAll">
+            <el-select v-model="filters.sales_id" :placeholder="$t('sendStats.allSales')" clearable style="width: 150px" @change="scheduleLoadAll">
             <el-option v-for="s in staffOptions" :key="s.id" :label="s.real_name || s.username" :value="s.id" />
           </el-select>
           </div>
 
           <div class="filter-group">
             <label class="filter-label">{{ $t('sendStats.channel') }}</label>
-            <el-select v-model="filters.channel_id" :placeholder="$t('sendStats.allChannels')" clearable style="width: 180px" @change="loadAll">
+            <el-select v-model="filters.channel_id" :placeholder="$t('sendStats.allChannels')" clearable style="width: 180px" @change="scheduleLoadAll">
             <el-option v-for="c in channelOptions" :key="c.id" :label="c.channel_name" :value="c.id" />
           </el-select>
           </div>
 
           <div class="filter-group">
             <label class="filter-label">{{ $t('sendStats.country') }}</label>
-            <el-select v-model="filters.country_code" placeholder="" clearable filterable style="width: 140px" @change="loadAll">
+            <el-select v-model="filters.country_code" placeholder="" clearable filterable style="width: 140px" @change="scheduleLoadAll">
               <el-option :label="$t('sendStats.allCountries')" :value="undefined" />
               <el-option v-for="c in countryOptions" :key="c.iso" :label="`${c.flag} ${c.name}`" :value="c.iso" />
           </el-select>
@@ -386,7 +386,7 @@
       <!-- 图表行 -->
       <el-row :gutter="20" class="chart-row">
         <el-col :span="14">
-          <el-card class="chart-card">
+          <el-card class="chart-card" v-loading="adminTrendLoading">
             <template #header>
               <div class="card-header">
                 <el-icon><TrendCharts /></el-icon>
@@ -397,7 +397,7 @@
     </el-card>
         </el-col>
         <el-col :span="10">
-          <el-card class="chart-card">
+          <el-card class="chart-card" v-loading="adminStatsLoading">
             <template #header>
               <div class="card-header">
                 <el-icon><PieChart /></el-icon>
@@ -418,7 +418,7 @@
             <span class="table-count">({{ items.length }})</span>
           </div>
         </template>
-        <el-table :data="items" v-loading="loading" style="width: 100%" :default-sort="{ prop: 'submit_total', order: 'descending' }">
+        <el-table :data="items" v-loading="adminStatsLoading" style="width: 100%" :default-sort="{ prop: 'submit_total', order: 'descending' }">
           <el-table-column :label="dimLabel" prop="dim_label" min-width="160">
           <template #default="{ row }">
               <div class="dim-cell">
@@ -525,6 +525,9 @@ const isAdminMode = computed(() => {
 })
 
 const loading = ref(false)
+const adminStatsLoading = ref(false)
+const adminTrendLoading = ref(false)
+const adminLoading = computed(() => adminStatsLoading.value || adminTrendLoading.value)
 
 // ===== 客户模式状态 =====
 const cItems = ref<any[]>([])
@@ -652,13 +655,13 @@ const calcShortcutRange = (key: string): [string, string] => {
 const applyShortcut = (s: { key: string }) => {
   activeShortcut.value = s.key
   dateRange.value = calcShortcutRange(s.key)
-  if (isAdminMode.value) loadAll()
+  if (isAdminMode.value) scheduleLoadAll()
   else loadCustomerData()
 }
 
 const onDatePickerChange = () => {
   activeShortcut.value = ''
-  if (isAdminMode.value) loadAll()
+  if (isAdminMode.value) scheduleLoadAll()
   else loadCustomerData()
 }
 
@@ -925,9 +928,13 @@ const getFilterParams = () => {
   return p
 }
 
-const loadStats = async () => {
+let adminLoadGeneration = 0
+let adminLoadTimer: ReturnType<typeof setTimeout> | null = null
+
+const loadStats = async (generation: number) => {
   const params = { ...getFilterParams(), group_by: filters.group_by }
   const res = await getSendStatistics(params)
+  if (generation !== adminLoadGeneration) return
   if (res.success) {
     items.value = res.items || []
     summary.value = res.summary || null
@@ -936,9 +943,10 @@ const loadStats = async () => {
   }
 }
 
-const loadTrend = async () => {
+const loadTrend = async (generation: number) => {
   const params = { ...getFilterParams(), days: 90 }
   const res = await getAdminDailyStats(params)
+  if (generation !== adminLoadGeneration) return
   if (res.success) {
     trendData.value = res.statistics || []
   } else {
@@ -947,15 +955,44 @@ const loadTrend = async () => {
 }
 
 const loadAll = async () => {
-  loading.value = true
+  if (adminLoadTimer) {
+    clearTimeout(adminLoadTimer)
+    adminLoadTimer = null
+  }
+  const generation = ++adminLoadGeneration
+  adminStatsLoading.value = true
   try {
-    await Promise.all([loadStats(), loadTrend()])
-    nextTick(() => updateAdminCharts())
+    // 先展示汇总/明细，再加载趋势。日聚合尚未覆盖的历史区间也不会并发扫描两次大表。
+    await loadStats(generation)
+    if (generation !== adminLoadGeneration) return
+    await nextTick()
+    updateAdminPieChart()
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail || e.message || t('common.loadFailed'))
   } finally {
-    loading.value = false
+    if (generation === adminLoadGeneration) adminStatsLoading.value = false
   }
+
+  if (generation !== adminLoadGeneration) return
+  adminTrendLoading.value = true
+  try {
+    await loadTrend(generation)
+    if (generation !== adminLoadGeneration) return
+    await nextTick()
+    updateAdminTrendChart()
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || t('common.loadFailed'))
+  } finally {
+    if (generation === adminLoadGeneration) adminTrendLoading.value = false
+  }
+}
+
+const scheduleLoadAll = () => {
+  if (adminLoadTimer) clearTimeout(adminLoadTimer)
+  adminLoadTimer = setTimeout(() => {
+    adminLoadTimer = null
+    loadAll()
+  }, 250)
 }
 
 const loadAccounts = async () => {
@@ -1203,6 +1240,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (adminLoadTimer) clearTimeout(adminLoadTimer)
   window.removeEventListener('resize', handleResize)
   trendChart?.dispose()
   pieChart?.dispose()

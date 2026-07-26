@@ -83,6 +83,7 @@ _COUNTRY_DATA: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
     ("KZ", "7KZ", ("哈萨克斯坦",)),
     ("ZM", "260", ("赞比亚",)),
     ("RS", "381", ("塞尔维亚",)),
+    ("SK", "421", ("斯洛伐克",)),
 )
 
 # 索引：任意写法 -> ISO2
@@ -128,6 +129,16 @@ def normalize_country_code(raw: Optional[str]) -> Optional[str]:
     iso = _TO_ISO.get(s) or _TO_ISO.get(s.upper())
     if iso:
         return iso
+    # 兜底：'0' 补齐的区号(如 '084'、'063'、'001')去掉前导零再查一次。
+    # 部分账户/模板历史上把区号存成三位补零形式，直查落空会让「账户国家限制」
+    # 把补零区号当作 ISO2 与真实 ISO2(如 VN)比对失败 → 误判「Country not allowed」。
+    # 仅当去零后能命中已登记国家时才采用，命不中则维持原值，避免误伤。
+    if s.isdigit():
+        stripped = s.lstrip("0")
+        if stripped and stripped != s:
+            iso = _TO_ISO.get(stripped)
+            if iso:
+                return iso
     return s.upper()
 
 

@@ -26,6 +26,12 @@ function gsm7SeptetCount(norm: string): number | null {
   return total
 }
 
+/** SMS Unicode 计费使用 16-bit 码元。JavaScript string.length 正好是
+ * UTF-16 code unit 数；Emoji 等辅助平面码点占 2 个码元。 */
+export function utf16CodeUnitCount(text: string): number {
+  return (text || '').length
+}
+
 /**
  * 与 backend app.utils.sms_segment.normalize_for_sms_segment_count 一致：
  * 仅做白名单字符替换（NBSP/零宽/弯引号/长破折/省略号），不做整段 NFKC ——
@@ -57,7 +63,8 @@ export function smsCodePointLength(message: string): number {
 }
 
 /**
- * 返回与「单段上限」同口径的长度：GSM-7 按 septet（扩展字符算 2），UCS-2 按码点。
+ * 返回与「单段上限」同口径的长度：GSM-7 按 septet（扩展字符算 2），
+ * SMS Unicode 按 UTF-16 码元。
  * 用于判断正文是否超出单段（GSM-7 比 160 / UCS-2 比 70），避免含 [ ] 等扩展字符时
  * 用码点数误判。自动识别 {{TRACK_URL=...}} 占位符。
  */
@@ -67,7 +74,7 @@ export function smsSegmentUnitLength(message: string): number {
     : message
   const norm = normalizeForSmsSegmentCount(effective || '')
   const septets = gsm7SeptetCount(norm)
-  return septets !== null ? septets : [...norm].length
+  return septets !== null ? septets : utf16CodeUnitCount(norm)
 }
 
 export function isGsm7Message(message: string): boolean {
@@ -107,15 +114,16 @@ export function countSmsParts(message: string): number {
     ? substituteTrackUrlForCount(message)
     : message
   const norm = normalizeForSmsSegmentCount(effective)
-  const len = [...norm].length
-  if (len === 0) return 0
+  if (norm.length === 0) return 0
   const septets = gsm7SeptetCount(norm)
   if (septets !== null) {
     // GSM-7：单段 160 septet，拼接每段 153
     if (septets <= 160) return 1
     return Math.floor((septets + 152) / 153)
   }
-  // UCS-2：单段 70 码点，拼接每段 67
-  if (len <= 70) return 1
-  return Math.floor((len + 66) / 67)
+  // SMS Unicode（通常称 UCS-2，兼容 UTF-16 代理对）：
+  // 单段 70 个 16-bit 码元，6-byte UDH 拼接每段 67 码元。
+  const units = utf16CodeUnitCount(norm)
+  if (units <= 70) return 1
+  return Math.floor((units + 66) / 67)
 }
