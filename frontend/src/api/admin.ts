@@ -313,6 +313,8 @@ export interface AdminDashboardResponse {
   success: boolean;
   admin_name: string;
   admin_role: string;
+  /** 数据快照时间（后端常返回 4 分钟一轮的预热缓存，非请求时刻的实时值） */
+  generated_at?: string;
   statistics: {
     today_sent: number;
     today_delivered: number;

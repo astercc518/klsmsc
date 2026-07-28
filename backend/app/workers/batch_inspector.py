@@ -12,6 +12,7 @@ Go 网关全异步后：SMPP 条目不再在网关内同步改库，pending 可�
 停滞批次巡检恢复为高效的 **sms_batches.updated_at** 条件；若仍有 pending/queued 则执行超时斩杀。
 """
 import os
+import time
 from typing import Optional
 from datetime import datetime, timedelta
 from sqlalchemy import select, and_, func, update as _sa_upd_log
@@ -734,6 +735,19 @@ async def _do_inspect_batches():
         await eng.dispose()
 
 
+def _task_redis():
+    """为「当前任务的事件循环」新建 Redis 客户端。
+
+    **不要在 Celery 任务里用 app.utils.cache.get_redis_client()**：它是模块级单例，
+    连接池 bound 到首个使用它的事件循环；而 _run_async 每个任务都 new_event_loop()，
+    第二个任务起必 RuntimeError('Event loop is closed') / 'Future attached to a
+    different loop'（仪表板预热曾因此 100% 失败、缓存长期无人续命）。
+    调用方负责 finally 里 aclose()。
+    """
+    import redis.asyncio as _aioredis
+    return _aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+
+
 @celery_app.task(name='refresh_staff_commission_cache_task')
 def refresh_staff_commission_cache_task():
     """每 25 分钟预热员工月度业绩缓存，避免首次打开员工管理页需全表扫描 sms_logs"""
@@ -746,7 +760,6 @@ async def _do_refresh_staff_commission_cache():
     from app.modules.sms.sms_log import SMSLog
     from app.modules.sms.channel import Channel
     from app.modules.common.account import Account
-    from app.utils.cache import get_redis_client
 
     eng, Session = _make_session()
     try:
@@ -770,8 +783,11 @@ async def _do_refresh_staff_commission_cache():
             comm_map = {r.sales_id: float(r.total_profit or 0) for r in comm_result}
 
         ym = datetime.now().strftime("%Y-%m")
-        redis = await get_redis_client()
-        await redis.setex(f"admin:monthly_commission:{ym}", 1800, _json.dumps(comm_map))
+        redis = _task_redis()
+        try:
+            await redis.setex(f"admin:monthly_commission:{ym}", 1800, _json.dumps(comm_map))
+        finally:
+            await redis.aclose()
         logger.info(f"员工月度业绩缓存已刷新: {len(comm_map)} 个销售, month={ym}")
         return {"refreshed": len(comm_map), "month": ym}
     finally:
@@ -794,13 +810,19 @@ def refresh_admin_dashboard_cache_task():
 
 async def _do_refresh_admin_dashboard_cache():
     from types import SimpleNamespace
-    from app.api.v1.admin import get_admin_dashboard, _dashboard_preheat_force
-    from app.utils.cache import get_redis_client
+    from app.api.v1.admin import (
+        get_admin_dashboard,
+        _dashboard_preheat_force,
+        DASHBOARD_LIVE_TTL as _DASH_LIVE_TTL,
+    )
 
-    redis = await get_redis_client()
+    _t0 = time.time()
+    # 必须用「本次任务事件循环」的客户端，见 _task_redis 注释（用单例会 100% Event loop is closed）
+    redis = _task_redis()
     # 单实例锁：周期 240s 但冷算可能 ~50s，避免 beat 抖动/上一轮未完导致并发预热叠加冲击 DB
     if not await redis.set("admin_dashboard:preheat:lock", "1", nx=True, ex=230):
         logger.info("仪表板缓存预热跳过：上一轮仍在进行")
+        await redis.aclose()
         return {"skipped": True}
     # 抢路由的单飞锁：预热用 ContextVar 强制重算(绕过缓存读)，必须独占该锁，否则会与某个
     # 在线请求(它抢到锁后也会冷算)并发双重全表扫描，撞 net_write_timeout=60s → 2013。
@@ -809,6 +831,7 @@ async def _do_refresh_admin_dashboard_cache():
     if not await redis.set(_route_lock, "1", nx=True, ex=240):
         logger.info("仪表板缓存预热跳过：已有在线请求在计算")
         await redis.delete("admin_dashboard:preheat:lock")
+        await redis.aclose()
         return {"skipped": True, "reason": "route_locked"}
     # 仪表板十几条全表聚合冷算可达 ~60-120s；worker 默认 asyncmy read_timeout=30s 会半途撕连接(2013)。
     # 本任务独占路由锁、绝无并发争用，给它分钟级读超时单独计算。
@@ -830,10 +853,10 @@ async def _do_refresh_admin_dashboard_cache():
             return {"warmed": 0, "error": str(e)[:120]}
         val = await redis.get("admin_dashboard:role:super_admin")
         if val:
-            await redis.setex("admin_dashboard:role:admin", 300, val)
+            await redis.setex("admin_dashboard:role:admin", _DASH_LIVE_TTL, val)
             await redis.setex("admin_dashboard:role:admin:stale", 86400, val)
-            logger.info("管理员仪表板缓存预热完成: super_admin + admin")
-            return {"warmed": 2}
+            logger.info(f"管理员仪表板缓存预热完成: super_admin + admin, 耗时 {time.time() - _t0:.1f}s")
+            return {"warmed": 2, "elapsed": round(time.time() - _t0, 1)}
         logger.warning("仪表板缓存预热: super_admin 计算后未取到缓存值")
         return {"warmed": 0}
     finally:
@@ -844,21 +867,33 @@ async def _do_refresh_admin_dashboard_cache():
                 await redis.delete(_k)
             except Exception:
                 pass
+        await redis.aclose()
 
 
 @celery_app.task(name='refresh_business_report_cache_task')
 def refresh_business_report_cache_task():
-    """预热业务报表缓存，避免管理员首次打开报表页等待 ~17s 扫 sms_logs。"""
-    return _run_async(_do_refresh_business_report_cache())
+    """预热业务报表缓存，避免管理员首次打开报表页等待 ~17s 扫 sms_logs。
+
+    这里必须显式给超时：20 个维度组合逐个跑，_run_async 默认 60s 会在第三四个组合就
+    被砍掉（实测本任务连续数日每小时 TimeoutError，绝大多数组合从未被预热过 → 用户
+    打开报表页照样吃冷算）。任务每小时一轮，给 900s 预算不会与下一轮重叠。
+    """
+    return _run_async(_do_refresh_business_report_cache(), timeout=900)
 
 
 async def _do_refresh_business_report_cache():
     from app.services.reports_service import ReportsService
 
-    eng, Session = _make_session()
+    # 默认 asyncmy read_timeout=30s 会把每个组合的月维度聚合半途撕断成 (2013)，实测
+    # channel/supplier/employee 等维度整批 30s 整点报错、从未预热成功。预热独占后台、
+    # 无用户在等，给分钟级读超时。
+    eng, Session = _make_session(read_timeout=180)
     try:
         warmed = 0
-        # 覆盖前端会展示的常用组合（last_month 数据已冻结，缓存值有意义）
+        # 覆盖前端会展示的常用组合。ReportsService 对 this_month 的**结果**只给 60s TTL
+        # （区间上界在动），但预热它仍然值：它会把 ReportsService 的**按天 rollup 缓存**
+        # 建好（历史天 30 天 TTL），此后每次打开报表只需实时扫「今天」那一小片。
+        # last_month 区间已冻结，结果本身就是 24h TTL，第二轮起直接命中、近乎零成本。
         targets = [
             (dim, biz, tr)
             for dim in ("customer", "employee", "channel", "supplier", "country")

@@ -39,5 +39,14 @@ def net_revenue(label: str | None = "total_revenue"):
 
 
 def net_profit(label: str | None = "total_profit"):
-    """利润聚合：SUM(profit)（profit 为生成列 = selling - cost）。"""
-    return _sum(SMSLog.profit, label)
+    """利润聚合：SUM(selling_price) - SUM(cost_price)。
+
+    **不要写成 SUM(profit)**：profit 虽是生成列(= selling - cost)，但它 STORED 且不在
+    覆盖索引 idx_sms_report_cov2(submit_time, account_id, channel_id, status, cost_price,
+    selling_price) 内。一旦聚合里引用 profit，覆盖扫描就退化成对整个分区逐行回表——
+    实测仪表板「本月」聚合 EXPLAIN 从 `Using index` 掉成 `type: ALL` 扫 563 万行、15.8s，
+    改成 SUM(selling)-SUM(cost) 后回到覆盖扫描。
+    数值恒等：两列均 NOT NULL（近 1500 万行实测无单边 NULL），故 SUM 差与 SUM(差) 一致。
+    """
+    expr = func.sum(SMSLog.selling_price) - func.sum(SMSLog.cost_price)
+    return expr.label(label) if label else expr
