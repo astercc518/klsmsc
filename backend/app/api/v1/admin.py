@@ -3736,6 +3736,100 @@ class SenderIDAuditRequest(BaseModel):
 # 在线请求始终命中旧热缓存、绝不与预热并发冷扫描同一分区）。见 batch_inspector.refresh_admin_dashboard_cache_task。
 _dashboard_preheat_force = contextvars.ContextVar("dashboard_preheat_force", default=False)
 
+# 热缓存 TTL。预热任务每 240s 续一次，这里取 900s（=容忍连续 3 轮预热失败仍不掉出热缓存），
+# 避免「预热一坏就有用户被罚同步冷算」的悬崖。真实新鲜度由预热周期决定（≤4 分钟），
+# 与 TTL 无关；响应里的 generated_at 供前端显示数据时间。
+DASHBOARD_LIVE_TTL = 900
+DASHBOARD_STALE_TTL = 86400
+
+# 历史单日聚合缓存：已完结的日期结果不再变化，长期复用；昨天用短 TTL 兜迟到 DLR。
+_DAY_AGG_KEY = "dash:day:{tag}:{d}"
+_DAY_AGG_TTL_RECENT = 1800        # 昨天：迟到 DLR 仍会把 sent 改成 delivered
+_DAY_AGG_TTL_SETTLED = 86400 * 30  # 前天及更早：视为已定稿
+_DAY_AGG_EMPTY = {"sent": 0, "delivered": 0, "failed": 0, "cost": 0.0, "revenue": 0.0}
+
+
+async def _dashboard_day_aggs(db, days, not_virtual, virtual_ids):
+    """按天返回全局聚合(sent/delivered/failed/cost/revenue)，历史天走 Redis 长缓存。
+
+    仪表板的「本周 / 本月 / 7 天趋势」原本各是一条跨天扫描：实测本月聚合 15.8s、
+    7 天趋势 7.0s，占整个冷算 26s 的九成（EXPLAIN 对当月分区 563 万行 type=ALL）。
+    按天切开后只有「今天」必须实时扫（≈3 万行、亚秒），已完结的天缓存复用，
+    冷算降到秒级，也不再每 4 分钟把 10GB 分区刷穿 buffer pool。
+
+    仅用于全局角色（super_admin/admin/finance/tech）；sales 带 account 过滤走
+    idx_account_time 本来就便宜，仍走原查询，避免缓存串号。
+    """
+    import json as _json
+    import redis.asyncio as _aioredis
+    from datetime import date as _date
+    from app.modules.sms.sms_log import SMSLog
+    from sqlalchemy import func, and_, case
+
+    today = datetime.now().date()
+    out: dict = {}
+    rc = None
+    # 缓存键绑定「被剔除的虚拟通道集合」：新增/删除虚拟通道会改变历史天的口径，
+    # 不进键名的话旧数字会一直被复用到 TTL 到期（最长 30 天）。
+    tag = ",".join(str(i) for i in sorted(virtual_ids or ())) or "all"
+    try:
+        rc = _aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        raws = await rc.mget([_DAY_AGG_KEY.format(tag=tag, d=d.isoformat()) for d in days])
+        for d, raw in zip(days, raws or []):
+            if raw and d < today:  # 今天永不吃缓存
+                try:
+                    out[d] = _json.loads(raw)
+                except Exception:
+                    pass
+    except Exception:
+        rc = None
+
+    missing = [d for d in days if d not in out]
+    if missing:
+        lo = datetime.combine(min(missing), datetime.min.time())
+        hi = datetime.combine(max(missing), datetime.min.time()) + timedelta(days=1)
+        q = (
+            select(
+                func.date(SMSLog.submit_time).label("d"),
+                func.count(SMSLog.id).label("sent"),
+                func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
+                func.sum(case((SMSLog.status == "failed", 1), else_=0)).label("failed"),
+                net_cost("cost"),
+                net_revenue("revenue"),
+            )
+            .where(and_(SMSLog.submit_time >= lo, SMSLog.submit_time < hi, not_virtual))
+            .group_by(func.date(SMSLog.submit_time))
+        )
+        got = {}
+        for r in (await db.execute(q)).fetchall():
+            dd = r.d if isinstance(r.d, _date) else datetime.strptime(str(r.d), "%Y-%m-%d").date()
+            got[dd] = {
+                "sent": int(r.sent or 0),
+                "delivered": int(r.delivered or 0),
+                "failed": int(r.failed or 0),
+                "cost": round(float(r.cost or 0), 4),
+                "revenue": round(float(r.revenue or 0), 4),
+            }
+        for d in missing:
+            out[d] = got.get(d, dict(_DAY_AGG_EMPTY))
+        if rc is not None:
+            try:
+                pipe = rc.pipeline()
+                for d in missing:
+                    if d >= today:
+                        continue
+                    ttl = _DAY_AGG_TTL_RECENT if d >= today - timedelta(days=1) else _DAY_AGG_TTL_SETTLED
+                    pipe.setex(_DAY_AGG_KEY.format(tag=tag, d=d.isoformat()), ttl, _json.dumps(out[d]))
+                await pipe.execute()
+            except Exception:
+                pass
+    if rc is not None:
+        try:
+            await rc.aclose()
+        except Exception:
+            pass
+    return out
+
 
 @router.get("/dashboard", response_model=dict)
 async def get_admin_dashboard(
@@ -3759,8 +3853,8 @@ async def get_admin_dashboard(
         _cache_key = f"admin_dashboard:role:{admin.role}"
     else:
         _cache_key = f"admin_dashboard:{admin.id}:{admin.role}"
-    _cache_ttl = 300       # 热缓存；由 refresh_admin_dashboard_cache_task 每 4 分钟预热，用户常态命中
-    _stale_ttl = 86400     # 陈旧兜底副本(24h)：只要 seed 过一次，热缓存过期时其余请求即时吃旧数据，
+    _cache_ttl = DASHBOARD_LIVE_TTL   # 热缓存；由 refresh_admin_dashboard_cache_task 每 4 分钟预热，用户常态命中
+    _stale_ttl = DASHBOARD_STALE_TTL  # 陈旧兜底副本(24h)：只要 seed 过一次，热缓存过期时其余请求即时吃旧数据，
                            # 永不让用户同步等 ~60-120s 冷扫描(撞前端 120s 超时)；刷新交给后台预热任务
     _stale_key = f"{_cache_key}:stale"
     _lock_key = f"{_cache_key}:lock"
@@ -4021,26 +4115,45 @@ async def get_admin_dashboard(
 
     # 7天趋势
     week_ago = today_start - timedelta(days=6)
-    if is_global_admin or (not is_sales):
-        trend_filter = and_(SMSLog.submit_time >= week_ago, SMSLog.submit_time < today_end)
-    elif is_sales and my_account_ids:
-        trend_filter = and_(SMSLog.submit_time >= week_ago, SMSLog.submit_time < today_end,
-                            SMSLog.account_id.in_(my_account_ids))
+    # 全局角色（无 account 过滤）走按天缓存：趋势 / 本周 / 本月三处共用同一份日聚合，
+    # 只有「今天」需要实时扫描，历史天命中缓存 → 原本 7 天趋势 7.0s + 本月 15.8s 变秒级。
+    _use_day_cache = not is_sales
+    _day_aggs: dict = {}
+    _trend_days = [(today - timedelta(days=i)) for i in range(6, -1, -1)]
+    _month_first = today.replace(day=1)
+    _week_first = today - timedelta(days=today.weekday())
+    if _use_day_cache:
+        _span_start = min(_trend_days[0], _month_first, _week_first)
+        _all_days = [_span_start + timedelta(days=i) for i in range((today - _span_start).days + 1)]
+        _day_aggs = await _dashboard_day_aggs(db, _all_days, _not_virtual, _virtual_ids)
+        daily_trend = [
+            {
+                "date": d.isoformat(),
+                "sent": (_day_aggs.get(d) or _DAY_AGG_EMPTY)["sent"],
+                "delivered": (_day_aggs.get(d) or _DAY_AGG_EMPTY)["delivered"],
+                "revenue": round((_day_aggs.get(d) or _DAY_AGG_EMPTY)["revenue"], 2),
+            }
+            for d in _trend_days
+        ]
     else:
-        trend_filter = and_(SMSLog.submit_time >= week_ago, SMSLog.submit_time < today_end, SMSLog.id < 0)
+        if is_sales and my_account_ids:
+            trend_filter = and_(SMSLog.submit_time >= week_ago, SMSLog.submit_time < today_end,
+                                SMSLog.account_id.in_(my_account_ids))
+        else:
+            trend_filter = and_(SMSLog.submit_time >= week_ago, SMSLog.submit_time < today_end, SMSLog.id < 0)
 
-    trend_q = select(
-        func.date(SMSLog.submit_time).label("dt"),
-        func.count(SMSLog.id).label("cnt"),
-        func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
-        net_revenue("revenue"),
-    ).where(trend_filter).group_by(func.date(SMSLog.submit_time)).order_by(func.date(SMSLog.submit_time))
-    trend_rows = (await db.execute(trend_q.where(_not_virtual))).fetchall()
-    daily_trend = [
-        {"date": str(r.dt), "sent": r.cnt, "delivered": int(r.delivered or 0),
-         "revenue": round(float(r.revenue or 0), 2)}
-        for r in trend_rows
-    ]
+        trend_q = select(
+            func.date(SMSLog.submit_time).label("dt"),
+            func.count(SMSLog.id).label("cnt"),
+            func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered"),
+            net_revenue("revenue"),
+        ).where(trend_filter).group_by(func.date(SMSLog.submit_time)).order_by(func.date(SMSLog.submit_time))
+        trend_rows = (await db.execute(trend_q.where(_not_virtual))).fetchall()
+        daily_trend = [
+            {"date": str(r.dt), "sent": r.cnt, "delivered": int(r.delivered or 0),
+             "revenue": round(float(r.revenue or 0), 2)}
+            for r in trend_rows
+        ]
 
     # 今日客户发送TOP10
     top_customers = []
@@ -4248,6 +4361,27 @@ async def get_admin_dashboard(
             "profit": round(float(row.profit or 0), 4),
         }
 
+    def _sum_days(first_day):
+        """按天聚合求和（全局角色）。profit = revenue - cost：sms_logs.profit 是
+        STORED 生成列且不在 idx_sms_report_cov2 内，SUM(profit) 会让覆盖索引失效、
+        退化成对整个分区逐行回表（实测本月聚合 15.8s vs 10.2s）。两者数值恒等。"""
+        sent = 0
+        cost = 0.0
+        revenue = 0.0
+        d = first_day
+        while d <= today:
+            a = _day_aggs.get(d) or _DAY_AGG_EMPTY
+            sent += a["sent"]
+            cost += a["cost"]
+            revenue += a["revenue"]
+            d += timedelta(days=1)
+        return {
+            "sent": sent,
+            "cost": round(cost, 4),
+            "revenue": round(revenue, 4),
+            "profit": round(revenue - cost, 4),
+        }
+
     period_stats = {
         "today": {
             "sent": int(today_sent),
@@ -4255,8 +4389,8 @@ async def get_admin_dashboard(
             "revenue": round(today_revenue, 4),
             "profit": round(today_profit, 4),
         },
-        "week": await _period_agg(week_start, today_end),
-        "month": await _period_agg(month_start, today_end),
+        "week": _sum_days(_week_first) if _use_day_cache else await _period_agg(week_start, today_end),
+        "month": _sum_days(_month_first) if _use_day_cache else await _period_agg(month_start, today_end),
     }
 
     logger.info(f"仪表板查询: admin={admin.username}, role={admin.role}")
@@ -4309,6 +4443,9 @@ async def get_admin_dashboard(
         "success": True,
         "admin_name": admin.username,
         "admin_role": admin.role,
+        # 数据快照时间：响应常来自 4 分钟一轮的预热缓存，前端据此显示「更新于 x 分钟前」，
+        # 而不是让用户以为看到的是实时值。
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
         "statistics": {
             "today_sent": today_sent,
             "today_delivered": today_delivered,

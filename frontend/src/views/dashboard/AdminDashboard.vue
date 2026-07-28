@@ -947,8 +947,14 @@ const formatTime = (time: string) => {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-const updateLastTime = () => {
-  lastUpdateTime.value = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+/**
+ * 显示「数据时间」而非「拉取时间」：后端仪表板走 4 分钟一轮的预热缓存，
+ * 拿请求时刻当更新时间会让人误以为数字是实时的。有 generated_at 就用它。
+ */
+const updateLastTime = (generatedAt?: string) => {
+  const d = generatedAt ? new Date(generatedAt) : new Date()
+  const valid = !Number.isNaN(d.getTime()) ? d : new Date()
+  lastUpdateTime.value = valid.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
 /** 统一仪表盘监控字段（兼容 snake_case / camelCase） */
@@ -982,8 +988,16 @@ function normalizeServiceStatus(raw: unknown): AdminServiceStatusItem[] {
   })
 }
 
-const loadStaffData = async () => {
+/** 有通道列表权限的角色，用于预判是否可并行发起 getChannels */
+const CHANNEL_VIEW_ROLES = ['super_admin', 'admin', 'tech']
+
+const loadStaffData = async (): Promise<string | undefined> => {
   try {
+    // 通道列表原先串在 dashboard 响应之后发，白白多一个 RTT。角色已知（第二次起的刷新）
+    // 时直接并行发起；首次加载角色未知，仍回落到拿到权限后再发。
+    const channelsPromise = CHANNEL_VIEW_ROLES.includes(adminRole.value)
+      ? getChannels().catch(() => null)
+      : null
     const res = await getAdminDashboard()
     if (res.success) {
       accountName.value = res.admin_name
@@ -1065,16 +1079,18 @@ const loadStaffData = async () => {
       // 加载通道
       if (permissions.value.view_channels) {
         try {
-          const channelsRes = await getChannels()
-          channels.value = channelsRes.channels || []
+          const channelsRes = await (channelsPromise ?? getChannels())
+          channels.value = channelsRes?.channels || []
         } catch {
           channels.value = []
         }
       }
+      return res.generated_at
     }
   } catch (error) {
     console.error('Failed to load staff data:', error)
   }
+  return undefined
 }
 
 const loadCustomerData = async () => {
@@ -1144,16 +1160,16 @@ const loadData = async () => {
   try {
     const isImpersonateMode = sessionStorage.getItem('impersonate_mode') === '1'
     const adminToken = localStorage.getItem('admin_token')
-    
+
     if (!isImpersonateMode && adminToken) {
       isStaff.value = true
-      await loadStaffData()
+      updateLastTime(await loadStaffData())
     } else {
       isStaff.value = false
       adminRole.value = ''
       await loadCustomerData()
+      updateLastTime()
     }
-    updateLastTime()
   } finally {
     loading.value = false
   }
@@ -1176,13 +1192,29 @@ const copyApiKey = async () => {
 
 let refreshInterval: number
 
+/**
+ * 定时刷新：后台标签页不拉数据（切回来时会立刻补一次），并跳过仍在飞行中的请求，
+ * 避免慢响应时多个 loadData 叠加。
+ */
+const tickRefresh = () => {
+  if (document.visibilityState !== 'visible') return
+  if (loading.value) return
+  loadData()
+}
+
+const onVisibilityChange = () => {
+  if (document.visibilityState === 'visible' && !loading.value) loadData()
+}
+
 onMounted(() => {
   loadData()
-  refreshInterval = window.setInterval(() => loadData(), 60000)
+  refreshInterval = window.setInterval(tickRefresh, 60000)
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
   if (refreshInterval) clearInterval(refreshInterval)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 </script>

@@ -1,9 +1,11 @@
 """
 业务报表服务
 """
-from datetime import datetime, timedelta
+import json as _json
+from datetime import datetime, timedelta, date as _date, time as _time
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
-from sqlalchemy import select, func, and_, case, or_
+from sqlalchemy import select, func, and_, case, or_, text as _sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.sms.sms_log import SMSLog
 from app.modules.sms.channel import Channel
@@ -15,8 +17,23 @@ from app.utils.cache import get_cache_manager
 from app.utils.logger import get_logger
 from app.services.sms_finance import net_cost, net_revenue, net_profit
 from app.modules.common.balance_log import BalanceLog
+from app.config import settings
 
 logger = get_logger(__name__)
+
+# ── 按天聚合缓存 ────────────────────────────────────────────────────────────
+# 报表原本对整个区间做一次 GROUP BY：客户维度/上月实测 **81.7s**（优化器选
+# idx_account_time，920 万行逐行回表）。按天切开后，已完结的天结果不再变化 →
+# 缓存长期复用，每次打开报表只需实时扫「今天」那一小片。
+_DAY_ROLLUP_KEY = "report:sms_day:v1:{tag}:{col}:{d}"
+_DAY_ROLLUP_TTL_RECENT = 1800        # 昨天：迟到 DLR 仍会把 sent 改成 delivered
+_DAY_ROLLUP_TTL_SETTLED = 86400 * 30  # 前天及更早：视为已定稿
+
+# sms_logs 报表覆盖索引。优化器倾向选 idx_account_time（分组列有序、省临时表），
+# 但那条索引不含 status/价格列 → 每行都要回表；强制走覆盖索引实测 81.7s → 36s。
+# 仅对 account_id / channel_id 分组有效（country_code 不在该索引内）。
+_COV_INDEX = "idx_sms_report_cov2"
+_cov_index_available: Optional[bool] = None
 
 class ReportsService:
     @staticmethod
@@ -85,6 +102,140 @@ class ReportsService:
         return today, now
 
     @staticmethod
+    def _rollup_days(start_dt: datetime, end_dt: datetime) -> Optional[List[_date]]:
+        """把查询区间切成整天列表；无法整天对齐则返回 None（调用方回落到原始整段查询）。
+
+        覆盖 today / this_week / this_month（上界=now，等价于「算到今天为止」，
+        因为不可能有未来时间的记录）、last_month、以及只选日期的 custom 区间。
+        显式带时分秒的 custom 上界不整天对齐，按天聚合会多算，必须回落。
+        """
+        if start_dt.time() != _time.min:
+            return None
+        now = datetime.now()
+        if end_dt.time() == _time.min:
+            last = end_dt.date() - timedelta(days=1)          # 半开区间，上界当天不算
+        elif end_dt.date() == now.date() and abs((end_dt - now).total_seconds()) <= 120:
+            last = now.date()                                  # 上界就是「此刻」
+        else:
+            return None
+        if last < start_dt.date():
+            return []
+        return [start_dt.date() + timedelta(days=i) for i in range((last - start_dt.date()).days + 1)]
+
+    @staticmethod
+    async def _has_cov_index(db: AsyncSession) -> bool:
+        """覆盖索引是否存在（其它部署可能没建）。不存在时不能加 FORCE INDEX，否则报 1176。"""
+        global _cov_index_available
+        if _cov_index_available is None:
+            try:
+                row = (await db.execute(_sa_text(
+                    "SELECT COUNT(*) FROM information_schema.statistics "
+                    "WHERE table_schema = DATABASE() AND table_name = 'sms_logs' AND index_name = :ix"
+                ), {"ix": _COV_INDEX})).scalar()
+                _cov_index_available = bool(row)
+            except Exception:
+                _cov_index_available = False
+        return _cov_index_available
+
+    @staticmethod
+    async def _sms_group_rollup(db: AsyncSession, col_name: str, days: List[_date], virtual_ids: List[int]):
+        """按天缓存的分组聚合，返回与原查询同形状的行对象(fk/total_count/delivered_count/revenue/cost/profit)。
+
+        缺失的天用一条 `GROUP BY DATE(submit_time), <col>` 补齐（整月回填实测 ~33s，
+        一次性），写回缓存后长期复用；「今天」永远实时算。
+        """
+        col = {
+            "account_id": SMSLog.account_id,
+            "channel_id": SMSLog.channel_id,
+            "country_code": SMSLog.country_code,
+        }[col_name]
+        today = datetime.now().date()
+        # 缓存键绑定被剔除的虚拟通道集合：增删虚拟通道会改变历史天口径
+        tag = ",".join(str(i) for i in sorted(virtual_ids or ())) or "all"
+
+        per_day: Dict[_date, list] = {}
+        rc = None
+        try:
+            import redis.asyncio as aioredis
+            rc = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+            raws = await rc.mget([_DAY_ROLLUP_KEY.format(tag=tag, col=col_name, d=d.isoformat()) for d in days])
+            for d, raw in zip(days, raws or []):
+                if raw and d < today:  # 今天永不吃缓存
+                    try:
+                        per_day[d] = _json.loads(raw)
+                    except Exception:
+                        pass
+        except Exception:
+            rc = None
+
+        missing = [d for d in days if d not in per_day]
+        if missing:
+            conds = [
+                SMSLog.submit_time >= datetime.combine(min(missing), _time.min),
+                SMSLog.submit_time < datetime.combine(max(missing), _time.min) + timedelta(days=1),
+            ]
+            if virtual_ids:
+                conds.append(or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
+            q = (
+                select(
+                    func.date(SMSLog.submit_time).label("d"),
+                    col.label("fk"),
+                    func.count(SMSLog.id).label("c"),
+                    func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("dl"),
+                    net_revenue("rev"),
+                    net_cost("cst"),
+                )
+                .where(and_(*conds))
+                .group_by(func.date(SMSLog.submit_time), col)
+            )
+            # country_code 不在覆盖索引里，强制反而更糟；只给 account_id/channel_id 上 hint
+            if col_name in ("account_id", "channel_id") and await ReportsService._has_cov_index(db):
+                q = q.with_hint(SMSLog, f"FORCE INDEX ({_COV_INDEX})")
+
+            acc: Dict[_date, list] = {d: [] for d in missing}
+            for r in (await db.execute(q)).all():
+                dd = r.d if isinstance(r.d, _date) else datetime.strptime(str(r.d), "%Y-%m-%d").date()
+                if dd in acc:
+                    acc[dd].append([r.fk, int(r.c or 0), int(r.dl or 0), float(r.rev or 0), float(r.cst or 0)])
+            for d in missing:
+                per_day[d] = acc.get(d, [])
+            if rc is not None:
+                try:
+                    pipe = rc.pipeline()
+                    for d in missing:
+                        if d >= today:
+                            continue
+                        ttl = _DAY_ROLLUP_TTL_RECENT if d >= today - timedelta(days=1) else _DAY_ROLLUP_TTL_SETTLED
+                        pipe.setex(
+                            _DAY_ROLLUP_KEY.format(tag=tag, col=col_name, d=d.isoformat()),
+                            ttl, _json.dumps(per_day[d]),
+                        )
+                    await pipe.execute()
+                except Exception:
+                    pass
+        if rc is not None:
+            try:
+                await rc.aclose()
+            except Exception:
+                pass
+
+        merged: Dict[Any, list] = {}
+        for d in days:
+            for fk, c, dl, rev, cst in per_day.get(d, []):
+                b = merged.setdefault(fk, [0, 0, 0.0, 0.0])
+                b[0] += c
+                b[1] += dl
+                b[2] += rev
+                b[3] += cst
+        return [
+            SimpleNamespace(
+                fk=fk, dim_id=fk, total_count=c, delivered_count=dl,
+                revenue=rev, cost=cst, profit=rev - cst,
+            )
+            for fk, (c, dl, rev, cst) in merged.items()
+        ]
+
+    @staticmethod
     async def _get_sms_stats(db: AsyncSession, dimension: str, start_dt: datetime, end_dt: datetime) -> List[Dict[str, Any]]:
         """
         短信业务聚合查询。
@@ -109,33 +260,45 @@ class ReportsService:
                 or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)),
             )
 
+        # 整天对齐的区间（today/this_week/this_month/last_month/纯日期 custom）走按天缓存，
+        # 只实时扫「今天」；带时分秒的自定义区间无法按天切，回落到原始整段聚合。
+        rollup_days = ReportsService._rollup_days(start_dt, end_dt)
+
         # === 第一步：按 sms_logs 自带列聚合 ===
         if dimension == "country":
             # 国家维度直接出结果
-            query = (
-                select(
-                    SMSLog.country_code.label("dim_id"),
-                    agg_count, agg_delivered, agg_revenue, agg_cost, agg_profit,
+            if rollup_days is not None:
+                rows = await ReportsService._sms_group_rollup(db, "country_code", rollup_days, virtual_ids)
+            else:
+                query = (
+                    select(
+                        SMSLog.country_code.label("dim_id"),
+                        agg_count, agg_delivered, agg_revenue, agg_cost, agg_profit,
+                    )
+                    .where(time_filter)
+                    .group_by(SMSLog.country_code)
                 )
-                .where(time_filter)
-                .group_by(SMSLog.country_code)
-            )
-            rows = (await db.execute(query)).all()
+                rows = (await db.execute(query)).all()
             return [ReportsService._fmt_sms_row(r.dim_id, r.dim_id or "Unknown", r) for r in rows]
 
         if dimension in ("customer", "employee"):
-            base_col = SMSLog.account_id
+            base_col, base_col_name = SMSLog.account_id, "account_id"
         elif dimension in ("channel", "supplier"):
-            base_col = SMSLog.channel_id
+            base_col, base_col_name = SMSLog.channel_id, "channel_id"
         else:
             return []
 
-        query = (
-            select(base_col.label("fk"), agg_count, agg_delivered, agg_revenue, agg_cost, agg_profit)
-            .where(time_filter)
-            .group_by(base_col)
-        )
-        rows = (await db.execute(query)).all()
+        if rollup_days is not None:
+            rows = await ReportsService._sms_group_rollup(db, base_col_name, rollup_days, virtual_ids)
+        else:
+            query = (
+                select(base_col.label("fk"), agg_count, agg_delivered, agg_revenue, agg_cost, agg_profit)
+                .where(time_filter)
+                .group_by(base_col)
+            )
+            if await ReportsService._has_cov_index(db):
+                query = query.with_hint(SMSLog, f"FORCE INDEX ({_COV_INDEX})")
+            rows = (await db.execute(query)).all()
         if not rows:
             return []
 
