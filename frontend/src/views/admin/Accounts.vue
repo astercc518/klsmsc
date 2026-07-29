@@ -7,10 +7,6 @@
         <p class="page-desc">{{ pageDesc }}</p>
       </div>
       <div class="header-right">
-        <el-button v-if="isVoiceTab && !isSalesRole" type="warning" :loading="okccSyncing" @click="handleOkccSync">
-          <el-icon><Refresh /></el-icon>
-          同步OKCC
-        </el-button>
         <el-button v-if="!isSalesRole" type="primary" @click="openCreate" class="add-btn">
           <el-icon><Plus /></el-icon>
           {{ $t('customers.createAccount') }}
@@ -33,13 +29,6 @@
       >
         <span class="tab-icon">💬</span>
         <span class="tab-label">短信客户</span>
-      </div>
-      <div
-        class="biz-tab voice" :class="{ active: businessTypeFilter === 'voice' }"
-        @click="switchBizType('voice')"
-      >
-        <span class="tab-icon">📞</span>
-        <span class="tab-label">语音客户</span>
       </div>
       <div
         class="biz-tab data" :class="{ active: businessTypeFilter === 'data' }"
@@ -178,14 +167,14 @@
         </el-table-column>
 
         <!-- === SMS 专属列 === -->
-        <el-table-column v-if="!isVoiceTab" :label="$t('customers.protocol')" min-width="70" align="center">
+        <el-table-column :label="$t('customers.protocol')" min-width="70" align="center">
           <template #default="{ row }">
             <el-tag :type="row.protocol === 'SMPP' ? 'warning' : 'primary'" size="small" effect="plain">
               {{ row.protocol || 'HTTP' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column v-if="!isVoiceTab" :label="$t('customers.channel')" min-width="120">
+        <el-table-column :label="$t('customers.channel')" min-width="120">
           <template #default="{ row }">
             <template v-if="row.channels?.length">
               <el-tag v-for="ch in row.channels" :key="ch.id" size="small" type="info" effect="plain" style="margin-right: 4px; margin-bottom: 2px">
@@ -195,34 +184,11 @@
             <span v-else class="text-muted" title="未指定默认通道，可用全部通道（走全局路由）">*</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="!isVoiceTab" :label="$t('customers.payment')" min-width="60" align="center">
+        <el-table-column :label="$t('customers.payment')" min-width="60" align="center">
           <template #default="{ row }">
             <el-tag :type="row.payment_type === 'prepaid' ? 'success' : 'warning'" size="small" effect="plain">
               {{ row.payment_type === 'prepaid' ? $t('customers.prepaid') : $t('customers.postpaid') }}
             </el-tag>
-          </template>
-        </el-table-column>
-
-        <!-- === 语音专属列 === -->
-        <el-table-column v-if="isVoiceTab" label="坐席范围" min-width="140">
-          <template #default="{ row }">
-            <template v-if="row.supplier_credentials?.sip_range">
-              <code class="voice-code">{{ row.supplier_credentials.sip_range }}</code>
-              <span class="sip-count">({{ row.supplier_credentials.sip_count || '-' }}个)</span>
-            </template>
-            <span v-else class="text-muted">-</span>
-          </template>
-        </el-table-column>
-        <el-table-column v-if="isVoiceTab" label="SIP域名" min-width="160">
-          <template #default="{ row }">
-            <code v-if="row.supplier_credentials?.sip_domain" class="voice-code">{{ row.supplier_credentials.sip_domain }}</code>
-            <span v-else class="text-muted">-</span>
-          </template>
-        </el-table-column>
-        <el-table-column v-if="isVoiceTab" label="资费套餐" min-width="160">
-          <template #default="{ row }">
-            <span v-if="row.supplier_credentials?.billing_package" class="pkg-name">{{ row.supplier_credentials.billing_package }}</span>
-            <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
 
@@ -259,7 +225,7 @@
         </el-table-column>
 
         <!-- SMS 专属列：剩余条数 -->
-        <el-table-column v-if="!isVoiceTab" min-width="110" align="right">
+        <el-table-column min-width="110" align="right">
           <template #header>
             <el-tooltip :content="$t('customers.remainingMessagesHint')" placement="top">
               <span class="col-hint">{{ $t('customers.remainingMessages') }}</span>
@@ -267,18 +233,6 @@
           </template>
           <template #default="{ row }">
             <span class="remaining-msgs">{{ formatRemainingMessages(row) }}</span>
-          </template>
-        </el-table-column>
-
-        <!-- 语音专属列：OKCC 余额 -->
-        <el-table-column v-if="isVoiceTab" label="OKCC余额" min-width="100" align="right">
-          <template #default="{ row }">
-            <template v-if="row.supplier_credentials?.okcc_balance !== undefined && row.supplier_credentials?.okcc_balance !== null">
-              <span :class="['balance-text', row.supplier_credentials.okcc_balance < 0 ? 'negative' : 'positive']">
-                ¥{{ Number(row.supplier_credentials.okcc_balance).toFixed(2) }}
-              </span>
-            </template>
-            <span v-else class="text-muted">-</span>
           </template>
         </el-table-column>
 
@@ -290,17 +244,11 @@
         </el-table-column>
 
         <!-- 操作列 -->
-        <el-table-column :label="$t('common.action')" :width="isVoiceTab ? 160 : (isSalesRole ? 360 : 200)" fixed="right" align="center">
+        <el-table-column :label="$t('common.action')" :width="isSalesRole ? 360 : 200" fixed="right" align="center">
           <template #default="{ row }">
             <div class="action-btns">
-              <template v-if="isVoiceTab && !isSalesRole">
-                <el-button link type="primary" size="small" @click="showVoiceDetail(row)">详情</el-button>
-                <el-button link type="primary" size="small" @click="openEdit(row)">{{ $t('common.edit') }}</el-button>
-                <el-button link type="danger" size="small" @click="handleDelete(row)">{{ $t('common.delete') }}</el-button>
-              </template>
-              <template v-else-if="isSalesRole">
-                <el-button v-if="isVoiceTab" link type="primary" size="small" @click="showVoiceDetail(row)">详情</el-button>
-                <el-button v-else link type="warning" size="small" @click="impersonateAccount(row)" :disabled="row.status !== 'active'">{{ $t('customers.login') }}</el-button>
+              <template v-if="isSalesRole">
+                <el-button link type="warning" size="small" @click="impersonateAccount(row)" :disabled="row.status !== 'active'">{{ $t('customers.login') }}</el-button>
                 <el-button
                   v-if="row.status === 'active'"
                   link type="danger" size="small"
@@ -311,8 +259,8 @@
                   link type="success" size="small"
                   @click="salesSetStatus(row, 'active')"
                 >{{ $t('customers.salesActivate') }}</el-button>
-                <el-button v-if="!isVoiceTab" link type="success" size="small" @click="openSalesRecharge(row)">{{ $t('customers.recharge') }}</el-button>
-                <el-button v-if="!isVoiceTab" link type="primary" size="small" @click="openResetPasswordDialog(row)">{{ $t('customers.resetLoginPassword') }}</el-button>
+                <el-button link type="success" size="small" @click="openSalesRecharge(row)">{{ $t('customers.recharge') }}</el-button>
+                <el-button link type="primary" size="small" @click="openResetPasswordDialog(row)">{{ $t('customers.resetLoginPassword') }}</el-button>
               </template>
               <template v-else>
                 <el-button link type="primary" size="small" @click="openEdit(row)">{{ $t('common.edit') }}</el-button>
@@ -373,7 +321,6 @@
         <el-form-item :label="$t('customers.bizTypeLabel')">
           <el-select v-model="form.business_type" style="width: 100%">
             <el-option label="💬 短信 SMS" value="sms" />
-            <el-option label="📞 语音 Voice" value="voice" />
             <el-option label="📊 数据 Data" value="data" />
           </el-select>
         </el-form-item>
@@ -880,122 +827,6 @@
         <el-button type="primary" :loading="resetPwdLoading" @click="submitResetPassword">{{ $t('common.confirm') }}</el-button>
       </template>
     </el-dialog>
-
-    <!-- 语音客户详情弹窗 -->
-    <el-dialog v-model="voiceDetailVisible" title="语音客户详情" width="600px" :close-on-click-modal="true">
-      <template v-if="voiceDetailRow">
-        <div class="voice-detail-card">
-          <div class="voice-section">
-            <div class="voice-section-title"><span class="voice-icon">🏢</span> 企业客户登录</div>
-            <div class="voice-info-grid">
-              <div class="voice-info-row">
-                <span class="voice-label">客户名:</span>
-                <code class="voice-value">{{ voiceDetailRow.supplier_credentials?.client_name || voiceDetailRow.account_name }}</code>
-                <el-button link size="small" @click="copyText(voiceDetailRow.supplier_credentials?.client_name || voiceDetailRow.account_name)">复制</el-button>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">用户名:</span>
-                <code class="voice-value">{{ voiceDetailRow.supplier_credentials?.username || 'admin' }}</code>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">密码:</span>
-                <code class="voice-value">{{ enterprisePassword || '-' }}</code>
-                <el-button v-if="enterprisePassword" link size="small" @click="copyText(enterprisePassword)">复制</el-button>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">登录地址:</span>
-                <a v-if="voiceDetailRow.supplier_url" :href="voiceDetailRow.supplier_url" target="_blank" class="voice-link">{{ voiceDetailRow.supplier_url }}</a>
-                <span v-else class="text-muted">-</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="voice-section">
-            <div class="voice-section-title"><span class="voice-icon">📞</span> 坐席注册</div>
-            <div class="voice-info-grid">
-              <div class="voice-info-row">
-                <span class="voice-label">坐席号:</span>
-                <code class="voice-value">{{ voiceDetailRow.supplier_credentials?.sip_range || voiceDetailRow.supplier_credentials?.agent_range || '-' }}</code>
-                <el-button v-if="voiceDetailRow.supplier_credentials?.sip_range" link size="small" @click="copyText(voiceDetailRow.supplier_credentials.sip_range)">复制</el-button>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">口令:</span>
-                <code class="voice-value">{{ voiceDetailRow.supplier_credentials?.sip_password || '-' }}</code>
-                <el-button v-if="voiceDetailRow.supplier_credentials?.sip_password" link size="small" @click="copyText(voiceDetailRow.supplier_credentials.sip_password)">复制</el-button>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">域名:</span>
-                <code class="voice-value">{{ voiceDetailRow.supplier_credentials?.sip_domain || voiceDetailRow.supplier_credentials?.domain || '-' }}</code>
-                <el-button v-if="voiceDetailRow.supplier_credentials?.sip_domain" link size="small" @click="copyText(voiceDetailRow.supplier_credentials.sip_domain)">复制</el-button>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">坐席数:</span>
-                <span>{{ voiceDetailRow.supplier_credentials?.sip_count || '-' }} 个</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="voice-section">
-            <div class="voice-section-title"><span class="voice-icon">👤</span> 坐席登录</div>
-            <div class="voice-info-grid">
-              <div class="voice-info-row">
-                <span class="voice-label">客户名:</span>
-                <code class="voice-value">{{ voiceDetailRow.supplier_credentials?.client_name || voiceDetailRow.account_name }}</code>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">用户名:</span>
-                <code class="voice-value">{{ voiceDetailRow.supplier_credentials?.sip_range || '-' }}</code>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">密码:</span>
-                <code class="voice-value">{{ voiceDetailRow.supplier_credentials?.sip_range || '-' }}</code>
-              </div>
-            </div>
-          </div>
-
-          <div class="voice-section">
-            <div class="voice-section-title"><span class="voice-icon">💰</span> 计费信息</div>
-            <div class="voice-info-grid">
-              <div class="voice-info-row">
-                <span class="voice-label">资费套餐:</span>
-                <span>{{ voiceDetailRow.supplier_credentials?.billing_package || '-' }}</span>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">单价:</span>
-                <span class="unit-price">¥{{ (voiceDetailRow.unit_price ?? 0).toFixed(4) }}/分钟</span>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">平台余额:</span>
-                <span class="balance">¥{{ (voiceDetailRow.balance ?? 0).toFixed(2) }}</span>
-              </div>
-              <div class="voice-info-row" v-if="voiceDetailRow.supplier_credentials?.okcc_balance !== undefined">
-                <span class="voice-label">OKCC余额:</span>
-                <span :class="['balance-text', (voiceDetailRow.supplier_credentials?.okcc_balance ?? 0) < 0 ? 'negative' : 'positive']">
-                  ¥{{ Number(voiceDetailRow.supplier_credentials?.okcc_balance ?? 0).toFixed(2) }}
-                </span>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">国家:</span>
-                <span>{{ formatAccountCountry(voiceDetailRow.country_code) }}</span>
-              </div>
-              <div class="voice-info-row">
-                <span class="voice-label">员工:</span>
-                <span>{{ voiceDetailRow.sales?.real_name || voiceDetailRow.sales?.username || '-' }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="voice-section" v-if="voiceDetailRow.supplier_credentials?.raw_reply">
-            <div class="voice-section-title"><span class="voice-icon">📋</span> 技术原始回复</div>
-            <pre class="voice-raw-reply">{{ voiceDetailRow.supplier_credentials.raw_reply }}</pre>
-          </div>
-        </div>
-      </template>
-      <template #footer>
-        <el-button type="primary" @click="copyAllVoiceDetail">一键复制全部</el-button>
-        <el-button @click="voiceDetailVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -1017,7 +848,6 @@ import {
   resetAccountPassword,
   generateAccountPassword,
   getAccountBalanceLogs,
-  syncOkccBalances,
   getAccountCountryRoutes,
   setAccountCountryRoutes,
   type AdminAccount,
@@ -1041,7 +871,6 @@ const route = useRoute()
 // 页面标题
 const pageTitle = computed(() => {
   if (props.defaultBusinessType === 'sms') return t('menu.smsAccounts')
-  if (props.defaultBusinessType === 'voice') return t('menu.voiceAccounts')
   if (props.defaultBusinessType === 'data') return t('menu.dataAccounts')
   return t('customers.title')
 })
@@ -1067,7 +896,6 @@ const countryQueryFilter = ref('')
 const channelKeywordFilter = ref('')
 const statusFilter = ref('')
 const businessTypeFilter = ref(props.defaultBusinessType || '')
-const isVoiceTab = computed(() => businessTypeFilter.value === 'voice')
 const salesIdFilter = ref<number | undefined>(undefined)
 const filterSalesStaffList = ref<any[]>([])
 
@@ -1973,91 +1801,6 @@ const resetPwdLoading = ref(false)
 const resetPwdRow = ref<AdminAccount | null>(null)
 const resetPwdForm = reactive({ password: '' })
 
-const voiceDetailVisible = ref(false)
-const voiceDetailRow = ref<any>(null)
-function showVoiceDetail(row: any) {
-  voiceDetailRow.value = row
-  voiceDetailVisible.value = true
-}
-
-// 企业客户登录密码：先取扁平字段，再回落到 sections.enterprise_login.密码，
-// 最后回落到 OKCC 系统的固定默认密码
-const ENTERPRISE_DEFAULT_PASSWORD = 'aa112233'
-const enterprisePassword = computed(() => {
-  const c = voiceDetailRow.value?.supplier_credentials
-  if (!c) return ENTERPRISE_DEFAULT_PASSWORD
-  return c.password || c.sections?.enterprise_login?.['密码'] || ENTERPRISE_DEFAULT_PASSWORD
-})
-
-async function copyAllVoiceDetail() {
-  const row = voiceDetailRow.value
-  if (!row) return
-  const c = row.supplier_credentials || {}
-  const clientName = c.client_name || row.account_name || '-'
-  const sipRange = c.sip_range || c.agent_range || '-'
-  const sipPwd = c.sip_password || '-'
-  const sipDomain = c.sip_domain || c.domain || '-'
-  const sipCount = c.sip_count != null ? `${c.sip_count} 个` : '-'
-  const loginUrl = row.supplier_url || '-'
-  const entUser = c.username || 'admin'
-  const entPwd = enterprisePassword.value || '-'
-  const billingPkg = c.billing_package || '-'
-  const unitPrice = `¥${(row.unit_price ?? 0).toFixed(4)}/分钟`
-  const balance = `¥${(row.balance ?? 0).toFixed(2)}`
-  const okccBal = c.okcc_balance !== undefined ? `¥${Number(c.okcc_balance ?? 0).toFixed(2)}` : '-'
-  const country = formatAccountCountry(row.country_code) || '-'
-  const sales = row.sales?.real_name || row.sales?.username || '-'
-
-  const text = [
-    '【企业客户登录】',
-    `客户名: ${clientName}`,
-    `用户名: ${entUser}`,
-    `密码: ${entPwd}`,
-    `登录地址: ${loginUrl}`,
-    '',
-    '【坐席注册】',
-    `坐席号: ${sipRange}`,
-    `口令: ${sipPwd}`,
-    `域名: ${sipDomain}`,
-    `坐席数: ${sipCount}`,
-    '',
-    '【坐席登录】',
-    `客户名: ${clientName}`,
-    `用户名: ${sipRange}`,
-    `密码: ${sipRange}`,
-    '',
-    '【计费信息】',
-    `资费套餐: ${billingPkg}`,
-    `单价: ${unitPrice}`,
-    `平台余额: ${balance}`,
-    `OKCC余额: ${okccBal}`,
-    `国家: ${country}`,
-    `员工: ${sales}`,
-  ].join('\n')
-
-  try {
-    await navigator.clipboard.writeText(text)
-    ElMessage.success('已复制全部信息到剪贴板')
-  } catch {
-    ElMessage.warning(t('customers.copyFailed'))
-  }
-}
-
-const okccSyncing = ref(false)
-async function handleOkccSync() {
-  okccSyncing.value = true
-  try {
-    const res = await syncOkccBalances()
-    const s = res?.stats || {}
-    ElMessage.success(`OKCC同步完成：已同步 ${s.synced ?? 0} 个，新增 ${s.created ?? 0} 个`)
-    await loadAccounts()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '同步失败')
-  } finally {
-    okccSyncing.value = false
-  }
-}
-
 function openResetPasswordDialog(row: AdminAccount) {
   resetPwdRow.value = row
   resetPwdForm.password = ''
@@ -2510,12 +2253,6 @@ onMounted(() => {
   color: #409eff;
 }
 
-.biz-tab.voice.active {
-  border-color: #67c23a;
-  background: rgba(103, 194, 58, 0.08);
-  color: #529b2e;
-}
-
 .biz-tab.data.active {
   border-color: #a855f7;
   background: rgba(168, 85, 247, 0.08);
@@ -2537,94 +2274,6 @@ onMounted(() => {
   border-radius: 10px;
   min-width: 24px;
   text-align: center;
-}
-
-/* 语音专属列样式 */
-.voice-code {
-  font-family: 'Courier New', monospace;
-  font-size: 12px;
-  color: var(--el-color-primary);
-  background: var(--el-fill-color-light);
-  padding: 1px 6px;
-  border-radius: 3px;
-}
-.sip-count {
-  font-size: 11px;
-  color: #909399;
-  margin-left: 4px;
-}
-.pkg-name {
-  font-size: 12px;
-  color: var(--el-text-color-regular);
-}
-.balance-text.positive { color: #67c23a; font-weight: 600; }
-.balance-text.negative { color: #f56c6c; font-weight: 600; }
-
-/* 语音客户详情弹窗 */
-.voice-detail-card {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-.voice-section {
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 16px;
-  background: var(--el-fill-color-blank);
-}
-.voice-section-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--el-text-color-primary);
-  margin-bottom: 12px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.voice-icon { font-size: 16px; }
-.voice-info-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.voice-info-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-.voice-label {
-  color: var(--el-text-color-secondary);
-  min-width: 80px;
-  flex-shrink: 0;
-}
-.voice-value {
-  font-family: 'Courier New', monospace;
-  font-size: 13px;
-  color: var(--el-text-color-primary);
-  background: var(--el-fill-color-light);
-  padding: 2px 8px;
-  border-radius: 4px;
-  word-break: break-all;
-}
-.voice-link {
-  color: var(--el-color-primary);
-  text-decoration: none;
-}
-.voice-link:hover { text-decoration: underline; }
-.voice-raw-reply {
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
-  padding: 12px;
-  font-family: 'Courier New', monospace;
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: var(--el-text-color-regular);
-  margin-top: 8px;
-  max-height: 200px;
-  overflow-y: auto;
 }
 
 /* 响应式 */

@@ -16,13 +16,6 @@ export const adminRoutes: RouteRecordRaw[] = [
     meta: { titleKey: 'menu.smsAccounts', icon: 'Message' },
   },
   {
-    path: '/admin/voice-accounts',
-    name: 'VoiceAccounts',
-    component: () => import('@/views/admin/Accounts.vue'),
-    props: { defaultBusinessType: 'voice' },
-    meta: { titleKey: 'menu.voiceAccounts', icon: 'Headset' },
-  },
-  {
     path: '/admin/data-accounts-list',
     name: 'DataAccountsList',
     component: () => import('@/views/admin/Accounts.vue'),
@@ -57,18 +50,6 @@ export const adminRoutes: RouteRecordRaw[] = [
   {
     path: '/admin/bot/templates',
     redirect: { path: '/admin/system/config', query: { tab: 'tg_bot', sub: 'templates' } },
-  },
-  {
-    path: '/admin/bot/recharge-audit',
-    name: 'BotRechargeAudit',
-    component: () => import('@/views/bot/RechargeAudit.vue'),
-    meta: { titleKey: 'menu.rechargeAudit', icon: 'Money' },
-  },
-  {
-    path: '/admin/bot/batch-audit',
-    name: 'BotBatchAudit',
-    component: () => import('@/views/bot/BatchAudit.vue'),
-    meta: { titleKey: 'menu.batchAudit', icon: 'Stamp' },
   },
   {
     path: '/admin/business-knowledge',
