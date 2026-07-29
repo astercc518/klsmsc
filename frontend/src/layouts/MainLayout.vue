@@ -202,27 +202,6 @@
               <div class="nav-section">
                 <span class="nav-section-title" v-if="!sidebarCollapsed">{{ $t('menu.operationCenter') }}</span>
 
-                <div class="nav-item" :class="{ active: isActive('/admin/reports/business') }" @click="navigate('/admin/reports/business')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <path d="M2 16H18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                      <path d="M4 16V10M8 16V6M12 16V8M16 16V4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.businessReport') }}</span>
-                </div>
-
-                <div class="nav-item" :class="{ active: isActive('/admin/accounts') }" @click="navigate('/admin/accounts')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <circle cx="7" cy="7" r="3" stroke="currentColor" stroke-width="1.5"/>
-                      <circle cx="13" cy="7" r="3" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M2 17C2 14.5 4.2 13 7 13M18 17C18 14.5 15.8 13 13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.customerManage') }}</span>
-                </div>
-
                 <div class="nav-item" :class="{ active: isActive('/admin/staff') }" @click="navigate('/admin/staff')">
                   <div class="nav-icon">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -242,16 +221,6 @@
                     </svg>
                   </div>
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.businessKnowledge') }}</span>
-                </div>
-
-                <div class="nav-item" :class="{ active: isActive('/admin/tickets') }" @click="navigate('/admin/tickets')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <rect x="3" y="3" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M7 7H13M7 10H13M7 13H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.ticketManage') }}</span>
                 </div>
 
                 <div class="nav-item" :class="{ active: isActive('/admin/suppliers') }" @click="navigate('/admin/suppliers')">
@@ -349,23 +318,6 @@
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.smsTaskManagement') }}</span>
                 </div>
 
-              </div>
-
-
-              <!-- 5. 数据业务 -->
-              <div class="nav-section">
-                <span class="nav-section-title" v-if="!sidebarCollapsed">{{ $t('menu.dataBusiness') }}</span>
-                
-                <div class="nav-item" :class="{ active: isActive('/admin/data/accounts') }" @click="navigate('/admin/data/accounts')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <circle cx="10" cy="6" r="3" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M4 17C4 14 6.5 12 10 12C13.5 12 16 14 16 17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.dataAccounts') }}</span>
-                </div>
-
                 <div class="nav-item" :class="{ active: isActive('/admin/data/private-library') }" @click="navigate('/admin/data/private-library')">
                   <div class="nav-icon">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -376,71 +328,6 @@
                   <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.adminCustomerData') }}</span>
                 </div>
 
-                <div class="nav-item" :class="{ active: isActive('/admin/data/upload') }" @click="navigate('/admin/data/upload')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <path d="M10 3V13M10 3L6 7M10 3L14 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                      <path d="M3 13V15C3 16.1046 3.89543 17 5 17H15C16.1046 17 17 16.1046 17 15V13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.dataUpload') }}</span>
-                </div>
-                
-                <div class="nav-item" :class="{ active: isActive('/admin/data/products') }" @click="navigate('/admin/data/products')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <rect x="2" y="4" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M6 9H14M6 12H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.dataProducts') }}</span>
-                </div>
-                
-                <div class="nav-item" :class="{ active: isActive('/admin/data/orders') }" @click="navigate('/admin/data/orders')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <rect x="3" y="3" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M7 7H13M7 10H13M7 13H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.dataOrders') }}</span>
-                </div>
-
-                <div class="nav-item" :class="{ active: isActive('/admin/data/pricing') }" @click="navigate('/admin/data/pricing')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <path d="M4 4H16V16H4V4Z" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M4 8H16M4 12H16M8 4V16M12 4V16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.dataPricing') }}</span>
-                </div>
-              </div>
-
-              <!-- 6. TG助手 -->
-              <div class="nav-section">
-                <span class="nav-section-title" v-if="!sidebarCollapsed">{{ $t('menu.tgBot') }}</span>
-
-                <div class="nav-item" :class="{ active: isActive('/admin/bot/recharge-audit') }" @click="navigate('/admin/bot/recharge-audit')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <rect x="2" y="5" width="16" height="10" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                      <path d="M2 9H18" stroke="currentColor" stroke-width="1.5"/>
-                      <circle cx="10" cy="10" r="2" stroke="currentColor" stroke-width="1.5"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.rechargeAudit') }}</span>
-                </div>
-
-                <div class="nav-item" :class="{ active: isActive('/admin/bot/batch-audit') }" @click="navigate('/admin/bot/batch-audit')">
-                  <div class="nav-icon">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                      <path d="M4 10L8 14L16 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                      <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/>
-                    </svg>
-                  </div>
-                  <span class="nav-label" v-if="!sidebarCollapsed">{{ $t('menu.batchAudit') }}</span>
-                </div>
               </div>
 
               <!-- 自动注水 -->

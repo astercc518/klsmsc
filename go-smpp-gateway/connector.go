@@ -647,6 +647,26 @@ func (m *SMPPManager) ReloadChannels() error {
 				backoff := 2 * time.Second
 				const maxBackoff = 60 * time.Second
 				for attempt := 1; ; attempt++ {
+					// 每轮重取最新配置。本 goroutine 按值捕获的是 spawn 时的 cfg，而通道
+					// 从未绑成时 m.connections 为空 —— ReloadChannels 的「凭据变更强制重连」
+					// 分支带 len(currentConns) > 0 前提走不到，pendingBindCount 又让新一轮
+					// reconcile 算出 needed = 0 不再 spawn。结果：改了账号/密码/host 永远
+					// 不生效，只能重启网关。这里兜底：m.configs 由 5 分钟一跳的 ReloadChannels
+					// 刷新，故新配置最迟在「下一次 reload + 下一轮重试」后生效(≤6min)。
+					// 顺带承担原「通道是否仍存在」的检查，删掉已被移除通道的无限重试。
+					m.mu.RLock()
+					latest, stillExists := m.configs[cfg.ID]
+					m.mu.RUnlock()
+					if !stillExists {
+						log.Printf("Channel %s removed, stopping bind retry", cfg.ChannelCode)
+						return
+					}
+					if connParamsChanged(cfg, latest) {
+						log.Printf("Channel %s bind params changed during retry, adopting new config", latest.ChannelCode)
+						backoff = 2 * time.Second
+					}
+					cfg = latest
+
 					release := m.acquireBindSlot(cfg.ID)
 					session, err := m.bindSession(cfg)
 					release()
@@ -656,14 +676,6 @@ func (m *SMPPManager) ReloadChannels() error {
 						backoff *= 2
 						if backoff > maxBackoff {
 							backoff = maxBackoff
-						}
-						// 检查通道是否仍存在（避免已删除通道无限重试）
-						m.mu.RLock()
-						_, stillExists := m.configs[cfg.ID]
-						m.mu.RUnlock()
-						if !stillExists {
-							log.Printf("Channel %s removed, stopping bind retry", cfg.ChannelCode)
-							return
 						}
 						continue
 					}

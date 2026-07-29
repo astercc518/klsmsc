@@ -5173,26 +5173,10 @@ async def list_admin_users(
                 comm_map = {}
         else:
             # 缓存未命中：执行聚合查询，再存入 Redis
-            first_day = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            from app.modules.sms.sms_log import SMSLog
-            from app.modules.sms.channel import Channel
+            # profit 已是整条(含分段)总利润，勿再乘 message_count（审计 P0-1）
+            from app.services.staff_commission import get_monthly_commission_map
 
-            comm_query = (
-                select(Account.sales_id, func.sum(SMSLog.profit).label("total_profit"))  # profit 已是整条(含分段)总利润，勿再乘 message_count（审计 P0-1）
-                .select_from(SMSLog)
-                .join(Account, SMSLog.account_id == Account.id)
-                .join(Channel, SMSLog.channel_id == Channel.id)
-                .where(
-                    and_(
-                        SMSLog.submit_time >= first_day,
-                        SMSLog.status == "delivered",
-                        Channel.protocol != "VIRTUAL",
-                    )
-                )
-                .group_by(Account.sales_id)
-            )
-            comm_result = await db.execute(comm_query)
-            comm_map = {r.sales_id: float(r.total_profit or 0) for r in comm_result}
+            comm_map = await get_monthly_commission_map(db)
             try:
                 await _redis.setex(_cache_key, _CACHE_TTL, _json.dumps(comm_map))
             except Exception:
