@@ -385,24 +385,12 @@ async def verify_bot_user(
             if admin.role in ['sales', 'finance', 'super_admin']:
                 res_data["commission_rate"] = float(admin.commission_rate or 0)
                 if include_monthly_performance:
-                    from datetime import date
-                    from sqlalchemy import text
-                    rate = float(admin.commission_rate or 0) / 100.0
-                    first_day = date.today().replace(day=1).strftime('%Y-%m-%d 00:00:00')
+                    # 与员工管理页共用聚合：已完结的天读日聚合表，只有今天扫明细
+                    from app.services.staff_commission import get_sales_monthly_profit
 
-                    sql = text("""
-                        SELECT SUM(l.profit) 
-                        FROM sms_logs l
-                        JOIN accounts acc ON l.account_id = acc.id
-                        JOIN channels ch ON l.channel_id = ch.id
-                        WHERE acc.sales_id = :sales_id 
-                          AND l.submit_time >= :start_time
-                          AND l.status = 'delivered'
-                          AND ch.protocol != 'VIRTUAL'
-                    """)
+                    rate = float(admin.commission_rate or 0) / 100.0
                     try:
-                        res_comm = await db.execute(sql, {"sales_id": admin.id, "start_time": first_day})
-                        total_profit = float(res_comm.scalar() or 0)
+                        total_profit = await get_sales_monthly_profit(db, admin.id)
                         res_data["monthly_profit"] = total_profit
                         res_data["monthly_commission"] = total_profit * rate
                     except Exception as e:
@@ -2677,19 +2665,18 @@ async def get_sales_stats_internal(sales_id: int, db: AsyncSession = Depends(get
         import json
         from app.modules.common.admin_user import AdminUser
         from app.modules.common.account import Account
-        from sqlalchemy import func, select, text
+        from sqlalchemy import func, select
         from datetime import datetime
 
         admin = await db.get(AdminUser, sales_id)
         if not admin:
             return {"success": False, "msg": "Sales user not found"}
-            
+
         rate = float(admin.commission_rate or 0) / 100.0
-        
+
         # 本月第一天
         today = datetime.now()
         first_day_dt = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        first_day_str = first_day_dt.strftime('%Y-%m-%d 00:00:00')
         month_tag = first_day_dt.strftime("%Y%m")
         cache_key = f"bot:sales_stats:v1:{sales_id}:{month_tag}".encode("utf-8")
 
@@ -2727,20 +2714,10 @@ async def get_sales_stats_internal(sales_id: int, db: AsyncSession = Depends(get
         )
         total_balance = float(balance_res.scalar() or 0)
 
-        # 业绩统计
-        sql = text("""
-            SELECT SUM(l.profit) 
-            FROM sms_logs l
-            JOIN accounts acc ON l.account_id = acc.id
-            JOIN channels ch ON l.channel_id = ch.id
-            WHERE acc.sales_id = :sales_id 
-              AND l.submit_time >= :start_time
-              AND l.status = 'delivered'
-              AND ch.protocol != 'VIRTUAL'
-        """)
-        
-        res_comm = await db.execute(sql, {"sales_id": sales_id, "start_time": first_day_str})
-        total_profit = float(res_comm.scalar() or 0)
+        # 业绩统计：与员工管理页共用聚合（日聚合表 + 当天明细）
+        from app.services.staff_commission import get_sales_monthly_profit
+
+        total_profit = await get_sales_monthly_profit(db, sales_id)
 
         result = {
             "success": True,
