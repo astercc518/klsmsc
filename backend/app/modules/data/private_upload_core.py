@@ -6,11 +6,11 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from collections import Counter
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.data.models import PrivateLibraryNumber
@@ -25,7 +25,6 @@ from app.modules.data.private_upload_parse import (
     decode_my_numbers_upload_bytes,
     extract_phone_numbers_from_upload_text,
     filter_numbers_by_real_country,
-    phone_db_lookup_keys,
 )
 from app.utils.data_customer_cache import invalidate_my_numbers_summary_cache
 
@@ -93,72 +92,46 @@ async def run_private_library_upload(
     # 勾选识别时对全部新增号码做运营商查询；未勾选时仅对少量号码自动识别（兼容旧行为）
     want_carrier_lookup = detect_carrier or total_u <= 5_000
 
-    existing_pln: Dict[str, int] = {}
-    chunk_n = 800
-    nchunks = max(1, (total_u + chunk_n - 1) // chunk_n)
-    for ci, i in enumerate(range(0, total_u, chunk_n)):
-        chunk = unique_numbers[i : i + chunk_n]
-        variants: List[str] = []
-        for n in chunk:
-            variants.extend(phone_db_lookup_keys(n))
-        q = select(PrivateLibraryNumber.id, PrivateLibraryNumber.phone_number).where(
-            PrivateLibraryNumber.account_id == account_id,
-            PrivateLibraryNumber.phone_number.in_(variants),
-        )
-        res = await db.execute(q)
-        for row in res.all():
-            canon = (row.phone_number or "").lstrip("+")
-            if canon not in existing_pln:
-                existing_pln[canon] = row.id
-        pct = 15 + int(25 * (ci + 1) / nchunks)
-        await _p(stage="loading_existing", progress_percent=min(pct, 40), total_unique=total_u)
-
-    insert_dicts: List[dict] = []
-    update_ids: List[int] = []
-
     batch_id = f"UP-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}"
     now = datetime.now()
 
-    new_for_carrier: List[str] = [
-        n for n in unique_numbers if n.lstrip("+") not in existing_pln
-    ]
+    # 分包独立：不跨包查重、不改挂。本包内去重后全部作为新行写入，与账户里
+    # 其它数据包重号是允许的（唯一键含 batch_id），各包的总数/已使用互不影响。
+    # 旧实现会把重号的老行 batch_id 改成新包并清零 use_count，导致老包凭空缩水、
+    # 已发过的号变回"未使用"，卡片数字与客户上传的文件条数对不上。
+    await _p(stage="loading_existing", progress_percent=40, total_unique=total_u)
+
     carrier_map: Dict[str, Optional[str]] = {}
-    if want_carrier_lookup and new_for_carrier:
+    if want_carrier_lookup and unique_numbers:
         # 分块在线程池中识别，避免单次任务过大；进度 44%–49% 后进入写入 50%+
-        ncar = len(new_for_carrier)
+        ncar = len(unique_numbers)
         chunk_sz = 3000
         n_car_chunks = max(1, (ncar + chunk_sz - 1) // chunk_sz)
         for ci, i in enumerate(range(0, ncar, chunk_sz)):
-            sub = new_for_carrier[i : i + chunk_sz]
+            sub = unique_numbers[i : i + chunk_sz]
             pct = 45 if n_car_chunks <= 1 else 44 + int(5 * (ci + 1) / n_car_chunks)
             await _p(stage="carrier_lookup", progress_percent=pct, total_unique=total_u)
             part = await asyncio.to_thread(batch_lookup_carriers, sub)
             carrier_map.update(part)
 
-    for num in unique_numbers:
-        canon = num.lstrip("+")
-        pln_id = existing_pln.get(canon)
-        if pln_id is None:
-            detected_carrier = carrier_map.get(num) if want_carrier_lookup else None
-            insert_dicts.append(
-                {
-                    "phone_number": num,
-                    "country_code": country_code,
-                    "source": source,
-                    "purpose": purpose,
-                    "remarks": remarks,
-                    "account_id": account_id,
-                    "status": "active",
-                    "batch_id": batch_id,
-                    "carrier": detected_carrier,
-                    "tags": ["private_upload"],
-                    "is_deleted": False,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-            )
-        else:
-            update_ids.append(pln_id)
+    insert_dicts: List[dict] = [
+        {
+            "phone_number": num,
+            "country_code": country_code,
+            "source": source,
+            "purpose": purpose,
+            "remarks": remarks,
+            "account_id": account_id,
+            "status": "active",
+            "batch_id": batch_id,
+            "carrier": carrier_map.get(num) if want_carrier_lookup else None,
+            "tags": ["private_upload"],
+            "is_deleted": False,
+            "created_at": now,
+            "updated_at": now,
+        }
+        for num in unique_numbers
+    ]
 
     await _p(stage="inserting", progress_percent=50, total_unique=total_u)
     ins_chunks = max(1, (len(insert_dicts) + 4999) // 5000)
@@ -178,51 +151,10 @@ async def run_private_library_upload(
                 inserted=min(i + chunk_size, len(insert_dicts)),
             )
 
-    # 快照旧维度值（必须在 UPDATE 之前读取，否则 batch_id 已被改为新值，旧桶永不减少）
-    _old_snapshots: List[Tuple[str, str, str, str, str, int]] = []
-    if update_ids:
-        await db.flush()
-        ch_sz = 2000
-        for j in range(0, len(update_ids), ch_sz):
-            chunk = update_ids[j : j + ch_sz]
-            res = await db.execute(
-                select(
-                    PrivateLibraryNumber.country_code,
-                    PrivateLibraryNumber.source,
-                    PrivateLibraryNumber.purpose,
-                    PrivateLibraryNumber.batch_id,
-                    PrivateLibraryNumber.carrier,
-                    PrivateLibraryNumber.use_count,
-                ).where(PrivateLibraryNumber.id.in_(chunk))
-            )
-            for r in res.all():
-                _old_snapshots.append((
-                    norm_dim(r[0]), norm_dim(r[1]), norm_dim(r[2]),
-                    norm_dim(r[3]), norm_dim(r[4]), int(r[5] or 0),
-                ))
-
     await _p(stage="updating", progress_percent=88, total_unique=total_u)
-    if update_ids:
-        chunk_size = 5000
-        for i in range(0, len(update_ids), chunk_size):
-            chunk_ids = update_ids[i : i + chunk_size]
-            stmt = (
-                update(PrivateLibraryNumber)
-                .where(PrivateLibraryNumber.id.in_(chunk_ids))
-                .values(
-                    status="active",
-                    batch_id=batch_id,
-                    use_count=0,
-                    last_used_at=None,
-                    is_deleted=False,
-                    updated_at=now,
-                )
-            )
-            if remarks is not None:
-                stmt = stmt.values(remarks=remarks)
-            await db.execute(stmt)
 
-    # 写时维护私库汇总表（与明细同一事务）
+    # 写时维护私库汇总表（与明细同一事务）。分包独立后本次上传只新增本包的桶，
+    # 不再需要"从旧包桶里减一"的补偿逻辑。
     deltas: List[tuple] = []
     cc_n = norm_dim(country_code)
     src_n = norm_dim(source or "")
@@ -232,11 +164,6 @@ async def run_private_library_upload(
         deltas.append(
             (ORIGIN_MANUAL, cc_n, src_n, pur_n, bid_n, car_k, n, 0, remarks, now, now)
         )
-    for oc, osrc, opur, ob, ocar, ouc in _old_snapshots:
-        deltas.append((ORIGIN_MANUAL, oc, osrc, opur, ob, ocar, -1, -1 if ouc > 0 else 0, None, None, None))
-        deltas.append(
-            (ORIGIN_MANUAL, oc, osrc, opur, bid_n, ocar, 1, 0, remarks, now, now)
-        )
     if deltas:
         await pls_apply_deltas_bulk(db, account_id, deltas)
         await pls_prune_non_positive(db, account_id)
@@ -245,7 +172,7 @@ async def run_private_library_upload(
     await invalidate_my_numbers_summary_cache(account_id)
 
     n_ins = actually_inserted
-    n_upd = len(update_ids)
+    n_upd = 0  # 分包独立后不再改挂已有记录，保留字段兼容前端/日志
     n_dup = len(insert_dicts) - actually_inserted
     await _p(
         stage="completed",
@@ -263,7 +190,7 @@ async def run_private_library_upload(
         _drop_msg = f"，剔除 {n_dropped} 条非 {region_iso} 国家号码（{_detail}）"
     return {
         "success": True,
-        "message": f"成功上传 {n_ins} 条新数据，更新 {n_upd} 条已有私库记录" + (f"，跳过 {n_dup} 条重复" if n_dup else "") + _drop_msg,
+        "message": f"成功上传 {n_ins} 条数据" + (f"，跳过 {n_dup} 条重复" if n_dup else "") + _drop_msg,
         "total": total_u,
         "added": n_ins + n_upd,
         "inserted": n_ins,

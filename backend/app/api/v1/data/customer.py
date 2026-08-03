@@ -2112,8 +2112,9 @@ async def my_numbers_upload(
     account: Account = Depends(get_current_account),
 ):
     """
-    上传数据到私有库表 private_library_numbers（与公海 data_numbers 分表，按 account_id+phone 唯一）。
-    不与公海或其它客户号码冲突；同一账户重复上传则更新批次/备注等。
+    上传数据到私有库表 private_library_numbers（与公海 data_numbers 分表，
+    按 account_id+phone+batch_id 唯一）。不与公海或其它客户号码冲突。
+    数据包彼此独立：同一号码在不同数据包各存一份，各包的总数/已使用互不影响。
     """
     from app.utils.upload_validator import validate_upload_csv_txt, UploadValidationError
     fname = file.filename or ""

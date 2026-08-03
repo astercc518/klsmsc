@@ -121,7 +121,12 @@ class PrivateLibraryNumber(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        UniqueConstraint("account_id", "phone_number", name="uq_pln_account_phone"),
+        # 分包独立：同一号码允许在不同数据包(batch_id)各存一份，各包的
+        # 总数/已使用互不影响。唯一键前缀仍是 (account_id, phone_number)，
+        # 按号码查找的既有查询照常走索引。
+        UniqueConstraint(
+            "account_id", "phone_number", "batch_id", name="uq_pln_account_phone_batch"
+        ),
         Index("idx_pln_account_batch", "account_id", "batch_id"),
         Index("idx_pln_account_created", "account_id", "created_at"),
         Index("idx_pln_account_not_deleted", "account_id", "is_deleted"),

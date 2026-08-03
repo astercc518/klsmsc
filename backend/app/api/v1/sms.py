@@ -45,29 +45,46 @@ from app.modules.common.account_template import AccountTemplate
 logger = get_logger(__name__)
 
 
-async def _mark_private_library_used(db, account_id: int, phone_numbers: list) -> None:
+async def _mark_private_library_used(
+    db, account_id: int, phone_numbers: list, batch_id: Optional[str] = None
+) -> None:
     """私库号码标记为已使用 (use_count+=1 + last_used_at=now)。
 
     调用时机：batch 创建并成功入队/发送之后、commit 之前。
     不在前置 SELECT 之后立刻标记，是为了避免 INSUFFICIENT_BALANCE 等失败路径下
     `get_db()` 自动 commit 把脏数据写入（参见 5/13 客户 TG19880V01 事故）。
+
+    batch_id：本次发送选定的数据包。数据包之间彼此独立——同一号码在 A、B 两个包
+    各存一份时，发 A 包只标 A 包那份，B 包仍是未使用。未指定（全库发送）时
+    才按号码标记账户下全部数据包。
     """
     if not phone_numbers:
         return
     from datetime import datetime as _dt
     from app.modules.data.models import DataNumber, PrivateLibraryNumber
+    from app.api.v1.data.customer import _sql_dim_ci_trim_eq
 
     now = _dt.now()
+    _bid = str(batch_id).strip() if batch_id is not None else ""
     BATCH_SZ = 2000
     for ci in range(0, len(phone_numbers), BATCH_SZ):
         chunk = phone_numbers[ci:ci + BATCH_SZ]
+        _pln_where = [
+            PrivateLibraryNumber.account_id == account_id,
+            PrivateLibraryNumber.phone_number.in_(chunk),
+            PrivateLibraryNumber.is_deleted == False,  # noqa: E712
+        ]
+        _dn_where = [
+            DataNumber.account_id == account_id,
+            DataNumber.phone_number.in_(chunk),
+        ]
+        if _bid:
+            # 取号时就是按这个 batch_id 过滤的，标记时用同一条件不会漏标
+            _pln_where.append(_sql_dim_ci_trim_eq(PrivateLibraryNumber.batch_id, _bid))
+            _dn_where.append(_sql_dim_ci_trim_eq(DataNumber.batch_id, _bid))
         await db.execute(
             update(PrivateLibraryNumber)
-            .where(
-                PrivateLibraryNumber.account_id == account_id,
-                PrivateLibraryNumber.phone_number.in_(chunk),
-                PrivateLibraryNumber.is_deleted == False,  # noqa: E712
-            )
+            .where(*_pln_where)
             .values(
                 use_count=PrivateLibraryNumber.use_count + 1,
                 last_used_at=now,
@@ -75,10 +92,7 @@ async def _mark_private_library_used(db, account_id: int, phone_numbers: list) -
         )
         await db.execute(
             update(DataNumber)
-            .where(
-                DataNumber.account_id == account_id,
-                DataNumber.phone_number.in_(chunk),
-            )
+            .where(*_dn_where)
             .values(
                 use_count=DataNumber.use_count + 1,
                 last_used_at=now,
@@ -96,6 +110,7 @@ async def _mark_private_library_used(db, account_id: int, phone_numbers: list) -
         _celery_pls.send_task(
             "private_library_sync_used",
             args=[account_id, list(phone_numbers)],
+            kwargs={"batch_id": _bid or None},
             queue="data_tasks",
         )
     except Exception as e:
@@ -869,6 +884,13 @@ async def send_batch_sms(
         res = await db.execute(select(u.c.phone_number).distinct().limit(limit))
         db_nums = [r[0] for r in res.all()]
 
+        # 本次实际取号所用的数据包。数据包彼此独立，标记已用时要限定在这个包内，
+        # 否则会把其它包里的同号一并标掉。走下面的兜底路径时置空（那时取到的号
+        # 不一定属于该包，再按 batch_id 过滤就会漏标）。
+        _private_library_batch_id: Optional[str] = None
+        if f.get("batch_id") is not None:
+            _private_library_batch_id = str(f["batch_id"]).strip() or None
+
         # 兜底：batch_id 过滤后为空（汇总表与明细不一致时），去掉 batch_id 再查一次
         if not db_nums and f.get("batch_id"):
             logger.warning(
@@ -878,6 +900,7 @@ async def send_batch_sms(
             u2 = _build_union(include_batch=False)
             res2 = await db.execute(select(u2.c.phone_number).distinct().limit(limit))
             db_nums = [r[0] for r in res2.all()]
+            _private_library_batch_id = None
         # 仅把私库号码并入 request.phone_numbers，**不立即**写 use_count。
         # 必须等余额预检通过、batch 创建成功后再标已用——否则 INSUFFICIENT_BALANCE
         # return 时 get_db() 仍会自动 commit，造成「数据被消耗但任务未生成」的脏数据
@@ -889,6 +912,7 @@ async def send_batch_sms(
             request.phone_numbers.extend(_private_library_db_nums)
     else:
         _private_library_db_nums = []
+        _private_library_batch_id = None
 
     if not request.phone_numbers or len(request.phone_numbers) == 0:
         _empty_err = None
@@ -1041,7 +1065,7 @@ async def send_batch_sms(
                 "channel_id": request.channel_id,
             }
             # 私库取号成功 → 标记 use_count（与 batch 入同一事务，失败一起回滚）
-            await _mark_private_library_used(db, account.id, _private_library_db_nums)
+            await _mark_private_library_used(db, account.id, _private_library_db_nums, _private_library_batch_id)
             await db.commit()
             logger.info(f"定时发送已登记: batch_id={batch_pk}, total={total_numbers}, scheduled_at={_scheduled_at}")
             return BatchSMSResponse(
@@ -1073,7 +1097,7 @@ async def send_batch_sms(
         chunk_count = await asyncio.to_thread(_enqueue_all_batch_chunks)
         sms_batch.send_config = {"chunks": chunk_count, "chunk_size": CHUNK_SIZE, "async": True}
         # 私库取号成功 → 标记 use_count（与 batch 入同一事务，失败一起回滚）
-        await _mark_private_library_used(db, account.id, _private_library_db_nums)
+        await _mark_private_library_used(db, account.id, _private_library_db_nums, _private_library_batch_id)
         await db.commit()
         logger.info(f"批量发送已进入后台加速处理: batch_id={batch_pk}, total={total_numbers}, chunks={chunk_count}")
         return BatchSMSResponse(
@@ -1326,7 +1350,7 @@ async def send_batch_sms(
             sms_batch.completed_at = None
 
     # 私库取号成功 → 标记 use_count（与 batch 入同一事务，失败一起回滚）
-    await _mark_private_library_used(db, account.id, _private_library_db_nums)
+    await _mark_private_library_used(db, account.id, _private_library_db_nums, _private_library_batch_id)
 
     await db.commit()
 

@@ -1751,12 +1751,16 @@ async def _do_private_library_upload_task(task_id: str):
 
 
 @celery_app.task(name="private_library_sync_used", bind=True, soft_time_limit=300, time_limit=360)
-def private_library_sync_used(self, account_id: int, phone_numbers: list):
-    """异步更新私库汇总表的 used_count（发送时触发）"""
-    return _run_async(_do_sync_used(account_id, phone_numbers))
+def private_library_sync_used(self, account_id: int, phone_numbers: list, batch_id: str = None):
+    """异步更新私库汇总表的 used_count（发送时触发）
+
+    batch_id：本次发送选定的数据包，与 sms.py 标记 use_count 时用的作用域保持一致。
+    数据包彼此独立，不带 batch_id（全库发送）时才统计账户下全部包。
+    """
+    return _run_async(_do_sync_used(account_id, phone_numbers, batch_id))
 
 
-async def _do_sync_used(account_id: int, phone_numbers: list):
+async def _do_sync_used(account_id: int, phone_numbers: list, batch_id: str = None):
     from app.modules.data.private_library_summary_sync import (
         ORIGIN_MANUAL, ORIGIN_PURCHASED, norm_dim, pls_apply_deltas_bulk,
     )
@@ -1768,16 +1772,26 @@ async def _do_sync_used(account_id: int, phone_numbers: list):
             BATCH_SZ = 2000
             pls_deltas = []
             now = datetime.now()
+            _bid = str(batch_id).strip() if batch_id else ""
 
             for ci in range(0, len(phone_numbers), BATCH_SZ):
                 chunk = phone_numbers[ci:ci + BATCH_SZ]
+                _pln_where = [
+                    PrivateLibraryNumber.account_id == account_id,
+                    PrivateLibraryNumber.phone_number.in_(chunk),
+                    PrivateLibraryNumber.use_count == 1,
+                    PrivateLibraryNumber.is_deleted == False,  # noqa: E712
+                ]
+                _dn_where = [
+                    DataNumber.account_id == account_id,
+                    DataNumber.phone_number.in_(chunk),
+                    DataNumber.use_count == 1,
+                ]
+                if _bid:
+                    _pln_where.append(PrivateLibraryNumber.batch_id == _bid)
+                    _dn_where.append(DataNumber.batch_id == _bid)
                 res_pln = await db.execute(
-                    select(PrivateLibraryNumber).where(
-                        PrivateLibraryNumber.account_id == account_id,
-                        PrivateLibraryNumber.phone_number.in_(chunk),
-                        PrivateLibraryNumber.use_count == 1,
-                        PrivateLibraryNumber.is_deleted == False,  # noqa: E712
-                    )
+                    select(PrivateLibraryNumber).where(*_pln_where)
                 )
                 for row in res_pln.scalars():
                     pls_deltas.append((
@@ -1789,11 +1803,7 @@ async def _do_sync_used(account_id: int, phone_numbers: list):
                     ))
 
                 res_dn = await db.execute(
-                    select(DataNumber).where(
-                        DataNumber.account_id == account_id,
-                        DataNumber.phone_number.in_(chunk),
-                        DataNumber.use_count == 1,
-                    )
+                    select(DataNumber).where(*_dn_where)
                 )
                 for row in res_dn.scalars():
                     pls_deltas.append((

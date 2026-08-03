@@ -1415,6 +1415,20 @@ async def admin_resync_private_library_summary(
         raise HTTPException(status_code=404, detail="账户不存在")
     aid = body.account_id
 
+    # 数据包名称（上传文件名）与下载密码只存在于汇总表，明细表里没有。
+    # 删除重建会把它们抹成 NULL——客户卡片的文件名和下载密码全丢，
+    # 所以必须先按 batch_id 快照，重建时原样带回。
+    _meta_rows = (await db.execute(
+        select(
+            PrivateLibrarySummary.batch_id,
+            func.max(PrivateLibrarySummary.batch_name),
+            func.max(PrivateLibrarySummary.export_password_hash),
+        )
+        .where(PrivateLibrarySummary.account_id == aid)
+        .group_by(PrivateLibrarySummary.batch_id)
+    )).all()
+    _batch_meta = {norm_dim(r[0]): (r[1], r[2]) for r in _meta_rows}
+
     await db.execute(delete(PrivateLibrarySummary).where(PrivateLibrarySummary.account_id == aid))
 
     def _agg_stmt(model, account_id, extra_where):
@@ -1448,6 +1462,7 @@ async def admin_resync_private_library_summary(
             cnt = int(r.cnt or 0)
             if cnt <= 0:
                 continue
+            _bn, _ph = _batch_meta.get(norm_dim(r.bid), (None, None))
             db.add(PrivateLibrarySummary(
                 account_id=aid,
                 country_code=norm_dim(r.cc),
@@ -1462,6 +1477,8 @@ async def admin_resync_private_library_summary(
                 remarks=r.rmk,
                 first_at=r.fa,
                 last_at=r.la,
+                batch_name=_bn,
+                export_password_hash=_ph,
             ))
 
     # 已软删行 → is_deleted=True（仅 PrivateLibraryNumber 有软删状态）
@@ -1493,6 +1510,7 @@ async def admin_resync_private_library_summary(
                norm_dim(r.bid), norm_dim(r.car), "manual")
         if key in existing_keys:
             continue
+        _bn, _ph = _batch_meta.get(norm_dim(r.bid), (None, None))
         db.add(PrivateLibrarySummary(
             account_id=aid,
             country_code=norm_dim(r.cc),
@@ -1507,6 +1525,8 @@ async def admin_resync_private_library_summary(
             remarks=r.rmk,
             first_at=r.fa,
             last_at=r.la,
+            batch_name=_bn,
+            export_password_hash=_ph,
         ))
     await db.commit()
 
