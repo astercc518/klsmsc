@@ -13,9 +13,9 @@ class BalanceLog(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True, comment="记录ID")
     account_id = Column(Integer, nullable=False, comment="账户ID")
     change_type = Column(
-        Enum("charge", "refund", "deposit", "withdraw", "adjustment", "refund_recharge", name="balance_change_type"),
+        Enum("charge", "refund", "deposit", "withdraw", "adjustment", "refund_recharge", "sales_credit", name="balance_change_type"),
         nullable=False,
-        comment="变动类型: refund_recharge=退补充值(不计算业绩/成本)"
+        comment="变动类型: refund_recharge=退补充值(不计算业绩/成本); sales_credit=销售授信充值"
     )
     amount = Column(DECIMAL(12, 4), nullable=False, comment="变动金额")
     balance_after = Column(DECIMAL(12, 4), nullable=False, comment="变动后余额")
