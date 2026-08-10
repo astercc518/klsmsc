@@ -31,6 +31,13 @@
         <span class="tab-label">短信客户</span>
       </div>
       <div
+        class="biz-tab rcs" :class="{ active: businessTypeFilter === 'rcs' }"
+        @click="switchBizType('rcs')"
+      >
+        <span class="tab-icon">💬</span>
+        <span class="tab-label">RCS客户</span>
+      </div>
+      <div
         class="biz-tab data" :class="{ active: businessTypeFilter === 'data' }"
         @click="switchBizType('data')"
       >
@@ -321,6 +328,7 @@
         <el-form-item :label="$t('customers.bizTypeLabel')">
           <el-select v-model="form.business_type" style="width: 100%">
             <el-option label="💬 短信 SMS" value="sms" />
+            <el-option label="💬 RCS" value="rcs" />
             <el-option label="📊 数据 Data" value="data" />
           </el-select>
         </el-form-item>
@@ -336,7 +344,7 @@
         </el-form-item>
         
         <!-- SMS/通用：接入与计费 -->
-        <template v-if="form.business_type === 'sms' || !form.business_type">
+        <template v-if="isSmsLikeBiz(form.business_type)">
           <el-divider content-position="left">{{ $t('customers.accessAndBilling') }}</el-divider>
           <el-form-item :label="$t('customers.accessMethod')" required>
             <el-select v-model="form.protocol" style="width: 160px">
@@ -395,7 +403,7 @@
             <el-option v-for="s in salesList" :key="s.id" :label="`${s.real_name || s.username}`" :value="s.id" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="form.business_type === 'sms' || !form.business_type" :label="$t('customers.assignChannel')">
+        <el-form-item v-if="isSmsLikeBiz(form.business_type)" :label="$t('customers.assignChannel')">
           <el-switch v-model="useAllChannels" active-text="全部通道 (*)" inline-prompt style="margin-bottom: 6px" />
           <el-select v-if="!useAllChannels" v-model="form.channel_ids" :placeholder="$t('customers.selectChannel')" multiple clearable filterable style="width: 100%" :loading="channelLoading">
             <el-option v-for="ch in channelList" :key="ch.id" :label="`${ch.channel_name} (${ch.channel_code})`" :value="ch.id">
@@ -977,15 +985,16 @@ const statusText = (s: string) => {
 }
 
 const businessTypeText = (type: string) => {
-  const map: Record<string, string> = { 
-    sms: t('customers.smsBusiness'), 
+  const map: Record<string, string> = {
+    sms: t('customers.smsBusiness'),
+    rcs: t('customers.rcsBusiness'),
     voice: t('customers.voiceBusiness'),
-    data: t('customers.dataBusiness') 
+    data: t('customers.dataBusiness')
   }
   return map[type] || type || t('customers.smsBusiness')
 }
 const businessTypeTag = (bt: string) => {
-  const map: Record<string, any> = { sms: 'primary', voice: 'success', data: 'warning' }
+  const map: Record<string, any> = { sms: 'primary', rcs: 'danger', voice: 'success', data: 'warning' }
   return map[bt] || 'primary'
 }
 
@@ -1064,6 +1073,10 @@ function formatRemainingMessages(row: { balance?: number; unit_price?: number })
   const n = Math.floor(bal / price)
   return n.toLocaleString()
 }
+
+// 短信与 RCS 走同一套接入/计费/风控/通道绑定配置（都是按条计费、按通道路由发送）；
+// 语音/数据是另一套（按分钟计费、外部产品ID）。business_type 为空时按短信处理。
+const isSmsLikeBiz = (t?: string) => !t || t === 'sms' || t === 'rcs'
 
 const form = reactive<any>({
   id: 0,
@@ -2251,6 +2264,12 @@ onMounted(() => {
   border-color: #409eff;
   background: rgba(64, 158, 255, 0.08);
   color: #409eff;
+}
+
+.biz-tab.rcs.active {
+  border-color: #f56c6c;
+  background: rgba(245, 108, 108, 0.08);
+  color: #f56c6c;
 }
 
 .biz-tab.data.active {

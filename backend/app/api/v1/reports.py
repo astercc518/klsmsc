@@ -352,7 +352,7 @@ async def get_daily_stats(
 @router.get("/admin/business")
 async def get_business_report(
     dimension: str = Query(..., description="聚合维度: customer/employee/supplier/channel/country"),
-    business_type: str = Query("all", description="业务类型: all/sms/data"),
+    business_type: str = Query("all", description="业务类型: all/sms/rcs/data"),
     time_range: str = Query("today", description="时间范围: today/this_week/this_month/last_month/custom"),
     start_date: Optional[str] = Query(None, description="开始日期 (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="结束日期 (YYYY-MM-DD)"),

@@ -68,6 +68,7 @@
       <el-select v-model="filters.protocol" :placeholder="$t('channels.protocolType')" clearable style="width: 120px" @change="loadChannels">
         <el-option label="SMPP" value="SMPP" />
         <el-option label="HTTP" value="HTTP" />
+        <el-option label="RCS" value="RCS" />
         <el-option label="VIRTUAL" value="VIRTUAL" />
       </el-select>
       <el-select v-model="filters.status" :placeholder="$t('common.status')" clearable style="width: 100px" @change="loadChannels">
@@ -87,7 +88,7 @@
             <div class="ch-code-block">
               <span class="ch-code">{{ row.channel_code }}</span>
               <el-tag
-                :type="row.protocol === 'SMPP' ? 'primary' : row.protocol === 'VIRTUAL' ? 'warning' : 'success'"
+                :type="protocolTagType(row.protocol)"
                 size="small"
                 effect="plain"
               >{{ row.protocol }}</el-tag>
@@ -144,7 +145,7 @@
           <template #default="{ row }">
             <div class="channel-code">
               <span class="code-text">{{ row.channel_code }}</span>
-              <el-tag :type="row.protocol === 'SMPP' ? 'primary' : row.protocol === 'VIRTUAL' ? 'warning' : 'success'" size="small" effect="plain">
+              <el-tag :type="protocolTagType(row.protocol)" size="small" effect="plain">
                 {{ row.protocol }}
               </el-tag>
             </div>
@@ -237,6 +238,7 @@
               <el-select v-model="channelForm.protocol" style="width: 100%">
                 <el-option label="SMPP" value="SMPP" />
                 <el-option label="HTTP" value="HTTP" />
+                <el-option label="RCS (富媒体短信)" value="RCS" />
                 <el-option label="VIRTUAL (虚拟通道)" value="VIRTUAL" />
               </el-select>
             </el-form-item>
@@ -304,6 +306,59 @@
               :placeholder="$t('channels.apiCredentialsPlaceholder')" 
             />
           </el-form-item>
+        </template>
+
+        <!-- RCS 富媒体短信配置（叮咚 BoltTel OpenAPI） -->
+        <template v-if="channelForm.protocol === 'RCS'">
+          <el-divider content-position="left">RCS 供应商配置（叮咚 BoltTel）</el-divider>
+          <el-alert type="warning" :closable="false" style="margin-bottom: 16px">
+            <div>上游硬限制：单条文案 ≤ <b>160 个字符</b>、<b>禁止 emoji</b>，违反会被整批拒绝。系统已在发送入口拦截。</div>
+            <div>计费按「条」而非短信分段：一个号码一条，与文案长度无关。</div>
+          </el-alert>
+          <el-form-item label="接口地址" required>
+            <el-input v-model="channelForm.api_url" placeholder="https://生产域名/service/api（BASE，含 /service/api）" />
+          </el-form-item>
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="appKey" required>
+                <el-input v-model="channelForm.username" placeholder="平台下发的 appKey" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="appSecret" required>
+                <el-input
+                  v-model="channelForm.password"
+                  type="password"
+                  show-password
+                  :placeholder="editingChannel ? '留空表示不修改' : '平台下发的 appSecret'"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-row :gutter="20">
+            <el-col :span="12">
+              <el-form-item label="回执 secret">
+                <el-input
+                  v-model="channelForm.gateway_config.rcs.webhook_secret"
+                  placeholder="平台「回执推送」里配置的 secret"
+                />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="回执 URL">
+                <el-input :model-value="rcsWebhookUrl" readonly>
+                  <template #append>
+                    <el-button @click="copyRcsWebhookUrl">复制</el-button>
+                  </template>
+                </el-input>
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-alert type="info" :closable="false" style="margin-bottom: 16px">
+            在叮咚平台「API 接入 / 回执推送」填入上面的回执 URL 与同一个 secret，订阅事件建议：
+            <code>DELIVERED,READED,UNDELIVERABLE,REJECTED,EXPIRED,SEND_FAILED,REPLY</code>。
+            未配置 secret 时系统会拒收回执（无法验签即无法防伪造）。发件人 sendCode 用下方「默认 SID」。
+          </el-alert>
         </template>
 
         <!-- VIRTUAL 虚拟通道配置 -->
@@ -745,6 +800,25 @@ const defaultVirtualConfig = () => ({
   fail_codes: ['UNDELIV'],
 })
 
+// channels.config_json 的前端镜像。目前只有 RCS 用到（webhook secret），
+// 其余键（strip_leading_plus / payload_template）由详情接口原样带回、保存时原样送回，避免被抹掉。
+const defaultGatewayConfig = () => ({ rcs: { webhook_secret: '' } as Record<string, any> })
+
+const normalizeGatewayConfig = (raw: any) => {
+  const base = defaultGatewayConfig()
+  if (!raw || typeof raw !== 'object') return base
+  const merged: Record<string, any> = { ...base, ...raw }
+  merged.rcs = { ...base.rcs, ...(raw.rcs && typeof raw.rcs === 'object' ? raw.rcs : {}) }
+  return merged as ReturnType<typeof defaultGatewayConfig> & Record<string, any>
+}
+
+const protocolTagType = (protocol: string) => {
+  if (protocol === 'SMPP') return 'primary'
+  if (protocol === 'VIRTUAL') return 'warning'
+  if (protocol === 'RCS') return 'danger'
+  return 'success'
+}
+
 const channelForm = ref({
   channel_code: '',
   channel_name: '',
@@ -764,7 +838,22 @@ const channelForm = ref({
   supplier_id: null as number | null,
   banned_words: '',
   virtual_config: defaultVirtualConfig(),
+  gateway_config: defaultGatewayConfig() as Record<string, any>,
 })
+
+const rcsWebhookUrl = computed(() => {
+  const code = channelForm.value.channel_code || '{通道编码}'
+  return `${window.location.origin}/api/v1/rcs/dlr/${code}`
+})
+
+const copyRcsWebhookUrl = async () => {
+  try {
+    await navigator.clipboard.writeText(rcsWebhookUrl.value)
+    ElMessage.success('回执 URL 已复制')
+  } catch {
+    ElMessage.warning('复制失败，请手动选中复制')
+  }
+}
 
 const loadChannels = async () => {
   loading.value = true
@@ -805,6 +894,7 @@ const handleEdit = async (channel: any) => {
         supplier_id: ch.supplier_id ?? null,
         banned_words: ch.banned_words ?? '',
         virtual_config: ch.virtual_config ? { ...defaultVirtualConfig(), ...ch.virtual_config } : defaultVirtualConfig(),
+        gateway_config: normalizeGatewayConfig(ch.gateway_config),
       }
     } else {
       channelForm.value = {
@@ -827,6 +917,7 @@ const handleEdit = async (channel: any) => {
         supplier_id: channel.supplier?.id ?? null,
         banned_words: channel.banned_words ?? '',
         virtual_config: channel.virtual_config ? { ...defaultVirtualConfig(), ...channel.virtual_config } : defaultVirtualConfig(),
+        gateway_config: normalizeGatewayConfig(channel.gateway_config),
       }
     }
   } catch {
@@ -849,6 +940,7 @@ const handleEdit = async (channel: any) => {
       default_sender_id: channel.default_sender_id || '',
       supplier_id: channel.supplier?.id ?? null,
       banned_words: channel.banned_words ?? '',
+      gateway_config: normalizeGatewayConfig(channel.gateway_config),
     }
   }
   showCreateDialog.value = true
@@ -871,6 +963,19 @@ const handleSave = async () => {
   const payload: any = { ...channelForm.value }
   if (payload.supplier_id === null) payload.supplier_id = undefined
   if (payload.protocol !== 'VIRTUAL') delete payload.virtual_config
+  // gateway_config 只在 RCS 通道随表单提交；其它协议不带，避免把后端已有的
+  // strip_leading_plus / payload_template 覆盖掉（详情接口回读的是脱敏值）
+  if (payload.protocol !== 'RCS') {
+    delete payload.gateway_config
+  } else if (!payload.gateway_config?.rcs?.webhook_secret) {
+    delete payload.gateway_config.rcs.webhook_secret
+  }
+  // 编辑时凭据留空 = 不修改：详情接口不回吐 password / api_key，
+  // 原样提交空串会把库里的 SMPP 密码 / RCS appSecret 抹掉，通道当场鉴权失败。
+  if (editingChannel.value) {
+    if (!payload.password) delete payload.password
+    if (!payload.api_key) delete payload.api_key
+  }
   try {
     if (editingChannel.value) {
       await updateChannel(editingChannel.value.id, payload)
@@ -929,6 +1034,7 @@ const resetChannelForm = () => {
     supplier_id: null,
     banned_words: '',
     virtual_config: defaultVirtualConfig(),
+    gateway_config: defaultGatewayConfig(),
   }
 }
 

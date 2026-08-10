@@ -162,13 +162,13 @@ class InvitationService:
         login_password = secrets.token_urlsafe(10)
         account_name = await self._gen_account_name(invite.sales_id, country_code)
 
-        # 根据业务类型构建 services（短信账户默认同步开通数据服务）
+        # 根据业务类型构建 services（短信/RCS 账户默认同步开通数据服务：都要买号码发）
         svc_list = [business_type]
-        if business_type == 'sms' and 'data' not in svc_list:
+        if business_type in ('sms', 'rcs') and 'data' not in svc_list:
             svc_list.append('data')
 
-        # 新开短信账户默认赠送 1 USD
-        initial_balance = 1.0 if business_type == 'sms' else 0.0
+        # 新开短信/RCS 账户默认赠送 1 USD 试用金
+        initial_balance = 1.0 if business_type in ('sms', 'rcs') else 0.0
 
         new_account = Account(
             account_name=account_name,
@@ -188,7 +188,7 @@ class InvitationService:
         self.db.add(new_account)
         await self.db.flush()
 
-        # 新开短信账户赠送 1U：记录余额日志
+        # 新开短信/RCS 账户赠送 1U：记录余额日志
         if initial_balance > 0:
             from app.modules.common.balance_log import BalanceLog
             self.db.add(BalanceLog(
@@ -196,7 +196,7 @@ class InvitationService:
                 change_type='deposit',
                 amount=initial_balance,
                 balance_after=initial_balance,
-                description='新开短信账户赠送',
+                description=f'新开{"RCS" if business_type == "rcs" else "短信"}账户赠送',
             ))
 
         # 2. 将该 TG 用户的旧绑定全部置为非活跃，再创建新绑定

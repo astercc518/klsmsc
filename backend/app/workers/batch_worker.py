@@ -985,6 +985,21 @@ async def _do_process_chunk(
                             failed += 1
                             continue
 
+                        # RCS 通道：文案须满足上游硬限制，且按「条」计费而非按分段
+                        if str(channel.protocol).upper() == 'RCS':
+                            from app.utils.rcs_content import validate_rcs_content
+                            _rcs_ok, _rcs_code, _rcs_msg = validate_rcs_content(final_message)
+                            if not _rcs_ok:
+                                logger.warning(
+                                    f"分片预检失败 (RCS文案): batch={batch_id}, phone={phone_number}, {_rcs_code}"
+                                )
+                                prefailed_items.append(
+                                    (phone_info.get('e164_format', phone_number), country_code, _rcs_msg)
+                                )
+                                failed += 1
+                                continue
+                            msg_count = 1
+
                         # 查价（缓存）
                         _pk = (channel.id, country_code)
                         if _pk not in price_cache:
@@ -1226,6 +1241,8 @@ async def _do_process_chunk(
                                 charge_result = await pricing_engine.calculate_and_charge(
                                     account_id=account_id, channel_id=ch.id,
                                     country_code=cc, message=final_msg,
+                                    # 传通道：RCS 走「按条计费」而非按短信分段
+                                    channel=ch,
                                 )
                                 if not charge_result.get('success'):
                                     failed += 1

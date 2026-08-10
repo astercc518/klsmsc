@@ -3,6 +3,7 @@
 """
 import asyncio
 import contextvars
+import json
 import random
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -142,8 +143,8 @@ class ChannelCreateRequest(BaseModel):
     def validate_protocol(cls, v: str) -> str:
         if v is None:
             raise ValueError('protocol is required')
-        if v not in ['HTTP', 'SMPP', 'VIRTUAL']:
-            raise ValueError('protocol must be HTTP, SMPP or VIRTUAL')
+        if v not in ['HTTP', 'SMPP', 'VIRTUAL', 'RCS']:
+            raise ValueError('protocol must be HTTP, SMPP, VIRTUAL or RCS')
         return v
 
     @field_validator('default_sender_id')
@@ -202,6 +203,83 @@ class ChannelUpdateRequest(BaseModel):
         if isinstance(v, str):
             return v.strip()
         return v
+
+
+# ── 通道扩展配置（config_json）中的 RCS 密钥脱敏 ──────────────────────────────
+# appSecret / webhook secret 属于上游凭据，与 channels.password / api_key 一样
+# 不能随列表接口回吐给前端。回读时替换为掩码，回写时掩码代表「保持原值」。
+_RCS_SECRET_KEYS = ("app_secret", "webhook_secret")
+_SECRET_MASK = "******"
+
+
+def _mask_gateway_config(cfg: Optional[dict]) -> dict:
+    """返回给管理端的通道扩展配置：屏蔽 RCS 密钥明文。"""
+    if not isinstance(cfg, dict):
+        return {}
+    out = dict(cfg)
+    rcs = out.get("rcs")
+    if isinstance(rcs, dict):
+        masked = dict(rcs)
+        for k in _RCS_SECRET_KEYS:
+            if masked.get(k):
+                masked[k] = _SECRET_MASK
+        out["rcs"] = masked
+    return out
+
+
+def _merge_gateway_config(existing_raw, incoming: Optional[dict]) -> Optional[dict]:
+    """
+    合并前端提交的扩展配置。
+
+    前端拿到的是掩码值，原样提交回来时必须保留库里的真实密钥，
+    否则一次「只改 TPS」的保存就会把 appSecret 抹成 ******，通道当场鉴权失败。
+    """
+    if incoming is None:
+        return None
+    merged = dict(incoming)
+    rcs_in = merged.get("rcs")
+    if not isinstance(rcs_in, dict):
+        return merged
+
+    old: dict = {}
+    if existing_raw:
+        try:
+            parsed = existing_raw if isinstance(existing_raw, dict) else json.loads(existing_raw)
+            old = parsed.get("rcs") if isinstance(parsed.get("rcs"), dict) else {}
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+            old = {}
+
+    rcs_out = dict(rcs_in)
+    for k in _RCS_SECRET_KEYS:
+        v = rcs_out.get(k)
+        if v == _SECRET_MASK or (isinstance(v, str) and set(v.strip()) == {"*"}):
+            if old.get(k):
+                rcs_out[k] = old[k]
+            else:
+                rcs_out.pop(k, None)
+    merged["rcs"] = rcs_out
+    return merged
+
+
+def _assert_rcs_channel_ready(protocol: Optional[str], api_url, username, password, api_key, gateway_config):
+    """RCS 通道保存前的必填校验：缺凭据就直接报错，别等发送时才失败。"""
+    if (protocol or "").upper() != "RCS":
+        return
+    rcs = (gateway_config or {}).get("rcs") if isinstance(gateway_config, dict) else {}
+    rcs = rcs if isinstance(rcs, dict) else {}
+
+    def _has(*vals):
+        return any(isinstance(v, str) and v.strip() for v in vals)
+
+    missing = []
+    if not _has(api_url, rcs.get("base_url")):
+        missing.append("接口地址 api_url（如 https://域名/service/api）")
+    if not _has(username, rcs.get("app_key")):
+        missing.append("appKey（填在用户名或 rcs.app_key）")
+    if not _has(password, api_key, rcs.get("app_secret")):
+        missing.append("appSecret（填在密码或 rcs.app_secret）")
+    if missing:
+        raise HTTPException(status_code=400, detail="RCS 通道配置不完整，缺少：" + "；".join(missing))
 
 
 class PricingCreateRequest(BaseModel):
@@ -2102,7 +2180,7 @@ async def list_channels_admin(
                 "remark": getattr(ch, "remark", None),
                 "default_sender_id": ch.default_sender_id,
                 "virtual_config": ch.get_virtual_config() if ch.protocol == "VIRTUAL" else None,
-                "gateway_config": ch.get_gateway_config(),
+                "gateway_config": _mask_gateway_config(ch.get_gateway_config()),
                 "supplier": supplier_map.get(ch.id),
                 "created_at": ch.created_at.isoformat() if ch.created_at else None
             }
@@ -2168,7 +2246,7 @@ async def get_channel_admin(
             "remark": getattr(ch, "remark", None),
             "default_sender_id": ch.default_sender_id,
             "virtual_config": ch.get_virtual_config() if ch.protocol == "VIRTUAL" else None,
-            "gateway_config": ch.get_gateway_config(),
+            "gateway_config": _mask_gateway_config(ch.get_gateway_config()),
             "supplier": supplier_info,
             "supplier_id": supplier_info["id"] if supplier_info else None,
             "created_at": ch.created_at.isoformat() if ch.created_at else None,
@@ -2194,7 +2272,12 @@ async def create_channel(
     
     if existing:
         raise HTTPException(status_code=400, detail="Channel code already exists")
-    
+
+    _assert_rcs_channel_ready(
+        request.protocol, request.api_url, request.username,
+        request.password, request.api_key, request.gateway_config,
+    )
+
     # 创建通道
     channel = Channel(
         channel_code=request.channel_code,
@@ -2228,11 +2311,9 @@ async def create_channel(
         channel.connection_checked_at = datetime.utcnow()
     
     if request.virtual_config and request.protocol == 'VIRTUAL':
-        import json
         channel.virtual_config = json.dumps(request.virtual_config, ensure_ascii=False)
 
     if request.gateway_config:
-        import json
         channel.config_json = json.dumps(request.gateway_config, ensure_ascii=False)
 
     db.add(channel)
@@ -2334,11 +2415,17 @@ async def update_channel(
     if "remark" in updated_fields:
         channel.remark = request.remark
     if "virtual_config" in updated_fields:
-        import json
         channel.virtual_config = json.dumps(request.virtual_config, ensure_ascii=False) if request.virtual_config else None
     if "gateway_config" in updated_fields:
-        import json
-        channel.config_json = json.dumps(request.gateway_config, ensure_ascii=False) if request.gateway_config else None
+        # 掩码回写保护：前端提交的 ****** 表示「保持库里的原密钥」
+        merged_cfg = _merge_gateway_config(channel.config_json, request.gateway_config)
+        channel.config_json = json.dumps(merged_cfg, ensure_ascii=False) if merged_cfg else None
+
+    _assert_rcs_channel_ready(
+        str(channel.protocol),
+        channel.api_url, channel.username, channel.password, channel.api_key,
+        channel.get_gateway_config(),
+    )
 
     # 更新供应商关联（仅当请求中显式包含 supplier_id 时处理，传 null 表示清除）
     # 同时维护 channels.supplier_id 硬主键与 supplier_channels 关联表，二者保持一致
@@ -2577,6 +2664,21 @@ async def channel_test_send(
             from app.workers.adapters.http_adapter import HTTPAdapter
             adapter = HTTPAdapter(channel)
             success, channel_msg_id, error = await adapter.send(sms_log)
+
+        elif channel.protocol == "RCS":
+            from app.workers.adapters.rcs_adapter import get_rcs_adapter
+
+            # 测试发送同样受上游 160 字符 / 禁 emoji 限制；sender_id 走本条自选
+            sms_log.sender_id = request.sender_id or None
+            rcs_result = await get_rcs_adapter(channel).send_one(sms_log)
+            success = rcs_result.success
+            channel_msg_id = rcs_result.upstream_message_id
+            error = rcs_result.error
+            if rcs_result.duplicated:
+                logger.info(
+                    f"RCS 测试发送命中上游幂等(clientRef 复用): {test_message_id}, "
+                    f"batch={rcs_result.batch_id}"
+                )
 
         else:
             sms_log.status = "failed"
@@ -3000,6 +3102,42 @@ async def _run_channel_check(channel) -> dict:
                         "latency_ms": latency_ms
                     }
                 }
+        elif channel.protocol == "RCS":
+            # 用 /balance 做真实探测：一次调用同时验证 base_url 可达 + appKey/appSecret + 签名路径，
+            # 比 TCP 探测有用得多（TCP 通≠鉴权过，历史上 SMPP 就吃过这个亏）。
+            from app.workers.adapters.rcs_adapter import RCSConfigError, get_rcs_adapter
+
+            base_details = {"channel": channel.channel_code, "protocol": "RCS"}
+            try:
+                probe = await get_rcs_adapter(channel).get_balance()
+            except RCSConfigError as e:
+                return {
+                    "success": False,
+                    "status": "offline",
+                    "message": str(e),
+                    "details": {**base_details, "latency_ms": int((time.time() - start_time) * 1000)},
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "status": "offline",
+                    "message": f"RCS 接口不可达: {str(e)[:200]}",
+                    "details": {**base_details, "latency_ms": int((time.time() - start_time) * 1000)},
+                }
+            latency_ms = int((time.time() - start_time) * 1000)
+            if probe.get("success"):
+                return {
+                    "success": True,
+                    "status": "online",
+                    "message": "RCS 鉴权通过，接口可用",
+                    "details": {**base_details, "latency_ms": latency_ms},
+                }
+            return {
+                "success": False,
+                "status": "offline",
+                "message": f"RCS 鉴权/接口异常: {probe.get('error_code') or ''} {probe.get('error') or ''}".strip(),
+                "details": {**base_details, "latency_ms": latency_ms},
+            }
         elif channel.protocol == "VIRTUAL":
             latency_ms = int((time.time() - start_time) * 1000)
             return {
@@ -3331,7 +3469,8 @@ async def _sync_template_floor_price(
     country_pricing 存国际区号(如 63)，account_templates 存 ISO2(如 PH)，
     故用 get_country_variants() 取同一国家的全部等价写法做 IN 匹配；
     channel_ids 是整数 JSON 数组(可能为 NULL)，用 json_contains 判断包含。
-    仅处理短信模板(business_type='sms')。
+    模板业务类型跟随通道协议：RCS 通道联动 business_type='rcs' 的模板，其余走 'sms'
+    —— RCS 单价与短信量级不同，串到 sms 模板会把短信底价改错。
 
     行为：
     - 已有匹配模板 → 更新 default_price。
@@ -3343,6 +3482,7 @@ async def _sync_template_floor_price(
     返回受影响（更新或新建）模板数。
     """
     from app.modules.common.account_template import AccountTemplate
+    from app.modules.sms.channel import Channel
     from app.utils.country_code import get_country_variants, normalize_country_code
     from decimal import Decimal
 
@@ -3351,9 +3491,16 @@ async def _sync_template_floor_price(
         return 0
     new_price = Decimal(str(price))
 
+    # 模板业务类型跟随通道协议（RCS 通道 → rcs 模板）
+    _proto = (await db.execute(
+        select(Channel.protocol).where(Channel.id == int(channel_id))
+    )).scalar_one_or_none()
+    _proto = str(getattr(_proto, 'value', _proto) or '').upper()
+    biz_type = 'rcs' if _proto == 'RCS' else 'sms'
+
     result = await db.execute(
         select(AccountTemplate).where(
-            AccountTemplate.business_type == 'sms',
+            AccountTemplate.business_type == biz_type,
             AccountTemplate.country_code.in_(variants),
             func.json_contains(AccountTemplate.channel_ids, str(int(channel_id))),
         )
@@ -3364,7 +3511,7 @@ async def _sync_template_floor_price(
             tpl.default_price = new_price
         logger.info(
             f"通道价格联动开户模板底价: channel={channel_id} country={country_code} "
-            f"price={new_price} 命中模板 {len(templates)} 个"
+            f"biz={biz_type} price={new_price} 命中模板 {len(templates)} 个"
         )
         return len(templates)
 
@@ -3378,7 +3525,7 @@ async def _sync_template_floor_price(
 
     sibling = (await db.execute(
         select(AccountTemplate).where(
-            AccountTemplate.business_type == 'sms',
+            AccountTemplate.business_type == biz_type,
             func.json_contains(AccountTemplate.channel_ids, str(int(channel_id))),
         ).limit(1)
     )).scalar_one_or_none()
@@ -3401,7 +3548,7 @@ async def _sync_template_floor_price(
         if supplier is None:
             logger.info(
                 f"通道价格联动开户模板底价: channel={channel_id} country={country_code} "
-                f"无同通道短信模板且通道未关联供应商，跳过自动新建"
+                f"无同通道 {biz_type} 模板且通道未关联供应商，跳过自动新建"
             )
             return 0
         group_name = supplier.supplier_group or supplier.supplier_name
@@ -3415,7 +3562,7 @@ async def _sync_template_floor_price(
     # 生成唯一模板编码
     template_code = None
     for _ in range(10):
-        candidate = generate_template_code('sms', iso2)
+        candidate = generate_template_code(biz_type, iso2)
         exists = await db.execute(
             select(AccountTemplate).where(AccountTemplate.template_code == candidate)
         )
@@ -3432,7 +3579,7 @@ async def _sync_template_floor_price(
     db.add(AccountTemplate(
         template_code=template_code,
         template_name=new_name,
-        business_type='sms',
+        business_type=biz_type,
         country_code=iso2,
         country_name=cn_name,
         supplier_group_id=group_id,
@@ -3456,16 +3603,18 @@ async def _sync_supplier_rate(
     通道价格（成本价）即时联动资源报价 supplier_rates.cost_price。
 
     定位供应商靠 channels.supplier_id 硬主键——未关联供应商则跳过（不做名字模糊匹配）。
-    两表 country_code 格式不同，复用 get_country_variants() 做等价匹配。仅短信。
+    两表 country_code 格式不同，复用 get_country_variants() 做等价匹配。
+    业务类型跟随通道协议：RCS 通道走 'rcs' 行，其余走 'sms'。
 
-    - 命中已有报价行（供应商+国家+sms）→ 更新 cost_price 并标记 price_source='channel'，
+    - 命中已有报价行（供应商+国家+业务类型）→ 更新 cost_price 并标记 price_source='channel'，
       sell_price 不动（人工维护）。
-    - 无 → 新建一行：cost=sell=price，resource_type 取该供应商已有 sms 行众数（缺省 'card'）。
+    - 无 → 新建一行：cost=sell=price，resource_type 取该供应商同业务已有行众数（缺省 'card'）。
 
     price_source 标记用于与 Excel 导入隔离：导入逻辑不覆盖 price_source='channel' 的行。
     返回受影响（更新或新建）行数。
     """
     from app.modules.sms.supplier import SupplierRate
+    from app.modules.sms.channel import Channel
     from app.utils.country_code import get_country_variants, normalize_country_code
     from collections import Counter
     from decimal import Decimal
@@ -3480,10 +3629,16 @@ async def _sync_supplier_rate(
         return 0
     new_price = Decimal(str(price))
 
+    _proto = (await db.execute(
+        select(Channel.protocol).where(Channel.id == int(channel_id))
+    )).scalar_one_or_none()
+    _proto = str(getattr(_proto, 'value', _proto) or '').upper()
+    biz_type = 'rcs' if _proto == 'RCS' else 'sms'
+
     rows = (await db.execute(
         select(SupplierRate).where(
             SupplierRate.supplier_id == supplier_id,
-            SupplierRate.business_type == 'sms',
+            SupplierRate.business_type == biz_type,
             SupplierRate.country_code.in_(variants),
         )
     )).scalars().all()
@@ -3502,7 +3657,7 @@ async def _sync_supplier_rate(
     rtypes = (await db.execute(
         select(SupplierRate.resource_type).where(
             SupplierRate.supplier_id == supplier_id,
-            SupplierRate.business_type == 'sms',
+            SupplierRate.business_type == biz_type,
         )
     )).scalars().all()
     rtype_mode = Counter([t for t in rtypes if t]).most_common(1)
@@ -3511,7 +3666,7 @@ async def _sync_supplier_rate(
     db.add(SupplierRate(
         supplier_id=supplier_id,
         channel_id=int(channel_id),  # 记录设此成本的通道
-        business_type='sms',
+        business_type=biz_type,
         country_code=iso2,
         resource_type=resource_type,
         business_scope='otp',

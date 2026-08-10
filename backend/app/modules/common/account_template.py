@@ -14,7 +14,7 @@ class AccountTemplate(Base):
     template_code = Column(String(50), unique=True, nullable=False, comment="模板编码")
     template_name = Column(String(100), nullable=False, comment="模板名称")
     business_type = Column(
-        Enum("sms", "voice", "data", name="business_type_enum"),
+        Enum("sms", "voice", "data", "rcs", name="business_type_enum"),
         nullable=False,
         default="sms",
         comment="业务类型"
@@ -23,7 +23,7 @@ class AccountTemplate(Base):
     country_name = Column(String(100), comment="国家名称")
     supplier_group_id = Column(BigInteger, comment="供应商TG群ID")
     supplier_group_name = Column(String(100), comment="供应商群名称")
-    channel_ids = Column(JSON, comment="关联通道IDs (短信用)")
+    channel_ids = Column(JSON, comment="关联通道IDs (短信/RCS 用)")
     external_product_id = Column(String(100), comment="外部产品ID (数据用)")
     default_price = Column(DECIMAL(10, 4), default=0.0, comment="底价(成本价)，由通道价格配置保存时自动联动同步")
     pricing_rules = Column(JSON, comment="定价规则")

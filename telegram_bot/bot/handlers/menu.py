@@ -12,6 +12,8 @@ from bot.utils import (
     dedupe_country_codes_from_templates,
     get_group_ids,
     COUNTRY_NAMES,
+    BIZ_NAMES,
+    biz_label as _biz_label,
 )
 from bot.services.api_client import APIClient
 from datetime import datetime, timedelta, date
@@ -196,8 +198,9 @@ async def get_main_menu_guest():
 def _get_biz_ticket_top_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📱 短信工单", callback_data="btk_sms"),
-         InlineKeyboardButton("📞 语音工单", callback_data="btk_voice")],
-        [InlineKeyboardButton("📊 数据工单", callback_data="btk_data")],
+         InlineKeyboardButton("💬 RCS工单", callback_data="btk_rcs")],
+        [InlineKeyboardButton("📞 语音工单", callback_data="btk_voice"),
+         InlineKeyboardButton("📊 数据工单", callback_data="btk_data")],
         [InlineKeyboardButton("📂 我的业务工单", callback_data="bizt_my")],
         [InlineKeyboardButton("🔙 返回", callback_data="menu_main")],
     ])
@@ -206,6 +209,7 @@ def _get_biz_ticket_top_keyboard() -> InlineKeyboardMarkup:
 def _get_biz_ticket_category_keyboard(biz_type: str) -> InlineKeyboardMarkup:
     opts = {
         'sms':   ('🏢 短信开户', '🧪 短信测试', '💬 发送反馈'),
+        'rcs':   ('🏢 RCS开户', '🧪 RCS测试', '💬 发送反馈'),
         'voice': ('🏢 语音开户', '🧪 语音测试', '📞 通话反馈'),
         'data':  ('🏢 数据开户', '🧪 数据测试', '📊 效果反馈'),
     }
@@ -238,10 +242,11 @@ def get_ticket_type_menu():
 
 
 def get_business_type_menu():
-    """业务类型菜单（用于邀请）"""
+    """业务类型菜单（用于开户邀请）。短信 / RCS 走授权码开户。"""
     keyboard = [
         [
             InlineKeyboardButton("📱 短信 SMS", callback_data="biz_sms"),
+            InlineKeyboardButton("💬 RCS", callback_data="biz_rcs"),
         ],
         [
             InlineKeyboardButton("❌ 取消", callback_data="menu_main"),
@@ -254,7 +259,7 @@ async def show_invite_country_selection(query, context, biz_type="sms"):
     """展示开户邀请的国家选择（默认短信业务，跳过业务类型选择）"""
     context.user_data['business_type'] = biz_type
 
-    biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
+    biz_label = _biz_label(biz_type)
 
     # 获取该业务类型下的所有国家
     client = APIClient()
@@ -526,8 +531,11 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['sales_id'] = user_info.get("user_id")
         context.user_data['sales_name'] = user_info.get("real_name")
 
-        # 简化步骤：直接进入短信业务的国家选择
-        await show_invite_country_selection(query, context, biz_type="sms")
+        # 先选业务类型：短信 / RCS 走授权码开户，语音 / 数据走开户订单流程
+        await query.edit_message_text(
+            "🎯 创建开户邀请\n\n请选择业务类型：",
+            reply_markup=get_business_type_menu()
+        )
         return
     
     # 处理业务类型选择（邀请流程）
@@ -540,8 +548,10 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await opening_start(update, context, biz_type=biz_type)
             return
 
-        # 短信 → 继续走邀请码流程
-        await show_invite_country_selection(query, context, biz_type="sms")
+        # 短信 / RCS → 走授权码流程（模板 + 单价 → 生成授权码）
+        await show_invite_country_selection(
+            query, context, biz_type="rcs" if biz_type == "rcs" else "sms"
+        )
         return
     
     # 我的客户（分类概览或全部）
@@ -551,7 +561,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # 按业务类型查看客户（支持分页：my_cust_voice、my_cust_voice_p1）
     if data.startswith("my_cust_"):
-        m = re.match(r"^my_cust_(sms|voice|data|all)(?:_p(\d+))?$", data)
+        m = re.match(r"^my_cust_(sms|rcs|voice|data|all)(?:_p(\d+))?$", data)
         if m:
             await show_my_customers(
                 query, context, biz_filter=m.group(1), page=int(m.group(2) or 0)
@@ -640,7 +650,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     # 报价查询 - 按业务类型选国家
     if data.startswith("pricing_biz_"):
         rest = data.replace("pricing_biz_", "")
-        if rest in ("sms", "voice", "data"):
+        if rest in ("sms", "rcs", "voice", "data"):
             await show_pricing_country_by_biz(query, context, rest)
         elif rest.startswith("country_"):
             # pricing_biz_country_sms_CN 格式
@@ -663,7 +673,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['country_code'] = country_code
         biz_type = context.user_data.get('business_type', 'sms')
         
-        biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
+        biz_label = _biz_label(biz_type)
         
         # 获取该国家的模板（* 代表全球通配）
         client = APIClient()
@@ -886,9 +896,9 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # 业务工单类别选择
-    if data in ("btk_sms", "btk_voice", "btk_data"):
+    if data in ("btk_sms", "btk_rcs", "btk_voice", "btk_data"):
         biz = data[4:]
-        biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}[biz]
+        biz_label = _biz_label(biz)
         await query.edit_message_text(
             f"📋 {biz_label}工单\n\n请选择工单类别：",
             reply_markup=_get_biz_ticket_category_keyboard(biz)
@@ -1381,9 +1391,10 @@ async def show_my_customers(query, context, biz_filter=None, page: int = 0):
     type_counts = res.get("type_counts", {})
     
     sms_count = type_counts.get('sms', 0)
+    rcs_count = type_counts.get('rcs', 0)
     voice_count = type_counts.get('voice', 0)
     data_count = type_counts.get('data', 0)
-    total_count = sms_count + voice_count + data_count
+    total_count = sms_count + rcs_count + voice_count + data_count
 
     if total_count == 0:
         await query.edit_message_text(
@@ -1402,6 +1413,7 @@ async def show_my_customers(query, context, biz_filter=None, page: int = 0):
     if biz_filter is None:
         biz_labels = {
             'sms': f"📱 短信客户 ({sms_count})",
+            'rcs': f"💬 RCS客户 ({rcs_count})",
             'voice': f"📞 语音客户 ({voice_count})",
             'data': f"📊 数据客户 ({data_count})",
         }
@@ -1415,7 +1427,8 @@ async def show_my_customers(query, context, biz_filter=None, page: int = 0):
 
         await query.edit_message_text(
             f"👥 <b>我的客户</b>（共 {total_count} 个）\n\n"
-            f"📱 短信: {sms_count}  |  📞 语音: {voice_count}  |  📊 数据: {data_count}\n\n"
+            f"📱 短信: {sms_count}  |  💬 RCS: {rcs_count}  |  "
+            f"📞 语音: {voice_count}  |  📊 数据: {data_count}\n\n"
             f"选择业务类型查看客户列表：",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='HTML'
@@ -1427,7 +1440,7 @@ async def show_my_customers(query, context, biz_filter=None, page: int = 0):
         f"👥 客户列表 ({biz_filter})\n",
         "<i>账号 | 国家 | 通道 | 单价 | 余额</i>\n",
     ]
-    unit_hint = "/条" if (biz_filter or "").lower() == "sms" else ""
+    unit_hint = "/条" if (biz_filter or "").lower() in ("sms", "rcs") else ""
     keyboard = []
     for c in customers:
         raw_cc = (c.get("country_code") or "").strip().upper()
@@ -1744,9 +1757,10 @@ async def show_pricing_menu(query, context, tg_id: int):
         return
 
     keyboard = [
-        [InlineKeyboardButton("📱 短信", callback_data="pricing_biz_sms")],
-        [InlineKeyboardButton("📞 语音", callback_data="pricing_biz_voice")],
-        [InlineKeyboardButton("📊 数据", callback_data="pricing_biz_data")],
+        [InlineKeyboardButton("📱 短信", callback_data="pricing_biz_sms"),
+         InlineKeyboardButton("💬 RCS", callback_data="pricing_biz_rcs")],
+        [InlineKeyboardButton("📞 语音", callback_data="pricing_biz_voice"),
+         InlineKeyboardButton("📊 数据", callback_data="pricing_biz_data")],
         [InlineKeyboardButton("🔙 返回", callback_data="menu_main")],
     ]
     await query.edit_message_text(
@@ -1756,7 +1770,7 @@ async def show_pricing_menu(query, context, tg_id: int):
     )
 
 
-BIZ_LABELS = {"sms": "短信", "voice": "语音", "data": "数据"}
+BIZ_LABELS = BIZ_NAMES  # 单一数据源见 bot/utils.py
 
 
 async def _get_bot_config() -> dict:
@@ -2417,7 +2431,7 @@ async def _generate_invite_code(target, context, is_callback=True):
     price = context.user_data.get('customer_price', 0)
     tpl_name = context.user_data.get('template_name', '')
     biz_type = context.user_data.get('business_type', 'sms')
-    biz_label = {'sms': '短信', 'voice': '语音', 'data': '数据'}.get(biz_type, biz_type)
+    biz_label = _biz_label(biz_type)
     country = context.user_data.get('country_code', '')
     country_label = '全球（所有国家）' if country == '*' else COUNTRY_NAMES.get(country, country)
 
@@ -2455,6 +2469,7 @@ async def _generate_invite_code(target, context, is_callback=True):
         f"✅ <b>授权码创建成功！</b>\n\n"
         f"📋 授权码: <code>{code}</code>\n"
         f"🔗 开户链接:\n{invite_link}\n\n"
+        f"🏷 业务: {biz_label}\n"
         f"📦 模板: {tpl_name}\n"
         f"🌍 国家/地区: {country_label}\n"
         f"{price_line}"
@@ -2706,7 +2721,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['waiting_for'] = None
 
             biz_type = account.get('business_type', 'sms')
-            biz_label = {'sms': '短信', 'voice': '语音', 'data': '数据'}.get(biz_type, biz_type)
+            biz_label = _biz_label(biz_type)
             country_label = COUNTRY_NAMES.get(extra_info.get('country_code', ''), extra_info.get('country_code', ''))
             tpl_name = extra_info.get('template_name', '')
             login_account = extra_info.get('login_account', account.get('account_name'))
@@ -3046,7 +3061,7 @@ menu_handlers = [
     CallbackQueryHandler(
         handle_menu_callback,
         # kb_ 不能覆盖 kb_dl_*（第三字符为 d）；kb_noop 同理，须单独列出
-        pattern=r'^(?!menu_register$|menu_sms_test$|reg_)(?:sales_login_|okcc_refresh_|menu_|biz_|btk_sms$|btk_voice$|btk_data$|kb_|kb_dl_|kb_noop|ticket_type_|country_|tpl_|pricing_|approve_|reject_|send_approved_sms_|sms_approval_skip_|process_|ticket_detail_|close_ticket_|back_|my_cust_)'
+        pattern=r'^(?!menu_register$|menu_sms_test$|reg_)(?:sales_login_|okcc_refresh_|menu_|biz_|btk_sms$|btk_rcs$|btk_voice$|btk_data$|kb_|kb_dl_|kb_noop|ticket_type_|country_|tpl_|pricing_|approve_|reject_|send_approved_sms_|sms_approval_skip_|process_|ticket_detail_|close_ticket_|back_|my_cust_)'
     ),
     # 短信审核回复：图片与图片类文档需在 TEXT 之外单独处理
     MessageHandler(

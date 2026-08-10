@@ -1,6 +1,6 @@
 """业务工单处理器
 
-员工通过菜单发起 9 类业务工单（短信/语音/数据 × 开户/测试/反馈），
+员工通过菜单发起 12 类业务工单（短信/RCS/语音/数据 × 开户/测试/反馈），
 ConversationHandler 接管描述输入，避开其他 conversation 拦截 TEXT。
 
 发起后推送至技术群，技术点击接单/完成时通知发起人，群消息按钮联动。
@@ -24,11 +24,11 @@ from bot.utils import get_group_ids
 
 BIZ_DESC = 0
 
-CAT_LABELS = {'sms': '短信', 'voice': '语音', 'data': '数据'}
+CAT_LABELS = {'sms': '短信', 'rcs': 'RCS', 'voice': '语音', 'data': '数据'}
 ACT_LABELS = {'register': '开户', 'test': '测试', 'feedback': '反馈'}
 ACT_TYPE_MAP = {'register': 'registration', 'test': 'test', 'feedback': 'feedback'}
 
-CAT_EMOJI = {'sms': '📱', 'voice': '📞', 'data': '📊'}
+CAT_EMOJI = {'sms': '📱', 'rcs': '💬', 'voice': '📞', 'data': '📊'}
 
 STATUS_LABELS = {
     'open': '⏳ 待处理',
@@ -44,8 +44,9 @@ STATUS_LABELS = {
 def _biz_top_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📱 短信工单", callback_data="btk_sms"),
-         InlineKeyboardButton("📞 语音工单", callback_data="btk_voice")],
-        [InlineKeyboardButton("📊 数据工单", callback_data="btk_data")],
+         InlineKeyboardButton("💬 RCS工单", callback_data="btk_rcs")],
+        [InlineKeyboardButton("📞 语音工单", callback_data="btk_voice"),
+         InlineKeyboardButton("📊 数据工单", callback_data="btk_data")],
         [InlineKeyboardButton("📂 我的业务工单", callback_data="bizt_my")],
         [InlineKeyboardButton("🔙 返回", callback_data="menu_main")],
     ])
@@ -70,7 +71,7 @@ async def on_btk_action_entry(update: Update, context: ContextTypes.DEFAULT_TYPE
     """处理 btk_<biz>_<action> 回调，进入描述输入阶段。"""
     query = update.callback_query
     await query.answer()
-    m = re.match(r'^btk_(sms|voice|data)_(register|test|feedback)$', query.data)
+    m = re.match(r'^btk_(sms|rcs|voice|data)_(register|test|feedback)$', query.data)
     if not m:
         return ConversationHandler.END
 
@@ -353,7 +354,7 @@ def get_biz_ticket_handlers():
     conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(on_btk_action_entry,
-                                 pattern=r'^btk_(sms|voice|data)_(register|test|feedback)$')
+                                 pattern=r'^btk_(sms|rcs|voice|data)_(register|test|feedback)$')
         ],
         states={
             BIZ_DESC: [

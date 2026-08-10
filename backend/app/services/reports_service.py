@@ -52,8 +52,9 @@ class ReportsService:
         today_zero = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         ttl = 24 * 3600 if end_dt <= today_zero else 60
         # v2: 剔除虚拟通道后口径变更，版本号使旧缓存(含虚拟通道)立即失效
+        # v7: RCS 从 sms 桶中拆出（sms 不再含 RCS 流量），旧缓存口径不同必须失效
         cache_key = (
-            f"report:business:v6:{dimension}:{business_type}:"
+            f"report:business:v7:{dimension}:{business_type}:"
             f"{start_dt.strftime('%Y%m%d%H%M')}:{end_dt.strftime('%Y%m%d%H%M')}"
         )
         cm = await get_cache_manager()
@@ -64,6 +65,11 @@ class ReportsService:
         results: List[Dict[str, Any]] = []
         if business_type in ["all", "sms"]:
             results.extend(await ReportsService._get_sms_stats(db, dimension, start_dt, end_dt))
+        if business_type in ["all", "rcs"]:
+            # RCS 与短信同表(sms_logs)，靠通道协议拆分，见 _get_sms_stats
+            results.extend(
+                await ReportsService._get_sms_stats(db, dimension, start_dt, end_dt, biz="rcs")
+            )
         if business_type in ["all", "data"]:
             results.extend(await ReportsService._get_data_stats(db, dimension, start_dt, end_dt))
 
@@ -138,11 +144,20 @@ class ReportsService:
         return _cov_index_available
 
     @staticmethod
-    async def _sms_group_rollup(db: AsyncSession, col_name: str, days: List[_date], virtual_ids: List[int]):
+    async def _sms_group_rollup(
+        db: AsyncSession,
+        col_name: str,
+        days: List[_date],
+        virtual_ids: List[int],
+        rcs_ids: Optional[List[int]] = None,
+        biz: str = "sms",
+    ):
         """按天缓存的分组聚合，返回与原查询同形状的行对象(fk/total_count/delivered_count/revenue/cost/profit)。
 
         缺失的天用一条 `GROUP BY DATE(submit_time), <col>` 补齐（整月回填实测 ~33s，
         一次性），写回缓存后长期复用；「今天」永远实时算。
+
+        biz='rcs' 只统计 RCS 通道，biz='sms' 排除 RCS 通道（口径见 _get_sms_stats）。
         """
         col = {
             "account_id": SMSLog.account_id,
@@ -152,6 +167,10 @@ class ReportsService:
         today = datetime.now().date()
         # 缓存键绑定被剔除的虚拟通道集合：增删虚拟通道会改变历史天口径
         tag = ",".join(str(i) for i in sorted(virtual_ids or ())) or "all"
+        # 同理绑定 RCS 通道集合与业务口径。没有 RCS 通道时不加后缀 ——
+        # 此时 sms 桶的查询与拆分前完全一致，已预热的历史天缓存继续有效。
+        if rcs_ids:
+            tag = f"{tag}|{biz}:{','.join(str(i) for i in sorted(rcs_ids))}"
 
         per_day: Dict[_date, list] = {}
         rc = None
@@ -176,6 +195,10 @@ class ReportsService:
             ]
             if virtual_ids:
                 conds.append(or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)))
+            if biz == "rcs":
+                conds.append(SMSLog.channel_id.in_(rcs_ids or []))
+            elif rcs_ids:
+                conds.append(or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(rcs_ids)))
             q = (
                 select(
                     func.date(SMSLog.submit_time).label("d"),
@@ -236,11 +259,21 @@ class ReportsService:
         ]
 
     @staticmethod
-    async def _get_sms_stats(db: AsyncSession, dimension: str, start_dt: datetime, end_dt: datetime) -> List[Dict[str, Any]]:
+    async def _get_sms_stats(
+        db: AsyncSession,
+        dimension: str,
+        start_dt: datetime,
+        end_dt: datetime,
+        biz: str = "sms",
+    ) -> List[Dict[str, Any]]:
         """
-        短信业务聚合查询。
+        短信 / RCS 业务聚合查询。
         策略：先按外键(account_id/channel_id/country_code)在 sms_logs 上聚合（覆盖索引扫描），
         再在 Python 里二次聚合到目标维度并补名称，避免在 3M 行级别上做 JOIN。
+
+        RCS 复用 sms_logs 落库，唯一可靠的区分依据是通道协议(channels.protocol='RCS')
+        —— 账户 business_type 不行：同一账户可能既发短信又发 RCS。
+        biz='sms' 排除 RCS 通道，biz='rcs' 只取 RCS 通道，两者互不重叠且合起来等于原口径。
         """
         agg_count = func.count(SMSLog.id).label("total_count")
         agg_delivered = func.sum(case((SMSLog.status == "delivered", 1), else_=0)).label("delivered_count")
@@ -260,6 +293,18 @@ class ReportsService:
                 or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(virtual_ids)),
             )
 
+        # RCS 与短信拆桶：无 RCS 通道时 sms 桶不加任何条件，行为与拆分前一致
+        rcs_ids = await ReportsService._fetch_rcs_channel_ids(db)
+        if biz == "rcs":
+            if not rcs_ids:
+                return []
+            time_filter = and_(time_filter, SMSLog.channel_id.in_(rcs_ids))
+        elif rcs_ids:
+            time_filter = and_(
+                time_filter,
+                or_(SMSLog.channel_id.is_(None), SMSLog.channel_id.notin_(rcs_ids)),
+            )
+
         # 整天对齐的区间（today/this_week/this_month/last_month/纯日期 custom）走按天缓存，
         # 只实时扫「今天」；带时分秒的自定义区间无法按天切，回落到原始整段聚合。
         rollup_days = ReportsService._rollup_days(start_dt, end_dt)
@@ -268,7 +313,9 @@ class ReportsService:
         if dimension == "country":
             # 国家维度直接出结果
             if rollup_days is not None:
-                rows = await ReportsService._sms_group_rollup(db, "country_code", rollup_days, virtual_ids)
+                rows = await ReportsService._sms_group_rollup(
+                    db, "country_code", rollup_days, virtual_ids, rcs_ids=rcs_ids, biz=biz
+                )
             else:
                 query = (
                     select(
@@ -279,7 +326,7 @@ class ReportsService:
                     .group_by(SMSLog.country_code)
                 )
                 rows = (await db.execute(query)).all()
-            return [ReportsService._fmt_sms_row(r.dim_id, r.dim_id or "Unknown", r) for r in rows]
+            return [ReportsService._fmt_sms_row(r.dim_id, r.dim_id or "Unknown", r, biz) for r in rows]
 
         if dimension in ("customer", "employee"):
             base_col, base_col_name = SMSLog.account_id, "account_id"
@@ -289,7 +336,9 @@ class ReportsService:
             return []
 
         if rollup_days is not None:
-            rows = await ReportsService._sms_group_rollup(db, base_col_name, rollup_days, virtual_ids)
+            rows = await ReportsService._sms_group_rollup(
+                db, base_col_name, rollup_days, virtual_ids, rcs_ids=rcs_ids, biz=biz
+            )
         else:
             query = (
                 select(base_col.label("fk"), agg_count, agg_delivered, agg_revenue, agg_cost, agg_profit)
@@ -307,12 +356,17 @@ class ReportsService:
         # === 第二步：根据维度补名称 / 二次聚合 ===
         if dimension == "customer":
             name_map = await ReportsService._fetch_account_names(db, fk_ids)
-            rr_acc, _ = await ReportsService._fetch_refund_recharge(db, start_dt, end_dt)
+            # 退补充值只挂在 sms 行：balance_logs 没有通道/协议归属，无法拆到 RCS，
+            # 若两个桶都挂同一笔，业务类型选「全部」时同一笔退款会显示两遍。
+            rr_acc = (
+                (await ReportsService._fetch_refund_recharge(db, start_dt, end_dt))[0]
+                if biz == "sms" else {}
+            )
             out = []
             for r in rows:
                 if r.fk is None:
                     continue
-                d = ReportsService._fmt_sms_row(r.fk, name_map.get(r.fk, f"Account#{r.fk}"), r)
+                d = ReportsService._fmt_sms_row(r.fk, name_map.get(r.fk, f"Account#{r.fk}"), r, biz)
                 rr = rr_acc.get(r.fk)
                 if rr:
                     d["refunded_count"] = rr["cnt"]
@@ -323,14 +377,18 @@ class ReportsService:
         if dimension == "channel":
             name_map = await ReportsService._fetch_channel_names(db, fk_ids)
             return [
-                ReportsService._fmt_sms_row(r.fk, name_map.get(r.fk, f"Channel#{r.fk}"), r)
+                ReportsService._fmt_sms_row(r.fk, name_map.get(r.fk, f"Channel#{r.fk}"), r, biz)
                 for r in rows if r.fk is not None
             ]
 
         if dimension == "employee":
             # account_id -> sales_id 映射
             sales_map = await ReportsService._fetch_account_sales_map(db, fk_ids)
-            _, rr_sales = await ReportsService._fetch_refund_recharge(db, start_dt, end_dt)
+            # 同 customer 维度：退补只挂 sms 行，避免「全部」口径下一笔退款计两遍
+            rr_sales = (
+                (await ReportsService._fetch_refund_recharge(db, start_dt, end_dt))[1]
+                if biz == "sms" else {}
+            )
             # 在 Python 里按 sales_id 重新聚合
             buckets: Dict[int, Dict[str, float]] = {}
             for r in rows:
@@ -346,7 +404,7 @@ class ReportsService:
             admin_map = await ReportsService._fetch_admin_names(db, list(buckets.keys()))
             return [
                 {
-                    "business_type": "sms",
+                    "business_type": biz,
                     "dim_id": sid,
                     "dim_name": admin_map.get(sid, f"Admin#{sid}"),
                     "count": b["count"],
@@ -378,7 +436,7 @@ class ReportsService:
             sup_name_map = await ReportsService._fetch_supplier_names(db, list(buckets.keys()))
             return [
                 {
-                    "business_type": "sms",
+                    "business_type": biz,
                     "dim_id": sup_id,
                     "dim_name": sup_name_map.get(sup_id, f"Supplier#{sup_id}"),
                     "count": b["count"],
@@ -396,11 +454,11 @@ class ReportsService:
         return []
 
     @staticmethod
-    def _fmt_sms_row(dim_id: Any, dim_name: Any, row: Any) -> Dict[str, Any]:
+    def _fmt_sms_row(dim_id: Any, dim_name: Any, row: Any, biz: str = "sms") -> Dict[str, Any]:
         cnt = int(row.total_count or 0)
         delivered = int(row.delivered_count or 0)
         return {
-            "business_type": "sms",
+            "business_type": biz,
             "dim_id": dim_id,
             "dim_name": dim_name,
             "count": cnt,
@@ -473,6 +531,16 @@ class ReportsService:
     async def _fetch_virtual_channel_ids(db: AsyncSession) -> List[int]:
         """虚拟通道(protocol=VIRTUAL)的ID，用于从业务报表中剔除注水/演示流量。"""
         rows = (await db.execute(select(Channel.id).where(Channel.protocol == "VIRTUAL"))).all()
+        return [r[0] for r in rows]
+
+    @staticmethod
+    async def _fetch_rcs_channel_ids(db: AsyncSession) -> List[int]:
+        """RCS 通道(protocol=RCS)的ID，用于把 RCS 流量从短信桶里拆出来。
+
+        不过滤 is_deleted：通道删了，历史 sms_logs 里那些记录仍然属于 RCS 业务，
+        排除掉会让它们悄悄回流到短信桶。
+        """
+        rows = (await db.execute(select(Channel.id).where(Channel.protocol == "RCS"))).all()
         return [r[0] for r in rows]
 
     @staticmethod

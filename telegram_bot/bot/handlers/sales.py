@@ -5,7 +5,7 @@ from telegram.ext import (
     ConversationHandler, 
     CallbackQueryHandler
 )
-from bot.utils import logger, dedupe_country_codes_from_templates
+from bot.utils import logger, dedupe_country_codes_from_templates, biz_label as _biz_label
 from bot.handlers.menu import COUNTRY_NAMES
 from bot.services.api_client import APIClient
 
@@ -58,9 +58,10 @@ async def invite_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton("📱 短信 SMS", callback_data="biz_sms"),
-            InlineKeyboardButton("📞 语音 Voice", callback_data="biz_voice"),
+            InlineKeyboardButton("💬 RCS", callback_data="biz_rcs"),
         ],
         [
+            InlineKeyboardButton("📞 语音 Voice", callback_data="biz_voice"),
             InlineKeyboardButton("📊 数据 Data", callback_data="biz_data"),
         ],
         [InlineKeyboardButton("❌ 取消", callback_data="cancel")]
@@ -88,7 +89,7 @@ async def select_biz_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     biz_type = data.replace("biz_", "")
     context.user_data['business_type'] = biz_type
     
-    biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
+    biz_label = _biz_label(biz_type)
     
     # 获取该业务类型下的所有国家
     api = APIClient()
@@ -194,7 +195,7 @@ async def select_template(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "back_to_country":
         # 复用 select_biz_type 的逻辑显示国家列表
         biz_type = context.user_data['business_type']
-        biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
+        biz_label = _biz_label(biz_type)
         templates = context.user_data.get('available_templates', [])
         raw_codes = [t.get("country_code") for t in templates if t.get("country_code")]
         country_codes = dedupe_country_codes_from_templates(raw_codes)
@@ -338,7 +339,7 @@ async def receive_custom_price(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
+    biz_label = _biz_label(biz_type)
     await update.message.reply_text(
         f"📦 **确认邀请码信息**\n\n"
         f"业务类型: {biz_label}\n"
@@ -369,7 +370,7 @@ async def confirm_invite(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
+    biz_label = _biz_label(biz_type)
     await query.edit_message_text(
         f"📦 *确认授权码信息*\n\n"
         f"业务类型: {biz_label}\n"
@@ -426,7 +427,7 @@ async def generate_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = os.getenv('TELEGRAM_BOT_USERNAME', 'kaolachbot')
     invite_link = f"https://t.me/{bot_username}?start={code}"
 
-    biz_label = {"sms": "短信", "voice": "语音", "data": "数据"}.get(biz_type, biz_type)
+    biz_label = _biz_label(biz_type)
     await query.edit_message_text(
         f"✅ <b>授权码已生成</b>\n\n"
         f"📦 业务: {biz_label} - {country_code}\n"

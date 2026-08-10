@@ -20,7 +20,7 @@ class Channel(Base):
         comment="关联供应商ID：通道价格保存时据此同步资源报价(supplier_rates)成本",
     )
     protocol = Column(
-        Enum("SMPP", "HTTP", "VIRTUAL", name="channel_protocol"),
+        Enum("SMPP", "HTTP", "VIRTUAL", "RCS", name="channel_protocol"),
         nullable=False,
         comment="协议类型"
     )
@@ -110,6 +110,34 @@ class Channel(Base):
         from app.utils.phone_utils import strip_leading_plus_enabled
 
         return strip_leading_plus_enabled(self.get_gateway_config())
+
+    def get_rcs_config(self) -> dict:
+        """解析 RCS 供应商配置（存于 config_json.rcs）。
+
+        凭据优先取 config_json.rcs 中的显式字段，未配置则回落到通道通用列：
+        app_key ← username，app_secret ← password/api_key，base_url ← api_url。
+        这样管理员既可用通道表单的常规字段填，也能用扩展 JSON 覆盖。
+        """
+        cfg = self.get_gateway_config()
+        rcs = cfg.get("rcs")
+        rcs = dict(rcs) if isinstance(rcs, dict) else {}
+
+        def _pick(key: str, *fallbacks) -> str:
+            v = rcs.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            for fb in fallbacks:
+                if isinstance(fb, str) and fb.strip():
+                    return fb.strip()
+            return ""
+
+        rcs["base_url"] = _pick("base_url", self.api_url).rstrip("/")
+        rcs["app_key"] = _pick("app_key", self.username)
+        rcs["app_secret"] = _pick("app_secret", self.password, self.api_key)
+        rcs["send_code"] = _pick("send_code", self.default_sender_id)
+        rcs["webhook_secret"] = _pick("webhook_secret")
+        rcs["vendor"] = _pick("vendor", "bolttel")
+        return rcs
 
     def get_virtual_config(self) -> dict:
         """解析虚拟通道配置，返回带默认值的 dict（比例支持区间）"""

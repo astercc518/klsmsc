@@ -560,6 +560,16 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
                     await db.close()
                     return {"_rate_limited": True, "_wait_sec": 10}
                 success = bool(http_result)
+            elif channel.protocol == 'RCS':
+                rcs_result = await _send_via_rcs(sms_log, channel)
+                if rcs_result == "_retry":
+                    # 上游限流/超时/5xx：回退 queued 等待重投。clientRef=message_id，
+                    # 上游按 clientRef 幂等，重投不会重复扣费也不会双发。
+                    sms_log.status = 'queued'
+                    await db.commit()
+                    await db.close()
+                    return {"_rate_limited": True, "_wait_sec": 10}
+                success = bool(rcs_result)
             else:
                 # SMPP 不应在 Python 内 Submit；防御性重路由（缺负载时上层会记失败）
                 logger.error(f"非预期路径：{channel.protocol} 在 Python Worker 执行，触发重路由")
@@ -827,6 +837,31 @@ async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: di
         logger.error(f"HTTP发送异常: {sms_log.message_id}, {str(e)}", exc_info=e)
         sms_log.error_message = f"发送异常: {str(e)[:100]}"
         return False
+
+
+async def _send_via_rcs(sms_log: SMSLog, channel: Channel):
+    """
+    通过 RCS 通道发送（叮咚 BoltTel OpenAPI）。
+
+    与 _send_via_http 相同的三态返回：
+        True      — 上游已受理（upstream_message_id 已写入，等待 Webhook 回执）
+        False     — 永久失败（error_message 已设置）
+        "_retry"  — 可重试（限流/超时/5xx）；clientRef=message_id，上游幂等不会双发
+    """
+    from app.workers.adapters.rcs_adapter import get_rcs_adapter
+
+    logger.info(f"通过 RCS 发送: {sms_log.message_id} via {channel.channel_code}")
+
+    adapter = get_rcs_adapter(channel)
+    result = await adapter.send_one(sms_log)
+
+    if result.success:
+        if result.upstream_message_id:
+            sms_log.upstream_message_id = result.upstream_message_id
+        return True
+
+    sms_log.error_message = result.error or "RCS 发送失败"
+    return "_retry" if result.retryable else False
 
 
 async def _mark_failed(message_id: str, error_message: str):

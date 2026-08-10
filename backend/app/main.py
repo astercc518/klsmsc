@@ -200,6 +200,7 @@ from app.api.v1 import (
     account_templates, ai, admin_logs,
     water,
     _internal_smpp,
+    rcs as rcs_mod,
     license as license_mod,
     brands as brands_mod,
 )
@@ -211,6 +212,8 @@ from app.api.v1.data import (
 app.include_router(sms.router, prefix="/api/v1/sms", tags=["SMS"])
 app.include_router(account.router, prefix="/api/v1/account", tags=["Account"])
 app.include_router(channels.router, prefix="/api/v1/channels", tags=["Channels"])
+app.include_router(rcs_mod.router, prefix="/api/v1", tags=["RCS 回执"])
+app.include_router(rcs_mod.admin_router, prefix="/api/v1", tags=["RCS 管理"])
 app.include_router(admin.router, prefix="/api/v1", tags=["Admin"])
 app.include_router(reports.router, prefix="/api/v1", tags=["Reports"])
 app.include_router(bot_admin.router, prefix="/api/v1/admin/bot", tags=["Bot Admin"])

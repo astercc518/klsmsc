@@ -115,6 +115,39 @@ class PricingEngine:
         )
         raise PricingNotFoundError(country_code, channel_id)
     
+    async def resolve_channel_protocol(
+        self, channel_id: int, channel: Optional[Channel] = None
+    ) -> str:
+        """解析通道协议（大写）。调用方已有 channel 时零查库。"""
+        if channel is not None:
+            p = getattr(channel, "protocol", None)
+            return str(getattr(p, "value", p) or "").upper()
+
+        cache_manager = await get_cache_manager()
+        cache_key = f"channel_protocol:{channel_id}"
+        cached = await cache_manager.get(cache_key)
+        if cached:
+            return str(cached).upper()
+
+        row = await self.db.execute(select(Channel.protocol).where(Channel.id == channel_id))
+        p = row.scalar_one_or_none()
+        proto = str(getattr(p, "value", p) or "").upper()
+        if proto:
+            # TTL 取短：管理员改协议后计费口径要尽快跟上（RCS 按条 vs 短信按段）
+            await cache_manager.set(cache_key, proto, ttl=600)
+        return proto
+
+    def billable_units(self, message: str, protocol: str) -> int:
+        """
+        计费单位数。
+
+        RCS 按「条」计费：一个号码一条，与文案长度/编码无关（上游硬限 160 字符本就单条）。
+        普通短信仍按 GSM-7 / UCS-2 分段数计费。
+        """
+        if (protocol or "").upper() == "RCS":
+            return 1
+        return self._count_sms_parts(message)
+
     async def calculate_and_charge(
         self,
         account_id: int,
@@ -134,9 +167,10 @@ class PricingEngine:
                            适用于大批量循环，可将每条 ~4 次 DB 操作降为 1 次。
         """
         try:
-            # 1. 计算短信条数
-            message_count = self._count_sms_parts(message)
-            logger.debug(f"短信条数: {message_count}")
+            # 1. 计算计费条数（RCS 按条，短信按分段）
+            protocol = await self.resolve_channel_protocol(channel_id, channel)
+            message_count = self.billable_units(message, protocol)
+            logger.debug(f"计费条数: {message_count} (protocol={protocol})")
 
             # 2. 查询销售价格（带 Redis 缓存，同账户+通道+国家只查一次库）
             price_info = await self.get_price(channel_id, country_code, mnc, account_id)
