@@ -2407,7 +2407,9 @@ async def dlr_callback_get(
             logger.warning(f"DLR GET 无法解析报告（缺少已知消息 ID 字段）: {query_string[:500]}")
             return {"status": 0, "message": "missing message_id"}
 
-        success, fail = await process_dlr_reports(
+        # process_dlr_reports 返回三元组（批次进度已在其内部同步），此处按两元组解包会
+        # 直接 ValueError —— 整条 GET 回执路径静默 500，上游会当失败重推。
+        success, fail, _affected = await process_dlr_reports(
             reports, db, source="push-get", channel_id=None
         )
 

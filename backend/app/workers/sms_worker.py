@@ -1527,7 +1527,9 @@ async def _fetch_dlr_reports_async():
 
                         if reports:
                             logger.info(f"[{channel.channel_code}] 解析到 {len(reports)} 条 DLR 报告")
-                            success, fail = await process_dlr_reports(
+                            # 三元组返回（第三项为受影响批次，进度已在函数内部同步）；
+                            # 按两元组解包会 ValueError，被外层 except 吞成「拉取失败」。
+                            success, fail, _affected = await process_dlr_reports(
                                 reports,
                                 db,
                                 source=f"pull-{channel.channel_code}",
