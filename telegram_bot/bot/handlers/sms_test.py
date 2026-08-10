@@ -162,10 +162,35 @@ async def country_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await _load_suppliers_for_country(country, query.edit_message_text, context)
 
 
+async def _release_to_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """把不属于落地测试流程的文本交还通用文本处理器，并结束本会话。
+
+    ConversationHandler 消费掉的更新不会再往后派发，所以必须显式转交，
+    否则用户这条消息会白丢一次。
+    """
+    from bot.handlers.menu import handle_text_input  # 延迟导入避免循环依赖
+
+    logger.info(
+        "sms_test: 非本流程文本，放行给通用处理器并结束会话 (tg_id={})",
+        update.effective_user.id if update.effective_user else None,
+    )
+    for k in ('stest_countries', 'stest_country', 'stest_country_input_mode',
+              'stest_suppliers', 'stest_supplier_id', 'stest_supplier_name',
+              'stest_supplier_tg_group_id'):
+        context.user_data.pop(k, None)
+    await handle_text_input(update, context)
+    return ConversationHandler.END
+
+
 async def country_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理手动输入的国家"""
     if not context.user_data.get('stest_country_input_mode'):
-        return SELECT_COUNTRY
+        # 本 conversation 注册在 menu_handlers 之前，SELECT_COUNTRY 的 TEXT 捕获是通吃的。
+        # 员工点进落地测试后没走完（只是点了别的菜单），会话仍留在 SELECT_COUNTRY，
+        # 此处若静默 return 会把之后所有文本（开户单价/充值金额/员工绑定…）全部吞掉且零反馈，
+        # 只有 /cancel 能解套 —— 表现为「TG 助手开户点了模板后输价格没反应」。
+        # 因此：不属于本流程的文本一律放行给通用文本处理器，并结束会话释放劫持。
+        return await _release_to_menu_text(update, context)
 
     country = update.message.text.strip()
     if not country:
@@ -253,6 +278,11 @@ async def supplier_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Step 3: 输入文案 ─────────────────────────────────────
 
 async def content_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 同 country_text_input：会话残留在 INPUT_CONTENT 时，本 handler 会通吃后续所有文本。
+    # 供应商上下文已不在（用户中途点走了别的菜单）就不是本流程的输入，放行给通用处理器。
+    if not context.user_data.get('stest_supplier_id'):
+        return await _release_to_menu_text(update, context)
+
     text = update.message.text.strip()
 
     if not text:
