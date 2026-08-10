@@ -8,10 +8,11 @@ RCS 相关接口
 2) 管理端：余额查询、批次报告查询（对账兜底），仅管理员可见。
 """
 import json
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -202,6 +203,66 @@ async def rcs_dlr_webhook(
         "duplicated": duplicated,
         "replies": replies,
     }
+
+
+# ── 节点(nodesms)：号码文件下载（供上游拉取） ─────────────────────────────────
+
+
+@router.get("/rcs/numbers/{token}.txt")
+async def rcs_number_file(
+    token: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """节点上游按 numberUrl 来拉号码 TXT。
+
+    这是本次接入唯一对公网开放号码内容的入口，因此：
+      - 只认高熵 token（≈256 bit，不可枚举），路径本身即凭据
+      - 过期 / 已清空 一律 410，不透露原因差异
+      - 每次下载记审计（次数 / 时间 / 来源 IP）
+
+    故意不做 IP 白名单：上游拉取源 IP 未知且可能随其架构变动，
+    误拦会让整批任务静默发不出去；防护靠 token 熵 + 短 TTL + 用后即清。
+    """
+    from app.modules.sms.rcs_task import RCSNumberFile
+
+    res = await db.execute(select(RCSNumberFile).where(RCSNumberFile.token == token))
+    row = res.scalar_one_or_none()
+    if not row:
+        logger.warning(f"RCS 号码文件：token 不存在 (来源 {request.client.host if request.client else '?'})")
+        raise HTTPException(status_code=404, detail="not found")
+
+    now = datetime.now()
+    if row.purged_at is not None or row.content is None:
+        logger.warning(f"RCS 号码文件已清空仍被拉取: id={row.id} batch={row.batch_id}")
+        raise HTTPException(status_code=410, detail="gone")
+    if row.expires_at and row.expires_at < now:
+        logger.warning(f"RCS 号码文件已过期仍被拉取: id={row.id} 过期于 {row.expires_at}")
+        raise HTTPException(status_code=410, detail="gone")
+
+    client_ip = request.headers.get("X-Forwarded-For") or (
+        request.client.host if request.client else ""
+    )
+    client_ip = str(client_ip).split(",")[0].strip()[:64]
+    row.download_count = (row.download_count or 0) + 1
+    row.last_downloaded_at = now
+    row.last_downloaded_ip = client_ip
+    if row.first_downloaded_at is None:
+        row.first_downloaded_at = now
+    await db.commit()
+
+    logger.info(
+        f"RCS 号码文件被拉取: id={row.id} batch={row.batch_id} 条数={row.phone_count} "
+        f"第{row.download_count}次 来源={client_ip}"
+    )
+    return PlainTextResponse(
+        content=row.content,
+        headers={
+            "Content-Disposition": f'attachment; filename="numbers_{row.id}.txt"',
+            "Cache-Control": "no-store",
+            "X-Robots-Tag": "noindex, nofollow",
+        },
+    )
 
 
 # ── 管理端：余额 / 批次报告（对账兜底） ──────────────────────────────────────

@@ -23,6 +23,7 @@ celery_app = Celery(
         'app.workers.batch_inspector',
         'app.workers.channel_encoding_inspector',
         'app.workers.shortlink_health_worker',
+        'app.workers.rcs_node_worker',
         'app.workers.db_maintenance',
     ]
 )
@@ -67,6 +68,9 @@ celery_app.send_task = _send_task_tz_safe
 # 发送（sms_send / sms_send_smpp）与回执（sms_dlr）队列隔离：大批量 send 不会占满消费 DLR 的 worker。
 celery_app.conf.task_routes = {
     'send_sms_task': {'queue': 'sms_send'},
+    # 节点 RCS 轮询是对外 HTTP 调用,放 integrations 队列,别占发送/回执通道
+    'poll_rcs_node_tasks_task': {'queue': 'integrations'},
+    'purge_rcs_number_files_task': {'queue': 'integrations'},
     'process_sms_result_task': {'queue': 'sms_result_queue'},
     'process_dlr_task': {'queue': 'sms_dlr'},
     'process_smpp_dlr_task': {'queue': 'sms_dlr'},
@@ -211,6 +215,17 @@ celery_app.conf.task_routes.update({
 
 # 定时任务配置（Celery Beat）
 celery_app.conf.beat_schedule = {
+    # 每 2 分钟轮询节点(nodesms) RCS 群发任务：它没有回执推送,状态只能靠轮询;
+    # 终态后顺带取结果文件回写 sms_logs
+    'poll-rcs-node-tasks-2min': {
+        'task': 'poll_rcs_node_tasks_task',
+        'schedule': 120.0,
+    },
+    # 每小时兜底清理过期的 RCS 号码文件(正常路径在任务终态时已清)
+    'purge-rcs-number-files-1h': {
+        'task': 'purge_rcs_number_files_task',
+        'schedule': 3600.0,
+    },
     # 每30秒拉取一次 DLR 报告
     'fetch-dlr-reports-every-30s': {
         'task': 'fetch_dlr_reports_task',

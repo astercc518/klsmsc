@@ -389,6 +389,19 @@ async def submit_sms_core(
         # 3.2 RCS 通道：文案须满足上游硬限制（≤160 Unicode 字符、禁 emoji），
         #     否则上游是「整批拒绝」，必须在提交入口就拦下来而不是发出去再失败。
         if channel.is_rcs():
+            # 节点(nodesms)只有「号码文件 + 群发任务」模式，没有逐条提交接口。
+            # 在入口就回绝，否则要走到适配器才抛错，客户拿到的是含糊的失败。
+            if channel.rcs_vendor() == "node":
+                logger.warning(
+                    f"节点 RCS 通道被用于单条发送: {channel.channel_code} account={account.id}"
+                )
+                return SMSSendResponse(
+                    success=False,
+                    error={
+                        "code": "CHANNEL_BATCH_ONLY",
+                        "message": "该 RCS 通道仅支持批量发送，请改用批量接口",
+                    },
+                )
             from app.utils.rcs_content import validate_rcs_content
             _rcs_ok, _rcs_code, _rcs_msg = validate_rcs_content(final_message)
             if not _rcs_ok:

@@ -285,6 +285,7 @@
               <el-select v-model="form.rcs_vendor" :disabled="isEdit" style="width: 100%">
                 <el-option label="通用 HTTP 短信" value="" />
                 <el-option label="RCS - 叮咚 BoltTel" value="bolttel" />
+                <el-option label="RCS - 节点 nodesms" value="node" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -345,7 +346,7 @@
         </template>
 
         <!-- RCS 富媒体短信配置（叮咚 BoltTel OpenAPI） -->
-        <template v-if="isRcsForm">
+        <template v-if="isRcsForm && form.rcs_vendor === 'bolttel'">
           <el-divider content-position="left">RCS 供应商配置（叮咚 BoltTel）</el-divider>
           <el-alert type="warning" :closable="false" style="margin-bottom: 18px" show-icon>
             <div>上游硬限制：单条文案 ≤ <b>160 个字符</b>、<b>禁止 emoji</b>，违反会被整批拒绝（系统已在发送入口拦截）。</div>
@@ -395,6 +396,43 @@
             订阅事件建议：DELIVERED,READED,UNDELIVERABLE,REJECTED,EXPIRED,SEND_FAILED,REPLY。
             未配置 secret 时系统会拒收回执（无法验签即无法防伪造）。发件人 sendCode 用下方「默认 SID」。
             另需在通道「国家」里配好目标国家，否则不参与路由。
+          </div>
+        </template>
+
+        <!-- RCS 群发配置（节点 nodesms，任务制） -->
+        <template v-if="isRcsForm && form.rcs_vendor === 'node'">
+          <el-divider content-position="left">RCS 供应商配置（节点 nodesms）</el-divider>
+          <el-alert type="warning" :closable="false" style="margin-bottom: 18px" show-icon>
+            <div><b>只支持批量发送</b>：上游是「号码文件 + 群发任务」模式，没有逐条接口，单条发送会被拒绝。</div>
+            <div><b>整批同文案</b>：上游一个任务只有一份文案，含模板变量的多文案批次无法用本通道。</div>
+            <div>无逐条回执：状态靠轮询任务，终态后下载结果文件回写，比叮咚慢。</div>
+          </el-alert>
+          <el-form-item label="接口地址" prop="api_url">
+            <el-input v-model="form.api_url" placeholder="留空则用默认 https://apip.nodesms.com" />
+          </el-form-item>
+          <el-row :gutter="24">
+            <el-col :span="12">
+              <el-form-item label="account" prop="username">
+                <el-input v-model="form.username" placeholder="平台下发的调用者账号" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="secret" prop="password">
+                <el-input
+                  v-model="form.password"
+                  type="password"
+                  show-password
+                  :placeholder="isEdit ? $t('channels.leaveEmptyNoChange') : '平台下发的 secret（仅用于签名）'"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-form-item label="productId">
+            <el-input v-model="form.rcs_product_id" placeholder="平台分配的产品 ID，决定线路与单价（必填）" />
+          </el-form-item>
+          <div class="form-tip" style="margin-bottom: 18px">
+            号码会以 TXT 形式生成一个带高熵 token 的临时下载地址供上游拉取，48 小时过期、
+            任务终态后立即清空内容。另需在通道「国家」里配好目标国家，否则不参与路由。
           </div>
         </template>
 
@@ -1251,6 +1289,8 @@ const form = reactive({
   // RCS 上游厂商（空=通用 HTTP 短信通道）。写入 config_json.rcs.vendor，
   // 是后端判别「这是不是 RCS 通道」的唯一依据。
   rcs_vendor: '',
+  // 节点(nodesms)专用：产品 ID，决定线路与单价（存 config_json.rcs.product_id）
+  rcs_product_id: '',
   // RCS 回执验签 secret（存 config_json.rcs.webhook_secret）。详情接口回读的是掩码 ******，
   // 原样提交＝保持原值，由后端 _merge_gateway_config 识别。
   rcs_webhook_secret: '',
@@ -1365,6 +1405,7 @@ const handleCreate = () => {
     remark: '',
     dlr_sent_timeout_hours: null,
     rcs_vendor: '',
+    rcs_product_id: '',
     rcs_webhook_secret: '',
     virtual_config: defaultVirtualConfig(),
   })
@@ -1398,6 +1439,7 @@ const handleEdit = async (row: any) => {
     max_inflight: null,
     gateway_config: {},
     rcs_vendor: row.gateway_config?.rcs?.vendor ?? '',
+    rcs_product_id: row.gateway_config?.rcs?.product_id ?? '',
     rcs_webhook_secret: '',
     virtual_config: row.virtual_config ? { ...defaultVirtualConfig(), ...row.virtual_config } : defaultVirtualConfig(),
   })
@@ -1433,6 +1475,7 @@ const handleEdit = async (row: any) => {
         gateway_config: ch.gateway_config && typeof ch.gateway_config === 'object' ? { ...ch.gateway_config } : {},
         max_inflight: ch.gateway_config?.max_inflight ?? null,
         rcs_vendor: ch.gateway_config?.rcs?.vendor ?? '',
+        rcs_product_id: ch.gateway_config?.rcs?.product_id ?? '',
         rcs_webhook_secret: ch.gateway_config?.rcs?.webhook_secret ?? '',
         virtual_config: ch.virtual_config ? { ...defaultVirtualConfig(), ...ch.virtual_config } : defaultVirtualConfig(),
       })
@@ -1720,6 +1763,9 @@ const submitForm = async () => {
         const rcs: Record<string, any> = { ...(gw.rcs || {}) }
         // vendor 是后端判别「这是不是 RCS 通道」的唯一依据，必须始终回传
         rcs.vendor = form.rcs_vendor
+        if (form.rcs_vendor === 'node') {
+          rcs.product_id = form.rcs_product_id
+        }
         if (form.rcs_webhook_secret) {
           rcs.webhook_secret = form.rcs_webhook_secret
         } else {
@@ -1784,6 +1830,7 @@ const submitForm = async () => {
         createPayload.gateway_config = {
           rcs: {
             vendor: form.rcs_vendor,
+            ...(form.rcs_vendor === 'node' ? { product_id: form.rcs_product_id } : {}),
             ...(form.rcs_webhook_secret ? { webhook_secret: form.rcs_webhook_secret } : {}),
           },
         }

@@ -574,6 +574,75 @@ async def _flush_commit_chunk(db, batch, channel, commit_batch: list, chunk_dedu
     logger.info(f"批次 {batch.id} commit chunk: 协议={_proto}, 数量={len(commit_batch)}, 扣款={chunk_deducted:.4f}")
 
 
+async def _queue_commit_batch_node_rcs(
+    db, account_id: int, channel, commit_batch: list, batch: Optional[SmsBatch] = None
+) -> tuple[int, int]:
+    """节点 RCS：把本片消息整体提交为一个上游群发任务。
+
+    与逐条通道的关键差异：提交成功 ≠ 送达，节点没有逐条回执，真实成败要等任务终态后
+    下载结果文件回写（rcs_node_service.apply_result）。所以这里只把 sms_logs 置 sent。
+    """
+    from app.services.rcs_node_service import NodeBatchRejected, submit_task
+
+    mids = [mid for mid, _ in commit_batch]
+    rows = (await db.execute(select(SMSLog).where(SMSLog.message_id.in_(mids)))).scalars().all()
+    if not rows:
+        return 0, 0
+    # 退款金额取库里的 selling_price，不依赖调用方传进来的成本 ——
+    # 分片主路径那个调用点手上没有 cost 映射，传 0 会导致提交失败却不退款。
+    costs = {r.message_id: float(r.selling_price or 0) for r in rows}
+
+    # 短链占位符替换：必须在把文案交给上游之前（与 SMPP 路径同一处理）
+    if await _replace_track_urls_for_logs(db, rows):
+        await db.commit()
+
+    batch_id = batch.id if batch is not None else (rows[0].batch_id if rows else None)
+    chunk_key = mids[0][-12:] if mids else "0"
+
+    try:
+        task = await submit_task(
+            db,
+            channel=channel,
+            logs=list(rows),
+            batch_id=batch_id,
+            account_id=account_id,
+            chunk_key=chunk_key,
+        )
+    except NodeBatchRejected as e:
+        logger.error(f"节点 RCS 分片提交被拒: batch={batch_id}, {e}")
+        for row in rows:
+            row.status = 'failed'
+            row.error_message = str(e)[:255]
+        await db.commit()
+        for mid in mids:
+            await _refund_single(db, account_id, costs.get(mid, 0), mid)
+        return 0, len(mids)
+    except Exception as e:
+        logger.error(f"节点 RCS 分片提交异常: batch={batch_id}, {e}", exc_info=e)
+        for row in rows:
+            row.status = 'failed'
+            row.error_message = "RCS 任务提交失败"
+        await db.commit()
+        for mid in mids:
+            await _refund_single(db, account_id, costs.get(mid, 0), mid)
+        return 0, len(mids)
+
+    now = datetime.now()
+    for row in rows:
+        row.status = 'sent'
+        row.send_time = now
+        # 节点无逐条 ID，存任务号便于对账；结果回写按号码匹配，不依赖它
+        if task.sn:
+            row.upstream_message_id = task.sn
+    await db.commit()
+
+    logger.info(
+        f"节点 RCS 分片已提交: batch={batch_id} sn={task.sn} order_id={task.order_id} "
+        f"条数={len(rows)}"
+    )
+    return len(rows), 0
+
+
 async def _queue_commit_batch(
     db, account_id: int, channel, commit_batch: list, batch: Optional[SmsBatch] = None
 ) -> tuple[int, int]:
@@ -583,6 +652,11 @@ async def _queue_commit_batch(
     success = 0
     failed = 0
     _proto = str(channel.protocol).upper() if channel else "HTTP"
+
+    # 节点(nodesms) RCS：上游只有「号码文件 + 群发任务」模式，不能逐条入 sms_send 队列
+    # （那边会走 send_one，节点适配器会直接抛错）。整片提交成一个上游任务。
+    if channel is not None and channel.is_rcs() and channel.rcs_vendor() == 'node':
+        return await _queue_commit_batch_node_rcs(db, account_id, channel, commit_batch, batch)
 
     if 'SMPP' in _proto:
         smpp_mids = [mid for mid, _ in commit_batch]
@@ -1221,9 +1295,22 @@ async def _do_process_chunk(
                                         else:
                                             failed += 1
                             if http_mids:
-                                _ok_http, _bad_http = QueueManager.queue_sms_bulk(http_mids)
-                                succeeded += len(_ok_http)
-                                failed += len(_bad_http)
+                                # 节点 RCS 走整批任务，不能逐条入 sms_send（那边会调 send_one 直接抛错）
+                                if (
+                                    _batch_channel is not None
+                                    and _batch_channel.is_rcs()
+                                    and _batch_channel.rcs_vendor() == 'node'
+                                ):
+                                    _ok_n, _bad_n = await _queue_commit_batch_node_rcs(
+                                        db, account_id, _batch_channel,
+                                        [(m, 0) for m in http_mids], None,
+                                    )
+                                    succeeded += _ok_n
+                                    failed += _bad_n
+                                else:
+                                    _ok_http, _bad_http = QueueManager.queue_sms_bulk(http_mids)
+                                    succeeded += len(_ok_http)
+                                    failed += len(_bad_http)
 
                         if is_virtual_channel:
                             succeeded += len(virtual_message_ids)
