@@ -430,9 +430,15 @@ class BoltTelRCSAdapter:
 
 # RCS 上游厂商 → 适配器实现。RCS 不占 protocol 枚举（它就是 HTTP），
 # 每接一家新供应商只在这里加一行，不动 DB 枚举也不动发送链路。
+def _node_adapter(channel: Channel):
+    from app.workers.adapters.node_rcs_adapter import NodeRCSAdapter
+
+    return NodeRCSAdapter(channel)
+
+
 _RCS_ADAPTERS = {
     "bolttel": BoltTelRCSAdapter,   # 叮咚：逐条提交 + Webhook 回执
-    # "node": NodeRCSAdapter,       # 节点(apip.nodesms.com)：任务制，创建任务→轮询结果，待接
+    "node": _node_adapter,          # 节点(apip.nodesms.com)：号码文件 + 群发任务 + 轮询
 }
 
 DEFAULT_RCS_VENDOR = "bolttel"
