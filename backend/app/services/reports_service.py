@@ -271,7 +271,7 @@ class ReportsService:
         策略：先按外键(account_id/channel_id/country_code)在 sms_logs 上聚合（覆盖索引扫描），
         再在 Python 里二次聚合到目标维度并补名称，避免在 3M 行级别上做 JOIN。
 
-        RCS 复用 sms_logs 落库，唯一可靠的区分依据是通道协议(channels.protocol='RCS')
+        RCS 复用 sms_logs 落库，区分依据是通道的 RCS 上游标记(config_json.rcs.vendor)
         —— 账户 business_type 不行：同一账户可能既发短信又发 RCS。
         biz='sms' 排除 RCS 通道，biz='rcs' 只取 RCS 通道，两者互不重叠且合起来等于原口径。
         """
@@ -535,12 +535,28 @@ class ReportsService:
 
     @staticmethod
     async def _fetch_rcs_channel_ids(db: AsyncSession) -> List[int]:
-        """RCS 通道(protocol=RCS)的ID，用于把 RCS 流量从短信桶里拆出来。
+        """RCS 通道的 ID，用于把 RCS 流量从短信桶里拆出来。
+
+        RCS 不占 protocol 枚举（它就是 HTTP），判别在 config_json.rcs.vendor。
+        config_json 是 Text 列，历史行可能存了非法 JSON —— 直接喂 JSON_EXTRACT 会让
+        整条语句报错，故先用 CASE + JSON_VALID 把非法值换成 NULL（JSON_EXTRACT(NULL)
+        返回 NULL，安全）。
 
         不过滤 is_deleted：通道删了，历史 sms_logs 里那些记录仍然属于 RCS 业务，
         排除掉会让它们悄悄回流到短信桶。
         """
-        rows = (await db.execute(select(Channel.id).where(Channel.protocol == "RCS"))).all()
+        safe_json = case(
+            (func.json_valid(Channel.config_json) == 1, Channel.config_json),
+            else_=None,
+        )
+        rows = (
+            await db.execute(
+                select(Channel.id).where(
+                    Channel.config_json.isnot(None),
+                    func.json_extract(safe_json, "$.rcs.vendor").isnot(None),
+                )
+            )
+        ).all()
         return [r[0] for r in rows]
 
     @staticmethod

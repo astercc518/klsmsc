@@ -115,36 +115,41 @@ class PricingEngine:
         )
         raise PricingNotFoundError(country_code, channel_id)
     
-    async def resolve_channel_protocol(
+    async def is_rcs_channel(
         self, channel_id: int, channel: Optional[Channel] = None
-    ) -> str:
-        """解析通道协议（大写）。调用方已有 channel 时零查库。"""
+    ) -> bool:
+        """通道是否为 RCS 上游。调用方已有 channel 时零查库。
+
+        RCS 不占 protocol 枚举（它就是 HTTP），判别在 config_json.rcs.vendor，
+        因此这里必须把 config_json 一起读出来交给 Channel.is_rcs() 判断。
+        """
         if channel is not None:
-            p = getattr(channel, "protocol", None)
-            return str(getattr(p, "value", p) or "").upper()
+            return bool(channel.is_rcs())
 
         cache_manager = await get_cache_manager()
-        cache_key = f"channel_protocol:{channel_id}"
+        cache_key = f"channel_is_rcs:{channel_id}"
         cached = await cache_manager.get(cache_key)
-        if cached:
-            return str(cached).upper()
+        if cached is not None:
+            return str(cached) == "1"
 
-        row = await self.db.execute(select(Channel.protocol).where(Channel.id == channel_id))
-        p = row.scalar_one_or_none()
-        proto = str(getattr(p, "value", p) or "").upper()
-        if proto:
-            # TTL 取短：管理员改协议后计费口径要尽快跟上（RCS 按条 vs 短信按段）
-            await cache_manager.set(cache_key, proto, ttl=600)
-        return proto
+        row = await self.db.execute(
+            select(Channel.config_json).where(Channel.id == channel_id)
+        )
+        cfg_raw = row.scalar_one_or_none()
+        probe = Channel(config_json=cfg_raw)
+        is_rcs = bool(probe.is_rcs())
+        # TTL 取短：管理员改通道配置后计费口径要尽快跟上（RCS 按条 vs 短信按段）
+        await cache_manager.set(cache_key, "1" if is_rcs else "0", ttl=600)
+        return is_rcs
 
-    def billable_units(self, message: str, protocol: str) -> int:
+    def billable_units(self, message: str, is_rcs: bool) -> int:
         """
         计费单位数。
 
         RCS 按「条」计费：一个号码一条，与文案长度/编码无关（上游硬限 160 字符本就单条）。
         普通短信仍按 GSM-7 / UCS-2 分段数计费。
         """
-        if (protocol or "").upper() == "RCS":
+        if is_rcs:
             return 1
         return self._count_sms_parts(message)
 
@@ -168,9 +173,9 @@ class PricingEngine:
         """
         try:
             # 1. 计算计费条数（RCS 按条，短信按分段）
-            protocol = await self.resolve_channel_protocol(channel_id, channel)
-            message_count = self.billable_units(message, protocol)
-            logger.debug(f"计费条数: {message_count} (protocol={protocol})")
+            is_rcs = await self.is_rcs_channel(channel_id, channel)
+            message_count = self.billable_units(message, is_rcs)
+            logger.debug(f"计费条数: {message_count} (rcs={is_rcs})")
 
             # 2. 查询销售价格（带 Redis 缓存，同账户+通道+国家只查一次库）
             price_info = await self.get_price(channel_id, country_code, mnc, account_id)

@@ -4,15 +4,23 @@
 
 ## 1. 设计要点
 
-RCS 作为**新的通道协议** `RCS` 接入（与 `SMPP` / `HTTP` / `VIRTUAL` 并列），
-因此完全复用现有的路由、计费、批量发送、批次进度、退款、报表、客户 webhook 链路，
+RCS 走的就是 HTTP API，**不占 protocol 枚举**（否则每接一家 RCS 供应商都要动一次
+DB 枚举）。通道配置为：
+
+    protocol = 'HTTP'  +  config_json.rcs.vendor = 'bolttel' | ...
+
+判别统一走 `Channel.is_rcs()` / `Channel.rcs_vendor()`，适配器在
+`workers/adapters/rcs_adapter.py:_RCS_ADAPTERS` 按 vendor 分发（未知 vendor 直接报错，
+不回落——静默回落会用错误的签名算法把号码发给另一家上游）。
+
+这样完全复用现有的路由、计费、批量发送、批次进度、退款、报表、客户 webhook 链路，
 不新增业务表。
 
 | 环节 | 走向 |
 |---|---|
 | 提交 | `/api/v1/sms/send`、批量发送、TG 发送 —— 与短信同一入口 |
 | 路由 | `RoutingEngine`（按国家/账户绑定），与短信一致 |
-| 发送 | `sms_send` 队列 → `sms_worker._send_via_rcs` → `workers/adapters/rcs_adapter.py` |
+| 发送 | `sms_send` 队列 → `sms_worker._send_via_rcs`（HTTP 分支内按 `is_rcs()` 分流） → `workers/adapters/rcs_adapter.py` |
 | 回执 | 叮咚平台 Webhook → `POST /api/v1/rcs/dlr/{channel_code}` → `core/dlr_handler.process_dlr_reports` |
 | 对账 | 管理端 `/api/v1/admin/rcs/channels/{id}/report`、`/balance` |
 
@@ -36,7 +44,8 @@ RCS 作为**新的通道协议** `RCS` 接入（与 `SMPP` / `HTTP` / `VIRTUAL` 
 
 ### 3.1 后台建通道
 
-管理后台 → 通道管理 → 新增通道，协议选 **RCS (富媒体短信)**：
+管理后台 → 通道管理 → 新增通道，协议选 **HTTP**，再把「接口类型」选成
+**RCS - 叮咚 BoltTel**（该选择写入 `config_json.rcs.vendor`，是后端判别 RCS 通道的唯一依据）：
 
 | 表单项 | 填什么 | 落库位置 |
 |---|---|---|
@@ -109,6 +118,8 @@ RCS 是与短信/语音/数据并列的独立业务类型，销售在 TG 里的�
 
 | 现象 | 多半是 |
 |---|---|
+| 通道存了但发送走了普通 HTTP 短信逻辑 | 「接口类型」没选，`config_json.rcs.vendor` 为空 —— 判别全靠它，不看 protocol |
+| 日志 `RCS 上游 vendor=... 尚未实现` | vendor 值不在 `_RCS_ADAPTERS` 里（如节点 `node` 尚未接入） |
 | `RCS 通道鉴权异常` + 日志 `AUTH_BAD_SIGNATURE` | 签名路径写错。签名用 `/api/openApi/rcs/send`（含 `/api`、**不含** `/service`），实际 URL 是 `{BASE}/openApi/rcs/send` |
 | `AUTH_TIMESTAMP_EXPIRED` | 本机时间漂移 > 5 分钟，校准 NTP |
 | `AUTH_IP_FORBIDDEN` | 出口 IP 未加白 |
@@ -130,7 +141,8 @@ backend/app/api/v1/rcs.py                     回执 Webhook + 管理端余额/�
 backend/app/workers/sms_worker.py             _send_via_rcs 与协议分发
 backend/app/core/pricing.py                   billable_units：RCS 按条计费
 backend/app/modules/sms/channel.py            protocol 枚举 + get_rcs_config()
-backend/alembic/versions/c7d8e9f0a1b2_*.py    channels.protocol 增加 RCS
+backend/alembic/versions/c7d8e9f0a1b2_*.py    channels.protocol 增加 RCS（已被 e9f0a1b2c3d4 收回）
+backend/alembic/versions/e9f0a1b2c3d4_*.py    protocol 收回 RCS，改用 config_json.rcs.vendor
 frontend/src/views/admin/Channels.vue         RCS 通道表单
 ```
 

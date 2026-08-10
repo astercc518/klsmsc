@@ -986,7 +986,7 @@ async def _do_process_chunk(
                             continue
 
                         # RCS 通道：文案须满足上游硬限制，且按「条」计费而非按分段
-                        if str(channel.protocol).upper() == 'RCS':
+                        if channel.is_rcs():
                             from app.utils.rcs_content import validate_rcs_content
                             _rcs_ok, _rcs_code, _rcs_msg = validate_rcs_content(final_message)
                             if not _rcs_ok:

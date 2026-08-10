@@ -20,7 +20,7 @@ class Channel(Base):
         comment="关联供应商ID：通道价格保存时据此同步资源报价(supplier_rates)成本",
     )
     protocol = Column(
-        Enum("SMPP", "HTTP", "VIRTUAL", "RCS", name="channel_protocol"),
+        Enum("SMPP", "HTTP", "VIRTUAL", name="channel_protocol"),
         nullable=False,
         comment="协议类型"
     )
@@ -111,12 +111,34 @@ class Channel(Base):
 
         return strip_leading_plus_enabled(self.get_gateway_config())
 
+    def is_rcs(self) -> bool:
+        """是否为 RCS 上游通道。
+
+        RCS 走的就是 HTTP API，不单独占 protocol 枚举（否则每接一家 RCS 供应商都要
+        动一次 DB 枚举）。判别靠 config_json.rcs.vendor —— 该对象同时承载 appKey/
+        appSecret 等凭据，一处配置既标记类型又存参数。
+        """
+        rcs = self.get_gateway_config().get("rcs")
+        if not isinstance(rcs, dict):
+            return False
+        return bool(str(rcs.get("vendor") or "").strip())
+
+    def rcs_vendor(self) -> str:
+        """RCS 上游厂商标识（bolttel=叮咚 / node=节点 …）。非 RCS 通道返回空串。"""
+        rcs = self.get_gateway_config().get("rcs")
+        if not isinstance(rcs, dict):
+            return ""
+        return str(rcs.get("vendor") or "").strip().lower()
+
     def get_rcs_config(self) -> dict:
         """解析 RCS 供应商配置（存于 config_json.rcs）。
 
         凭据优先取 config_json.rcs 中的显式字段，未配置则回落到通道通用列：
         app_key ← username，app_secret ← password/api_key，base_url ← api_url。
         这样管理员既可用通道表单的常规字段填，也能用扩展 JSON 覆盖。
+
+        注意：本方法对任何通道都返回非空 dict（vendor 有默认值，供适配器选实现），
+        因此判断「是不是 RCS 通道」只能用 is_rcs()，不能用本方法的返回值。
         """
         cfg = self.get_gateway_config()
         rcs = cfg.get("rcs")

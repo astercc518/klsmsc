@@ -386,9 +386,30 @@ class BoltTelRCSAdapter:
         return hmac.compare_digest(expected, str(signature).strip().lower())
 
 
-def get_rcs_adapter(channel: Channel) -> BoltTelRCSAdapter:
-    """按通道 rcs.vendor 选择适配器实现（目前仅叮咚 BoltTel）。"""
-    return BoltTelRCSAdapter(channel)
+# RCS 上游厂商 → 适配器实现。RCS 不占 protocol 枚举（它就是 HTTP），
+# 每接一家新供应商只在这里加一行，不动 DB 枚举也不动发送链路。
+_RCS_ADAPTERS = {
+    "bolttel": BoltTelRCSAdapter,   # 叮咚：逐条提交 + Webhook 回执
+    # "node": NodeRCSAdapter,       # 节点(apip.nodesms.com)：任务制，创建任务→轮询结果，待接
+}
+
+DEFAULT_RCS_VENDOR = "bolttel"
+
+
+def get_rcs_adapter(channel: Channel):
+    """按通道 config_json.rcs.vendor 选择适配器实现。
+
+    未知 vendor 直接报错而不是回落到叮咚 —— 静默回落会用错误的签名算法把号码发给
+    另一家上游，必然全批失败且极难定位。
+    """
+    vendor = (channel.rcs_vendor() or DEFAULT_RCS_VENDOR).lower()
+    impl = _RCS_ADAPTERS.get(vendor)
+    if impl is None:
+        raise RCSConfigError(
+            f"通道 {channel.channel_code} 的 RCS 上游 vendor={vendor!r} 尚未实现，"
+            f"当前支持: {', '.join(sorted(_RCS_ADAPTERS))}"
+        )
+    return impl(channel)
 
 
 __all__ = [

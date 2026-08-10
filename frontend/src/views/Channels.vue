@@ -77,7 +77,6 @@
       <el-select v-model="filters.protocol" :placeholder="$t('channels.protocolType')" clearable style="width: 120px">
         <el-option label="SMPP" value="SMPP" />
         <el-option label="HTTP" value="HTTP" />
-        <el-option label="RCS" value="RCS" />
         <el-option label="VIRTUAL" value="VIRTUAL" />
       </el-select>
       <el-select v-model="filters.status" :placeholder="$t('common.status')" clearable style="width: 100px">
@@ -115,7 +114,6 @@
           <template #default="{ row }">
             <span v-if="row.protocol === 'SMPP' && row.host" class="server-text">{{ row.host }}:{{ row.port }}</span>
             <span v-else-if="row.protocol === 'HTTP' && row.api_url" class="server-text">{{ row.api_url }}</span>
-            <span v-else-if="row.protocol === 'RCS' && row.api_url" class="server-text">{{ row.api_url }}</span>
             <span v-else-if="row.protocol === 'VIRTUAL'" class="server-text" style="color: #f59e0b">虚拟通道</span>
             <span v-else class="empty-text">-</span>
           </template>
@@ -234,10 +232,10 @@
         <el-descriptions-item v-if="currentChannel.protocol === 'HTTP'" :label="$t('channels.apiAddress')" :span="2">
           {{ currentChannel.api_url || '-' }}
         </el-descriptions-item>
-        <el-descriptions-item v-if="currentChannel.protocol === 'RCS'" label="RCS 接口地址" :span="2">
+        <el-descriptions-item v-if="isRcsChannel(currentChannel)" label="RCS 接口地址" :span="2">
           {{ currentChannel.api_url || '-' }}
         </el-descriptions-item>
-        <el-descriptions-item v-if="currentChannel.protocol === 'RCS'" label="appKey">
+        <el-descriptions-item v-if="isRcsChannel(currentChannel)" label="appKey">
           {{ currentChannel.username || '-' }}
         </el-descriptions-item>
         <el-descriptions-item v-if="currentChannel.protocol === 'VIRTUAL'" label="虚拟通道" :span="2">
@@ -274,8 +272,19 @@
               <el-select v-model="form.protocol" :disabled="isEdit" style="width: 100%">
                 <el-option label="SMPP" value="SMPP" />
                 <el-option label="HTTP" value="HTTP" />
-                <el-option label="RCS (富媒体短信)" value="RCS" />
                 <el-option label="VIRTUAL (虚拟通道)" value="VIRTUAL" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <!-- 接口类型：RCS 走的就是 HTTP，不占协议枚举，靠上游厂商标记区分 -->
+        <el-row :gutter="24" v-if="form.protocol === 'HTTP'">
+          <el-col :span="12">
+            <el-form-item label="接口类型">
+              <el-select v-model="form.rcs_vendor" :disabled="isEdit" style="width: 100%">
+                <el-option label="通用 HTTP 短信" value="" />
+                <el-option label="RCS - 叮咚 BoltTel" value="bolttel" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -336,7 +345,7 @@
         </template>
 
         <!-- RCS 富媒体短信配置（叮咚 BoltTel OpenAPI） -->
-        <template v-if="form.protocol === 'RCS'">
+        <template v-if="isRcsForm">
           <el-divider content-position="left">RCS 供应商配置（叮咚 BoltTel）</el-divider>
           <el-alert type="warning" :closable="false" style="margin-bottom: 18px" show-icon>
             <div>上游硬限制：单条文案 ≤ <b>160 个字符</b>、<b>禁止 emoji</b>，违反会被整批拒绝（系统已在发送入口拦截）。</div>
@@ -1071,9 +1080,13 @@ const linkingSupplier = ref(false)
 const protocolTagType = (protocol: string) => {
   if (protocol === 'SMPP') return 'primary'
   if (protocol === 'VIRTUAL') return 'warning'
-  if (protocol === 'RCS') return 'danger'
   return 'success'
 }
+
+// RCS 不是独立协议：它走 HTTP，靠 config_json.rcs.vendor 标记上游厂商。
+// 后端 list/detail 接口返回的 gateway_config 里 vendor 不脱敏（只有密钥是 ******）。
+const isRcsChannel = (row: any) => !!row?.gateway_config?.rcs?.vendor
+const isRcsForm = computed(() => form.protocol === 'HTTP' && !!form.rcs_vendor)
 
 // 筛选
 const filters = reactive({ keyword: '', protocol: '', status: '' })
@@ -1099,7 +1112,7 @@ const stats = computed(() => {
   const active = channels.value.filter(c => c.connection_status === 'online').length
   const smpp = channels.value.filter(c => c.protocol === 'SMPP').length
   const http = channels.value.filter(c => c.protocol === 'HTTP').length
-  const rcs = channels.value.filter(c => c.protocol === 'RCS').length
+  const rcs = channels.value.filter(c => isRcsChannel(c)).length
   const virtual_count = channels.value.filter(c => c.protocol === 'VIRTUAL').length
   return { total, active, smpp, http, rcs, virtual_count }
 })
@@ -1235,6 +1248,9 @@ const form = reactive({
   banned_words: '',
   remark: '',
   dlr_sent_timeout_hours: null as number | null,
+  // RCS 上游厂商（空=通用 HTTP 短信通道）。写入 config_json.rcs.vendor，
+  // 是后端判别「这是不是 RCS 通道」的唯一依据。
+  rcs_vendor: '',
   // RCS 回执验签 secret（存 config_json.rcs.webhook_secret）。详情接口回读的是掩码 ******，
   // 原样提交＝保持原值，由后端 _merge_gateway_config 识别。
   rcs_webhook_secret: '',
@@ -1348,6 +1364,7 @@ const handleCreate = () => {
     banned_words: '',
     remark: '',
     dlr_sent_timeout_hours: null,
+    rcs_vendor: '',
     rcs_webhook_secret: '',
     virtual_config: defaultVirtualConfig(),
   })
@@ -1380,6 +1397,7 @@ const handleEdit = async (row: any) => {
     dlr_sent_timeout_hours: null,
     max_inflight: null,
     gateway_config: {},
+    rcs_vendor: row.gateway_config?.rcs?.vendor ?? '',
     rcs_webhook_secret: '',
     virtual_config: row.virtual_config ? { ...defaultVirtualConfig(), ...row.virtual_config } : defaultVirtualConfig(),
   })
@@ -1414,6 +1432,7 @@ const handleEdit = async (row: any) => {
         dlr_sent_timeout_hours: ch.dlr_sent_timeout_hours ?? null,
         gateway_config: ch.gateway_config && typeof ch.gateway_config === 'object' ? { ...ch.gateway_config } : {},
         max_inflight: ch.gateway_config?.max_inflight ?? null,
+        rcs_vendor: ch.gateway_config?.rcs?.vendor ?? '',
         rcs_webhook_secret: ch.gateway_config?.rcs?.webhook_secret ?? '',
         virtual_config: ch.virtual_config ? { ...defaultVirtualConfig(), ...ch.virtual_config } : defaultVirtualConfig(),
       })
@@ -1670,7 +1689,7 @@ const submitForm = async () => {
         port: form.protocol === 'SMPP' ? form.port : undefined,
         username: form.username || undefined,
         password: form.password || undefined,
-        api_url: (form.protocol === 'HTTP' || form.protocol === 'RCS') ? form.api_url : undefined,
+        api_url: form.protocol === 'HTTP' ? form.api_url : undefined,
         api_key: form.protocol === 'HTTP' ? (form.api_key || undefined) : undefined,
         default_sender_id: form.default_sender_id || undefined
       }
@@ -1696,9 +1715,11 @@ const submitForm = async () => {
       }
       // RCS 回执 secret：合并进既有 config_json 整体回传。表单里若是详情接口回读的掩码
       // ******，后端 _merge_gateway_config 会识别并保留库里的真密钥（不会被抹掉）。
-      if (form.protocol === 'RCS') {
+      if (isRcsForm.value) {
         const gw: Record<string, any> = { ...(form.gateway_config || {}) }
         const rcs: Record<string, any> = { ...(gw.rcs || {}) }
+        // vendor 是后端判别「这是不是 RCS 通道」的唯一依据，必须始终回传
+        rcs.vendor = form.rcs_vendor
         if (form.rcs_webhook_secret) {
           rcs.webhook_secret = form.rcs_webhook_secret
         } else {
@@ -1731,7 +1752,7 @@ const submitForm = async () => {
         port: form.protocol === 'SMPP' ? form.port : undefined,
         username: form.username || undefined,
         password: form.password || undefined,
-        api_url: (form.protocol === 'HTTP' || form.protocol === 'RCS') ? form.api_url : undefined,
+        api_url: form.protocol === 'HTTP' ? form.api_url : undefined,
         api_key: form.protocol === 'HTTP' ? form.api_key : undefined,
         default_sender_id: form.default_sender_id,
         status: form.status,
@@ -1759,8 +1780,13 @@ const submitForm = async () => {
       if (form.protocol === 'SMPP' && typeof form.max_inflight === 'number' && form.max_inflight > 0) {
         createPayload.gateway_config = { max_inflight: form.max_inflight }
       }
-      if (form.protocol === 'RCS' && form.rcs_webhook_secret) {
-        createPayload.gateway_config = { rcs: { webhook_secret: form.rcs_webhook_secret } }
+      if (isRcsForm.value) {
+        createPayload.gateway_config = {
+          rcs: {
+            vendor: form.rcs_vendor,
+            ...(form.rcs_webhook_secret ? { webhook_secret: form.rcs_webhook_secret } : {}),
+          },
+        }
       }
       const created = await createChannel(createPayload)
 

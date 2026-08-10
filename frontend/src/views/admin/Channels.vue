@@ -68,7 +68,6 @@
       <el-select v-model="filters.protocol" :placeholder="$t('channels.protocolType')" clearable style="width: 120px" @change="loadChannels">
         <el-option label="SMPP" value="SMPP" />
         <el-option label="HTTP" value="HTTP" />
-        <el-option label="RCS" value="RCS" />
         <el-option label="VIRTUAL" value="VIRTUAL" />
       </el-select>
       <el-select v-model="filters.status" :placeholder="$t('common.status')" clearable style="width: 100px" @change="loadChannels">
@@ -238,8 +237,19 @@
               <el-select v-model="channelForm.protocol" style="width: 100%">
                 <el-option label="SMPP" value="SMPP" />
                 <el-option label="HTTP" value="HTTP" />
-                <el-option label="RCS (富媒体短信)" value="RCS" />
                 <el-option label="VIRTUAL (虚拟通道)" value="VIRTUAL" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <!-- 接口类型：RCS 走的就是 HTTP，不占协议枚举，靠上游厂商标记区分 -->
+        <el-row :gutter="20" v-if="channelForm.protocol === 'HTTP'">
+          <el-col :span="12">
+            <el-form-item label="接口类型">
+              <el-select v-model="channelForm.gateway_config.rcs.vendor" style="width: 100%">
+                <el-option label="通用 HTTP 短信" value="" />
+                <el-option label="RCS - 叮咚 BoltTel" value="bolttel" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -309,7 +319,7 @@
         </template>
 
         <!-- RCS 富媒体短信配置（叮咚 BoltTel OpenAPI） -->
-        <template v-if="channelForm.protocol === 'RCS'">
+        <template v-if="isRcsForm">
           <el-divider content-position="left">RCS 供应商配置（叮咚 BoltTel）</el-divider>
           <el-alert type="warning" :closable="false" style="margin-bottom: 16px">
             <div>上游硬限制：单条文案 ≤ <b>160 个字符</b>、<b>禁止 emoji</b>，违反会被整批拒绝。系统已在发送入口拦截。</div>
@@ -802,7 +812,7 @@ const defaultVirtualConfig = () => ({
 
 // channels.config_json 的前端镜像。目前只有 RCS 用到（webhook secret），
 // 其余键（strip_leading_plus / payload_template）由详情接口原样带回、保存时原样送回，避免被抹掉。
-const defaultGatewayConfig = () => ({ rcs: { webhook_secret: '' } as Record<string, any> })
+const defaultGatewayConfig = () => ({ rcs: { vendor: '', webhook_secret: '' } as Record<string, any> })
 
 const normalizeGatewayConfig = (raw: any) => {
   const base = defaultGatewayConfig()
@@ -815,7 +825,6 @@ const normalizeGatewayConfig = (raw: any) => {
 const protocolTagType = (protocol: string) => {
   if (protocol === 'SMPP') return 'primary'
   if (protocol === 'VIRTUAL') return 'warning'
-  if (protocol === 'RCS') return 'danger'
   return 'success'
 }
 
@@ -840,6 +849,11 @@ const channelForm = ref({
   virtual_config: defaultVirtualConfig(),
   gateway_config: defaultGatewayConfig() as Record<string, any>,
 })
+
+// RCS 不是独立协议：走 HTTP + config_json.rcs.vendor 标记上游厂商
+const isRcsForm = computed(
+  () => channelForm.protocol === 'HTTP' && !!channelForm.gateway_config?.rcs?.vendor
+)
 
 const rcsWebhookUrl = computed(() => {
   const code = channelForm.value.channel_code || '{通道编码}'
@@ -965,7 +979,7 @@ const handleSave = async () => {
   if (payload.protocol !== 'VIRTUAL') delete payload.virtual_config
   // gateway_config 只在 RCS 通道随表单提交；其它协议不带，避免把后端已有的
   // strip_leading_plus / payload_template 覆盖掉（详情接口回读的是脱敏值）
-  if (payload.protocol !== 'RCS') {
+  if (!isRcsForm.value) {
     delete payload.gateway_config
   } else if (!payload.gateway_config?.rcs?.webhook_secret) {
     delete payload.gateway_config.rcs.webhook_secret

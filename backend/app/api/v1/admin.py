@@ -143,8 +143,9 @@ class ChannelCreateRequest(BaseModel):
     def validate_protocol(cls, v: str) -> str:
         if v is None:
             raise ValueError('protocol is required')
-        if v not in ['HTTP', 'SMPP', 'VIRTUAL', 'RCS']:
-            raise ValueError('protocol must be HTTP, SMPP, VIRTUAL or RCS')
+        # RCS 不是独立协议：它走 HTTP，靠 config_json.rcs.vendor 标记上游厂商
+        if v not in ['HTTP', 'SMPP', 'VIRTUAL']:
+            raise ValueError('protocol must be HTTP, SMPP or VIRTUAL')
         return v
 
     @field_validator('default_sender_id')
@@ -261,11 +262,32 @@ def _merge_gateway_config(existing_raw, incoming: Optional[dict]) -> Optional[di
     return merged
 
 
-def _assert_rcs_channel_ready(protocol: Optional[str], api_url, username, password, api_key, gateway_config):
-    """RCS 通道保存前的必填校验：缺凭据就直接报错，别等发送时才失败。"""
-    if (protocol or "").upper() != "RCS":
+def _gateway_config_is_rcs(gateway_config) -> bool:
+    """扩展配置里是否带 RCS 上游标记（config_json.rcs.vendor）。"""
+    rcs = gateway_config.get("rcs") if isinstance(gateway_config, dict) else None
+    if not isinstance(rcs, dict):
+        return False
+    return bool(str(rcs.get("vendor") or "").strip())
+
+
+async def _channel_is_rcs(db: AsyncSession, channel_id) -> bool:
+    """按通道 ID 判断是否 RCS 上游（读 config_json.rcs.vendor）。"""
+    from app.modules.sms.channel import Channel as _Ch
+
+    cfg = (await db.execute(
+        select(_Ch.config_json).where(_Ch.id == int(channel_id))
+    )).scalar_one_or_none()
+    return bool(_Ch(config_json=cfg).is_rcs())
+
+
+def _assert_rcs_channel_ready(api_url, username, password, api_key, gateway_config):
+    """RCS 通道保存前的必填校验：缺凭据就直接报错，别等发送时才失败。
+
+    触发条件是 config_json.rcs.vendor（RCS 不占 protocol 枚举，protocol 恒为 HTTP）。
+    """
+    if not _gateway_config_is_rcs(gateway_config):
         return
-    rcs = (gateway_config or {}).get("rcs") if isinstance(gateway_config, dict) else {}
+    rcs = gateway_config.get("rcs")
     rcs = rcs if isinstance(rcs, dict) else {}
 
     def _has(*vals):
@@ -2274,7 +2296,7 @@ async def create_channel(
         raise HTTPException(status_code=400, detail="Channel code already exists")
 
     _assert_rcs_channel_ready(
-        request.protocol, request.api_url, request.username,
+        request.api_url, request.username,
         request.password, request.api_key, request.gateway_config,
     )
 
@@ -2422,7 +2444,6 @@ async def update_channel(
         channel.config_json = json.dumps(merged_cfg, ensure_ascii=False) if merged_cfg else None
 
     _assert_rcs_channel_ready(
-        str(channel.protocol),
         channel.api_url, channel.username, channel.password, channel.api_key,
         channel.get_gateway_config(),
     )
@@ -2660,12 +2681,8 @@ async def channel_test_send(
                 },
             }
 
-        elif channel.protocol == "HTTP":
-            from app.workers.adapters.http_adapter import HTTPAdapter
-            adapter = HTTPAdapter(channel)
-            success, channel_msg_id, error = await adapter.send(sms_log)
-
-        elif channel.protocol == "RCS":
+        elif channel.protocol == "HTTP" and channel.is_rcs():
+            # RCS 也是 HTTP 协议，靠 config_json.rcs.vendor 区分；须排在通用 HTTP 之前
             from app.workers.adapters.rcs_adapter import get_rcs_adapter
 
             # 测试发送同样受上游 160 字符 / 禁 emoji 限制；sender_id 走本条自选
@@ -2679,6 +2696,11 @@ async def channel_test_send(
                     f"RCS 测试发送命中上游幂等(clientRef 复用): {test_message_id}, "
                     f"batch={rcs_result.batch_id}"
                 )
+
+        elif channel.protocol == "HTTP":
+            from app.workers.adapters.http_adapter import HTTPAdapter
+            adapter = HTTPAdapter(channel)
+            success, channel_msg_id, error = await adapter.send(sms_log)
 
         else:
             sms_log.status = "failed"
@@ -3029,6 +3051,47 @@ async def _run_channel_check(channel) -> dict:
                     },
                 }
 
+        elif channel.protocol == "HTTP" and channel.is_rcs():
+            # 用 /balance 做真实探测：一次调用同时验证 base_url 可达 + appKey/appSecret + 签名路径，
+            # 比 TCP 探测有用得多（TCP 通≠鉴权过，历史上 SMPP 就吃过这个亏）。
+            from app.workers.adapters.rcs_adapter import RCSConfigError, get_rcs_adapter
+
+            base_details = {
+                "channel": channel.channel_code,
+                "protocol": "HTTP",
+                "api_type": "RCS",
+                "rcs_vendor": channel.rcs_vendor(),
+            }
+            try:
+                probe = await get_rcs_adapter(channel).get_balance()
+            except RCSConfigError as e:
+                return {
+                    "success": False,
+                    "status": "offline",
+                    "message": str(e),
+                    "details": {**base_details, "latency_ms": int((time.time() - start_time) * 1000)},
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "status": "offline",
+                    "message": f"RCS 接口不可达: {str(e)[:200]}",
+                    "details": {**base_details, "latency_ms": int((time.time() - start_time) * 1000)},
+                }
+            latency_ms = int((time.time() - start_time) * 1000)
+            if probe.get("success"):
+                return {
+                    "success": True,
+                    "status": "online",
+                    "message": "RCS 鉴权通过，接口可用",
+                    "details": {**base_details, "latency_ms": latency_ms},
+                }
+            return {
+                "success": False,
+                "status": "offline",
+                "message": f"RCS 鉴权/接口异常: {probe.get('error_code') or ''} {probe.get('error') or ''}".strip(),
+                "details": {**base_details, "latency_ms": latency_ms},
+            }
         elif channel.protocol == "HTTP":
             if not channel.api_url:
                 return {
@@ -3102,42 +3165,6 @@ async def _run_channel_check(channel) -> dict:
                         "latency_ms": latency_ms
                     }
                 }
-        elif channel.protocol == "RCS":
-            # 用 /balance 做真实探测：一次调用同时验证 base_url 可达 + appKey/appSecret + 签名路径，
-            # 比 TCP 探测有用得多（TCP 通≠鉴权过，历史上 SMPP 就吃过这个亏）。
-            from app.workers.adapters.rcs_adapter import RCSConfigError, get_rcs_adapter
-
-            base_details = {"channel": channel.channel_code, "protocol": "RCS"}
-            try:
-                probe = await get_rcs_adapter(channel).get_balance()
-            except RCSConfigError as e:
-                return {
-                    "success": False,
-                    "status": "offline",
-                    "message": str(e),
-                    "details": {**base_details, "latency_ms": int((time.time() - start_time) * 1000)},
-                }
-            except Exception as e:
-                return {
-                    "success": False,
-                    "status": "offline",
-                    "message": f"RCS 接口不可达: {str(e)[:200]}",
-                    "details": {**base_details, "latency_ms": int((time.time() - start_time) * 1000)},
-                }
-            latency_ms = int((time.time() - start_time) * 1000)
-            if probe.get("success"):
-                return {
-                    "success": True,
-                    "status": "online",
-                    "message": "RCS 鉴权通过，接口可用",
-                    "details": {**base_details, "latency_ms": latency_ms},
-                }
-            return {
-                "success": False,
-                "status": "offline",
-                "message": f"RCS 鉴权/接口异常: {probe.get('error_code') or ''} {probe.get('error') or ''}".strip(),
-                "details": {**base_details, "latency_ms": latency_ms},
-            }
         elif channel.protocol == "VIRTUAL":
             latency_ms = int((time.time() - start_time) * 1000)
             return {
@@ -3491,12 +3518,8 @@ async def _sync_template_floor_price(
         return 0
     new_price = Decimal(str(price))
 
-    # 模板业务类型跟随通道协议（RCS 通道 → rcs 模板）
-    _proto = (await db.execute(
-        select(Channel.protocol).where(Channel.id == int(channel_id))
-    )).scalar_one_or_none()
-    _proto = str(getattr(_proto, 'value', _proto) or '').upper()
-    biz_type = 'rcs' if _proto == 'RCS' else 'sms'
+    # 模板业务类型跟随通道的 RCS 上游标记（config_json.rcs.vendor），RCS 通道 → rcs 模板
+    biz_type = 'rcs' if await _channel_is_rcs(db, channel_id) else 'sms'
 
     result = await db.execute(
         select(AccountTemplate).where(
@@ -3629,11 +3652,7 @@ async def _sync_supplier_rate(
         return 0
     new_price = Decimal(str(price))
 
-    _proto = (await db.execute(
-        select(Channel.protocol).where(Channel.id == int(channel_id))
-    )).scalar_one_or_none()
-    _proto = str(getattr(_proto, 'value', _proto) or '').upper()
-    biz_type = 'rcs' if _proto == 'RCS' else 'sms'
+    biz_type = 'rcs' if await _channel_is_rcs(db, channel_id) else 'sms'
 
     rows = (await db.execute(
         select(SupplierRate).where(

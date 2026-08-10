@@ -388,7 +388,7 @@ async def submit_sms_core(
 
         # 3.2 RCS 通道：文案须满足上游硬限制（≤160 Unicode 字符、禁 emoji），
         #     否则上游是「整批拒绝」，必须在提交入口就拦下来而不是发出去再失败。
-        if str(channel.protocol).upper() == "RCS":
+        if channel.is_rcs():
             from app.utils.rcs_content import validate_rcs_content
             _rcs_ok, _rcs_code, _rcs_msg = validate_rcs_content(final_message)
             if not _rcs_ok:
@@ -1228,7 +1228,7 @@ async def send_batch_sms(
                 continue
 
             # RCS 通道文案硬限制（≤160 字符、禁 emoji）：上游整批拒绝，须在扣费前拦下
-            if str(channel.protocol).upper() == "RCS":
+            if channel.is_rcs():
                 from app.utils.rcs_content import validate_rcs_content
                 _rcs_ok, _rcs_code, _rcs_msg = validate_rcs_content(final_message)
                 if not _rcs_ok:
@@ -1826,7 +1826,7 @@ async def execute_approved_sms(
         raise HTTPException(status_code=400, detail=f"内容包含违禁词: {_bw_hit}")
 
     # RCS 通道文案硬限制（≤160 字符、禁 emoji）：上游整批拒绝，须在扣费前拦下
-    if str(channel.protocol).upper() == "RCS":
+    if channel.is_rcs():
         from app.utils.rcs_content import validate_rcs_content
         _rcs_ok, _rcs_code, _rcs_msg = validate_rcs_content(final_message)
         if not _rcs_ok:

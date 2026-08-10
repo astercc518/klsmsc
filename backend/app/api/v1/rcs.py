@@ -118,8 +118,8 @@ async def rcs_dlr_webhook(
         logger.warning(f"RCS 回执：未知通道 {channel_code}")
         return JSONResponse(status_code=404, content={"code": 1, "message": "unknown channel"})
 
-    if str(channel.protocol).upper() != "RCS":
-        logger.warning(f"RCS 回执：通道 {channel_code} 不是 RCS 协议")
+    if not channel.is_rcs():
+        logger.warning(f"RCS 回执：通道 {channel_code} 未配置 RCS 上游(config_json.rcs.vendor)")
         return JSONResponse(status_code=404, content={"code": 1, "message": "not an RCS channel"})
 
     from app.workers.adapters.rcs_adapter import get_rcs_adapter
@@ -208,7 +208,7 @@ async def _load_rcs_channel(db: AsyncSession, channel_id: int) -> Channel:
     channel = res.scalar_one_or_none()
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
-    if str(channel.protocol).upper() != "RCS":
+    if not channel.is_rcs():
         raise HTTPException(status_code=400, detail="不是 RCS 通道")
     return channel
 

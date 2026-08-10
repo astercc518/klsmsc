@@ -551,16 +551,9 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
             # 根据通道协议发送
             if channel.protocol == 'VIRTUAL':
                 success = await _send_via_virtual(sms_log, channel)
-            elif channel.protocol == 'HTTP':
-                http_result = await _send_via_http(sms_log, channel, http_credentials)
-                if http_result == "_retry":
-                    # 临时错误（超时/限速/网关故障）：回退状态避免幽灵 sent，等待 Celery retry
-                    sms_log.status = 'queued'
-                    await db.commit()
-                    await db.close()
-                    return {"_rate_limited": True, "_wait_sec": 10}
-                success = bool(http_result)
-            elif channel.protocol == 'RCS':
+            elif channel.protocol == 'HTTP' and channel.is_rcs():
+                # RCS 也是 HTTP 协议，只是上游接口不同（config_json.rcs.vendor 标记），
+                # 必须排在通用 HTTP 分支之前
                 rcs_result = await _send_via_rcs(sms_log, channel)
                 if rcs_result == "_retry":
                     # 上游限流/超时/5xx：回退 queued 等待重投。clientRef=message_id，
@@ -570,6 +563,15 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
                     await db.close()
                     return {"_rate_limited": True, "_wait_sec": 10}
                 success = bool(rcs_result)
+            elif channel.protocol == 'HTTP':
+                http_result = await _send_via_http(sms_log, channel, http_credentials)
+                if http_result == "_retry":
+                    # 临时错误（超时/限速/网关故障）：回退状态避免幽灵 sent，等待 Celery retry
+                    sms_log.status = 'queued'
+                    await db.commit()
+                    await db.close()
+                    return {"_rate_limited": True, "_wait_sec": 10}
+                success = bool(http_result)
             else:
                 # SMPP 不应在 Python 内 Submit；防御性重路由（缺负载时上层会记失败）
                 logger.error(f"非预期路径：{channel.protocol} 在 Python Worker 执行，触发重路由")
@@ -848,11 +850,17 @@ async def _send_via_rcs(sms_log: SMSLog, channel: Channel):
         False     — 永久失败（error_message 已设置）
         "_retry"  — 可重试（限流/超时/5xx）；clientRef=message_id，上游幂等不会双发
     """
-    from app.workers.adapters.rcs_adapter import get_rcs_adapter
+    from app.workers.adapters.rcs_adapter import RCSConfigError, get_rcs_adapter
 
     logger.info(f"通过 RCS 发送: {sms_log.message_id} via {channel.channel_code}")
 
-    adapter = get_rcs_adapter(channel)
+    try:
+        adapter = get_rcs_adapter(channel)
+    except RCSConfigError as e:
+        # vendor 未实现/配置缺失：重投也不会好，直接判永久失败
+        logger.error(str(e))
+        sms_log.error_message = "RCS 通道未配置完整，请联系客服"
+        return False
     result = await adapter.send_one(sms_log)
 
     if result.success:
