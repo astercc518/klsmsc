@@ -243,6 +243,54 @@ class BoltTelRCSAdapter:
 
         return self._parse_send_response(sms_log, status, data, raw)
 
+    @staticmethod
+    def _pick_message_id(sms_log: SMSLog, msg: dict, batch_id: Optional[str]) -> Optional[str]:
+        """从受理响应里取出这条消息的上游 messageId。
+
+        优先级（对接指南 §3）：
+          1. messages[{messageId, phone}] —— 文档「推荐使用」的显式映射，顺带能校验号码
+          2. messageIds[0] —— 老字段，靠下标对应（我们逐条提交，只有一条）
+          3. 按 `msg:{batchId}-{index}` 格式自拼
+
+        第 3 条是为幂等重放准备的：clientRef 命中幂等时上游返回 duplicated=true，
+        而 messageIds / messages **可能为 null**。若就此把 upstream_message_id 留空，
+        后续回执按 messageId 匹配会全部落空，只能退到「按手机号 + 24h」的模糊兜底，
+        同号码多条时会错配到最新那条。我们是逐条提交，index 恒为 0，可以安全拼出来。
+        """
+        wire_phone = rcs_phone_e164(sms_log.phone_number)
+
+        entries = msg.get("messages")
+        if isinstance(entries, list) and entries:
+            first = entries[0] if isinstance(entries[0], dict) else {}
+            mid = first.get("messageId")
+            phone = str(first.get("phone") or "").strip()
+            if phone and wire_phone and phone != wire_phone:
+                # 串号是最坏情况：回执会把 A 的状态写到 B 头上，宁可不认这个映射
+                logger.error(
+                    f"RCS 受理响应号码不匹配: {sms_log.message_id} 提交={wire_phone} 返回={phone}，"
+                    f"已忽略该 messageId"
+                )
+            elif mid:
+                return str(mid)
+
+        ids = msg.get("messageIds")
+        if isinstance(ids, list) and ids and ids[0]:
+            return str(ids[0])
+
+        if batch_id:
+            synthesized = f"msg:{batch_id}-0"
+            logger.warning(
+                f"RCS 受理成功但未返回 messageIds/messages（多为 clientRef 幂等重放）: "
+                f"{sms_log.message_id}, 按 batchId 拼出 {synthesized} 用于回执匹配"
+            )
+            return synthesized
+
+        logger.warning(
+            f"RCS 受理成功但既无 messageIds 也无 batchId: {sms_log.message_id}，"
+            f"回执只能靠 clientRef 兜底匹配"
+        )
+        return None
+
     def _parse_send_response(
         self, sms_log: SMSLog, status: int, data: Any, raw: str
     ) -> RCSSendResult:
@@ -280,15 +328,9 @@ class BoltTelRCSAdapter:
             if not isinstance(msg, dict):
                 logger.error(f"RCS 成功响应缺少 message 体: {sms_log.message_id}, {raw}")
                 return RCSSendResult(False, error="通道响应异常", retryable=True)
-            ids = msg.get("messageIds")
-            upstream_id = str(ids[0]) if isinstance(ids, list) and ids else None
             batch_id = str(msg.get("batchId")) if msg.get("batchId") is not None else None
             duplicated = bool(msg.get("duplicated"))
-            if not upstream_id:
-                # 没有 messageId 就无法与后续回执对上号，只能靠 clientRef 兜底匹配
-                logger.warning(
-                    f"RCS 受理成功但未返回 messageIds: {sms_log.message_id}, batchId={batch_id}"
-                )
+            upstream_id = self._pick_message_id(sms_log, msg, batch_id)
             logger.info(
                 f"RCS 发送受理: {sms_log.message_id} -> mid={upstream_id} batch={batch_id} "
                 f"duplicated={duplicated}"

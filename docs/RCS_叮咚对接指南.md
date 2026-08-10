@@ -49,7 +49,7 @@ DB 枚举）。通道配置为：
 
 | 表单项 | 填什么 | 落库位置 |
 |---|---|---|
-| 接口地址 | `https://<生产域名>/service/api`（BASE，含 `/service/api`） | `channels.api_url` |
+| 接口地址 | `https://user.fcuncloud.com/service/api`（BASE，含 `/service/api`） | `channels.api_url` |
 | appKey | 平台下发的 appKey | `channels.username` |
 | appSecret | 平台下发的 appSecret | `channels.password` |
 | 默认 SID | 平台开通的发件人 `sendCode` | `channels.default_sender_id` |
@@ -113,6 +113,11 @@ RCS 是与短信/语音/数据并列的独立业务类型，销售在 TG 里的�
 2. 通道「测试发送」发一条到真机。
 3. 观察 `sms_logs`：受理后 `status=sent` 且 `upstream_message_id` 形如 `msg:{batchId}-0`；
    收到回执后变 `delivered`。
+
+> **幂等重放的坑**：clientRef 命中幂等时上游返回 `duplicated=true`，而 `messageIds` /
+> `messages` 可能为 null。此时适配器按 `msg:{batchId}-0` 自拼 messageId 落库（我们逐条
+> 提交，index 恒为 0）；回执侧则优先用 `clientRef` 匹配（等于按我们的 message_id 主键命中），
+> 两条路互为备份，避免退到「按手机号 + 24h」的模糊兜底导致同号码错配。
 
 ## 4. 排查
 

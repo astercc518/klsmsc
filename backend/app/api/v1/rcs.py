@@ -74,9 +74,13 @@ def _to_report(item: dict) -> Optional[dict]:
         logger.warning(f"RCS 回执状态未识别: {status}, item={str(item)[:200]}")
         return None
 
-    # messageId 与发送返回的 messageIds 一致，已写入 sms_logs.upstream_message_id；
-    # clientRef 是我们的 message_id，dlr_handler 会在 upstream 匹配失败时自动兜底。
-    message_id = item.get("messageId") or item.get("clientRef")
+    # dlr_handler 只接受一个 ID 字符串：先拿它试 upstream_message_id，失败再试我们的
+    # message_id。所以优先给 clientRef —— 它就是我们的 message_id，等于按主键精确命中；
+    # 而 messageId 在「clientRef 幂等重放」时上游可能压根没返回过（对接指南 §3），
+    # 那种情况下库里的 upstream_message_id 是我们拼的，未必与回执里的一致，
+    # 一旦对不上就会退到「按手机号 + 24h」模糊兜底，同号码多条时会错配到最新那条。
+    # messageId 仅作兜底：万一某类事件不回传 clientRef。
+    message_id = item.get("clientRef") or item.get("messageId")
     if not message_id:
         return None
 
