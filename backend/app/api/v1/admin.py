@@ -2147,31 +2147,20 @@ async def list_channels_admin(
 ):
     """获取所有通道列表（管理员）"""
     from app.modules.sms.channel import Channel
-    from app.modules.sms.supplier import SupplierChannel, Supplier
-    
+
     result = await db.execute(
         select(Channel).where(
             Channel.is_deleted == False
         ).order_by(Channel.created_at.desc())
     )
     channels = result.scalars().all()
-    
-    # 获取所有通道的供应商关联
-    channel_ids = [ch.id for ch in channels]
-    supplier_map = {}
-    if channel_ids:
-        supplier_result = await db.execute(
-            select(SupplierChannel, Supplier)
-            .join(Supplier, SupplierChannel.supplier_id == Supplier.id)
-            .where(SupplierChannel.channel_id.in_(channel_ids))
-        )
-        for sc, supplier in supplier_result:
-            supplier_map[sc.channel_id] = {
-                "id": supplier.id,
-                "supplier_code": supplier.supplier_code,
-                "supplier_name": supplier.supplier_name
-            }
-    
+
+    # 供应商关联与发送统计供应商维度共用同一份映射，避免两处口径分叉
+    supplier_map = {
+        cid: {"id": info["id"], "supplier_code": info["code"], "supplier_name": info["name"]}
+        for cid, info in (await _channel_supplier_map(db)).items()
+    }
+
     return {
         "success": True,
         "total": len(channels),
@@ -4752,19 +4741,58 @@ async def _virtual_channel_ids(db: AsyncSession) -> list:
     return [r[0] for r in res.all()]
 
 
+async def _channel_supplier_map(db: AsyncSession) -> dict:
+    """通道ID → {id, name, code} 供应商信息；未关联供应商的通道不出现在返回值中。
+
+    口径与 _resolve_channel_supplier_id 一致：channels.supplier_id 硬主键优先，
+    早期只写了 supplier_channels 关联表的历史通道回退取其中最新的有效关联。
+    差别只是这里一次性构建全表映射（通道仅百级），供批量场景使用。
+    """
+    from app.modules.sms.channel import Channel
+    from app.modules.sms.supplier import Supplier, SupplierChannel
+
+    mapping: dict = {}
+    # 按 id 升序遍历，后写覆盖先写，等价于单通道回退时的 order_by(id.desc()).limit(1)
+    link_res = await db.execute(
+        select(SupplierChannel.channel_id, Supplier.id, Supplier.supplier_name, Supplier.supplier_code)
+        .join(Supplier, SupplierChannel.supplier_id == Supplier.id)
+        .where(SupplierChannel.status == "active")
+        .order_by(SupplierChannel.id.asc())
+    )
+    for cid, sid, sname, scode in link_res.all():
+        mapping[cid] = {"id": sid, "name": sname, "code": scode}
+    col_res = await db.execute(
+        select(Channel.id, Supplier.id, Supplier.supplier_name, Supplier.supplier_code)
+        .join(Supplier, Channel.supplier_id == Supplier.id)
+    )
+    for cid, sid, sname, scode in col_res.all():
+        mapping[cid] = {"id": sid, "name": sname, "code": scode}
+    return mapping
+
+
+async def _supplier_channel_ids(db: AsyncSession, supplier_id: int) -> list:
+    """返回归属该供应商的通道ID列表。
+
+    sms_logs / sms_daily_stats 都没有供应商字段，供应商筛选统一先反查通道再按
+    channel_id 过滤，避免聚合查询 JOIN channels 拖慢大表扫描。
+    """
+    return [cid for cid, info in (await _channel_supplier_map(db)).items() if info["id"] == supplier_id]
+
+
 @router.get("/send-statistics", response_model=dict)
 async def get_send_statistics(
     account_id: Optional[int] = Query(None, description="客户账户ID"),
     sales_id: Optional[int] = Query(None, description="归属销售/员工ID"),
     channel_id: Optional[int] = Query(None, description="通道ID"),
+    supplier_id: Optional[int] = Query(None, description="供应商ID"),
     country_code: Optional[str] = Query(None, description="国家代码"),
-    group_by: str = Query("account", description="分组维度: account/channel/country/sales"),
+    group_by: str = Query("account", description="分组维度: account/channel/supplier/country/sales"),
     start_date: Optional[str] = Query(None, description="开始日期 YYYY-MM-DD"),
     end_date: Optional[str] = Query(None, description="结束日期 YYYY-MM-DD"),
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """发送统计查询：支持多维度分组（客户/通道/国家）+ 多条件筛选"""
+    """发送统计查询：支持多维度分组（客户/通道/供应商/国家/员工）+ 多条件筛选"""
     from app.modules.sms.sms_log import SMSLog
     from app.modules.sms.channel import Channel
     from sqlalchemy import func, and_, case, or_
@@ -4785,7 +4813,10 @@ async def get_send_statistics(
     # 缓存兜底：正常情况下下方读取日聚合表；尚未回填的历史区间才扫描 sms_logs。
     import json as _json
     from app.utils.cache import get_redis_client
-    _ck = f"send_stats:v2:{group_by}:{start_date}:{end_date}:a{account_id}:s{sales_id}:c{channel_id}:cc{country_code}"
+    _ck = (
+        f"send_stats:v2:{group_by}:{start_date}:{end_date}:a{account_id}:s{sales_id}:"
+        f"c{channel_id}:sp{supplier_id}:cc{country_code}"
+    )
     try:
         _hit = await (await get_redis_client()).get(_ck)
         if _hit:
@@ -4799,6 +4830,8 @@ async def get_send_statistics(
         # 限定该员工名下账户，避免 JOIN accounts
         _sacc = (await db.execute(select(Account.id).where(Account.sales_id == sales_id))).all()
         _sacc_ids = [a for (a,) in _sacc]
+    # 供应商筛选：先反查其通道，再按 channel_id 过滤（无通道时用不可能条件，返回空集）
+    _sup_ch_ids = await _supplier_channel_ids(db, supplier_id) if supplier_id else None
 
     # 覆盖完整时从日聚合表读取：整月约几千行，而不是 sms_logs 的 919 万行。
     _use_daily_rollup = False
@@ -4829,7 +4862,8 @@ async def get_send_statistics(
             func.sum(D.total_cost).label("total_cost"),
             func.sum(D.total_revenue).label("total_revenue"),
         ]
-        if group_by == "channel":
+        # 供应商维度先按 channel_id 聚合，再在 Python 归约到供应商（日聚合表无供应商字段）
+        if group_by in ("channel", "supplier"):
             gcol = D.channel_id
         elif group_by == "country":
             gcol = D.country_code
@@ -4844,11 +4878,13 @@ async def get_send_statistics(
             base = base.where(D.account_id == account_id)
         if channel_id:
             base = base.where(D.channel_id == channel_id)
+        if _sup_ch_ids is not None:
+            base = base.where(D.channel_id.in_(_sup_ch_ids) if _sup_ch_ids else (D.channel_id < 0))
         if country_code:
             base = base.where(func.upper(D.country_code) == country_code.upper())
         if sales_id:
             base = base.where(D.account_id.in_(_sacc_ids) if _sacc_ids else (D.account_id < 0))
-        if group_by == "channel":
+        if group_by in ("channel", "supplier"):
             base = base.where(D.channel_id != 0)
         elif group_by == "country":
             base = base.where(D.country_code != "")
@@ -4862,8 +4898,9 @@ async def get_send_statistics(
             net_cost("total_cost"),
             net_revenue("total_revenue"),
         ]
-        # account 与 sales 均先按 account_id 聚合，sales 再在 Python 归约到员工。
-        if group_by == "channel":
+        # account 与 sales 均先按 account_id 聚合，sales 再在 Python 归约到员工；
+        # supplier 同理，先按 channel_id 聚合再归约到供应商。
+        if group_by in ("channel", "supplier"):
             gcol = SMSLog.channel_id
         elif group_by == "country":
             gcol = SMSLog.country_code
@@ -4878,11 +4915,13 @@ async def get_send_statistics(
             base = base.where(SMSLog.account_id == account_id)
         if channel_id:
             base = base.where(SMSLog.channel_id == channel_id)
+        if _sup_ch_ids is not None:
+            base = base.where(SMSLog.channel_id.in_(_sup_ch_ids) if _sup_ch_ids else (SMSLog.id < 0))
         if country_code:
             base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
         if sales_id:
             base = base.where(SMSLog.account_id.in_(_sacc_ids) if _sacc_ids else (SMSLog.id < 0))
-        if group_by == "channel":
+        if group_by in ("channel", "supplier"):
             base = base.where(SMSLog.channel_id.isnot(None))
         elif group_by == "country":
             base = base.where(SMSLog.country_code.isnot(None))
@@ -4890,6 +4929,8 @@ async def get_send_statistics(
     base = base.group_by(gcol)
 
     agg_rows = (await db.execute(base)).all()
+
+    name_map: dict = {}
 
     # sales 维度：按 account_id 的聚合结果在 Python 里归约到 sales_id
     if group_by == "sales":
@@ -4920,10 +4961,38 @@ async def get_send_statistics(
             total_cost=b["total_cost"], total_revenue=b["total_revenue"],
             avg_unit_price=(b["total_revenue"] / b["submit_total"] if b["submit_total"] else 0),
         ) for sid, b in _sb.items()]
+    elif group_by == "supplier":
+        # 通道维度的聚合结果按 channels.supplier_id 归约到供应商；
+        # 未关联供应商的通道并入 gid=0 的“未关联供应商”桶，保证总量不丢。
+        _ch2sup = await _channel_supplier_map(db)
+        _pb: dict = {}
+        for r in agg_rows:
+            info = _ch2sup.get(r.gid)
+            sid = info["id"] if info else 0
+            if info:
+                name_map[sid] = {"name": info["name"], "code": info["code"]}
+            b = _pb.setdefault(sid, {"submit_total": 0, "success_count": 0, "failed_count": 0,
+                                     "pending_count": 0, "total_cost": 0.0, "total_revenue": 0.0,
+                                     "price_weight": 0.0})
+            _st = int(r.submit_total or 0)
+            b["submit_total"] += _st
+            b["success_count"] += int(r.success_count or 0)
+            b["failed_count"] += int(r.failed_count or 0)
+            b["pending_count"] += int(r.pending_count or 0)
+            b["total_cost"] += float(r.total_cost or 0)
+            b["total_revenue"] += float(r.total_revenue or 0)
+            b["price_weight"] += float(r.avg_unit_price or 0) * _st
+        from types import SimpleNamespace
+        rows = [SimpleNamespace(
+            gid=sid, submit_total=b["submit_total"], success_count=b["success_count"],
+            failed_count=b["failed_count"], pending_count=b["pending_count"],
+            total_cost=b["total_cost"], total_revenue=b["total_revenue"],
+            # 单价按条数加权，与通道维度显示的单价口径保持一致
+            avg_unit_price=(b["price_weight"] / b["submit_total"] if b["submit_total"] else 0),
+        ) for sid, b in _pb.items()]
     else:
         rows = agg_rows
 
-    name_map: dict = {}
     if group_by == "channel":
         ch_ids = list({r.gid for r in rows if r.gid})
         if ch_ids:
@@ -4999,7 +5068,7 @@ async def get_send_statistics(
         elif group_by == "sales":
             _rr = rr_by_sales.get(r.gid)
         else:
-            _rr = None  # 通道/国家维度无法归属退补
+            _rr = None  # 通道/供应商/国家维度无法归属退补
         refunded = _rr["cnt"] if _rr else 0
         refund_amt = round(_rr["amt"], 5) if _rr else 0.0
         success_rate = round((success_count / submit_total * 100) if submit_total > 0 else 0, 2)
@@ -5031,6 +5100,12 @@ async def get_send_statistics(
             item["channel_name"] = ch_info.get("name", "-") if isinstance(ch_info, dict) else "-"
             item["channel_code"] = ch_info.get("code", "-") if isinstance(ch_info, dict) else "-"
             item["dim_label"] = item["channel_name"]
+        elif group_by == "supplier":
+            sp_info = name_map.get(r.gid) or {}
+            item["supplier_id"] = r.gid or None
+            item["supplier_name"] = sp_info.get("name") or "未关联供应商"
+            item["supplier_code"] = sp_info.get("code") or ""
+            item["dim_label"] = item["supplier_name"]
         elif group_by == "country":
             item["country_code"] = r.gid
             item["dim_label"] = r.gid
@@ -5179,12 +5254,13 @@ async def get_admin_daily_stats(
     end_date: Optional[str] = None,
     account_id: Optional[int] = Query(None, description="客户账户ID"),
     channel_id: Optional[int] = Query(None, description="通道ID"),
+    supplier_id: Optional[int] = Query(None, description="供应商ID"),
     country_code: Optional[str] = Query(None, description="国家代码"),
     sales_id: Optional[int] = Query(None, description="归属销售/员工ID"),
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    """管理员：每日统计（用于图表）。支持按客户/通道/国家筛选。销售角色仅统计归属客户。"""
+    """管理员：每日统计（用于图表）。支持按客户/通道/供应商/国家筛选。销售角色仅统计归属客户。"""
     import json as _json
     from app.modules.sms.sms_log import SMSLog
     from app.utils.cache import get_redis_client
@@ -5205,7 +5281,7 @@ async def get_admin_daily_stats(
 
     _ck = (
         f"admin_daily_stats:v1:{start_dt}:{end_dt}:a{account_id}:s{sales_id}:"
-        f"c{channel_id}:cc{country_code}"
+        f"c{channel_id}:sp{supplier_id}:cc{country_code}"
     )
     try:
         _hit = await (await get_redis_client()).get(_ck)
@@ -5221,6 +5297,7 @@ async def get_admin_daily_stats(
             select(Account.id).where(Account.sales_id == sales_id, Account.is_deleted == False)
         )).all()
         _sacc_ids = [a for (a,) in _sacc]
+    _sup_ch_ids = await _supplier_channel_ids(db, supplier_id) if supplier_id else None
 
     _use_daily_rollup = False
     try:
@@ -5251,6 +5328,8 @@ async def get_admin_daily_stats(
             base = base.where(D.account_id == account_id)
         if channel_id:
             base = base.where(D.channel_id == channel_id)
+        if _sup_ch_ids is not None:
+            base = base.where(D.channel_id.in_(_sup_ch_ids) if _sup_ch_ids else (D.channel_id < 0))
         if country_code:
             base = base.where(func.upper(D.country_code) == country_code.upper())
         if sales_id:
@@ -5271,6 +5350,8 @@ async def get_admin_daily_stats(
             base = base.where(SMSLog.account_id == account_id)
         if channel_id:
             base = base.where(SMSLog.channel_id == channel_id)
+        if _sup_ch_ids is not None:
+            base = base.where(SMSLog.channel_id.in_(_sup_ch_ids) if _sup_ch_ids else (SMSLog.id < 0))
         if country_code:
             base = base.where(func.upper(SMSLog.country_code) == country_code.upper())
         if sales_id:
