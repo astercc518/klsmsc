@@ -2,11 +2,13 @@
 短信发送API路由
 """
 import asyncio
+import csv
+import io
 import json
 import uuid
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, BackgroundTasks, Header, HTTPException, Body, Request
+from fastapi import APIRouter, Depends, BackgroundTasks, Header, HTTPException, Body, Query, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, HTTPBasicCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -30,7 +32,7 @@ from app.schemas.sms import (
     PublicSMSRate,
     PublicSMSRateResponse,
 )
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from app.utils.logger import get_logger
 from app.utils.errors import (
     ValidationError, AuthenticationError,
@@ -1883,10 +1885,10 @@ async def get_sms_stats(
     }
 
 
-@router.get("/records")
-async def get_sms_records(
-    page: int = 1,
-    page_size: int = 20,
+async def _build_records_conditions(
+    db: AsyncSession,
+    auth_context: dict,
+    *,
     status: Optional[str] = None,
     phone_number: Optional[str] = None,
     message_id: Optional[str] = None,
@@ -1896,28 +1898,15 @@ async def get_sms_records(
     end_date: Optional[str] = None,
     account_id: Optional[int] = None,
     batch_id: Optional[int] = None,
-    cursor_time: Optional[str] = None,
-    cursor_id: Optional[int] = None,
-    direction: str = "next",
-    auth_context: dict = Depends(get_auth_context),
-    db: AsyncSession = Depends(get_db)
 ):
-    """获取短信发送记录（带通道信息、客户名称、归属员工）
+    """构造发送记录的查询条件（列表 /records 与导出 /records/export 共用）
 
-    翻页两种模式：
-    - 键集翻页(keyset)：传 cursor_time + cursor_id(+direction=next/prev)，按 (submit_time,id)
-      游标定位，每页恒定 O(page_size)，深翻页不退化。用于上一页/下一页。
-    - 偏移翻页(offset)：不传 cursor 时按 page/page_size，用于首屏/筛选重置(page=1)。
+    返回 (conditions, parsed_start, parsed_end)；conditions 已含账户归属与时间窗兜底，
+    两边共用保证「导出的就是列表里看到的那批数据」，不会因条件漂移对不上。
     """
-    from sqlalchemy import func, and_
-    from sqlalchemy.orm import aliased
+    from sqlalchemy import and_  # noqa: F401  (调用方按需组装)
     from datetime import datetime, timedelta
-    from app.modules.sms.channel import Channel
     from app.modules.sms.sms_batch import SmsBatch
-    from app.modules.common.account import Account
-    from app.modules.common.admin_user import AdminUser
-
-    SalesUser = aliased(AdminUser)
 
     conditions = []
 
@@ -1984,6 +1973,57 @@ async def get_sms_records(
 
     conditions.append(SMSLog.submit_time >= parsed_start)
     conditions.append(SMSLog.submit_time <= parsed_end)
+
+    return conditions, parsed_start, parsed_end
+
+
+@router.get("/records")
+async def get_sms_records(
+    page: int = 1,
+    page_size: int = 20,
+    status: Optional[str] = None,
+    phone_number: Optional[str] = None,
+    message_id: Optional[str] = None,
+    channel_id: Optional[int] = None,
+    country_code: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    account_id: Optional[int] = None,
+    batch_id: Optional[int] = None,
+    cursor_time: Optional[str] = None,
+    cursor_id: Optional[int] = None,
+    direction: str = "next",
+    auth_context: dict = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取短信发送记录（带通道信息、客户名称、归属员工）
+
+    翻页两种模式：
+    - 键集翻页(keyset)：传 cursor_time + cursor_id(+direction=next/prev)，按 (submit_time,id)
+      游标定位，每页恒定 O(page_size)，深翻页不退化。用于上一页/下一页。
+    - 偏移翻页(offset)：不传 cursor 时按 page/page_size，用于首屏/筛选重置(page=1)。
+    """
+    from sqlalchemy import func, and_
+    from sqlalchemy.orm import aliased
+    from app.modules.sms.channel import Channel
+    from app.modules.common.account import Account
+    from app.modules.common.admin_user import AdminUser
+
+    SalesUser = aliased(AdminUser)
+
+    conditions, parsed_start, parsed_end = await _build_records_conditions(
+        db,
+        auth_context,
+        status=status,
+        phone_number=phone_number,
+        message_id=message_id,
+        channel_id=channel_id,
+        country_code=country_code,
+        start_date=start_date,
+        end_date=end_date,
+        account_id=account_id,
+        batch_id=batch_id,
+    )
 
     where_clause = and_(*conditions) if conditions else True
 
@@ -2166,6 +2206,7 @@ async def get_sms_records(
             "submit_time": r.submit_time.isoformat() if r.submit_time else None,
             "sent_time": r.sent_time.isoformat() if r.sent_time else None,
             "delivery_time": r.delivery_time.isoformat() if r.delivery_time else None,
+            "refunded_at": r.refunded_at.isoformat() if r.refunded_at else None,
             "error_message": r.error_message,
             "sales_name": sales_name,
         }
@@ -2206,6 +2247,235 @@ async def get_sms_records(
         "has_next": has_next,
         "has_prev": has_prev,
     }
+
+
+# 单次导出行数上限：sms_logs 千万级，无上限导出会长时间占住连接并撑爆浏览器内存
+MAX_RECORDS_EXPORT_ROWS = 200000
+
+_EXPORT_STATUS_TEXT = {
+    "pending": "待发送",
+    "queued": "队列中",
+    "sent": "已发送",
+    "delivered": "已送达",
+    "failed": "失败",
+    "expired": "超时",
+}
+
+# 导出列白名单：key 与前端「显示列」清单一一对应（frontend/src/views/sms/Records.vue）。
+# 顺序即默认导出顺序；不传 columns 时全列导出。
+_EXPORT_COLUMN_ORDER = [
+    "id", "account_name", "account_id", "sales_name", "message_id", "upstream_message_id",
+    "batch_id", "phone_number", "country_code", "channel_code", "sender_id", "message",
+    "message_count", "status", "status_code", "error_message", "selling_price", "cost_price",
+    "profit", "currency", "submit_time", "sent_time", "delivery_time", "refunded_at",
+]
+
+
+@router.get("/records/export", summary="导出发送记录（管理员）")
+async def export_sms_records(
+    request: Request,
+    fmt: str = Query("csv", pattern="^(csv|txt)$"),
+    limit: int = Query(50000, ge=1, le=MAX_RECORDS_EXPORT_ROWS),
+    columns: Optional[str] = Query(None, description="逗号分隔的导出列 key，缺省导出全部列"),
+    status: Optional[str] = None,
+    phone_number: Optional[str] = None,
+    message_id: Optional[str] = None,
+    channel_id: Optional[int] = None,
+    country_code: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    account_id: Optional[int] = None,
+    batch_id: Optional[int] = None,
+    auth_context: dict = Depends(get_auth_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """按当前筛选条件导出发送记录（管理员限定）
+
+    - fmt=csv：明细表，带 BOM 供 Excel 直接打开；columns 指定导出哪些列（前端传「当前显示列」）
+    - fmt=txt：仅号码，去重后一行一个（用于二次投放/排查），不受 columns 影响
+    - 排序与列表一致（submit_time DESC, id DESC），最多导出 limit 行
+    - 时间窗与列表同源：未传日期时同样按 30 天兜底，避免全表扫
+    """
+    from sqlalchemy import and_
+    from sqlalchemy.orm import aliased
+    from app.modules.sms.channel import Channel
+    from app.modules.common.account import Account
+    from app.modules.common.admin_user import AdminUser
+    from app.utils.phone_utils import excel_text
+
+    if not auth_context.get("is_admin"):
+        raise HTTPException(status_code=403, detail="仅管理员可导出发送记录")
+
+    conditions, parsed_start, parsed_end = await _build_records_conditions(
+        db,
+        auth_context,
+        status=status,
+        phone_number=phone_number,
+        message_id=message_id,
+        channel_id=channel_id,
+        country_code=country_code,
+        start_date=start_date,
+        end_date=end_date,
+        account_id=account_id,
+        batch_id=batch_id,
+    )
+    where_clause = and_(*conditions)
+
+    # 审计日志必须写在建流式游标之前：log_operation 会在同一会话 flush 一条 INSERT，
+    # 之后再建的游标在 StreamingResponse 真正消费时会失效（返回 0 行）。
+    admin_id = auth_context.get("admin_id")
+    admin_name = None
+    if admin_id:
+        admin_name = await db.scalar(select(AdminUser.username).where(AdminUser.id == admin_id))
+    try:
+        from app.services.operation_log import log_operation
+        from app.utils.client_ip import get_client_ip
+        await log_operation(
+            db,
+            admin_id=admin_id,
+            admin_name=admin_name,
+            module="sms",
+            action="export",
+            target_type="sms_records",
+            title=f"导出发送记录（{fmt}，上限 {limit} 条）",
+            detail={
+                "fmt": fmt,
+                "limit": limit,
+                "account_id": account_id,
+                "batch_id": batch_id,
+                "status": status,
+                "phone_number": phone_number,
+                "message_id": message_id,
+                "channel_id": channel_id,
+                "country_code": country_code,
+                "start": parsed_start.isoformat() if parsed_start else None,
+                "end": parsed_end.isoformat() if parsed_end else None,
+            },
+            ip_address=get_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+        )
+    except Exception as e:
+        logger.warning(f"发送记录导出审计日志写入失败 admin_id={admin_id}: {e}")
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if fmt == "txt":
+        rows_iter = await db.stream(
+            select(SMSLog.phone_number)
+            .where(where_clause)
+            .order_by(SMSLog.submit_time.desc(), SMSLog.id.desc())
+            .limit(limit)
+            .execution_options(yield_per=2000)
+        )
+
+        async def gen_txt():
+            # 去重在内存做：DISTINCT + ORDER BY 会让 MySQL 起临时表排序，几十万行明显更慢
+            seen: set = set()
+            async for (phone,) in rows_iter:
+                p = (phone or "").strip()
+                if not p or p in seen:
+                    continue
+                seen.add(p)
+                yield p + "\n"
+
+        return StreamingResponse(
+            gen_txt(),
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="sms_records_{ts}.txt"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+
+    SalesUser = aliased(AdminUser)
+
+    def _time_cell(dt):
+        return excel_text(dt.strftime("%Y-%m-%d %H:%M:%S")) if dt else ""
+
+    def _flat(v):
+        # 正文/错误信息里的换行会把一条记录撕成多行，压平后每条记录恒占一行
+        return (v or "").replace("\r", " ").replace("\n", " ")
+
+    def _money(v):
+        return float(v) if v else 0
+
+    # key -> (CSV 表头, 取值表达式, 单元格格式化)
+    col_defs = {
+        "id": ("ID", SMSLog.id, lambda v: v),
+        "account_name": ("客户名称", Account.account_name, lambda v: v or ""),
+        "account_id": ("客户ID", SMSLog.account_id, lambda v: v),
+        "sales_name": ("归属员工", SalesUser.real_name, lambda v: v or ""),
+        "message_id": ("消息ID", SMSLog.message_id, excel_text),
+        "upstream_message_id": ("上游消息ID", SMSLog.upstream_message_id, excel_text),
+        "batch_id": ("任务ID", SMSLog.batch_id, lambda v: v or ""),
+        "phone_number": ("手机号码", SMSLog.phone_number, excel_text),
+        "country_code": ("国家", SMSLog.country_code, lambda v: v or ""),
+        "channel_code": ("通道", Channel.channel_code, lambda v: v or ""),
+        "sender_id": ("发送ID(SID)", SMSLog.sender_id, lambda v: v or ""),
+        "message": ("内容", SMSLog.message, _flat),
+        "message_count": ("条数", SMSLog.message_count, lambda v: v or 1),
+        "status": ("状态", SMSLog.status, lambda v: _EXPORT_STATUS_TEXT.get(v, v or "")),
+        "status_code": ("状态码", SMSLog.status, lambda v: v or ""),
+        "error_message": ("错误信息", SMSLog.error_message, _flat),
+        "selling_price": ("售价", SMSLog.selling_price, _money),
+        "cost_price": ("成本价", SMSLog.cost_price, _money),
+        "profit": ("利润", SMSLog.profit, _money),
+        "currency": ("币种", SMSLog.currency, lambda v: v or "USD"),
+        "submit_time": ("提交时间", SMSLog.submit_time, _time_cell),
+        "sent_time": ("发送时间", SMSLog.sent_time, _time_cell),
+        "delivery_time": ("送达时间", SMSLog.delivery_time, _time_cell),
+        "refunded_at": ("退款时间", SMSLog.refunded_at, _time_cell),
+    }
+
+    # 解析请求的列：只认白名单、去重、保持传入顺序（前端按表格列序传）；
+    # 全部非法或未传 → 回落全列，宁可多导也不给一个只有表头的空文件
+    keys: list = []
+    if columns:
+        for raw in columns.split(","):
+            k = raw.strip()
+            if k in col_defs and k not in keys:
+                keys.append(k)
+    if not keys:
+        keys = list(_EXPORT_COLUMN_ORDER)
+
+    # 只取需要的列（而非整个 ORM 实体）：几十万行下 ORM 实体会被完整物化进内存，
+    # 列式结果配 yield_per 才是真正的流式，内存恒定。
+    # 标成 c0..cN 按位置取值：status 与 status_code 指向同一个库列，同名属性会互相覆盖。
+    rows_iter = await db.stream(
+        select(*[col_defs[k][1].label(f"c{i}") for i, k in enumerate(keys)])
+        .outerjoin(Channel, SMSLog.channel_id == Channel.id)
+        .outerjoin(Account, SMSLog.account_id == Account.id)
+        .outerjoin(SalesUser, Account.sales_id == SalesUser.id)
+        .where(where_clause)
+        .order_by(SMSLog.submit_time.desc(), SMSLog.id.desc())
+        .limit(limit)
+        .execution_options(yield_per=2000)
+    )
+
+    async def gen_csv():
+        buf = io.StringIO()
+        buf.write("\ufeff")  # BOM：Excel 打开中文不乱码
+        writer = csv.writer(buf)
+        writer.writerow([col_defs[k][0] for k in keys])
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate(0)
+
+        cells = [col_defs[k][2] for k in keys]
+        async for r in rows_iter:
+            writer.writerow([fn(r[i]) for i, fn in enumerate(cells)])
+            data = buf.getvalue()
+            if data:
+                yield data
+                buf.seek(0); buf.truncate(0)
+
+    return StreamingResponse(
+        gen_csv(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="sms_records_{ts}.csv"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
 
 
 # ============ 上游 DLR 回调接口 (推送模式) ============
