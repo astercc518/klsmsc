@@ -8,6 +8,39 @@
         <p class="status-explain">{{ $t('smsRecords.statusExplain') }}</p>
       </div>
       <div class="header-actions">
+        <el-popover v-if="!isMobile" placement="bottom-end" :width="320" trigger="click" popper-class="col-popover">
+          <template #reference>
+            <button class="action-btn columns">
+              <el-icon><Grid /></el-icon>
+              {{ $t('smsRecords.columns') }}
+              <span class="col-count">{{ visibleColumns.length }}/{{ availableColumns.length }}</span>
+            </button>
+          </template>
+          <div class="col-panel">
+            <div class="col-panel-head">
+              <span class="col-panel-title">{{ $t('smsRecords.columnsTitle') }}</span>
+              <div class="col-panel-ops">
+                <a class="col-op" @click="selectAllColumns">{{ $t('smsRecords.columnsAll') }}</a>
+                <a class="col-op" @click="resetColumns">{{ $t('smsRecords.columnsReset') }}</a>
+              </div>
+            </div>
+            <el-checkbox-group v-model="visibleColumns" class="col-list">
+              <el-checkbox
+                v-for="c in availableColumns"
+                :key="c.key"
+                :value="c.key"
+                :label="c.key"
+                :disabled="visibleColumns.length === 1 && colVisible(c.key)"
+              >
+                {{ columnLabel(c) }}
+              </el-checkbox>
+            </el-checkbox-group>
+          </div>
+        </el-popover>
+        <button v-if="isAdmin" class="action-btn download" @click="openExport">
+          <el-icon><Download /></el-icon>
+          {{ $t('smsRecords.exportTitle') }}
+        </button>
         <button class="action-btn refresh" @click="loadRecords">
           <el-icon><Refresh /></el-icon>
           {{ $t('common.refresh') }}
@@ -177,16 +210,34 @@
       <!-- 桌面端：表格 -->
       <div class="table-wrapper" v-else v-loading="loading">
         <el-table :data="records" class="records-table" :row-class-name="tableRowClassName" @row-click="handleViewDetail" empty-text="暂无记录" stripe>
-          <el-table-column v-if="isAdmin" prop="account_name" label="客户" min-width="180" show-overflow-tooltip>
+          <el-table-column v-if="colVisible('id')" prop="id" label="ID" width="110">
+            <template #default="{ row }">
+              <span class="mono-text">{{ row.id }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="colVisible('account_name')" prop="account_name" label="客户" min-width="180" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="account-cell">
                 <span class="account-name-text">{{ row.account_name || '-' }}</span>
-                <span v-if="row.sales_name" class="sales-tag">{{ row.sales_name }}</span>
+                <span v-if="row.sales_name && !colVisible('sales_name')" class="sales-tag">{{ row.sales_name }}</span>
               </div>
             </template>
           </el-table-column>
 
-          <el-table-column prop="message_id" :label="$t('smsRecords.messageId')" width="140">
+          <el-table-column v-if="colVisible('account_id')" prop="account_id" label="客户ID" width="90" align="center">
+            <template #default="{ row }">
+              <span class="mono-text">{{ row.account_id }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="colVisible('sales_name')" prop="sales_name" label="归属员工" width="110" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span>{{ row.sales_name || '-' }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="colVisible('message_id')" prop="message_id" :label="$t('smsRecords.messageId')" width="140">
             <template #default="{ row }">
               <el-tooltip :content="row.message_id" placement="top">
                 <span class="mono-text clickable">{{ row.message_id?.substring(0, 12) }}...</span>
@@ -194,19 +245,31 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="phone_number" label="手机号码" width="150">
+          <el-table-column v-if="colVisible('upstream_message_id')" prop="upstream_message_id" label="上游消息ID" width="180" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span class="mono-text">{{ row.upstream_message_id || '-' }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="colVisible('batch_id')" prop="batch_id" label="任务ID" width="90" align="center">
+            <template #default="{ row }">
+              <span class="mono-text">{{ row.batch_id || '-' }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="colVisible('phone_number')" prop="phone_number" label="手机号码" width="150">
             <template #default="{ row }">
               <span class="phone-text">{{ row.phone_number }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column prop="country_code" :label="$t('smsRecords.country')" width="90" align="center">
+          <el-table-column v-if="colVisible('country_code')" prop="country_code" :label="$t('smsRecords.country')" width="90" align="center">
             <template #default="{ row }">
               <span>{{ countryDisplay(row.country_code) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column prop="channel_code" label="通道" width="140">
+          <el-table-column v-if="colVisible('channel_code')" prop="channel_code" label="通道" width="140">
             <template #default="{ row }">
               <el-tag v-if="row.channel_code" size="small" :type="row.channel_code?.includes('SMPP') ? 'primary' : 'success'" effect="plain">
                 {{ row.channel_code }}
@@ -215,14 +278,14 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="sender_id" label="发送ID(SID)" width="120" align="center">
+          <el-table-column v-if="colVisible('sender_id')" prop="sender_id" label="发送ID(SID)" width="120" align="center">
             <template #default="{ row }">
               <span v-if="row.sender_id">{{ row.sender_id }}</span>
               <span v-else class="text-muted">默认</span>
             </template>
           </el-table-column>
 
-          <el-table-column prop="message" label="内容" min-width="200">
+          <el-table-column v-if="colVisible('message')" prop="message" label="内容" min-width="200">
             <template #default="{ row }">
               <el-tooltip :content="row.message" placement="top" :show-after="500">
                 <span class="message-preview">{{ truncate(row.message, 40) }}</span>
@@ -230,13 +293,26 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="status" label="状态" width="100" align="center">
+          <el-table-column v-if="colVisible('message_count')" prop="message_count" label="条数" width="70" align="center">
+            <template #default="{ row }">
+              <span>{{ row.message_count || 1 }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="colVisible('status')" prop="status" label="状态" width="100" align="center">
             <template #default="{ row }">
               <span class="status-badge" :class="row.status">{{ getStatusText(row.status) }}</span>
             </template>
           </el-table-column>
 
+          <el-table-column v-if="colVisible('status_code')" prop="status" label="状态码" width="100" align="center">
+            <template #default="{ row }">
+              <span class="mono-text">{{ row.status }}</span>
+            </template>
+          </el-table-column>
+
           <el-table-column
+            v-if="colVisible('error_message')"
             prop="error_message"
             :label="$t('smsRecords.errorMsg')"
             min-width="160"
@@ -253,30 +329,51 @@
             </template>
           </el-table-column>
 
-          <el-table-column v-if="isAdmin" label="费用" width="160">
+          <el-table-column v-if="colVisible('selling_price')" prop="selling_price" label="售价" width="110" align="right">
             <template #default="{ row }">
-              <div class="cost-cell">
-                <span class="cost-selling">{{ row.selling_price?.toFixed(4) }}</span>
-                <span class="cost-detail" v-if="row.cost_price">成本 {{ row.cost_price?.toFixed(4) }}</span>
-              </div>
+              <span class="cost-selling">{{ row.selling_price?.toFixed(4) }}<template v-if="!colVisible('currency')"> {{ row.currency }}</template></span>
             </template>
           </el-table-column>
 
-          <el-table-column v-if="!isAdmin" prop="selling_price" label="费用" width="100" align="right">
+          <el-table-column v-if="colVisible('cost_price')" prop="cost_price" label="成本价" width="100" align="right">
             <template #default="{ row }">
-              <span class="cost-selling">{{ row.selling_price?.toFixed(4) }} {{ row.currency }}</span>
+              <span class="cost-detail">{{ row.cost_price?.toFixed(4) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column prop="submit_time" label="提交时间" width="170">
+          <el-table-column v-if="colVisible('profit')" prop="profit" label="利润" width="100" align="right">
+            <template #default="{ row }">
+              <span :class="row.profit >= 0 ? 'profit-positive' : 'profit-negative'">{{ row.profit?.toFixed(4) }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="colVisible('currency')" prop="currency" label="币种" width="80" align="center">
+            <template #default="{ row }">
+              <span>{{ row.currency || '-' }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="colVisible('submit_time')" prop="submit_time" label="提交时间" width="170">
             <template #default="{ row }">
               <span class="time-text">{{ formatTime(row.submit_time) }}</span>
             </template>
           </el-table-column>
 
-          <el-table-column prop="delivery_time" :label="$t('smsRecords.deliveryTime')" width="170">
+          <el-table-column v-if="colVisible('sent_time')" prop="sent_time" :label="$t('smsRecords.sentTime')" width="170">
+            <template #default="{ row }">
+              <span class="time-text">{{ formatTime(row.sent_time) || '-' }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="colVisible('delivery_time')" prop="delivery_time" :label="$t('smsRecords.deliveryTime')" width="170">
             <template #default="{ row }">
               <span class="time-text">{{ formatTime(row.delivery_time) || '-' }}</span>
+            </template>
+          </el-table-column>
+
+          <el-table-column v-if="colVisible('refunded_at')" prop="refunded_at" label="退款时间" width="170">
+            <template #default="{ row }">
+              <span class="time-text">{{ formatTime(row.refunded_at) || '-' }}</span>
             </template>
           </el-table-column>
 
@@ -303,6 +400,53 @@
         </el-button-group>
       </div>
     </div>
+
+    <!-- 下载对话框（仅管理员） -->
+    <el-dialog v-model="exportVisible" :title="$t('smsRecords.exportTitle')" width="560px" class="export-dialog">
+      <div class="export-body">
+        <div class="export-row">
+          <span class="export-label">{{ $t('smsRecords.exportFormat') }}</span>
+          <el-radio-group v-model="exportForm.fmt">
+            <el-radio-button value="csv">{{ $t('smsRecords.exportFormatCsv') }}</el-radio-button>
+            <el-radio-button value="txt">{{ $t('smsRecords.exportFormatTxt') }}</el-radio-button>
+          </el-radio-group>
+        </div>
+        <div class="export-row" v-if="exportForm.fmt === 'csv'">
+          <span class="export-label">{{ $t('smsRecords.exportColumns') }}</span>
+          <el-radio-group v-model="exportForm.columnMode">
+            <el-radio-button value="visible">
+              {{ $t('smsRecords.exportColumnsVisible', { n: visibleColumns.length }) }}
+            </el-radio-button>
+            <el-radio-button value="all">{{ $t('smsRecords.exportColumnsAll') }}</el-radio-button>
+          </el-radio-group>
+        </div>
+
+        <div class="export-row">
+          <span class="export-label">{{ $t('smsRecords.exportLimit') }}</span>
+          <el-select v-model="exportForm.limit" style="width: 180px">
+            <el-option
+              v-for="n in [10000, 50000, 100000, 200000]"
+              :key="n"
+              :label="$t('smsRecords.exportRows', { n: n.toLocaleString() })"
+              :value="n"
+            />
+          </el-select>
+        </div>
+        <div class="export-row export-scope">
+          <span class="export-label">{{ $t('smsRecords.exportScope') }}</span>
+          <div class="export-tags">
+            <el-tag v-for="(tag, i) in exportSummary" :key="i" size="small" effect="plain">{{ tag }}</el-tag>
+          </div>
+        </div>
+        <p class="export-hint">{{ $t('smsRecords.exportHint') }}</p>
+      </div>
+      <template #footer>
+        <el-button @click="exportVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="exporting" @click="doExport">
+          {{ exporting ? $t('smsRecords.exporting') : $t('smsRecords.exportConfirm') }}
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- 详情对话框 -->
     <el-dialog v-model="detailVisible" title="短信详情" width="640px" class="detail-dialog" destroy-on-close>
@@ -446,12 +590,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Refresh, Search, View } from '@element-plus/icons-vue'
-import { getSMSRecords } from '@/api/sms'
+import { Download, Grid, Refresh, Search, View } from '@element-plus/icons-vue'
+import { getSMSRecords, exportSMSRecords } from '@/api/sms'
 import { getAccountsAdmin, getChannelsAdmin } from '@/api/admin'
 import { getChannels } from '@/api/channel'
 import { COUNTRY_LIST, findCountryByDial, findCountryByIso } from '@/constants/countries'
@@ -461,7 +605,7 @@ import MobileFilterDrawer from '@/components/MobileFilterDrawer.vue'
 
 const { isMobile } = useBreakpoint()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 
@@ -490,7 +634,28 @@ const isAdmin = computed(() => {
 
 const accounts = ref<any[]>([])
 const channels = ref<any[]>([])
-const dateRange = ref<string[] | null>(null)
+
+/** 本地日期 → YYYY-MM-DD（不能用 toISOString：那是 UTC，东八区凌晨会退成前一天） */
+const toDateStr = (d: Date) => {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/** 本周起点按周一（国内习惯），周日归到本周最后一天 */
+const startOfWeek = (base: Date) => {
+  const d = new Date(base)
+  const offset = (d.getDay() + 6) % 7
+  d.setDate(d.getDate() - offset)
+  return d
+}
+
+const todayRange = (): [string, string] => {
+  const d = toDateStr(new Date())
+  return [d, d]
+}
+
+// 默认只看今天：sms_logs 千万级，默认拉 30 天窗口既慢又不是日常关注的范围
+const dateRange = ref<string[] | null>(todayRange())
 
 const searchForm = ref({
   phone_number: '',
@@ -527,6 +692,76 @@ const activeFilterCount = computed(() => {
   return n
 })
 
+// ---------------- 显示列 ----------------
+// 单一清单：表格列与导出列共用同一套 key 和顺序，"按显示列下载"才能严格一一对应。
+// key 必须与后端 /sms/records/export?columns= 的白名单一致。
+type ColumnDef = { key: string; label: string; labelEn: string; adminOnly?: boolean; default?: boolean }
+
+const ALL_COLUMNS: ColumnDef[] = [
+  { key: 'id', label: 'ID', labelEn: 'ID' },
+  { key: 'account_name', label: '客户名称', labelEn: 'Customer', adminOnly: true, default: true },
+  { key: 'account_id', label: '客户ID', labelEn: 'Customer ID', adminOnly: true },
+  { key: 'sales_name', label: '归属员工', labelEn: 'Owner', adminOnly: true },
+  { key: 'message_id', label: '消息ID', labelEn: 'Message ID', default: true },
+  { key: 'upstream_message_id', label: '上游消息ID', labelEn: 'Upstream ID' },
+  { key: 'batch_id', label: '任务ID', labelEn: 'Task ID' },
+  { key: 'phone_number', label: '手机号码', labelEn: 'Phone', default: true },
+  { key: 'country_code', label: '国家', labelEn: 'Country', default: true },
+  { key: 'channel_code', label: '通道', labelEn: 'Channel', default: true },
+  { key: 'sender_id', label: '发送ID(SID)', labelEn: 'Sender ID', default: true },
+  { key: 'message', label: '内容', labelEn: 'Content', default: true },
+  { key: 'message_count', label: '条数', labelEn: 'Parts' },
+  { key: 'status', label: '状态', labelEn: 'Status', default: true },
+  { key: 'status_code', label: '状态码', labelEn: 'Status code' },
+  { key: 'error_message', label: '错误信息', labelEn: 'Error', default: true },
+  { key: 'selling_price', label: '售价', labelEn: 'Price', default: true },
+  { key: 'cost_price', label: '成本价', labelEn: 'Cost', adminOnly: true, default: true },
+  { key: 'profit', label: '利润', labelEn: 'Profit', adminOnly: true },
+  { key: 'currency', label: '币种', labelEn: 'Currency' },
+  { key: 'submit_time', label: '提交时间', labelEn: 'Submitted', default: true },
+  { key: 'sent_time', label: '发送时间', labelEn: 'Sent' },
+  { key: 'delivery_time', label: '送达时间', labelEn: 'Delivered', default: true },
+  { key: 'refunded_at', label: '退款时间', labelEn: 'Refunded', adminOnly: true },
+]
+
+const availableColumns = computed(() => ALL_COLUMNS.filter(c => isAdmin.value || !c.adminOnly))
+const columnLabel = (c: ColumnDef) => (locale.value.startsWith('en') ? c.labelEn : c.label)
+const defaultColumnKeys = () => availableColumns.value.filter(c => c.default).map(c => c.key)
+
+const visibleColumns = ref<string[]>(defaultColumnKeys())
+const colVisible = (key: string) => visibleColumns.value.includes(key)
+
+const selectAllColumns = () => { visibleColumns.value = availableColumns.value.map(c => c.key) }
+const resetColumns = () => { visibleColumns.value = defaultColumnKeys() }
+
+// 列配置持久化（按账号隔离）。恢复时按清单过滤，避免旧配置里已下线的 key
+// 或越权列（客户端拿到管理员列）残留。
+const COLUMNS_STORAGE_KEY = `sms-records-columns:${localStorage.getItem('account_id') || 'anon'}`
+try {
+  const raw = localStorage.getItem(COLUMNS_STORAGE_KEY)
+  if (raw) {
+    const saved = JSON.parse(raw)
+    if (Array.isArray(saved)) {
+      const allowed = new Set(availableColumns.value.map(c => c.key))
+      const restored = saved.filter((k: any) => typeof k === 'string' && allowed.has(k))
+      if (restored.length) visibleColumns.value = restored
+    }
+  }
+} catch { /* 存储不可用/JSON 坏掉：用默认列 */ }
+
+watch(visibleColumns, (v) => {
+  try {
+    // 保持清单顺序，避免勾选先后打乱列序
+    const order = ALL_COLUMNS.map(c => c.key)
+    const sorted = [...v].sort((a, b) => order.indexOf(a) - order.indexOf(b))
+    if (sorted.join(',') !== v.join(',')) {
+      visibleColumns.value = sorted
+      return
+    }
+    localStorage.setItem(COLUMNS_STORAGE_KEY, JSON.stringify(sorted))
+  } catch { /* quota 等：忽略 */ }
+}, { deep: true })
+
 const statusCounts = computed(() => {
   const map: Record<string, number> = { sent: 0, delivered: 0, failed: 0, pending: 0, queued: 0, expired: 0 }
   records.value.forEach(r => { if (map[r.status] !== undefined) map[r.status]++ })
@@ -542,11 +777,14 @@ const statusOptions = computed(() => [
   { value: 'expired', label: t('smsStatus.expired') },
 ])
 
-const dateShortcuts = [
-  { text: '今天', value: () => { const d = new Date(); return [d, d] } },
-  { text: '近7天', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 6); return [s, e] } },
-  { text: '近30天', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 29); return [s, e] } },
-]
+const dateShortcuts = computed(() => [
+  { text: t('smsRecords.dateToday'), value: () => { const d = new Date(); return [d, d] } },
+  { text: t('smsRecords.dateYesterday'), value: () => { const d = new Date(); d.setDate(d.getDate() - 1); return [d, d] } },
+  { text: t('smsRecords.dateThisWeek'), value: () => [startOfWeek(new Date()), new Date()] },
+  { text: t('smsRecords.dateThisMonth'), value: () => { const s = new Date(); s.setDate(1); return [s, new Date()] } },
+  { text: t('smsRecords.dateLast7Days'), value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 6); return [s, e] } },
+  { text: t('smsRecords.dateLast30Days'), value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 29); return [s, e] } },
+])
 
 const truncate = (s: string | null, n: number) => {
   if (!s) return '-'
@@ -587,16 +825,9 @@ const tableRowClassName = ({ row }: { row: any }) => {
   return ''
 }
 
-const buildParams = () => {
-  const params: any = { page_size: pagination.value.pageSize }
-  // 有待消费游标 → 键集翻页；否则按 page 偏移(首屏/筛选重置 page=1)
-  if (pendingCursor) {
-    params.cursor_time = pendingCursor.time
-    params.cursor_id = pendingCursor.id
-    params.direction = pendingCursor.direction
-  } else {
-    params.page = pagination.value.page
-  }
+/** 仅筛选条件（不含分页/游标）：列表与导出共用，保证「下载的就是列表里筛出来的」 */
+const buildFilterParams = () => {
+  const params: any = {}
   if (searchForm.value.status) params.status = searchForm.value.status
   if (searchForm.value.phone_number) params.phone_number = searchForm.value.phone_number
   if (searchForm.value.message_id) params.message_id = searchForm.value.message_id
@@ -607,6 +838,19 @@ const buildParams = () => {
   if (dateRange.value && dateRange.value.length === 2) {
     params.start_date = dateRange.value[0]
     params.end_date = dateRange.value[1]
+  }
+  return params
+}
+
+const buildParams = () => {
+  const params: any = { page_size: pagination.value.pageSize, ...buildFilterParams() }
+  // 有待消费游标 → 键集翻页；否则按 page 偏移(首屏/筛选重置 page=1)
+  if (pendingCursor) {
+    params.cursor_time = pendingCursor.time
+    params.cursor_id = pendingCursor.id
+    params.direction = pendingCursor.direction
+  } else {
+    params.page = pagination.value.page
   }
   return params
 }
@@ -670,11 +914,96 @@ const goPrev = () => {
 
 const handleReset = () => {
   searchForm.value = { phone_number: '', message_id: '', status: '', account_id: null, channel_id: null, country_code: '', batch_id: null }
-  dateRange.value = null
+  dateRange.value = todayRange()
   if (route.query.batch_id) {
     router.replace({ query: { ...route.query, batch_id: undefined } })
   }
   handleSearch()
+}
+
+// ---------------- 下载（仅管理员） ----------------
+const exportVisible = ref(false)
+const exporting = ref(false)
+const exportForm = ref<{ fmt: string; limit: number; columnMode: string }>({
+  fmt: 'csv',
+  limit: 50000,
+  columnMode: 'visible',
+})
+
+/** 弹窗里回显本次下载覆盖的筛选，避免「以为导全部、其实只导了某天」 */
+const exportSummary = computed(() => {
+  const f = searchForm.value
+  const tags: string[] = []
+  tags.push(
+    dateRange.value && dateRange.value.length === 2
+      ? `${dateRange.value[0]} ~ ${dateRange.value[1]}`
+      : t('smsRecords.exportDefaultRange'),
+  )
+  if (f.account_id) {
+    const acc = accounts.value.find((a: any) => a.id === f.account_id)
+    tags.push(`${t('smsRecords.customerAccount')}: ${acc?.account_name || f.account_id}`)
+  }
+  if (f.status) tags.push(`${t('smsRecords.status')}: ${getStatusText(f.status)}`)
+  if (f.channel_id) {
+    const ch = channels.value.find((c: any) => c.id === f.channel_id)
+    tags.push(`${t('smsRecords.channel')}: ${ch?.channel_code ?? ch?.code ?? f.channel_id}`)
+  }
+  if (f.country_code) tags.push(`${t('smsRecords.country')}: ${countryDisplay(f.country_code)}`)
+  if (f.phone_number) tags.push(`${t('smsRecords.phoneNumber')}: ${f.phone_number}`)
+  if (f.message_id) tags.push(`${t('smsRecords.messageId')}: ${f.message_id}`)
+  if (f.batch_id) tags.push(`ID: ${f.batch_id}`)
+  return tags
+})
+
+const openExport = () => {
+  exportVisible.value = true
+}
+
+/** blob 响应下出错时，后端的 JSON detail 也在 blob 里，需读出来才能给出可读提示 */
+const readBlobError = async (e: any): Promise<string> => {
+  const data = e?.response?.data
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text())
+      return parsed?.detail || parsed?.error?.message || ''
+    } catch { /* 非 JSON：忽略 */ }
+  }
+  return data?.detail || ''
+}
+
+const doExport = async () => {
+  exporting.value = true
+  try {
+    const params: any = {
+      ...buildFilterParams(),
+      fmt: exportForm.value.fmt,
+      limit: exportForm.value.limit,
+    }
+    // 「按显示列」：把当前勾选的列（顺序即表格列序）交给后端，导出的表头与列表所见一致
+    if (exportForm.value.fmt === 'csv' && exportForm.value.columnMode === 'visible') {
+      params.columns = visibleColumns.value.join(',')
+    }
+    const blob = await exportSMSRecords(params)
+    // txt 无数据时 body 为空；csv 至少有表头，不做空判断
+    if (!blob || (exportForm.value.fmt === 'txt' && blob.size === 0)) {
+      ElMessage.warning(t('smsRecords.exportEmpty'))
+      return
+    }
+    const ts = toDateStr(new Date()).replace(/-/g, '') + '_' + new Date().toTimeString().slice(0, 8).replace(/:/g, '')
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = `sms_records_${ts}.${exportForm.value.fmt}`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(link.href)
+    ElMessage.success(t('smsRecords.exportStarted'))
+    exportVisible.value = false
+  } catch (e: any) {
+    ElMessage.error((await readBlobError(e)) || t('smsRecords.exportFailed'))
+  } finally {
+    exporting.value = false
+  }
 }
 
 const handleViewDetail = (row: any) => {
@@ -783,9 +1112,10 @@ const loadChannels = async () => {
 }
 
 // 持久化筛选条件（按账号 ID 隔离，避免共用浏览器时串号）
+// 日期范围刻意不持久化：进页面恒为「今日」，否则第二天打开还停在昨天那一天，
+// 会被误读成「今天没量」。
 useFilterPersist(`sms-records:${localStorage.getItem('account_id') || 'anon'}`, {
   searchForm,
-  dateRange,
 })
 
 onMounted(() => {
@@ -793,7 +1123,11 @@ onMounted(() => {
   const qBatchId = route.query.batch_id
   if (qBatchId) {
     const bid = Number(qBatchId)
-    if (Number.isFinite(bid) && bid > 0) searchForm.value.batch_id = bid
+    if (Number.isFinite(bid) && bid > 0) {
+      searchForm.value.batch_id = bid
+      // 按批次查逐条记录时放开日期：跨天的批次不能被「今日」默认挡掉
+      dateRange.value = null
+    }
   }
   loadAccounts()
   loadChannels()
@@ -1088,6 +1422,61 @@ onMounted(() => {
   font-size: 13px;
 }
 .pagination-wrapper.keyset .pg-size { width: 110px; }
+
+/* 列设置 */
+.action-btn .col-count {
+  font-size: 12px;
+  color: var(--text-quaternary);
+  font-variant-numeric: tabular-nums;
+}
+.col-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.col-panel-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.col-panel-ops { display: flex; gap: 12px; }
+.col-op {
+  font-size: 12px;
+  color: var(--primary);
+  cursor: pointer;
+}
+.col-op:hover { text-decoration: underline; }
+.col-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.col-list :deep(.el-checkbox) {
+  margin-right: 0;
+  height: 28px;
+}
+.col-list :deep(.el-checkbox__label) {
+  font-size: 13px;
+  padding-left: 6px;
+}
+
+/* 下载弹窗 */
+.export-body { display: flex; flex-direction: column; gap: 18px; }
+.export-row { display: flex; align-items: center; gap: 14px; }
+.export-row.export-scope { align-items: flex-start; }
+.export-label {
+  flex: 0 0 84px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+.export-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.export-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-quaternary);
+}
 
 /* 详情弹窗 */
 .detail-content { padding: 0 4px; }
