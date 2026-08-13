@@ -25,6 +25,7 @@
         />
         <el-select v-model="filters.business_type" :placeholder="$t('accountTemplates.allTypes')" clearable @change="onFilterChange">
           <el-option :label="$t('accountTemplates.sms')" value="sms" />
+          <el-option :label="$t('accountTemplates.rcs')" value="rcs" />
           <el-option :label="$t('accountTemplates.voice')" value="voice" />
           <el-option :label="$t('accountTemplates.data')" value="data" />
         </el-select>
@@ -80,7 +81,7 @@
         <!-- 短信：单独展示关联通道（与供应商群并存时也不互相遮挡） -->
         <el-table-column :label="$t('accountTemplates.linkedChannels')" min-width="200">
           <template #default="{ row }">
-            <div v-if="row.business_type === 'sms'" class="channel-tags-cell">
+            <div v-if="isChannelBoundBiz(row.business_type)" class="channel-tags-cell">
               <template v-if="normalizeChannelIds(row.channel_ids).length">
                 <el-tag
                   v-for="cid in normalizeChannelIds(row.channel_ids)"
@@ -191,6 +192,7 @@
             <el-form-item :label="$t('accountTemplates.businessType')" prop="business_type">
               <el-select v-model="form.business_type" :placeholder="$t('accountTemplates.selectBusinessType')" :disabled="isEdit">
                 <el-option :label="$t('accountTemplates.sms')" value="sms" />
+                <el-option :label="$t('accountTemplates.rcs')" value="rcs" />
                 <el-option :label="$t('accountTemplates.voice')" value="voice" />
                 <el-option :label="$t('accountTemplates.data')" value="data" />
               </el-select>
@@ -243,7 +245,7 @@
           </el-col>
         </el-row>
 
-        <el-form-item :label="$t('accountTemplates.linkedChannels')" v-if="form.business_type === 'sms'">
+        <el-form-item :label="$t('accountTemplates.linkedChannels')" v-if="isChannelBoundBiz(form.business_type)">
           <el-select v-model="form.channel_ids" multiple :placeholder="$t('accountTemplates.selectChannels')" style="width: 100%;">
             <el-option 
               v-for="ch in channels" 
@@ -254,7 +256,7 @@
           </el-select>
         </el-form-item>
 
-        <el-form-item :label="$t('accountTemplates.externalProductId')" v-if="form.business_type !== 'sms'">
+        <el-form-item :label="$t('accountTemplates.externalProductId')" v-if="!isChannelBoundBiz(form.business_type)">
           <el-input v-model="form.external_product_id" :placeholder="$t('accountTemplates.externalProductIdPlaceholder')" />
         </el-form-item>
 
@@ -369,9 +371,14 @@ const rules = computed(() => ({
   country_name: [{ required: true, message: t('accountTemplates.pleaseSelectCountry'), trigger: 'change' }]
 }))
 
+// 短信与 RCS 都靠 channel_ids 绑定通道（开户时据此把账户绑到对应通道），
+// 语音/数据走 external_product_id
+const isChannelBoundBiz = (type: string) => type === 'sms' || type === 'rcs'
+
 const getBusinessTypeLabel = (type: string) => {
   const map: Record<string, string> = {
     sms: t('accountTemplates.sms'),
+    rcs: t('accountTemplates.rcs'),
     voice: t('accountTemplates.voice'),
     data: t('accountTemplates.data')
   }
@@ -381,6 +388,7 @@ const getBusinessTypeLabel = (type: string) => {
 const getBusinessTypeColor = (type: string) => {
   const map: Record<string, string> = {
     sms: 'primary',
+    rcs: 'danger',
     voice: 'success',
     data: 'warning'
   }

@@ -52,6 +52,15 @@
           <div class="stat-label">{{ $t('channels.httpChannels') }}</div>
         </div>
       </div>
+      <div v-if="stats.rcs > 0" class="stat-card">
+        <div class="stat-icon rcs">
+          <el-icon><ChatDotSquare /></el-icon>
+        </div>
+        <div class="stat-info">
+          <div class="stat-value">{{ stats.rcs }}</div>
+          <div class="stat-label">RCS 通道</div>
+        </div>
+      </div>
     </div>
 
     <!-- 搜索筛选 -->
@@ -96,7 +105,7 @@
         </el-table-column>
         <el-table-column prop="protocol" :label="$t('channels.protocol')" min-width="70" align="center">
           <template #default="{ row }">
-            <el-tag :type="row.protocol === 'SMPP' ? '' : row.protocol === 'VIRTUAL' ? 'warning' : 'success'" size="small" effect="dark">
+            <el-tag :type="protocolTagType(row.protocol)" size="small" effect="dark">
               {{ row.protocol }}
             </el-tag>
           </template>
@@ -199,7 +208,7 @@
       <el-descriptions :column="2" border v-if="currentChannel">
         <el-descriptions-item :label="$t('channels.channelCode')">{{ currentChannel.code }}</el-descriptions-item>
         <el-descriptions-item :label="$t('channels.protocol')">
-          <el-tag :type="currentChannel.protocol === 'SMPP' ? 'primary' : currentChannel.protocol === 'VIRTUAL' ? 'warning' : 'success'" size="small">
+          <el-tag :type="protocolTagType(currentChannel.protocol)" size="small">
             {{ currentChannel.protocol }}
           </el-tag>
         </el-descriptions-item>
@@ -222,6 +231,12 @@
         </el-descriptions-item>
         <el-descriptions-item v-if="currentChannel.protocol === 'HTTP'" :label="$t('channels.apiAddress')" :span="2">
           {{ currentChannel.api_url || '-' }}
+        </el-descriptions-item>
+        <el-descriptions-item v-if="isRcsChannel(currentChannel)" label="RCS 接口地址" :span="2">
+          {{ currentChannel.api_url || '-' }}
+        </el-descriptions-item>
+        <el-descriptions-item v-if="isRcsChannel(currentChannel)" label="appKey">
+          {{ currentChannel.username || '-' }}
         </el-descriptions-item>
         <el-descriptions-item v-if="currentChannel.protocol === 'VIRTUAL'" label="虚拟通道" :span="2">
           <span style="color: #f59e0b">模拟回执（不实际发送）</span>
@@ -258,6 +273,19 @@
                 <el-option label="SMPP" value="SMPP" />
                 <el-option label="HTTP" value="HTTP" />
                 <el-option label="VIRTUAL (虚拟通道)" value="VIRTUAL" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+
+        <!-- 接口类型：RCS 走的就是 HTTP，不占协议枚举，靠上游厂商标记区分 -->
+        <el-row :gutter="24" v-if="form.protocol === 'HTTP'">
+          <el-col :span="12">
+            <el-form-item label="接口类型">
+              <el-select v-model="form.rcs_vendor" :disabled="isEdit" style="width: 100%">
+                <el-option label="通用 HTTP 短信" value="" />
+                <el-option label="RCS - 叮咚 BoltTel" value="bolttel" />
+                <el-option label="RCS - 节点 nodesms" value="node" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -315,6 +343,97 @@
           <el-form-item label="API Key" prop="api_key">
             <el-input v-model="form.api_key" type="password" show-password :placeholder="isEdit ? $t('channels.leaveEmptyNoChange') : $t('common.optional')" />
           </el-form-item>
+        </template>
+
+        <!-- RCS 富媒体短信配置（叮咚 BoltTel OpenAPI） -->
+        <template v-if="isRcsForm && form.rcs_vendor === 'bolttel'">
+          <el-divider content-position="left">RCS 供应商配置（叮咚 BoltTel）</el-divider>
+          <el-alert type="warning" :closable="false" style="margin-bottom: 18px" show-icon>
+            <div>上游硬限制：单条文案 ≤ <b>160 个字符</b>、<b>禁止 emoji</b>，违反会被整批拒绝（系统已在发送入口拦截）。</div>
+            <div>计费按「条」：一个号码一条，与文案长度无关。</div>
+          </el-alert>
+          <el-form-item label="接口地址" prop="api_url">
+            <el-input v-model="form.api_url" placeholder="https://生产域名/service/api（BASE，含 /service/api）" />
+          </el-form-item>
+          <el-row :gutter="24">
+            <el-col :span="12">
+              <el-form-item label="appKey" prop="username">
+                <el-input v-model="form.username" placeholder="平台下发的 appKey" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="appSecret" prop="password">
+                <el-input
+                  v-model="form.password"
+                  type="password"
+                  show-password
+                  :placeholder="isEdit ? $t('channels.leaveEmptyNoChange') : '平台下发的 appSecret'"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-row :gutter="24">
+            <el-col :span="12">
+              <el-form-item label="回执 secret">
+                <el-input
+                  v-model="form.rcs_webhook_secret"
+                  :placeholder="isEdit ? '留空表示不修改' : '平台「回执推送」里配置的 secret'"
+                />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="回执 URL">
+                <el-input :model-value="rcsWebhookUrl" readonly>
+                  <template #append>
+                    <el-button @click="copyRcsWebhookUrl">复制</el-button>
+                  </template>
+                </el-input>
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <div class="form-tip" style="margin-bottom: 18px">
+            在叮咚平台「API 接入 / 回执推送」填入上面的回执 URL 与同一个 secret，
+            订阅事件建议：DELIVERED,READED,UNDELIVERABLE,REJECTED,EXPIRED,SEND_FAILED,REPLY。
+            未配置 secret 时系统会拒收回执（无法验签即无法防伪造）。发件人 sendCode 用下方「默认 SID」。
+            另需在通道「国家」里配好目标国家，否则不参与路由。
+          </div>
+        </template>
+
+        <!-- RCS 群发配置（节点 nodesms，任务制） -->
+        <template v-if="isRcsForm && form.rcs_vendor === 'node'">
+          <el-divider content-position="left">RCS 供应商配置（节点 nodesms）</el-divider>
+          <el-alert type="warning" :closable="false" style="margin-bottom: 18px" show-icon>
+            <div><b>只支持批量发送</b>：上游是「号码文件 + 群发任务」模式，没有逐条接口，单条发送会被拒绝。</div>
+            <div><b>整批同文案</b>：上游一个任务只有一份文案，含模板变量的多文案批次无法用本通道。</div>
+            <div>无逐条回执：状态靠轮询任务，终态后下载结果文件回写，比叮咚慢。</div>
+          </el-alert>
+          <el-form-item label="接口地址" prop="api_url">
+            <el-input v-model="form.api_url" placeholder="留空则用默认 https://apip.nodesms.com" />
+          </el-form-item>
+          <el-row :gutter="24">
+            <el-col :span="12">
+              <el-form-item label="account" prop="username">
+                <el-input v-model="form.username" placeholder="平台下发的调用者账号" />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="secret" prop="password">
+                <el-input
+                  v-model="form.password"
+                  type="password"
+                  show-password
+                  :placeholder="isEdit ? $t('channels.leaveEmptyNoChange') : '平台下发的 secret（仅用于签名）'"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-form-item label="productId">
+            <el-input v-model="form.rcs_product_id" placeholder="平台分配的产品 ID，决定线路与单价（必填）" />
+          </el-form-item>
+          <div class="form-tip" style="margin-bottom: 18px">
+            号码会以 TXT 形式生成一个带高熵 token 的临时下载地址供上游拉取，48 小时过期、
+            任务终态后立即清空内容。另需在通道「国家」里配好目标国家，否则不参与路由。
+          </div>
         </template>
 
         <!-- VIRTUAL 虚拟通道配置 -->
@@ -996,6 +1115,17 @@ const supplierList = ref<any[]>([])
 const selectedSupplierId = ref<number | null>(null)
 const linkingSupplier = ref(false)
 
+const protocolTagType = (protocol: string) => {
+  if (protocol === 'SMPP') return 'primary'
+  if (protocol === 'VIRTUAL') return 'warning'
+  return 'success'
+}
+
+// RCS 不是独立协议：它走 HTTP，靠 config_json.rcs.vendor 标记上游厂商。
+// 后端 list/detail 接口返回的 gateway_config 里 vendor 不脱敏（只有密钥是 ******）。
+const isRcsChannel = (row: any) => !!row?.gateway_config?.rcs?.vendor
+const isRcsForm = computed(() => form.protocol === 'HTTP' && !!form.rcs_vendor)
+
 // 筛选
 const filters = reactive({ keyword: '', protocol: '', status: '' })
 const resetFilters = () => {
@@ -1020,8 +1150,9 @@ const stats = computed(() => {
   const active = channels.value.filter(c => c.connection_status === 'online').length
   const smpp = channels.value.filter(c => c.protocol === 'SMPP').length
   const http = channels.value.filter(c => c.protocol === 'HTTP').length
+  const rcs = channels.value.filter(c => isRcsChannel(c)).length
   const virtual_count = channels.value.filter(c => c.protocol === 'VIRTUAL').length
-  return { total, active, smpp, http, virtual_count }
+  return { total, active, smpp, http, rcs, virtual_count }
 })
 
 // 过滤后的通道
@@ -1155,8 +1286,31 @@ const form = reactive({
   banned_words: '',
   remark: '',
   dlr_sent_timeout_hours: null as number | null,
+  // RCS 上游厂商（空=通用 HTTP 短信通道）。写入 config_json.rcs.vendor，
+  // 是后端判别「这是不是 RCS 通道」的唯一依据。
+  rcs_vendor: '',
+  // 节点(nodesms)专用：产品 ID，决定线路与单价（存 config_json.rcs.product_id）
+  rcs_product_id: '',
+  // RCS 回执验签 secret（存 config_json.rcs.webhook_secret）。详情接口回读的是掩码 ******，
+  // 原样提交＝保持原值，由后端 _merge_gateway_config 识别。
+  rcs_webhook_secret: '',
   virtual_config: defaultVirtualConfig(),
 })
+
+// 叮咚平台「回执推送」里要填的 callbackUrl，按通道编码生成
+const rcsWebhookUrl = computed(() => {
+  const code = form.channel_code || '{通道编码}'
+  return `${window.location.origin}/api/v1/rcs/dlr/${code}`
+})
+
+const copyRcsWebhookUrl = async () => {
+  try {
+    await navigator.clipboard.writeText(rcsWebhookUrl.value)
+    ElMessage.success('回执 URL 已复制')
+  } catch {
+    ElMessage.warning('复制失败，请手动选中复制')
+  }
+}
 
 const rules = computed(() => ({
   channel_code: [{ required: true, message: t('channels.pleaseEnterChannelCode'), trigger: 'blur' }],
@@ -1250,6 +1404,9 @@ const handleCreate = () => {
     banned_words: '',
     remark: '',
     dlr_sent_timeout_hours: null,
+    rcs_vendor: '',
+    rcs_product_id: '',
+    rcs_webhook_secret: '',
     virtual_config: defaultVirtualConfig(),
   })
   formVisible.value = true
@@ -1281,6 +1438,9 @@ const handleEdit = async (row: any) => {
     dlr_sent_timeout_hours: null,
     max_inflight: null,
     gateway_config: {},
+    rcs_vendor: row.gateway_config?.rcs?.vendor ?? '',
+    rcs_product_id: row.gateway_config?.rcs?.product_id ?? '',
+    rcs_webhook_secret: '',
     virtual_config: row.virtual_config ? { ...defaultVirtualConfig(), ...row.virtual_config } : defaultVirtualConfig(),
   })
   gatewayConfigLoaded.value = false
@@ -1314,6 +1474,9 @@ const handleEdit = async (row: any) => {
         dlr_sent_timeout_hours: ch.dlr_sent_timeout_hours ?? null,
         gateway_config: ch.gateway_config && typeof ch.gateway_config === 'object' ? { ...ch.gateway_config } : {},
         max_inflight: ch.gateway_config?.max_inflight ?? null,
+        rcs_vendor: ch.gateway_config?.rcs?.vendor ?? '',
+        rcs_product_id: ch.gateway_config?.rcs?.product_id ?? '',
+        rcs_webhook_secret: ch.gateway_config?.rcs?.webhook_secret ?? '',
         virtual_config: ch.virtual_config ? { ...defaultVirtualConfig(), ...ch.virtual_config } : defaultVirtualConfig(),
       })
       gatewayConfigLoaded.value = true
@@ -1593,6 +1756,24 @@ const submitForm = async () => {
         }
         updatePayload.gateway_config = gw
       }
+      // RCS 回执 secret：合并进既有 config_json 整体回传。表单里若是详情接口回读的掩码
+      // ******，后端 _merge_gateway_config 会识别并保留库里的真密钥（不会被抹掉）。
+      if (isRcsForm.value) {
+        const gw: Record<string, any> = { ...(form.gateway_config || {}) }
+        const rcs: Record<string, any> = { ...(gw.rcs || {}) }
+        // vendor 是后端判别「这是不是 RCS 通道」的唯一依据，必须始终回传
+        rcs.vendor = form.rcs_vendor
+        if (form.rcs_vendor === 'node') {
+          rcs.product_id = form.rcs_product_id
+        }
+        if (form.rcs_webhook_secret) {
+          rcs.webhook_secret = form.rcs_webhook_secret
+        } else {
+          delete rcs.webhook_secret
+        }
+        gw.rcs = rcs
+        updatePayload.gateway_config = gw
+      }
       await updateChannel(form.id, updatePayload)
       ElMessage.success(t('common.updateSuccess'))
     } else {
@@ -1644,6 +1825,15 @@ const submitForm = async () => {
       }
       if (form.protocol === 'SMPP' && typeof form.max_inflight === 'number' && form.max_inflight > 0) {
         createPayload.gateway_config = { max_inflight: form.max_inflight }
+      }
+      if (isRcsForm.value) {
+        createPayload.gateway_config = {
+          rcs: {
+            vendor: form.rcs_vendor,
+            ...(form.rcs_vendor === 'node' ? { product_id: form.rcs_product_id } : {}),
+            ...(form.rcs_webhook_secret ? { webhook_secret: form.rcs_webhook_secret } : {}),
+          },
+        }
       }
       const created = await createChannel(createPayload)
 
@@ -1998,6 +2188,7 @@ onMounted(() => {
 .stat-icon.active { background: linear-gradient(135deg, rgba(103, 194, 58, 0.15), rgba(64, 158, 255, 0.05)); color: #67c23a; }
 .stat-icon.smpp { background: linear-gradient(135deg, rgba(64, 158, 255, 0.15), rgba(102, 126, 234, 0.05)); color: #409eff; }
 .stat-icon.http { background: linear-gradient(135deg, rgba(230, 162, 60, 0.15), rgba(245, 108, 108, 0.05)); color: #e6a23c; }
+.stat-icon.rcs { background: linear-gradient(135deg, rgba(245, 108, 108, 0.15), rgba(245, 108, 108, 0.05)); color: #f56c6c; }
 
 .stat-value {
   font-size: 28px;

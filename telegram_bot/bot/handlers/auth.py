@@ -3,7 +3,7 @@
 """
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
-from bot.utils import logger, send_and_log
+from bot.utils import logger, send_and_log, biz_label as _biz_label
 from bot.services.api_client import APIClient
 from bot.handlers.menu import (
     get_main_menu_customer, get_main_menu_sales, 
@@ -43,7 +43,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.user_data['user_type'] = 'customer'
 
                 business_type = extra_info.get('business_type', 'sms')
-                biz_label = {'sms': '短信', 'voice': '语音', 'data': '数据'}.get(business_type, business_type)
+                biz_label = _biz_label(business_type)
                 tpl_name = extra_info.get('template_name', '')
                 login_account = extra_info.get('login_account', account["account_name"])
                 login_password = extra_info.get('login_password', '')

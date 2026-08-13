@@ -538,11 +538,12 @@ export async function getRechargeLogs(params?: {
   return request.get('/admin/recharge-logs', { params });
 }
 
-// 发送统计查询（支持多维度分组：客户/通道/国家）
+// 发送统计查询（支持多维度分组：客户/通道/供应商/国家/员工）
 export async function getSendStatistics(params?: {
   account_id?: number
   sales_id?: number
   channel_id?: number
+  supplier_id?: number
   country_code?: string
   group_by?: string
   start_date?: string
@@ -558,6 +559,7 @@ export async function getAdminDailyStats(params?: {
   end_date?: string
   account_id?: number
   channel_id?: number
+  supplier_id?: number
   country_code?: string
   sales_id?: number
 }): Promise<any> {

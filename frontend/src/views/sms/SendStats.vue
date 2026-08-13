@@ -335,6 +335,13 @@
           </div>
 
           <div class="filter-group">
+            <label class="filter-label">{{ $t('sendStats.supplier') }}</label>
+            <el-select v-model="filters.supplier_id" :placeholder="$t('sendStats.allSuppliers')" clearable filterable style="width: 160px" @change="scheduleLoadAll">
+              <el-option v-for="s in supplierOptions" :key="s.id" :label="s.name" :value="s.id" />
+            </el-select>
+          </div>
+
+          <div class="filter-group">
             <label class="filter-label">{{ $t('sendStats.country') }}</label>
             <el-select v-model="filters.country_code" placeholder="" clearable filterable style="width: 140px" @change="scheduleLoadAll">
               <el-option :label="$t('sendStats.allCountries')" :value="undefined" />
@@ -429,6 +436,10 @@
                   <span class="name-text">{{ row.channel_name || '-' }}</span>
                   <span class="sub-id" v-if="row.channel_code">{{ row.channel_code }}</span>
                 </template>
+                <template v-else-if="filters.group_by === 'supplier'">
+                  <span class="name-text">{{ row.supplier_name || '-' }}</span>
+                  <span class="sub-id" v-if="row.supplier_code">{{ row.supplier_code }}</span>
+                </template>
                 <template v-else-if="filters.group_by === 'sales'">
                   <span class="name-text">{{ row.sales_name || $t('sendStats.unassigned') }}</span>
                   <span class="sub-id" v-if="row.sales_id">ID: {{ row.sales_id }}</span>
@@ -505,7 +516,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  Refresh, Download, User, Connection, Location, Avatar,
+  Refresh, Download, User, Connection, Location, Avatar, OfficeBuilding,
   PieChart, TrendCharts, List, Money, Wallet, Checked, ChatDotRound,
   CircleCheck, CircleClose, Clock, Warning
 } from '@element-plus/icons-vue'
@@ -571,6 +582,7 @@ const filters = reactive({
   account_id: undefined as number | undefined,
   sales_id: undefined as number | undefined,
   channel_id: undefined as number | undefined,
+  supplier_id: undefined as number | undefined,
   country_code: undefined as string | undefined,
   group_by: defaultGroupBy,
 })
@@ -578,6 +590,7 @@ const filters = reactive({
 const dimOptions = computed(() => [
   { label: t('sendStats.dimAccount'), value: 'account', icon: User },
   { label: t('sendStats.dimChannel'), value: 'channel', icon: Connection },
+  { label: t('sendStats.dimSupplier'), value: 'supplier', icon: OfficeBuilding },
   { label: t('sendStats.dimCountry'), value: 'country', icon: Location },
   { label: t('sendStats.dimSales'), value: 'sales', icon: Avatar },
 ])
@@ -586,10 +599,23 @@ const dimLabel = computed(() => {
   const map: Record<string, string> = {
     account: t('sendStats.customer'),
     channel: t('sendStats.channel'),
+    supplier: t('sendStats.supplier'),
     country: t('sendStats.country'),
     sales: t('sendStats.staff'),
   }
   return map[filters.group_by] || t('sendStats.customer')
+})
+
+// 供应商下拉只列真正挂了通道的供应商，与统计维度同源（后端按同一映射归约）
+const supplierOptions = computed(() => {
+  const seen = new Map<number, string>()
+  for (const c of channelOptions.value) {
+    const s = c?.supplier
+    if (s?.id && !seen.has(s.id)) seen.set(s.id, s.supplier_name || `#${s.id}`)
+  }
+  return [...seen.entries()]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
 })
 
 const fmt5 = (v: any) => (Number(v) || 0).toFixed(5)
@@ -924,6 +950,7 @@ const getFilterParams = () => {
   if (filters.account_id) p.account_id = filters.account_id
   if (filters.sales_id) p.sales_id = filters.sales_id
   if (filters.channel_id) p.channel_id = filters.channel_id
+  if (filters.supplier_id) p.supplier_id = filters.supplier_id
   if (filters.country_code) p.country_code = filters.country_code
   return p
 }

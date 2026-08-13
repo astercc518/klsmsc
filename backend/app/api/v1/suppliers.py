@@ -256,7 +256,7 @@ async def get_suppliers_by_business_type(
         )
 
     result = {}
-    for biz in ["sms", "voice", "data"]:
+    for biz in ["sms", "rcs", "voice", "data"]:
         # 1. 该业务类型下有报价的供应商
         subq = (
             select(SupplierRate.supplier_id)
@@ -361,8 +361,8 @@ async def remove_supplier_from_business(
     将供应商从指定业务中移除（停用该供应商在此业务下的所有报价）。
     用于纠正误归类的供应商，如一正通信本属短信业务但误有数据业务报价。
     """
-    if business_type not in ("sms", "voice", "data"):
-        raise HTTPException(status_code=400, detail="business_type 必须为 sms/voice/data 之一")
+    if business_type not in ("sms", "rcs", "voice", "data"):
+        raise HTTPException(status_code=400, detail="business_type 必须为 sms/rcs/voice/data 之一")
     # 校验供应商存在
     r = await db.execute(select(Supplier).where(Supplier.id == supplier_id, Supplier.is_deleted == False))
     if not r.scalar_one_or_none():

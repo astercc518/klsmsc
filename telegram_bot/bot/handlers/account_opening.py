@@ -30,7 +30,7 @@ from bot.utils import get_group_ids
 
 # COUNTRY_NAMES 统一从 bot.utils 引入（此前本地副本不全，缺 ZM 赞比亚等）
 
-BIZ_LABELS = {"voice": "📞 语音", "data": "📊 数据", "sms": "📱 短信"}
+from bot.utils import BIZ_ICON_NAMES as BIZ_LABELS  # 单一数据源见 bot/utils.py
 
 
 def _gen_ticket_no() -> str:

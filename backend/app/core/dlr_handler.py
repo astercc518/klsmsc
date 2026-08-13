@@ -12,7 +12,7 @@ DLR (Delivery Report) 统一处理模块
 """
 import re
 from datetime import datetime
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Set, Tuple, Any
 from enum import Enum
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -329,7 +329,7 @@ async def process_dlr_reports(
     db: AsyncSession,
     source: str = "unknown",
     channel_id: Optional[int] = None,
-) -> Tuple[int, int]:
+) -> Tuple[int, int, Set[int]]:
     """
     处理 DLR 报告列表
     

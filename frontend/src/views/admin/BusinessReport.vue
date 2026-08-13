@@ -162,8 +162,8 @@
         
         <el-table-column :label="$t('reports.businessType')" width="110">
           <template #default="{ row }">
-            <el-tag :type="row.business_type === 'sms' ? 'primary' : 'warning'" effect="light" size="small">
-              {{ row.business_type.toUpperCase() }}
+            <el-tag :type="bizTagType(row.business_type)" effect="light" size="small">
+              {{ (row.business_type || '').toUpperCase() }}
             </el-tag>
           </template>
         </el-table-column>
@@ -221,7 +221,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { 
   Refresh, Download, Search, User, UserFilled, Shop, Connection, Location, 
-  PieChart, TrendCharts, List, Money, Wallet, Checked, ChatDotRound, Coin, Grid
+  PieChart, TrendCharts, List, Money, Wallet, Checked, ChatDotRound, ChatDotSquare, Coin, Grid
 } from '@element-plus/icons-vue'
 const ProfitIcon = TrendCharts
 import { getBusinessReport } from '@/api/reports'
@@ -257,6 +257,7 @@ const dimensionOptions = computed(() => [
 const typeOptions = computed(() => [
   { label: t('common.all'), value: 'all', icon: PieChart },
   { label: 'SMS', value: 'sms', icon: ChatDotRound },
+  { label: 'RCS', value: 'rcs', icon: ChatDotSquare },
   { label: 'Data', value: 'data', icon: Coin }
 ])
 
@@ -269,6 +270,10 @@ const handleTypeChange = (val: string) => {
   filterForm.value.businessType = val
   fetchData()
 }
+
+// 业务类型标签配色：sms / rcs / data 三态（RCS 从 sms 桶拆出后需与短信区分）
+const bizTagType = (bt: string) =>
+  ({ sms: 'primary', rcs: 'success', data: 'warning' } as Record<string, string>)[bt] || 'info'
 
 const dimLabel = computed(() => {
   const map: any = {

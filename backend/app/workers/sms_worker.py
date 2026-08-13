@@ -551,6 +551,18 @@ async def _send_sms_async(message_id: str, http_credentials: dict = None, *, _cu
             # 根据通道协议发送
             if channel.protocol == 'VIRTUAL':
                 success = await _send_via_virtual(sms_log, channel)
+            elif channel.protocol == 'HTTP' and channel.is_rcs():
+                # RCS 也是 HTTP 协议，只是上游接口不同（config_json.rcs.vendor 标记），
+                # 必须排在通用 HTTP 分支之前
+                rcs_result = await _send_via_rcs(sms_log, channel)
+                if rcs_result == "_retry":
+                    # 上游限流/超时/5xx：回退 queued 等待重投。clientRef=message_id，
+                    # 上游按 clientRef 幂等，重投不会重复扣费也不会双发。
+                    sms_log.status = 'queued'
+                    await db.commit()
+                    await db.close()
+                    return {"_rate_limited": True, "_wait_sec": 10}
+                success = bool(rcs_result)
             elif channel.protocol == 'HTTP':
                 http_result = await _send_via_http(sms_log, channel, http_credentials)
                 if http_result == "_retry":
@@ -827,6 +839,37 @@ async def _send_via_http(sms_log: SMSLog, channel: Channel, http_credentials: di
         logger.error(f"HTTP发送异常: {sms_log.message_id}, {str(e)}", exc_info=e)
         sms_log.error_message = f"发送异常: {str(e)[:100]}"
         return False
+
+
+async def _send_via_rcs(sms_log: SMSLog, channel: Channel):
+    """
+    通过 RCS 通道发送（叮咚 BoltTel OpenAPI）。
+
+    与 _send_via_http 相同的三态返回：
+        True      — 上游已受理（upstream_message_id 已写入，等待 Webhook 回执）
+        False     — 永久失败（error_message 已设置）
+        "_retry"  — 可重试（限流/超时/5xx）；clientRef=message_id，上游幂等不会双发
+    """
+    from app.workers.adapters.rcs_adapter import RCSConfigError, get_rcs_adapter
+
+    logger.info(f"通过 RCS 发送: {sms_log.message_id} via {channel.channel_code}")
+
+    try:
+        adapter = get_rcs_adapter(channel)
+    except RCSConfigError as e:
+        # vendor 未实现/配置缺失：重投也不会好，直接判永久失败
+        logger.error(str(e))
+        sms_log.error_message = "RCS 通道未配置完整，请联系客服"
+        return False
+    result = await adapter.send_one(sms_log)
+
+    if result.success:
+        if result.upstream_message_id:
+            sms_log.upstream_message_id = result.upstream_message_id
+        return True
+
+    sms_log.error_message = result.error or "RCS 发送失败"
+    return "_retry" if result.retryable else False
 
 
 async def _mark_failed(message_id: str, error_message: str):
@@ -1527,7 +1570,9 @@ async def _fetch_dlr_reports_async():
 
                         if reports:
                             logger.info(f"[{channel.channel_code}] 解析到 {len(reports)} 条 DLR 报告")
-                            success, fail = await process_dlr_reports(
+                            # 三元组返回（第三项为受影响批次，进度已在函数内部同步）；
+                            # 按两元组解包会 ValueError，被外层 except 吞成「拉取失败」。
+                            success, fail, _affected = await process_dlr_reports(
                                 reports,
                                 db,
                                 source=f"pull-{channel.channel_code}",

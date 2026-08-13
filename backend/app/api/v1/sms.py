@@ -47,29 +47,46 @@ from app.modules.common.account_template import AccountTemplate
 logger = get_logger(__name__)
 
 
-async def _mark_private_library_used(db, account_id: int, phone_numbers: list) -> None:
+async def _mark_private_library_used(
+    db, account_id: int, phone_numbers: list, batch_id: Optional[str] = None
+) -> None:
     """私库号码标记为已使用 (use_count+=1 + last_used_at=now)。
 
     调用时机：batch 创建并成功入队/发送之后、commit 之前。
     不在前置 SELECT 之后立刻标记，是为了避免 INSUFFICIENT_BALANCE 等失败路径下
     `get_db()` 自动 commit 把脏数据写入（参见 5/13 客户 TG19880V01 事故）。
+
+    batch_id：本次发送选定的数据包。数据包之间彼此独立——同一号码在 A、B 两个包
+    各存一份时，发 A 包只标 A 包那份，B 包仍是未使用。未指定（全库发送）时
+    才按号码标记账户下全部数据包。
     """
     if not phone_numbers:
         return
     from datetime import datetime as _dt
     from app.modules.data.models import DataNumber, PrivateLibraryNumber
+    from app.api.v1.data.customer import _sql_dim_ci_trim_eq
 
     now = _dt.now()
+    _bid = str(batch_id).strip() if batch_id is not None else ""
     BATCH_SZ = 2000
     for ci in range(0, len(phone_numbers), BATCH_SZ):
         chunk = phone_numbers[ci:ci + BATCH_SZ]
+        _pln_where = [
+            PrivateLibraryNumber.account_id == account_id,
+            PrivateLibraryNumber.phone_number.in_(chunk),
+            PrivateLibraryNumber.is_deleted == False,  # noqa: E712
+        ]
+        _dn_where = [
+            DataNumber.account_id == account_id,
+            DataNumber.phone_number.in_(chunk),
+        ]
+        if _bid:
+            # 取号时就是按这个 batch_id 过滤的，标记时用同一条件不会漏标
+            _pln_where.append(_sql_dim_ci_trim_eq(PrivateLibraryNumber.batch_id, _bid))
+            _dn_where.append(_sql_dim_ci_trim_eq(DataNumber.batch_id, _bid))
         await db.execute(
             update(PrivateLibraryNumber)
-            .where(
-                PrivateLibraryNumber.account_id == account_id,
-                PrivateLibraryNumber.phone_number.in_(chunk),
-                PrivateLibraryNumber.is_deleted == False,  # noqa: E712
-            )
+            .where(*_pln_where)
             .values(
                 use_count=PrivateLibraryNumber.use_count + 1,
                 last_used_at=now,
@@ -77,10 +94,7 @@ async def _mark_private_library_used(db, account_id: int, phone_numbers: list) -
         )
         await db.execute(
             update(DataNumber)
-            .where(
-                DataNumber.account_id == account_id,
-                DataNumber.phone_number.in_(chunk),
-            )
+            .where(*_dn_where)
             .values(
                 use_count=DataNumber.use_count + 1,
                 last_used_at=now,
@@ -98,6 +112,7 @@ async def _mark_private_library_used(db, account_id: int, phone_numbers: list) -
         _celery_pls.send_task(
             "private_library_sync_used",
             args=[account_id, list(phone_numbers)],
+            kwargs={"batch_id": _bid or None},
             queue="data_tasks",
         )
     except Exception as e:
@@ -373,6 +388,30 @@ async def submit_sms_core(
 
         logger.info(f"选择通道: {channel.channel_code}")
 
+        # 3.2 RCS 通道：文案须满足上游硬限制（≤160 Unicode 字符、禁 emoji），
+        #     否则上游是「整批拒绝」，必须在提交入口就拦下来而不是发出去再失败。
+        if channel.is_rcs():
+            # 节点(nodesms)只有「号码文件 + 群发任务」模式，没有逐条提交接口。
+            # 在入口就回绝，否则要走到适配器才抛错，客户拿到的是含糊的失败。
+            if channel.rcs_vendor() == "node":
+                logger.warning(
+                    f"节点 RCS 通道被用于单条发送: {channel.channel_code} account={account.id}"
+                )
+                return SMSSendResponse(
+                    success=False,
+                    error={
+                        "code": "CHANNEL_BATCH_ONLY",
+                        "message": "该 RCS 通道仅支持批量发送，请改用批量接口",
+                    },
+                )
+            from app.utils.rcs_content import validate_rcs_content
+            _rcs_ok, _rcs_code, _rcs_msg = validate_rcs_content(final_message)
+            if not _rcs_ok:
+                return SMSSendResponse(
+                    success=False,
+                    error={"code": _rcs_code, "message": _rcs_msg},
+                )
+
         # 4. 解析发送方ID(SID)：白名单校验——客户自选的 SID 必须是该通道+目的国家已审批(active)的。
         #    未指定则取该国家默认SID；无国家级配置则留空(resolved_sid=None)，由 worker 回退 channel.default_sender_id。
         from app.utils.sender_id_resolver import resolve_sender_id
@@ -390,6 +429,8 @@ async def submit_sms_core(
             channel_id=channel.id,
             country_code=country_code,
             message=final_message,
+            # 已选定通道，直接传入：省一次查库，且让 RCS「按条计费」口径立即生效
+            channel=channel,
             # 入站 SMPP：跳过锁窗口内的"二次查余额+逐条BalanceLog+flush",仅做原子扣减，
             # 计费流水改到 commit 后补写，缩短账户余额行锁持有时间、提升入站吞吐。
             skip_balance_log=defer_balance_log,
@@ -871,6 +912,13 @@ async def send_batch_sms(
         res = await db.execute(select(u.c.phone_number).distinct().limit(limit))
         db_nums = [r[0] for r in res.all()]
 
+        # 本次实际取号所用的数据包。数据包彼此独立，标记已用时要限定在这个包内，
+        # 否则会把其它包里的同号一并标掉。走下面的兜底路径时置空（那时取到的号
+        # 不一定属于该包，再按 batch_id 过滤就会漏标）。
+        _private_library_batch_id: Optional[str] = None
+        if f.get("batch_id") is not None:
+            _private_library_batch_id = str(f["batch_id"]).strip() or None
+
         # 兜底：batch_id 过滤后为空（汇总表与明细不一致时），去掉 batch_id 再查一次
         if not db_nums and f.get("batch_id"):
             logger.warning(
@@ -880,6 +928,7 @@ async def send_batch_sms(
             u2 = _build_union(include_batch=False)
             res2 = await db.execute(select(u2.c.phone_number).distinct().limit(limit))
             db_nums = [r[0] for r in res2.all()]
+            _private_library_batch_id = None
         # 仅把私库号码并入 request.phone_numbers，**不立即**写 use_count。
         # 必须等余额预检通过、batch 创建成功后再标已用——否则 INSUFFICIENT_BALANCE
         # return 时 get_db() 仍会自动 commit，造成「数据被消耗但任务未生成」的脏数据
@@ -891,6 +940,7 @@ async def send_batch_sms(
             request.phone_numbers.extend(_private_library_db_nums)
     else:
         _private_library_db_nums = []
+        _private_library_batch_id = None
 
     if not request.phone_numbers or len(request.phone_numbers) == 0:
         _empty_err = None
@@ -1043,7 +1093,7 @@ async def send_batch_sms(
                 "channel_id": request.channel_id,
             }
             # 私库取号成功 → 标记 use_count（与 batch 入同一事务，失败一起回滚）
-            await _mark_private_library_used(db, account.id, _private_library_db_nums)
+            await _mark_private_library_used(db, account.id, _private_library_db_nums, _private_library_batch_id)
             await db.commit()
             logger.info(f"定时发送已登记: batch_id={batch_pk}, total={total_numbers}, scheduled_at={_scheduled_at}")
             return BatchSMSResponse(
@@ -1075,7 +1125,7 @@ async def send_batch_sms(
         chunk_count = await asyncio.to_thread(_enqueue_all_batch_chunks)
         sms_batch.send_config = {"chunks": chunk_count, "chunk_size": CHUNK_SIZE, "async": True}
         # 私库取号成功 → 标记 use_count（与 batch 入同一事务，失败一起回滚）
-        await _mark_private_library_used(db, account.id, _private_library_db_nums)
+        await _mark_private_library_used(db, account.id, _private_library_db_nums, _private_library_batch_id)
         await db.commit()
         logger.info(f"批量发送已进入后台加速处理: batch_id={batch_pk}, total={total_numbers}, chunks={chunk_count}")
         return BatchSMSResponse(
@@ -1192,10 +1242,21 @@ async def send_batch_sms(
                                 "message_id": None, "error": {"code": "CONTENT_BLOCKED", "message": f"内容包含违禁词: {_c_hit}"}})
                 continue
 
+            # RCS 通道文案硬限制（≤160 字符、禁 emoji）：上游整批拒绝，须在扣费前拦下
+            if channel.is_rcs():
+                from app.utils.rcs_content import validate_rcs_content
+                _rcs_ok, _rcs_code, _rcs_msg = validate_rcs_content(final_message)
+                if not _rcs_ok:
+                    failed += 1
+                    results.append({"phone_number": phone_number, "success": False,
+                                    "message_id": None, "error": {"code": _rcs_code, "message": _rcs_msg}})
+                    continue
+
             pricing_engine = PricingEngine(db)
             charge_result = await pricing_engine.calculate_and_charge(
                 account_id=account.id, channel_id=channel.id,
                 country_code=country_code, message=final_message,
+                channel=channel,
             )
             if not charge_result['success']:
                 failed += 1
@@ -1328,7 +1389,7 @@ async def send_batch_sms(
             sms_batch.completed_at = None
 
     # 私库取号成功 → 标记 use_count（与 batch 入同一事务，失败一起回滚）
-    await _mark_private_library_used(db, account.id, _private_library_db_nums)
+    await _mark_private_library_used(db, account.id, _private_library_db_nums, _private_library_batch_id)
 
     await db.commit()
 
@@ -1779,12 +1840,20 @@ async def execute_approved_sms(
         )
         raise HTTPException(status_code=400, detail=f"内容包含违禁词: {_bw_hit}")
 
+    # RCS 通道文案硬限制（≤160 字符、禁 emoji）：上游整批拒绝，须在扣费前拦下
+    if channel.is_rcs():
+        from app.utils.rcs_content import validate_rcs_content
+        _rcs_ok, _rcs_code, _rcs_msg = validate_rcs_content(final_message)
+        if not _rcs_ok:
+            raise HTTPException(status_code=400, detail=_rcs_msg)
+
     pricing_engine = PricingEngine(db)
     charge_result = await pricing_engine.calculate_and_charge(
         account_id=account.id,
         channel_id=channel.id,
         country_code=phone_info["country_code"],
-        message=final_message
+        message=final_message,
+        channel=channel,
     )
     if not charge_result["success"]:
         raise HTTPException(status_code=400, detail=charge_result.get("error", "计费失败"))
@@ -2653,7 +2722,9 @@ async def dlr_callback_get(
             logger.warning(f"DLR GET 无法解析报告（缺少已知消息 ID 字段）: {query_string[:500]}")
             return {"status": 0, "message": "missing message_id"}
 
-        success, fail = await process_dlr_reports(
+        # process_dlr_reports 返回三元组（批次进度已在其内部同步），此处按两元组解包会
+        # 直接 ValueError —— 整条 GET 回执路径静默 500，上游会当失败重推。
+        success, fail, _affected = await process_dlr_reports(
             reports, db, source="push-get", channel_id=None
         )
 

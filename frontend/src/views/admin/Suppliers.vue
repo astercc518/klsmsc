@@ -271,6 +271,7 @@
             <el-form-item :label="$t('suppliers.businessType')" prop="business_type">
               <el-select v-model="form.business_type" style="width: 100%" :placeholder="$t('suppliers.pleaseSelectBusinessType')">
                 <el-option :label="$t('suppliers.smsBusiness')" value="sms" />
+                <el-option :label="$t('suppliers.rcsBusiness')" value="rcs" />
                 <el-option :label="$t('suppliers.voiceBusiness')" value="voice" />
                 <el-option :label="$t('suppliers.dataBusiness')" value="data" />
               </el-select>
@@ -433,6 +434,9 @@
           <el-radio-group v-model="rateForm.business_type" @change="onBusinessTypeChange">
             <el-radio-button value="sms">
               <el-icon><Message /></el-icon> {{ $t('suppliers.sms') }}
+            </el-radio-button>
+            <el-radio-button value="rcs">
+              <el-icon><Message /></el-icon> {{ $t('suppliers.rcs') }}
             </el-radio-button>
             <el-radio-button value="voice">
               <el-icon><Phone /></el-icon> {{ $t('suppliers.voice') }}
@@ -653,6 +657,7 @@ const { t } = useI18n()
 const getBusinessTypeLabel = (type: string) => {
   const map: Record<string, string> = {
     sms: t('suppliers.sms'),
+    rcs: t('suppliers.rcs'),
     voice: t('suppliers.voice'),
     data: t('suppliers.data')
   }
@@ -749,7 +754,7 @@ const form = reactive({
   supplier_name: '',
   supplier_group: '',
   telegram_group_id: '',
-  business_type: 'sms' as 'sms' | 'voice' | 'data',
+  business_type: 'sms' as 'sms' | 'rcs' | 'voice' | 'data',
   cost_currency: 'USD',
   status: 'active',
   notes: ''
@@ -818,7 +823,7 @@ const editSupplier = (row: Supplier) => {
     supplier_name: row.supplier_name,
     supplier_group: row.supplier_group || '',
     telegram_group_id: row.telegram_group_id || '',
-    business_type: (row.business_type || 'sms') as 'sms' | 'voice' | 'data',
+    business_type: (row.business_type || 'sms') as 'sms' | 'rcs' | 'voice' | 'data',
     cost_currency: row.cost_currency || 'USD',
     status: row.status,
     notes: row.notes || ''
@@ -935,6 +940,11 @@ const smsResourceTypes = computed(() => [
   { value: 'rcs', label: t('suppliers.smsRcs') },
 ])
 
+const rcsResourceTypes = computed(() => [
+  { value: 'rcs', label: t('suppliers.smsRcs') },
+  { value: 'direct', label: t('suppliers.smsDirect') },
+])
+
 const voiceResourceTypes = computed(() => [
   { value: 'card', label: t('suppliers.voiceCard') },
   { value: 'direct', label: t('suppliers.voiceDirect') },
@@ -983,6 +993,8 @@ const businessScopeOptions = computed(() => [
 // 根据业务类型获取资源类型选项
 const getResourceTypeOptions = (businessType: string) => {
   switch (businessType) {
+    case 'rcs':
+      return rcsResourceTypes.value
     case 'voice':
       return voiceResourceTypes.value
     case 'data':
@@ -1352,7 +1364,7 @@ const parseCSV = (content: string): BatchRateRow[] => {
       if (cols.length >= 4 && cols[1] && parseFloat(cols[3]) > 0) {
         const businessType = cols[0].toLowerCase()
         rates.push({
-          business_type: ['sms', 'voice', 'data'].includes(businessType) ? businessType : 'sms',
+          business_type: ['sms', 'rcs', 'voice', 'data'].includes(businessType) ? businessType : 'sms',
           country_code: cols[1].toUpperCase(),
           resource_type: cols[2] || 'otp',
           business_scope: 'otp',

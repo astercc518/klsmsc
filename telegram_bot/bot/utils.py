@@ -81,6 +81,31 @@ COUNTRY_NAMES: dict[str, str] = {
 }
 
 
+# 业务类型中文名 —— 单一数据源。新增业务只改这里，别再在各 handler 里散落字面量字典
+# （COUNTRY_NAMES 当初就是散落副本不全才踩过坑）。
+BIZ_NAMES: dict[str, str] = {
+    "sms": "短信",
+    "rcs": "RCS",
+    "voice": "语音",
+    "data": "数据",
+}
+
+# 带 emoji 的展示名（按钮/标题用）
+BIZ_ICON_NAMES: dict[str, str] = {
+    "sms": "📱 短信",
+    "rcs": "💬 RCS",
+    "voice": "📞 语音",
+    "data": "📊 数据",
+}
+
+
+def biz_label(biz_type: str, with_icon: bool = False) -> str:
+    """业务类型 → 中文名；无映射时回退原值。"""
+    key = str(biz_type or "").lower()
+    table = BIZ_ICON_NAMES if with_icon else BIZ_NAMES
+    return table.get(key, biz_type)
+
+
 def country_label(code: str) -> str:
     """ISO2 代码 → 中文名；无映射时回退原代码。'*' 表示全球。"""
     if not code:
