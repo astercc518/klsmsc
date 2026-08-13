@@ -52,6 +52,15 @@ export const getSMSRecords = (params?: any) => {
   return request.get('/sms/records', { params })
 }
 
+// 导出发送记录（管理员）：fmt=csv 明细 / txt 号码；服务端流式返回，大导出耗时长故单独放宽超时
+export const exportSMSRecords = (params: any) => {
+  return request.get('/sms/records/export', {
+    params,
+    responseType: 'blob',
+    timeout: 600000,
+  }) as unknown as Promise<Blob>
+}
+
 // ========== 短信审核（与 Bot 同步） ==========
 
 // 提交短信审核（仅需文案；可选号码）
