@@ -23,21 +23,80 @@ import httpx
 MERCHANT_BY_DOMAIN = {
     "in1.fun": "jilievof2",
     "rztk6mpvx.com": "8kbdtf4",  # 孟加拉博彩,注册开 GeeTest v4(走 CapSolver);affiliateCode 在子域/query
+    # 墨西哥西语博彩(7aa.mx),注册只要 username+password,mobileNum 选填10位。
+    # 真站同时挂 5 个马甲域轮换(见落地页 redirectDomains),另加 7aa88.vip 中间营销落地域——
+    # 短信短链先落中间页,再由页面跳真站,故两类域都要登记(否则路由不走直连 API)。
+    "7aamx.cc": "7aamxns1",
+    "7aamx.vip": "7aamxns1",
+    "7aamx.xyz": "7aamxns1",
+    "7aamx.me": "7aamxns1",
+    "7aamx.shop": "7aamxns1",
+    "7aa88.vip": "7aamxns1",
 }
 DEFAULT_MERCHANT = "jilievof2"
+
+# 主域 → 拟人语料/号码地区(账号密码词库与 mobileNum 本地化规则)。默认 bd(存量站)。
+LOCALE_BY_DOMAIN = {
+    "in1.fun": "bd",
+    "rztk6mpvx.com": "bd",
+    "7aamx.cc": "mx",
+    "7aamx.vip": "mx",
+    "7aamx.xyz": "mx",
+    "7aamx.me": "mx",
+    "7aamx.shop": "mx",
+    "7aa88.vip": "mx",
+}
+_LOCALE_BY_COUNTRY = {"MX": "mx", "BD": "bd"}
+
+
+def _load_env_sites() -> None:
+    """WATER_API_SITES="域名=商户号[:locale],..." 追加/覆盖站点映射。
+
+    马甲域轮换时只改环境变量即可接管新域,不必改代码重建镜像。
+    例:WATER_API_SITES="7aamx2.cc=7aamxns1:mx,newdom.com=abc123"
+    """
+    import os
+    for item in (os.getenv("WATER_API_SITES", "") or "").split(","):
+        item = item.strip()
+        if not item or "=" not in item:
+            continue
+        dom, val = item.split("=", 1)
+        dom = dom.strip().lower().strip(".")
+        mc, _, loc = val.strip().partition(":")
+        if dom and mc.strip():
+            MERCHANT_BY_DOMAIN[dom] = mc.strip()
+            if loc.strip():
+                LOCALE_BY_DOMAIN[dom] = loc.strip().lower()
+
+
+_load_env_sites()
+
+
+def _match_domain(host: str, table: dict):
+    """host → 表中值:先精确匹配,再按可注册主域后缀匹配。匹配不到返回 None。"""
+    host = (host or "").lower().strip(".")
+    if not host:
+        return None
+    if host in table:
+        return table[host]
+    for dom, val in table.items():
+        if host == dom or host.endswith("." + dom):
+            return val
+    return None
 
 
 def merchant_for_host(host: str) -> Optional[str]:
     """host → 商户号:先精确匹配,再按可注册主域后缀匹配。匹配不到返回 None。"""
-    host = (host or "").lower().strip(".")
-    if not host:
-        return None
-    if host in MERCHANT_BY_DOMAIN:
-        return MERCHANT_BY_DOMAIN[host]
-    for dom, mc in MERCHANT_BY_DOMAIN.items():
-        if host == dom or host.endswith("." + dom):
-            return mc
-    return None
+    return _match_domain(host, MERCHANT_BY_DOMAIN)
+
+
+def locale_for(host: str = "", country_code: str = "", cfg: Optional[dict] = None) -> str:
+    """决定拟人语料/号码地区:后台脚本 name_locale > 域名映射 > 短信国家 > bd(存量默认)。"""
+    if cfg and (cfg.get("name_locale") or cfg.get("locale")):
+        return str(cfg.get("name_locale") or cfg.get("locale")).strip().lower()
+    return (_match_domain(host, LOCALE_BY_DOMAIN)
+            or _LOCALE_BY_COUNTRY.get((country_code or "").strip().upper())
+            or "bd")
 
 
 def extract_affiliate(url: str, host: str = None) -> str:
@@ -61,6 +120,50 @@ def domain_candidates(host: str) -> list:
     host = (host or "").lower().strip(".")
     parts = host.split(".") if host else []
     return [".".join(parts[i:]) for i in range(len(parts) - 1)]
+
+
+def parse_landing_campaign(html: str) -> tuple:
+    """从「中间营销落地页」提取真站信息,返回 (merchant, affiliate, [真站base...])。
+
+    短信短链(cutt.ly)并不直接落到白标站本体,而是落到一张营销页(如 www.7aa88.vip),
+    页面内嵌 campaign 配置 JSON,含权威的:
+      "merchantCode":"7aamxns1"          商户号
+      "agentName":"7aadx16"              推广码(= affiliateCode)
+      "redirectDomains":["https://www.7aamx.xyz", ...]   真站马甲域轮换池
+    真站域随时增删,读页面比硬编码域名表更跟得上;取不到时返回 (None, "", [])。
+    """
+    import re
+    html = html or ""
+    if len(html) > 400_000:      # 只在头部找,避免超大页正则开销
+        html = html[:400_000]
+    m = re.search(r'"merchantCode"\s*:\s*"([^"]+)"', html)
+    merchant = m.group(1) if m else None
+    m = re.search(r'"agentName"\s*:\s*"([^"]+)"', html)
+    affiliate = m.group(1) if m else ""
+    bases = []
+    m = re.search(r'"redirectDomains"\s*:\s*\[([^\]]*)\]', html)
+    if m:
+        for d in re.findall(r'"(https?://[^"]+)"', m.group(1)):
+            d = d.rstrip("/")
+            if d not in bases:
+                bases.append(d)
+    return merchant, affiliate, bases
+
+
+def looks_like_white_label(html: str) -> bool:
+    """内容指纹:判断落地页是否本族白标(真站或其中间营销页),供域名未登记时自动路由到直连 API。
+
+    两种形态各自的判据:
+      真站   —— 首页骨架同时引用 /js/aboutMerchant.js 与 /js/encrypt.js(该白标的固定构建)
+      中间页 —— campaign 配置里同时有 merchantCode 与 redirectDomains(真站域池)
+    每个推广活动都会启用一个新的中间页域(7aa88/7aa69/7aa65/7aa13.vip ...),域名白名单穷举不过来,
+    靠内容识别兜住:换域、上新活动都不必改代码。
+    """
+    h = html or ""
+    if "aboutMerchant.js" in h and "encrypt.js" in h:
+        return True
+    merchant, _aff, bases = parse_landing_campaign(h)
+    return bool(merchant and bases)
 
 
 REGISTER_MODULE = "REG3"
@@ -121,6 +224,32 @@ _NUMS = (
     + ["123", "1234", "12345", "786", "111", "007", "99", "00", "21", "23", "01", "69", "88"]
 )
 
+# 西语(墨西哥)语料:MX 站用。孟加拉名出现在墨西哥站一眼假,故按站点地区换库。
+_NAMES_ES = [
+    "juan", "jose", "luis", "carlos", "miguel", "jorge", "ricardo", "eduardo", "fernando",
+    "alejandro", "javier", "antonio", "manuel", "pedro", "raul", "sergio", "hector", "arturo",
+    "cesar", "diego", "pablo", "andres", "oscar", "ivan", "rafael", "emilio", "santiago",
+    "maria", "guadalupe", "ana", "rosa", "laura", "patricia", "karla", "brenda", "alondra",
+    "fernanda", "lucia", "elena", "sofia", "valeria", "daniela", "gabriela", "monica",
+    "chava", "beto", "lalo", "tono", "checo", "memo", "pepe", "paco", "nacho",
+]
+_PWORDS_ES = [
+    "mexico", "azteca", "aguila", "tigre", "leon", "toro", "sol", "luna", "oro", "rey",
+    "reina", "fuego", "suerte", "dinero", "campeon", "futbol", "chivas", "america", "cancun",
+    "playa", "estrella", "corazon", "amigo", "fiesta", "guerrero", "jaguar", "puma", "norte",
+]
+_NUMS_ES = (
+    [str(y) for y in range(1985, 2011)]
+    + ["123", "1234", "12345", "111", "99", "00", "07", "10", "21", "23", "77", "88", "2024"]
+)
+
+
+def _corpus(locale: str = "bd"):
+    """按站点地区取(名库, 词库, 数字尾库)。未知地区回落存量 bd 库。"""
+    if (locale or "").lower() == "mx":
+        return _NAMES_ES, _PWORDS_ES, _NUMS_ES
+    return _NAMES, _PWORDS, _NUMS
+
 
 def _cap(s: str) -> str:
     return s[:1].upper() + s[1:] if s else s
@@ -131,20 +260,23 @@ def _syllables(n_syl: int) -> str:
     return "".join(random.choice(_CONS) + random.choice(_VOWELS) for _ in range(n_syl))
 
 
-def _gen_username() -> str:
-    """生成拟人用户名:6-13位,^[a-zA-Z0-9]+$。主力用真人名+自然数字尾,辅以拼名/可发音变体,避免一眼假或清一色。"""
+def _gen_username(locale: str = "bd") -> str:
+    """生成拟人用户名:6-13位,^[a-zA-Z0-9]+$。主力用真人名+自然数字尾,辅以拼名/可发音变体,避免一眼假或清一色。
+
+    locale 决定名库(bd=孟加拉罗马化名, mx=西语名),让账号看起来像该站真实用户。"""
+    _names, _, _nums = _corpus(locale)
     style = random.random()
     if style < 0.55:
-        # 真人名 + 自然数字(rakib95 / Sumon2018 / tania786)
-        u = random.choice(_NAMES) + (random.choice(_NUMS) if random.random() < 0.85 else "")
+        # 真人名 + 自然数字(rakib95 / Sumon2018 / carlos1998)
+        u = random.choice(_names) + (random.choice(_nums) if random.random() < 0.85 else "")
     elif style < 0.78:
-        # 双名拼接(rakibhasan / joysumon),偶带短数字
-        u = random.choice(_NAMES) + random.choice(_NAMES)
+        # 双名拼接(rakibhasan / joseluis),偶带短数字
+        u = random.choice(_names) + random.choice(_names)
         if random.random() < 0.4:
             u += random.choice(["1", "12", "7", "99", "23"])
     elif style < 0.92:
-        # 名 + 短可发音尾(rakibny / sumonta),更杂避免名库被识别
-        u = random.choice(_NAMES) + _syllables(random.randint(1, 2))
+        # 名 + 短可发音尾(rakibny / carlosda),更杂避免名库被识别
+        u = random.choice(_names) + _syllables(random.randint(1, 2))
         if random.random() < 0.5:
             u += str(random.randint(1, 99))
     else:
@@ -159,26 +291,27 @@ def _gen_username() -> str:
     return u
 
 
-def _gen_password() -> str:
-    """生成拟人密码:6-12位,^[a-zA-Z0-9]+$,含大小写+数字。主力为「首字母大写词/名 + 数字」(Dhaka2018 / Rakib786)。"""
+def _gen_password(locale: str = "bd") -> str:
+    """生成拟人密码:6-12位,^[a-zA-Z0-9]+$,含大小写+数字。主力为「首字母大写词/名 + 数字」(Dhaka2018 / Suerte99)。"""
+    _names, _pwords, _nums = _corpus(locale)
     for _ in range(12):
         style = random.random()
         if style < 0.6:
-            # 大写词 + 数字(Tiger2019 / Dhaka786)
-            p = _cap(random.choice(_PWORDS)) + random.choice(_NUMS)
+            # 大写词 + 数字(Tiger2019 / Azteca88)
+            p = _cap(random.choice(_pwords)) + random.choice(_nums)
         elif style < 0.85:
-            # 大写名 + 数字(Rakib1998)
-            p = _cap(random.choice(_NAMES)) + random.choice(_NUMS)
+            # 大写名 + 数字(Rakib1998 / Carlos1998)
+            p = _cap(random.choice(_names)) + random.choice(_nums)
         else:
             # 词 + 大写词(无数字时补一位)(tigerKing7)
-            p = random.choice(_PWORDS) + _cap(random.choice(_PWORDS))
+            p = random.choice(_pwords) + _cap(random.choice(_pwords))
             if not any(c.isdigit() for c in p):
                 p += str(random.randint(1, 99))
         p = p[:12]
         if 6 <= len(p) <= 12 and any(c.islower() for c in p) and any(c.isupper() for c in p) and any(c.isdigit() for c in p):
             return p
     # 兜底:保证一定产出合规密码
-    return _cap(random.choice(_PWORDS)) + str(random.randint(1985, 2010))
+    return _cap(random.choice(_pwords)) + str(random.randint(1985, 2010))
 
 
 def to_bd_mobile(phone: str) -> Optional[str]:
@@ -195,6 +328,31 @@ def to_bd_mobile(phone: str) -> Optional[str]:
     return None
 
 
+def to_mx_mobile(phone: str) -> Optional[str]:
+    """收件号 → MX 本地 10 位手机号(区号+号码,如 +5215512345678 → 5512345678)。非合法返回 None。
+
+    墨西哥历史上移动号带 1 前缀(52 1 XXXXXXXXXX),要剥掉才是站点要的 10 位。"""
+    import re
+    d = re.sub(r"\D", "", phone or "")
+    if d.startswith("00"):
+        d = d[2:]
+    if d.startswith("52") and len(d) > 10:
+        d = d[2:]
+    if len(d) == 11 and d.startswith("1"):
+        d = d[1:]
+    # MX 区号首位 2-9(无前导 0)
+    if len(d) == 10 and d[0] in "23456789":
+        return d
+    return None
+
+
+def to_local_mobile(phone: str, locale: str = "bd") -> Optional[str]:
+    """收件号 → 站点 mobileNum 要的本地号。未知地区回落 bd 规则(存量行为不变)。"""
+    if (locale or "").lower() == "mx":
+        return to_mx_mobile(phone)
+    return to_bd_mobile(phone)
+
+
 def _client(proxy_config: Optional[dict]) -> httpx.Client:
     kw = {"timeout": 30.0, "verify": False, "follow_redirects": True,
           "headers": {"User-Agent": UA}}
@@ -208,9 +366,13 @@ def _client(proxy_config: Optional[dict]) -> httpx.Client:
     return httpx.Client(**kw)
 
 
-def phone_to_username(phone: str) -> str:
-    """点击号码 → 用户名(撞库:用真实号码建号)。去非数字;BD 国码 880 转本地 0 前缀;截断到13位。"""
+def phone_to_username(phone: str, locale: str = "bd") -> str:
+    """点击号码 → 用户名(撞库:用真实号码建号)。优先按站点地区取本地号(BD 01XXXXXXXXX / MX 10位),
+    取不到再退化为去符号截断到 13 位。"""
     import re
+    local = to_local_mobile(phone, locale)
+    if local:
+        return local[:13]
     d = re.sub(r"\D", "", phone or "")
     if d.startswith("880"):
         d = "0" + d[3:]
@@ -218,10 +380,18 @@ def phone_to_username(phone: str) -> str:
 
 
 def _verify_username_exists(cli, base, merchant, module, username) -> Optional[bool]:
-    """查重核验:success:false=用户名已占用=账号确实已创建。返回 True(已建)/False(未建)/None(查不了)。"""
+    """查重核验:HTTP200 + success:false = 用户名已占用 = 账号确实已创建。
+    返回 True(已建)/False(未建)/None(查不了)。
+
+    必须先看状态码:用户名不合规(如超过 13 位)时站点返回 **HTTP 400 + success:false**,
+    与"已占用"的响应体只差状态码。只看 success 会把参数错误误判成"账号已建",
+    让失败的注册显示成核验通过。
+    """
     try:
         vr = cli.get(f"{base}/wps/check/username?username={username}", headers={
             "Merchant": merchant, "Module-Id": module, "x-module-id": module, "Language": "EN"})
+        if vr.status_code != 200:
+            return None
         vj = vr.json()
         if "success" in vj:
             return vj.get("success") is False
@@ -232,16 +402,19 @@ def _verify_username_exists(cli, base, merchant, module, username) -> Optional[b
 
 def register_via_api(url: str, proxy_config: Optional[dict] = None,
                      affiliate: str = "", config: Optional[dict] = None,
-                     username: Optional[str] = None, mobile: Optional[str] = None) -> dict:
-    """对 in1.fun 系短链落地页直连注册。返回 {success, username, password, customer_id, base, verified, reason}。
+                     username: Optional[str] = None, mobile: Optional[str] = None,
+                     country_code: str = "") -> dict:
+    """对 in1.fun / 7aamx 等同族白标落地页直连注册。
+    返回 {success, username, password, customer_id, base, verified, reason}。
     username 缺省随机(无固定特征);mobile=收件号则绑定为注册手机号(撞库,选填字段 mobileNum)。
-    config(来自 water_register_scripts.steps,可在后台编辑):{merchant, module, register_path}。"""
+    country_code 参与拟人语料/号码本地化选择(MX→西语名+10位号)。
+    config(来自 water_register_scripts.steps,可在后台编辑):{merchant, module, register_path, name_locale}。"""
     from urllib.parse import urlparse
     # 清洗:落地 URL 常被拼上点击追踪短链(如 ...register|66c.eu),取 | 与空白前的真链
     url = (url or "").split("|", 1)[0].strip()
     short_host = (urlparse(url).hostname or "").lower()
     cfg = config or {}
-    merchant = cfg.get("merchant") or merchant_for_host(short_host) or DEFAULT_MERCHANT
+    merchant = cfg.get("merchant") or merchant_for_host(short_host)
     module = cfg.get("module") or REGISTER_MODULE
     reg_path = cfg.get("register_path") or "/wps/member/register"
     # affiliateCode:调用方未显式传则从 URL 解析(子域或 query)
@@ -250,11 +423,34 @@ def register_via_api(url: str, proxy_config: Optional[dict] = None,
     with _client(proxy_config) as cli:
         # 1) 解析短链 → 真实落地基址(应对站点换域)
         r0 = cli.get(url)
+        final_host = (urlparse(str(r0.url)).hostname or "").lower()
         base = f"{urlparse(str(r0.url)).scheme}://{urlparse(str(r0.url)).netloc}"
+        # 2) 落地页自省:短链多半落在中间营销页(无 /wps 接口),据页面配置切到真站马甲域。
+        #    页面里的 merchantCode/agentName 比域名表权威,域轮换时无需改代码。
+        land_merchant, land_aff, land_bases = parse_landing_campaign(r0.text)
+        #    (redirectDomains 只出现在营销页配置里,真站 SPA 骨架没有,故它本身就是判据)
+        if land_bases:
+            # 优先已登记的马甲域,否则按落地页给出的顺序
+            base = next((b for b in land_bases if merchant_for_host(urlparse(b).hostname)), land_bases[0])
+            final_host = (urlparse(base).hostname or "").lower()
+        # 短链 host 匹配不到时用跳转后的真实落地域再匹配一次,避免错落 DEFAULT_MERCHANT 建到别家站
+        merchant = merchant or merchant_for_host(final_host) or land_merchant or DEFAULT_MERCHANT
+        # affiliateCode 决定这个号算不算客户业绩,必须取到。优先级:
+        # 调用方显式 > 入参URL(?affiliateCode=/子域) > 短链跳转后的最终URL > 中间页 agentName。
+        # 短链入参本身不带码,码在跳转后的 URL 或落地页配置里,少一层就丢归属。
+        affiliate = affiliate or extract_affiliate(str(r0.url), final_host) or land_aff
+        locale = locale_for(short_host, country_code, cfg)
+        if not (cfg.get("name_locale") or cfg.get("locale")) and not _match_domain(short_host, LOCALE_BY_DOMAIN):
+            locale = locale_for(final_host, country_code, cfg)
 
-        # 2) 取 RSA 公钥模数
-        mod = cli.get(f"{base}/wps/session/key/rsa",
-                      headers={"Merchant": merchant, "Referer": base + "/"}).text.strip().strip('"')
+        # 3) 取 RSA 公钥模数(个别马甲域会下线/被墙,逐个候选域试)
+        mod = ""
+        for cand in [base] + [b for b in land_bases if b != base]:
+            mod = cli.get(f"{cand}/wps/session/key/rsa",
+                          headers={"Merchant": merchant, "Referer": cand + "/"}).text.strip().strip('"')
+            if len(mod) >= 200:
+                base = cand
+                break
         if len(mod) < 200:
             return {"success": False, "reason": f"取RSA公钥失败: {mod[:80]}", "base": base}
 
@@ -262,18 +458,18 @@ def register_via_api(url: str, proxy_config: Optional[dict] = None,
         # 拟人用户名易与站点已有真实用户撞名 → 提交前用只读 check/username 预检,被占就换,
         # 避免把已解的 GeeTest 浪费在注定"用户名已占用"的提交上。
         if not username:
-            username = _gen_username()
+            username = _gen_username(locale)
             for _ in range(6):
                 taken = _verify_username_exists(cli, base, merchant, module, username)
                 if taken is not True:   # False=可用 / None=查不了 → 放行
                     break
-                username = _gen_username()
-        password = _gen_password()
+                username = _gen_username(locale)
+        password = _gen_password(locale)
         payload = {
             "username": username, "password": password, "confirmPassword": password,
             "affiliateCode": affiliate, "paymentPassword": "", "merchantCode": merchant,
         }
-        mobile_local = to_bd_mobile(mobile) if mobile else None
+        mobile_local = to_local_mobile(mobile, locale) if mobile else None
         if mobile_local:
             payload["mobileNum"] = mobile_local
         headers = {
@@ -326,6 +522,8 @@ def register_via_api(url: str, proxy_config: Optional[dict] = None,
             verified = _verify_username_exists(cli, base, merchant, module, username)
             return {"success": True, "username": username, "password": password,
                     "customer_id": val.get("customerId"), "base": base, "mobile": mobile_local,
-                    "verified": verified, "reason": "ok"}
-        return {"success": False, "username": username, "base": base,
+                    "verified": verified, "affiliate": affiliate, "merchant": merchant,
+                    "reason": "ok"}
+        return {"success": False, "username": username, "base": base, "affiliate": affiliate,
+                "merchant": merchant,
                 "reason": f"{body.get('errorCode')}: {body.get('message')}"[:160]}

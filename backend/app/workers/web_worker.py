@@ -404,6 +404,23 @@ async def _attribute_short_link_click(factory, sms_log_id: int,
         return True
 
 
+def _finalize_register_log(engine, factory, log_id, script_data, success, *args, **kwargs):
+    """写注册终态 + 回写脚本计数 + dispose,全部在同一个事件循环内完成。
+
+    必须同 loop:_db_sync 每次新建 loop 跑完即关,async engine 的连接池绑定首次使用的那个 loop,
+    换 loop 复用同一 engine 会抛 'Event loop is closed' —— 计数器原先分两次 _db_sync 调用,
+    因此每次注册收尾都异常(账号其实已建、日志已写 success,但任务返回 False 且计数永远不增)。
+    *args/**kwargs 原样透传给 _update_log_status(status/duration/error_message/...)。
+    """
+    async def _run():
+        await _update_log_status(factory, log_id, *args, **kwargs)
+        if script_data and script_data.get("id"):
+            await _increment_script_counter(factory, script_data["id"], success)
+        await engine.dispose()
+
+    _db_sync(_run())
+
+
 async def _increment_script_counter(factory, script_id: int, success: bool):
     """更新脚本成功/失败计数"""
     from sqlalchemy import update as sa_update
@@ -898,19 +915,18 @@ def _do_register_1win(sms_log_id, url, channel_id, task_config_id, account_id,
             login = "+" + re.sub(r"\D", "", phone or "")
             creds = (f"账号(手机) {login} ┊ 邮箱 {email} ┊ 密码 {password} ┊ 1win @ "
                      f"{urlparse(url).hostname} ┊ exit {detected_ip}")
-            _db_sync(_update_log_status(factory2, log_id, 'success', duration,
-                                        proxy_ip=detected_ip, device_info=creds[:255], user_agent=ua))
+            _finalize_register_log(eng2, factory2, log_id, script_data, True,
+                                   'success', duration, proxy_ip=detected_ip,
+                                   device_info=creds[:255], user_agent=ua)
             logger.info(f"1win 注册成功: sms_log={sms_log_id}, login={login}, pwd={password}, "
                         f"status={captured.get('status')}, {duration}ms")
         else:
             err = (f"1win 注册未成功 status={captured.get('status')} "
                    f"{(captured.get('body') or '')[:160]}")
-            _db_sync(_update_log_status(factory2, log_id, 'failed', duration, err[:500],
-                                        proxy_ip=detected_ip, device_info=device_desc, user_agent=ua))
+            _finalize_register_log(eng2, factory2, log_id, script_data, False,
+                                   'failed', duration, err[:500], proxy_ip=detected_ip,
+                                   device_info=device_desc, user_agent=ua)
             logger.warning(f"1win 注册失败: sms_log={sms_log_id}, {err}")
-        if script_data and script_data.get("id"):
-            _db_sync(_increment_script_counter(factory2, script_data["id"], success))
-        _db_sync(eng2.dispose())
         return {"success": success, "log_id": log_id}
     except SoftTimeLimitExceeded:
         logger.warning(f"1win 注册软超时: sms_log={sms_log_id}")
@@ -961,7 +977,7 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
         # 直连注册 API 域名(如 in1.fun→jilievobdt 博彩SPA):页面反自动化把浏览器拖到200s超时,
         # 改走逆向出的加密注册接口,直接建号,快且稳。
         from urllib.parse import urlparse
-        from app.workers.jl_api_register import merchant_for_host
+        from app.workers.jl_api_register import merchant_for_host, looks_like_white_label
         host = urlparse(url).hostname or ""
         landing_html = ""
         # 裸短链(66c.eu/<token>、cutt.ly/<id>)匹配不到任何已知落地域 → 先跟随跳转解析真实落地域,
@@ -973,6 +989,14 @@ def web_register_task(self, sms_log_id: int, url: str, channel_id: int,
                 logger.info(f"短链解析: {url[:60]} -> {resolved[:80]}")
                 url = resolved
                 host = urlparse(url).hostname or ""
+        # 域名未登记时用落地页内容指纹兜底:该白标每个推广活动都换一个新的中间营销域
+        # (7aa88/7aa69/7aa65/7aa13.vip ...),白名单穷举不过来,漏一个就掉进浏览器引擎白跑200s。
+        if not merchant_for_host(host) and looks_like_white_label(landing_html):
+            logger.info(f"内容识别为白标注册站(域名 {host} 不在白名单)→ 走直连注册 API")
+            return _do_register_via_api(
+                sms_log_id, url, channel_id, task_config_id, account_id,
+                country_code, proxy_id, batch_id=batch_id
+            )
         if merchant_for_host(host):
             return _do_register_via_api(
                 sms_log_id, url, channel_id, task_config_id, account_id,
@@ -1144,10 +1168,14 @@ def _do_register_via_api(sms_log_id, url, channel_id, task_config_id, account_id
             _db_sync(_e3.dispose())
         except Exception:
             phone = None
-        username = phone_to_username(phone) if (phone and cfg and cfg.get("use_phone_username")) else None
+        # 站点地区(西语名库/号码本地化):后台 name_locale > 域名映射 > 短信国家
+        from urllib.parse import urlparse as _urlparse
+        from app.workers.jl_api_register import locale_for
+        _locale = locale_for((_urlparse(url).hostname or ""), country_code, cfg)
+        username = phone_to_username(phone, _locale) if (phone and cfg and cfg.get("use_phone_username")) else None
 
         result = register_via_api(url, proxy_config=proxy_config, config=cfg,
-                                  username=username, mobile=phone)
+                                  username=username, mobile=phone, country_code=country_code)
         dur = int((_time.time() - start) * 1000)
         proxy_ip = (proxy_config or {}).get("__ip") if proxy_config else None
 
@@ -1157,24 +1185,29 @@ def _do_register_via_api(sms_log_id, url, channel_id, task_config_id, account_id
             v = result.get("verified")
             vtxt = "核验OK(查重已占用)" if v is True else ("核验:未确认" if v is None else "核验失败(查重显示未占用)")
             _mob = f"手机 {result.get('mobile')} ┊ " if result.get('mobile') else ""
+            # affiliateCode 决定这个号算不算客户业绩,必须写进凭据串供对账核对;
+            # 取不到要显眼标出来——注册虽成功,但归属丢了,这个号对客户没价值。
+            _aff_val = result.get('affiliate')
+            if not _aff_val:
+                logger.warning(f"注水注册未取到 affiliateCode(归属会丢失): sms_log={sms_log_id}, "
+                               f"url={url[:80]}, base={result.get('base')}")
+            _aff = f"affiliateCode {_aff_val or '⚠未取到'} ┊ "
             creds = (f"账号 {result.get('username')} ┊ 密码 {result.get('password')} ┊ "
-                     f"{_mob}custId {result.get('customer_id')} ┊ {vtxt} @ {result.get('base')}")
-            _db_sync(_update_log_status(
-                factory2, log_id, 'success', dur,
+                     f"{_aff}{_mob}custId {result.get('customer_id')} ┊ {vtxt} @ {result.get('base')}")
+            # 命中脚本时一并回写成功/失败计数 + last_run_at(后台「注册脚本」页统计随 API 路径更新)
+            _finalize_register_log(
+                eng2, factory2, log_id, script_data, True, 'success', dur,
                 user_agent=f"直连注册API:{result.get('base')}",
-                proxy_ip=proxy_ip, device_info=creds[:255]))
+                proxy_ip=proxy_ip, device_info=creds[:255])
             logger.info(f"注水注册成功(API): sms_log={sms_log_id}, user={result.get('username')}, "
                         f"pwd={result.get('password')}, customer_id={result.get('customer_id')}, "
                         f"verified={v}, {dur}ms")
         else:
-            _db_sync(_update_log_status(
-                factory2, log_id, 'failed', dur, (result.get('reason') or '注册失败')[:500],
-                proxy_ip=proxy_ip, device_info="直连注册API"))
+            _finalize_register_log(
+                eng2, factory2, log_id, script_data, False, 'failed', dur,
+                (result.get('reason') or '注册失败')[:500],
+                proxy_ip=proxy_ip, device_info="直连注册API")
             logger.warning(f"注水注册失败(API): sms_log={sms_log_id}, {result.get('reason')}")
-        # 命中脚本时回写成功/失败计数 + last_run_at(后台「注册脚本」页统计随 API 路径更新)
-        if script_data and script_data.get("id"):
-            _db_sync(_increment_script_counter(factory2, script_data["id"], bool(result.get("success"))))
-        _db_sync(eng2.dispose())
         return {"success": bool(result.get("success")), "log_id": log_id, "api": True}
     except Exception as e:
         logger.error(f"直连注册API异常: sms_log={sms_log_id}, {e}", exc_info=True)
@@ -1347,16 +1380,23 @@ def _do_click_sync(sms_log_id, url, channel_id, task_config_id, account_id, coun
 
         duration = int((time.time() - start_time) * 1000)
         eng2, factory2 = _make_session()
-        _db_sync(_update_log_status(factory2, log_id, 'success', duration, proxy_ip=detected_ip,
-                                    device_info=device_desc, user_agent=ua))
-        # 点击成功 → 直接归因到短链 token（不再依赖外部短域重定向回流，那只命中 ~15%）。
-        # 幂等：已有点击明细则跳过，不与回流重复计数。
-        try:
-            _db_sync(_attribute_short_link_click(factory2, sms_log_id,
-                                                 client_ip=detected_ip, user_agent=ua))
-        except Exception as _attr_e:
-            logger.warning(f"注水点击短链归因失败 sms_log={sms_log_id}: {_attr_e}")
-        _db_sync(eng2.dispose())
+
+        # 写终态 + 短链归因 + dispose 必须在同一个事件循环内:_db_sync 每次新建 loop 跑完即关,
+        # 换 loop 复用同一 engine 会抛 'attached to a different loop' —— 归因原先单独一次 _db_sync,
+        # 因此每次点击都归因失败(点击本身成功,但短链统计一直收不到这些点击)。
+        async def _finalize_click():
+            await _update_log_status(factory2, log_id, 'success', duration, proxy_ip=detected_ip,
+                                     device_info=device_desc, user_agent=ua)
+            # 点击成功 → 直接归因到短链 token（不再依赖外部短域重定向回流，那只命中 ~15%）。
+            # 幂等：已有点击明细则跳过，不与回流重复计数。
+            try:
+                await _attribute_short_link_click(factory2, sms_log_id,
+                                                  client_ip=detected_ip, user_agent=ua)
+            except Exception as _attr_e:
+                logger.warning(f"注水点击短链归因失败 sms_log={sms_log_id}: {_attr_e}")
+            await eng2.dispose()
+
+        _db_sync(_finalize_click())
         logger.info(f"注水点击成功: log={log_id}, duration={duration}ms, ip={detected_ip}, final={final_url[:80]}")
 
         if trigger_register:
@@ -1521,11 +1561,9 @@ def _do_register_sync(sms_log_id, url, channel_id, task_config_id, account_id, c
             dev_info = reg_reason[:255]
 
         eng2, factory2 = _make_session()
-        _db_sync(_update_log_status(factory2, log_id, status, duration, error_msg, proxy_ip=detected_ip,
-                                    device_info=dev_info, user_agent=ua))
-        if script_data and script_data.get("id"):
-            _db_sync(_increment_script_counter(factory2, script_data["id"], reg_success))
-        _db_sync(eng2.dispose())
+        _finalize_register_log(eng2, factory2, log_id, script_data, reg_success,
+                               status, duration, error_msg, proxy_ip=detected_ip,
+                               device_info=dev_info, user_agent=ua)
         logger.info(f"注水注册{'成功' if reg_success else '失败'}: log={log_id}, duration={duration}ms, ip={detected_ip}")
 
         return {"success": reg_success, "log_id": log_id}

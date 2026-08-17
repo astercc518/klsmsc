@@ -107,7 +107,7 @@ import { getLogs, getLogScreenshot } from '@/api/water'
 const parseCreds = (s: string) => {
   return (s || '').split('┊').map((raw) => {
     const seg = raw.trim()
-    const m = seg.match(/^(账号|密码|affiliateCode)\s+(.+)$/)
+    const m = seg.match(/^(账号|密码|affiliateCode|手机|custId)\s+(.+)$/)
     if (m) return { k: m[1], v: m[2], mono: true }
     return { k: '来源', v: seg, mono: false } // "TK688 @ host"
   }).filter((x) => x.v)

@@ -248,7 +248,7 @@
             <el-option label="SP111（巴西博彩）" value="sp111" />
             <el-option label="MXLUCK（墨西哥博彩）" value="mxluck" />
             <el-option label="1win 系" value="onewin" />
-            <el-option label="直连 API（jl 系）" value="api" />
+            <el-option label="直连 API（jl / 7aamx 系白标）" value="api" />
             <el-option label="通用引擎/配置脚本" value="generic" />
           </el-select>
           <div class="form-tip">默认自动识别落地页；轮换马甲域识别不准时，可手动锁定用哪个注册脚本。</div>
