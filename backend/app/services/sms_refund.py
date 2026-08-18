@@ -25,14 +25,53 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# 已提交到上游的失败模式（不退款）
-# - "SMPP Error: N"：来自 connector.go:455 SubmitSMResp 非零状态，意味着 PDU 已被上游处理
-# - "SMPP DLR: stat=..."：DLR 已收到，意味着上游接收并尝试投递
-# - "DLR 超时" / "SubmitSMResp丢失"：进入 expired 不进 failed，理论上不会出现，列为防御
+# 真·已提交到上游的失败模式（不退款）
+# - "SMPP DLR: stat=..."：收到过投递回执，说明上游接收并尝试投递了
+# - "DLR 超时" / "SubmitSMResp丢失"：提交出去了但结果不明，保守当已提交
+#
+# 注意 "SMPP Error: N" **不在**此列（历史上曾错误地并进来，见下方 _SUBMIT_REJECTED_RE）。
 _SUBMITTED_PATTERNS = re.compile(
-    r"SMPP Error:\s*\d+|SMPP DLR:|DLR 超时|SubmitSMResp丢失",
+    r"SMPP DLR:|DLR 超时|SubmitSMResp丢失",
     re.IGNORECASE,
 )
+
+# 上游拒收、从未发出（**可退候选**，仍需管理员人工裁决）
+#
+# "SMPP Error: N" 来自 go-smpp-gateway/connector.go 的 `fmt.Sprintf("SMPP Error: %d",
+# pd.CommandStatus)`，即 submit_sm_resp 的 command_status。SMPP 协议规定：command_status
+# 非零时应答 body 里**不含 message_id**，消息压根没进上游系统，更没投递到手机。
+#
+# 旧代码把它归进 _SUBMITTED_PATTERNS，理由写的是"PDU 已被上游处理"——这是把「上游回了
+# 应答」当成了「上游接受了消息」。后果：ch82 泰国直连模板拒收(status=1=
+# REJECTED_NoValidTemplate) 累计 29 万条全部被判 eligible=False，进不了管理员可退候选
+# 列表，客户白扣费且无从追索。实测这批 upstream_message_id **100% 为空**（294859/294859），
+# 佐证确未提交成功。
+_SUBMIT_REJECTED_RE = re.compile(r"SMPP Error:\s*(\d+)", re.IGNORECASE)
+
+# 已知上游拒收码 → 人话，供管理员在候选列表里直接判断
+_SUBMIT_REJECT_REASONS = {
+    "1": "模板未报备/校验失败",
+    "11": "目标号码非法",
+    "88": "上游限流，重投耗尽",
+}
+
+
+# 上游因**内容/号码本身**拒收：原样重发必然再次被拒（白撞上游 + 二次扣费）。
+# 注意这与「可退」是两件事：它确实没发出去（该退），但也确实不该原样重投。
+# ch108 印度模板通道吃过这个亏——整批拒收原样重发 1554 条全废。
+# 限流类(88)是临时问题，不在此列，可以重发。
+_CONTENT_REJECT_CODES = frozenset({"1", "11"})
+
+
+def is_content_rejected(sms_log: SMSLog) -> bool:
+    """上游拒收且属于「原样重发必然再拒」的类型（模板未报备 / 目标号码非法）。
+
+    退款资格**不**看这个（拒收=未发出=可退）；**重发**候选必须看，否则管理员一键
+    重发就是拿同样的内容再撞一次上游，条条再被拒、还再扣一次费。
+    """
+    err = (sms_log.error_message or "").strip()
+    m = _SUBMIT_REJECTED_RE.search(err)
+    return bool(m and m.group(1) in _CONTENT_REJECT_CODES)
 
 
 def _looks_submitted_to_upstream(sms_log: SMSLog) -> bool:
@@ -67,6 +106,12 @@ def classify_refund_candidate(sms_log: SMSLog) -> RefundCandidate:
     # 合格 → 给一个简短分类便于管理员判断
     if not err:
         category = "未知系统错误（无错误信息）"
+    elif (m := _SUBMIT_REJECTED_RE.search(err)) is not None:
+        code = m.group(1)
+        why = _SUBMIT_REJECT_REASONS.get(code)
+        category = f"上游拒收未发出（SMPP status={code}{'：' + why if why else ''}）"
+        if "已转批次" in err:
+            category += "【已转批次重发，勿重复补偿】"
     elif any(k in err for k in ["No available channel", "无可用通道"]):
         category = "通道不可用/路由失败"
     elif any(k in err for k in ["黑名单", "blacklist"]):
@@ -107,13 +152,18 @@ async def list_refundable(
             SMSLog.cost_price > 0,
             SMSLog.upstream_message_id.is_(None),
         ]
-        # 排除已知"已到上游"的错误码模式
+        # 排除已知"已到上游"的错误码模式。必须与 _SUBMITTED_PATTERNS 逐条对齐，否则
+        # 下面的二次过滤会丢行、total 与实际条数对不上、分页出现空页。
+        # 注意**不含 "SMPP Error:"**：那是 submit_sm_resp 非零，上游拒收、从未投递，
+        # 属于可退候选（历史上这里和分类器两处都把它错当"已提交"，ch82 泰国直连模板
+        # 拒收 29 万条因此永远进不了候选列表）。
         base_where.append(
             or_(
                 SMSLog.error_message.is_(None),
                 and_(
-                    ~SMSLog.error_message.like("%SMPP Error:%"),
                     ~SMSLog.error_message.like("%SMPP DLR:%"),
+                    ~SMSLog.error_message.like("%DLR 超时%"),
+                    ~SMSLog.error_message.like("%SubmitSMResp丢失%"),
                 ),
             )
         )
@@ -330,9 +380,13 @@ async def execute_refund_batch(
 
 
 # ============ 管理员强制退款（绕过 eligible 校验）============
-# 场景：上游返回 SubmitSMResp 非零状态（如节点通信 SMPP Error 110）但实际因
-# 上游账户余额不足、风控等原因「收下却未投递」。eligible 规则保守地把所有
-# SMPP Error 视作已提交不可退，会让大面积失败完全无法退款。
+# 定位：管理员对 failed 条目的最终裁量权，留给 eligible 规则判不出的灰色场景——
+# 典型是上游「收下却未投递」：给了 message_id、甚至回了 DLR，但实际因上游账户
+# 余额不足/风控没真发出去。这类按规则算"已提交"，只能人工裁决。
+#
+# 注意：**"所有 SMPP Error 一律不可退"这个老毛病已在分类器修掉**（见文件头部
+# _SUBMIT_REJECTED_RE）。submit_sm_resp 非零 = 上游拒收未发出，现在走正常 eligible
+# 路径就能进候选，不必再靠强制退款兜底。
 # 管理员通过任务管理「系统退款」入口走此路径：放弃 eligible 自动判定，由人工
 # 选择条目并对扣费负责；金额仍按 selling_price 累加，不重复计成本。
 

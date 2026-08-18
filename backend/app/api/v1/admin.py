@@ -7081,7 +7081,7 @@ async def admin_export_batch_phones(
 # ============ 失败重发（生成新批次）：已挪到 batches.py 客户侧，本端点保留以便排障/特殊场景 ============
 
 class AdminRetryAsNewBatchRequest(BaseModel):
-    include_all: bool = False           # True 时把"已提交上游"类一起重发（如 SMPP Error 110）；
+    include_all: bool = False           # True 时连"已提交上游"和"内容/号码被拒"类一起重发；
                                         # 默认仅重发 eligible（未提交上游）
     new_batch_name: Optional[str] = None # 不传则自动生成「重发-原批次名」
 
@@ -7112,7 +7112,7 @@ async def admin_retry_failed_as_new_batch(
     from app.utils.queue import QueueManager
     from app.utils.errors import InsufficientBalanceError, PricingNotFoundError, ChannelNotAvailableError
     from app.utils.cache import get_cache_manager
-    from app.services.sms_refund import _looks_submitted_to_upstream
+    from app.services.sms_refund import _looks_submitted_to_upstream, is_content_rejected
     from app.services.operation_log import log_operation
     from decimal import Decimal
     import uuid as _uuid
@@ -7148,9 +7148,14 @@ async def admin_retry_failed_as_new_batch(
         if request.include_all:
             candidate_rows = list(failed_rows)
         else:
-            candidate_rows = [r for r in failed_rows if not _looks_submitted_to_upstream(r)]
+            # 排除两类：①已提交上游（重发=重复投递）②上游因内容/号码拒收（原样重发必然再拒，
+            # 还要再扣一次费）。后者该走的是「改文案/去上游报备模板」，不是重发。
+            candidate_rows = [
+                r for r in failed_rows
+                if not _looks_submitted_to_upstream(r) and not is_content_rejected(r)
+            ]
         if not candidate_rows:
-            raise HTTPException(status_code=400, detail="按当前规则无可重发条目（默认仅取未提交上游类，可勾「全部失败」重试）")
+            raise HTTPException(status_code=400, detail="按当前规则无可重发条目（默认已排除「已提交上游」和「上游因内容/号码拒收」两类；后者原样重发必然再次被拒，请先改文案或去上游报备模板。确要重发可勾「全部失败」）")
 
         account_id = src_batch.account_id
         account = (await db.execute(

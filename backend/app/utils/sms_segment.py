@@ -84,22 +84,51 @@ def is_gsm7_message(message: str) -> bool:
     return gsm7_septet_count(norm) is not None
 
 
+# 零宽字符：不可见、不占字形，但会实打实占用 UCS-2 码元，且被计费口径删掉。
+_ZERO_WIDTH: Final = frozenset("\u200b\u200c\u200d\ufeff")
+
+
+def _normalize_length_only(text: str) -> str:
+    """只做「会改变码元数」的清理，不碰任何等长的字形替换。
+
+    给 UCS-2 正文（泰文/中文/阿拉伯文等）用：它们无论清洗与否都按 UCS-2 计费，
+    条数只取决于长度。删零宽、把省略号展开成三点，长度就与计费口径严格一致；
+    而 en-dash/em-dash/弯引号/NBSP 都是 1↔1 的等长替换，对条数毫无影响，
+    保持原样才不会破坏上游按模板逐字节加白的精确匹配。
+    """
+    out: list[str] = []
+    for c in text:
+        if c in _ZERO_WIDTH:
+            continue
+        elif c == "…":
+            out.append("...")
+        else:
+            out.append(c)
+    return "".join(out)
+
+
 def sanitize_sms_text_for_wire(message: str) -> str:
-    """上行发送前对正文做与「分段计费」完全相同的白名单规范化。
+    """上行发送前规范化正文，保证「实际发出的编码/条数 ≡ 计费口径」。
 
-    与 normalize_for_sms_segment_count 共用同一实现——这是关键：计费按此规范化
-    后判定编码/条数，若发送时不做同样处理，就会出现「计费按 GSM-7 算 1 条、上游
-    按 UCS-2 算 2 条」的口径错位（en-dash「–」U+2013、em-dash、省略号、弯引号、
-    NBSP、零宽字符都会触发），中间差价由平台自担。让上行正文走同一函数，
-    「实际发出的编码 ≡ 计费口径」由构造保证，二者永不漂移。
+    清洗的唯一收益，是把「肉眼英文却含 en-dash「–」U+2013、em-dash、省略号、弯引号、
+    NBSP」的正文拉回 GSM-7，避免计费按 GSM-7 算 1 条、上游按 UCS-2 收 2 条的口径错位
+    （差价由平台自担）。所以只在清洗确实能落回 GSM-7 时，才整段替换。
 
-    仅做安全的等价替换（–/—→-、…→...、弯引号→直引号、NBSP→空格、零宽→删除），
-    对真正的非 GSM-7 内容（中文/泰文/emoji 等）不改动，仍按 UCS-2 正确多段计费。
-    幂等：重复调用结果不变。
+    正文本身就是 UCS-2（泰文/中文/emoji 等）时，等长字形替换一条也省不下来——实测
+    「699–6,999」与「699-6,999」同为 UCS-2、同为 1 条——却会改写实际发出的字节。对按
+    模板逐字节加白的上游（如 TS_066_zhilian 泰国直连）这是致命的：报备的是 en-dash 原
+    文、发出去的是 hyphen，模板校验不过，整批回 SMPP status=1 且不写回执、不自动退费。
+    故此路径只做零宽删除与省略号展开这类「改变码元数」的清理，字形一律原样发出。
+
+    两条路径的输出长度恒等（normalize 里唯二改变长度的规则就是这两条），因此无论走哪
+    条，UCS-2 码元数都与 count_sms_parts 的计费口径一致。幂等：重复调用结果不变。
     """
     if not message:
         return message
-    return normalize_for_sms_segment_count(message)
+    normalized = normalize_for_sms_segment_count(message)
+    if gsm7_septet_count(normalized) is not None:
+        return normalized
+    return _normalize_length_only(message)
 
 
 # 短链占位符识别：{{TRACK_URL}}、{{TRACK_URL=target}}、{{TRACK_URL=target|base}}
