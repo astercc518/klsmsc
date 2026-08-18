@@ -3,6 +3,21 @@
     <div class="page-header">
       <h2 class="page-title">我的私有库</h2>
       <div class="header-actions">
+        <div class="dedup-switch">
+          <el-switch
+            v-model="autoDedup"
+            :loading="dedupSaving"
+            :disabled="dedupLoading"
+            @change="onAutoDedupChange"
+          />
+          <span class="dedup-label">{{ t('dataMyNumbers.autoDedupLabel') }}</span>
+          <el-tooltip placement="bottom-start" effect="dark">
+            <template #content>
+              <div class="dedup-tip">{{ t('dataMyNumbers.autoDedupTip') }}</div>
+            </template>
+            <el-icon class="dedup-help"><QuestionFilled /></el-icon>
+          </el-tooltip>
+        </div>
         <el-button type="success" @click="showUpload = true">上传数据</el-button>
         <el-button @click="openUploadTasksDialog">{{ t('dataMyNumbers.uploadTasksBtn') }}</el-button>
         <el-button type="primary" @click="$router.push('/data/store')">前往商店选购</el-button>
@@ -192,6 +207,15 @@
       {{ t('dataMyNumbers.summaryMismatchWarn') }}
     </el-alert>
 
+    <el-alert
+      v-if="autoDedup"
+      type="success"
+      :closable="false"
+      show-icon
+      class="dedup-active-tip"
+      :title="t('dataMyNumbers.autoDedupActiveTip')"
+    />
+
     <!-- 运营商统计与筛选 -->
     <el-alert
       v-if="summaryTruncated"
@@ -326,7 +350,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ArrowDown, UploadFilled, Lock } from '@element-plus/icons-vue'
+import { ArrowDown, UploadFilled, Lock, QuestionFilled } from '@element-plus/icons-vue'
 import {
   getMyNumbersSummary,
   exportMyNumbers,
@@ -336,6 +360,8 @@ import {
   getMyNumbersUploadTask,
   listMyNumbersUploadTasks,
   abandonMyNumbersUploadTask,
+  getMyNumbersSettings,
+  updateMyNumbersSettings,
   type PrivateLibraryUploadTaskDTO,
 } from '@/api/data'
 import { getAccountInfo } from '@/api/account'
@@ -372,6 +398,10 @@ const summaryTruncated = ref(false)
 const summaryMismatch = ref(false)
 const loading = ref(false)
 const abandoningTaskId = ref<string | null>(null)
+/** 自动去重（账户级）：开启后发送取号跳过在其它数据包已使用过的相同号码 */
+const autoDedup = ref(false)
+const dedupLoading = ref(false)
+const dedupSaving = ref(false)
 
 const availableCarriers = computed(() => {
   const map: Record<string, number> = {}
@@ -756,6 +786,39 @@ async function loadData() {
   }
 }
 
+async function loadSettings() {
+  dedupLoading.value = true
+  try {
+    const res = await getMyNumbersSettings()
+    autoDedup.value = Boolean(res?.auto_dedup)
+  } catch {
+    // 读取失败按关闭展示，不打断页面；用户切换时仍会走保存接口
+    autoDedup.value = false
+  } finally {
+    dedupLoading.value = false
+  }
+}
+
+async function onAutoDedupChange(val: string | number | boolean) {
+  const next = Boolean(val)
+  dedupSaving.value = true
+  try {
+    const res = await updateMyNumbersSettings({ auto_dedup: next })
+    autoDedup.value = Boolean(res?.auto_dedup ?? next)
+    ElMessage.success(
+      autoDedup.value
+        ? t('dataMyNumbers.autoDedupOn')
+        : t('dataMyNumbers.autoDedupOff'),
+    )
+  } catch (e: any) {
+    // 保存失败必须回滚开关，否则界面显示与后端取号口径不一致
+    autoDedup.value = !next
+    ElMessage.error(e.response?.data?.detail || e.message || '保存失败')
+  } finally {
+    dedupSaving.value = false
+  }
+}
+
 async function onAbandonUploadTask(taskId: string) {
   try {
     await ElMessageBox.confirm(t('dataMyNumbers.uploadTaskAbandonConfirm'), '提示', {
@@ -920,6 +983,7 @@ async function handleDelete(g: NumberGroup) {
 
 onMounted(() => {
   loadData()
+  loadSettings()
 })
 
 onUnmounted(() => {
@@ -929,6 +993,26 @@ onUnmounted(() => {
 
 <style scoped>
 .summary-truncate-tip { margin-bottom: 16px; }
+.dedup-active-tip { margin-bottom: 12px; }
+.dedup-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+}
+.dedup-label {
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+  white-space: nowrap;
+}
+.dedup-help {
+  color: var(--el-text-color-secondary);
+  cursor: help;
+}
+.dedup-tip {
+  max-width: 320px;
+  line-height: 1.6;
+}
 .page-container { width: 100%; padding: 0 4px; }
 .page-header {
   display: flex;

@@ -1371,6 +1371,15 @@ export default {
     uploadTaskAbandon: '放弃',
     uploadTaskAbandonConfirm: '确定放弃该排队任务？放弃后可重新上传文件。',
     summaryMismatchWarn: '检测到库内有号码但暂无分组卡片，请刷新或联系管理员检查汇总接口。',
+    autoDedupLabel: '自动去重',
+    autoDedupTip:
+      '多份数据之间常有重复号码。开启后，同一号码只要在本账户任一数据包里已被使用过，'
+      + '发送取号时其它数据包里的副本会自动跳过，不会重复使用；关闭则各数据包彼此独立，'
+      + '同一号码在每个包里都可以各用一次。只影响发送取号，不改动已入库的号码与历史记录，可随时切换。',
+    autoDedupActiveTip:
+      '已开启自动去重：在其它数据包已使用过的相同号码，发送时会自动跳过，因此实际可发条数可能少于卡片显示的「未使用」。',
+    autoDedupOn: '已开启自动去重，重复号码不会被重复发送',
+    autoDedupOff: '已关闭自动去重，各数据包可分别使用相同号码',
   },
   dataPool: {
     accountIdPlaceholder: '账户ID',
@@ -2834,6 +2843,7 @@ export default {
     totalNumbers: '共计',
     viewAllRecords: '查看全部记录',
     viewSendTask: '查看发送任务',
+    privateAutoDedupTag: '已开启自动去重（跨数据包不重复取号）',
     privateLibraryHint:
       '私有库号码归您个人使用。默认不勾选「仅限未使用」时，可对同一号码多次群发短信；勾选后仅拉取从未被发送任务使用过的号码。',
   },

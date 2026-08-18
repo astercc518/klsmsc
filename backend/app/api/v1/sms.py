@@ -39,7 +39,8 @@ from app.utils.errors import (
     InsufficientBalanceError, PricingNotFoundError, ChannelNotAvailableError
 )
 from decimal import Decimal
-from sqlalchemy import select, update, func, or_, union_all
+from sqlalchemy import select, update, func, or_, and_, literal, union_all
+from sqlalchemy.orm import aliased
 from app.modules.common.balance_log import BalanceLog
 from app.modules.common.ticket import Ticket
 from app.modules.common.account_template import AccountTemplate
@@ -867,6 +868,38 @@ async def send_batch_sms(
                 _trimmed.in_(("unknown", "未知")),
             )
 
+        # 自动去重（账户级开关，客户在「我的私有库」自行开关）：
+        # 数据包彼此独立存储，同一号码在 A/B/C 包各有一份、各自计 use_count。
+        # 开启后按号码全局去重——只要本账户任一数据包（私库表或公海购入绑定行）里
+        # 的同号已被使用过，本次取号就跳过它，避免重号被反复发送；关闭则维持原行为
+        # （每个包各用一次）。只作用于取号，不改写已入库的 use_count，可随时切回。
+        _auto_dedup = bool(getattr(account, "private_library_auto_dedup", False) or False)
+        _pln_used = aliased(PrivateLibraryNumber)
+        _dn_used = aliased(DataNumber)
+
+        def _cross_batch_unused_clause(model):
+            """该号码在本账户「任何」数据包里都还没被使用过"""
+            used_in_pln = (
+                select(literal(1))
+                .where(
+                    _pln_used.account_id == account.id,
+                    _pln_used.phone_number == model.phone_number,
+                    _pln_used.is_deleted == False,  # noqa: E712
+                    _pln_used.use_count > 0,
+                )
+                .exists()
+            )
+            used_in_dn = (
+                select(literal(1))
+                .where(
+                    _dn_used.account_id == account.id,
+                    _dn_used.phone_number == model.phone_number,
+                    _dn_used.use_count > 0,
+                )
+                .exists()
+            )
+            return and_(~used_in_pln, ~used_in_dn)
+
         def _apply_dims(q, model, *, include_batch: bool = True):
             """国家/批次/来源/用途/运营商/仅未使用 公共过滤"""
             if f.get("country_code"):
@@ -887,6 +920,8 @@ async def send_batch_sms(
                 # use_count 在历史数据里可能为 NULL（早期上传未初始化默认值），
                 # NULL 与 0 在 SQL 比较里不相等 → 必须同时兼容两种写法
                 q = q.where(or_(model.use_count == 0, model.use_count.is_(None)))
+            if _auto_dedup:
+                q = q.where(_cross_batch_unused_clause(model))
             return q
 
         def _build_union(include_batch: bool = True):
@@ -941,15 +976,21 @@ async def send_batch_sms(
     else:
         _private_library_db_nums = []
         _private_library_batch_id = None
+        _auto_dedup = False
 
     if not request.phone_numbers or len(request.phone_numbers) == 0:
         _empty_err = None
         if request.private_library_filters:
+            _dedup_tip = (
+                "；当前已开启「自动去重」，在其它数据包已使用过的相同号码会被跳过，"
+                "本包可发条数可能少于卡片显示的未使用数（可在「我的私有库」关闭该开关）"
+                if _auto_dedup else ""
+            )
             _empty_err = {
                 "code": "NO_NUMBERS",
                 "message": (
                     "未找到符合条件的私有库号码。请检查：运营商筛选、「仅未使用」、批次是否与当前卡片一致；"
-                    "或刷新「我的号码」后重试。"
+                    "或刷新「我的号码」后重试" + _dedup_tip + "。"
                 ),
             }
         return BatchSMSResponse(

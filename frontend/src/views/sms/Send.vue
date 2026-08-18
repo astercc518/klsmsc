@@ -240,6 +240,15 @@
                         <el-checkbox v-model="unusedOnlyPrivate" size="large">
                           <span style="color: var(--el-color-primary); font-weight: bold; font-size: 14px;">仅限未使用号码 (Fresh Data Only)</span>
                         </el-checkbox>
+                        <el-tag
+                          v-if="privateAutoDedup"
+                          size="small"
+                          type="success"
+                          effect="plain"
+                          style="margin-left: 12px"
+                        >
+                          {{ $t('smsSend.privateAutoDedupTag') }}
+                        </el-tag>
                       </div>
                     </div>
                   </div>
@@ -1230,7 +1239,7 @@ import { sendBatchSMS, submitSmsApproval, getChannelSenderIds } from '@/api/sms'
 import { getChannels } from '@/api/channel'
 import { getChannelBannedWords } from '@/api/sms'
 import { getBatchDetail } from '@/api/batch'
-import { getDataProducts, buyAndSend, getCarriers, getMyNumbersSummary, type DataProduct } from '@/api/data'
+import { getDataProducts, buyAndSend, getCarriers, getMyNumbersSummary, getMyNumbersSettings, type DataProduct } from '@/api/data'
 import { getAiConfig, generateSmsContent, paraphraseText, translateTexts } from '@/api/ai'
 import { listActiveShortLinkDomains, buildTrackUrlPlaceholder, type ShortLinkDomain } from '@/api/short-link'
 import request from '@/api/index'
@@ -1829,6 +1838,8 @@ const privateGroups = ref<any[]>([])
 const selectedPrivateGroup = ref<any>(null)
 const carrierFilterPrivate = ref('')
 const unusedOnlyPrivate = ref(false)
+/** 账户级「自动去重」开关（在「我的私有库」设置）：仅用于提示，取号由后端按此开关执行 */
+const privateAutoDedup = ref(false)
 const privateQuantity = ref(1000)
 
 /**
@@ -1905,6 +1916,12 @@ async function fetchPrivateGroups() {
     ElMessage.error('获取私有库数据失败')
   } finally {
     loadingPrivate.value = false
+  }
+  try {
+    const st = await getMyNumbersSettings()
+    privateAutoDedup.value = Boolean(st?.auto_dedup)
+  } catch {
+    privateAutoDedup.value = false
   }
 }
 

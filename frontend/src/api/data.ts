@@ -281,3 +281,25 @@ export function resetMyNumbersUsage(params: {
     reset_purchased?: number
   }>
 }
+
+// ============ 私库设置（客户端开关） ============
+
+export interface MyNumbersSettings {
+  /** 自动去重：开启后发送取号跳过在其它数据包已使用过的相同号码 */
+  auto_dedup: boolean
+}
+
+export function getMyNumbersSettings() {
+  return request({
+    url: '/data/my-numbers/settings',
+    method: 'get',
+  }) as Promise<MyNumbersSettings>
+}
+
+export function updateMyNumbersSettings(data: MyNumbersSettings) {
+  return request({
+    url: '/data/my-numbers/settings',
+    method: 'put',
+    data,
+  }) as Promise<MyNumbersSettings>
+}

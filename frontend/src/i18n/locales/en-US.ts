@@ -1368,6 +1368,17 @@ export default {
     uploadTaskAbandon: 'Abandon',
     uploadTaskAbandonConfirm: 'Abandon this queued task? You can upload again afterward.',
     summaryMismatchWarn: 'Numbers exist but no groups returned; try refresh or contact support.',
+    autoDedupLabel: 'Auto de-duplicate',
+    autoDedupTip:
+      'Uploaded data packages often overlap. When enabled, a number that has already been used in ANY '
+      + 'package of this account is skipped when numbers are pulled from other packages, so it is never '
+      + 'sent twice. When disabled, packages stay independent and the same number can be used once per '
+      + 'package. Affects number selection only — stored numbers and history are untouched, and you can '
+      + 'switch it back any time.',
+    autoDedupActiveTip:
+      'Auto de-duplicate is on: numbers already used in other packages are skipped, so the sendable count may be lower than the "Unused" figure on the cards.',
+    autoDedupOn: 'Auto de-duplicate enabled — duplicated numbers will not be sent again',
+    autoDedupOff: 'Auto de-duplicate disabled — each package can use the same number once',
   },
   dataPool: {
     accountIdPlaceholder: 'Account ID',
@@ -2828,6 +2839,7 @@ export default {
     totalNumbers: 'Total',
     viewAllRecords: 'View All Records',
     viewSendTask: 'View send task',
+    privateAutoDedupTag: 'Auto de-duplicate on (no repeats across packages)',
     privateLibraryHint:
       'Private library numbers are yours. Leave “Fresh data only” unchecked to send to the same numbers multiple times; when checked, only numbers never pulled for a send are used.',
   },

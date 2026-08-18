@@ -1283,6 +1283,45 @@ async def get_my_numbers_summary(
     return payload
 
 
+class MyNumbersSettingsBody(BaseModel):
+    """私有库客户端开关"""
+
+    auto_dedup: bool
+
+
+def _my_numbers_settings_payload(account: Account) -> dict:
+    return {"auto_dedup": bool(getattr(account, "private_library_auto_dedup", False) or False)}
+
+
+@router.get("/my-numbers/settings")
+async def get_my_numbers_settings(
+    account: Account = Depends(get_current_account),
+):
+    """读取「我的私有库」客户端开关（目前只有自动去重）"""
+    return _my_numbers_settings_payload(account)
+
+
+@router.put("/my-numbers/settings")
+async def put_my_numbers_settings(
+    body: MyNumbersSettingsBody,
+    db: AsyncSession = Depends(get_db),
+    account: Account = Depends(get_current_account),
+):
+    """
+    自动去重开关：开启后发送取号按号码全局去重——同一号码只要在本账户任一数据包里
+    已被使用过(use_count>0)，其它数据包里的副本一律跳过；关闭则维持数据包彼此独立。
+    只影响取号，不改动已入库的号码与历史发送记录，可随时来回切换。
+    """
+    await db.execute(
+        sa_update(Account)
+        .where(Account.id == account.id)
+        .values(private_library_auto_dedup=bool(body.auto_dedup))
+    )
+    await db.commit()
+    account.private_library_auto_dedup = bool(body.auto_dedup)
+    return _my_numbers_settings_payload(account)
+
+
 async def _pls_bump_purchased_for_number_ids(
     db: AsyncSession, account_id: int, number_ids: Sequence[int]
 ) -> None:
